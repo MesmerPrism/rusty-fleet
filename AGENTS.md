@@ -44,10 +44,11 @@ Live device work is never implied by a source or documentation task.
   runtime state, and canonical HTTP projection adapter;
 - `crates/fleet-simulator`: synthetic fleet and damage scenarios;
 - `apps/fleetctl`: structured JSON CLI over the same local API;
-- `apps/fleet-console-wpf`: native WPF fleet table, persistent inspector, and
-  loopback-only local API projection;
+- `apps/fleet-console-wpf`: native WPF fleet table, canonical scope/grouping,
+  persistent inspector, and loopback-only local API projection;
 - `apps/fleet-console-wpf.tests`: package-free native DataGrid, UI Automation,
-  stable-selection, and 1,000-device scale validation;
+  stable-context, grouped virtualization, presented keyboard, and 1,000-device
+  scale validation;
 - `schemas`: versioned JSON Schema projection;
 - `fixtures`: small committed contracts and deterministic scenario manifests.
 

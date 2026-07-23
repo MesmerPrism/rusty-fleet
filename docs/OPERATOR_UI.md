@@ -501,6 +501,17 @@ The initial primary-grid candidate is the native WPF `DataGrid`, exercised
 with explicit columns, virtualization, recycling, selection, keyboard, and
 automation tests.
 
+The current M1 implementation checkpoint retains that dependency-free
+baseline. It exercises 1,000 real Rust-projected rows with canonical
+search/freshness filtering, explicit cohort/model/freshness/application
+grouping, grouped recycling virtualization, separate inspection and batch
+selection, hidden-selection accounting, and cached inspector context when the
+selected device falls outside the applied scope. A real presented-window pass
+also verifies the search → grid → batch → inspector keyboard path through
+native UI Automation. Narrator, high-contrast, large-text, and supported
+display-scaling review remain milestone gates and are not claimed by this
+checkpoint.
+
 WPF provides UI virtualization but not built-in data virtualization.
 Therefore:
 

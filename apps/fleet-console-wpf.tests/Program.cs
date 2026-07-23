@@ -54,7 +54,7 @@ internal static class Program
             if (hubAddress is not null)
             {
                 using var liveClient = new FleetApiClient(new Uri(hubAddress));
-                var liveQuery = FleetQuery.Create(null, 100);
+                var liveQuery = FleetQuery.Create(null, limit: 100);
                 var liveResult = liveClient.QueryAsync(
                         liveQuery,
                         CancellationToken.None)
@@ -84,15 +84,23 @@ internal static class Program
             }
 
             var queryJson = JsonSerializer.Serialize(
-                FleetQuery.Create("Quest 0001"),
+                FleetQuery.Create("Quest 0001", "Stale"),
                 FleetJson.Options);
             using (var document = JsonDocument.Parse(queryJson))
             {
                 var expression = document.RootElement.GetProperty("expression");
-                Require(expression.GetProperty("kind").GetString() == "or", "search is not canonical OR");
+                Require(expression.GetProperty("kind").GetString() == "and", "facets are not canonical AND");
+                var expressions = expression.GetProperty("expressions");
                 Require(
-                    expression.GetProperty("expressions").GetArrayLength() == 2,
+                    expressions.GetArrayLength() == 2 &&
+                    expressions[0].GetProperty("kind").GetString() == "or" &&
+                    expressions[0].GetProperty("expressions").GetArrayLength() == 2,
                     "search must target display name and device ID");
+                Require(
+                    expressions[1].GetProperty("field").GetString() == "freshness" &&
+                    expressions[1].GetProperty("comparison").GetString() == "equals" &&
+                    expressions[1].GetProperty("value").GetString() == "stale",
+                    "freshness facet is not canonical");
             }
 
             var source = new StaticFleetDataSource(projection);
@@ -114,14 +122,6 @@ internal static class Program
             };
             first.IsBatchSelected = true;
             Require(batchScopeChanged, "direct batch selection did not update visible scope");
-            workspace.SearchText = "Quest 0001";
-            workspace.RefreshAsync().GetAwaiter().GetResult();
-            Require(source.LastQuery?.Expression is not null, "search was not sent to the data source");
-            var queryCountBeforeClear = source.QueryCount;
-            workspace.ClearSearchAsync().GetAwaiter().GetResult();
-            Require(workspace.SearchText.Length == 0, "clear search retained text");
-            Require(source.QueryCount == queryCountBeforeClear + 1, "clear search did not reapply scope");
-            Require(source.LastQuery?.Expression is null, "clear search retained a query expression");
             workspace.SelectDeviceAsync(first).GetAwaiter().GetResult();
             var inspector = workspace.Inspector ??
                             throw new InvalidOperationException("inspector did not select device");
@@ -129,12 +129,54 @@ internal static class Program
             Require(
                 inspector.Capabilities.Count >= 3,
                 "inspector did not preserve independent capabilities");
+
+            workspace.SearchText = "Quest 0001";
+            workspace.SelectedFreshness = "Fresh";
+            workspace.SelectedGrouping = "Cohort";
+            workspace.ApplyScopeAsync().GetAwaiter().GetResult();
+            Require(source.LastQuery?.Expression is not null, "search was not sent to the data source");
+            Require(workspace.Rows.Count == 1, "combined scope did not narrow the projection");
+            Require(
+                workspace.ActiveScopeText.Contains("freshness = fresh", StringComparison.Ordinal) &&
+                workspace.ActiveScopeText.Contains("grouped by cohort", StringComparison.Ordinal),
+                "active scope is not visibly serialized");
+            Require(workspace.RowsView.Groups?.Count == 1, "cohort grouping was not applied");
+
+            workspace.SearchText = string.Empty;
+            workspace.SelectedFreshness = "Offline";
+            workspace.ApplyScopeAsync().GetAwaiter().GetResult();
+            Require(workspace.Rows.Count == 0, "offline filter retained fresh devices");
+            Require(
+                workspace.BatchSelectionText.Contains("1 hidden by scope", StringComparison.Ordinal),
+                "hidden batch selection was not retained");
+            Require(
+                workspace.Inspector?.Title == first.DisplayName &&
+                workspace.InspectorContextText.Contains(
+                    "outside the active scope",
+                    StringComparison.Ordinal),
+                "selected-device context was lost outside the active scope");
+
+            var queryCountBeforeClear = source.QueryCount;
+            workspace.ClearSearchAsync().GetAwaiter().GetResult();
+            Require(workspace.SearchText.Length == 0, "clear search retained text");
+            Require(source.QueryCount == queryCountBeforeClear + 1, "clear search did not reapply scope");
+            Require(source.LastQuery?.Expression is null, "clear search retained a query expression");
+            Require(
+                workspace.Rows[0].IsBatchSelected &&
+                workspace.SelectedDevice?.StableKey == workspace.Rows[0].StableKey,
+                "clearing scope did not restore batch and inspection context");
+            first = workspace.Rows[0];
             var firstReference = workspace.Rows[0];
             workspace.RefreshAsync().GetAwaiter().GetResult();
             Require(
                 ReferenceEquals(firstReference, workspace.Rows[0]),
                 "refresh replaced a stable interaction-bound row");
             Require(workspace.Rows[0].IsBatchSelected, "batch selection was lost on refresh");
+            workspace.SelectedGrouping = "Cohort";
+            workspace.ApplyScopeAsync().GetAwaiter().GetResult();
+            Require(
+                workspace.RowsView.Groups is { Count: 2 },
+                "full cohort grouping did not retain both simulator cohorts");
 
             var mismatchedQueryWorkspace = new FleetWorkspaceViewModel(
                 new StaticFleetDataSource(projection, echoQuery: false));
@@ -162,19 +204,37 @@ internal static class Program
                     StringComparison.Ordinal),
                 "wrong-device inspector evidence replaced the cached identity");
 
+            var presentWindow = arguments.Contains("--present", StringComparer.Ordinal);
             var windowWatch = Stopwatch.StartNew();
             var window = new MainWindow(workspace)
             {
-                ShowActivated = false,
-                ShowInTaskbar = false,
-                WindowStyle = WindowStyle.None
+                ShowActivated = presentWindow,
+                ShowInTaskbar = presentWindow,
+                WindowStyle = presentWindow
+                    ? WindowStyle.SingleBorderWindow
+                    : WindowStyle.None,
+                Width = 1_500,
+                Height = 900
             };
             var rootVisual = (FrameworkElement)window.Content;
-            rootVisual.Measure(new Size(1_500, 900));
-            rootVisual.Arrange(new Rect(0, 0, 1_500, 900));
+            if (presentWindow)
+            {
+                window.Show();
+                window.Activate();
+            }
+            else
+            {
+                rootVisual.Measure(new Size(1_500, 900));
+                rootVisual.Arrange(new Rect(0, 0, 1_500, 900));
+            }
             rootVisual.UpdateLayout();
             window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
             windowWatch.Stop();
+            var renderPath = ReadOptionalValue(arguments, "--render");
+            if (renderPath is not null)
+            {
+                RenderVisual(rootVisual, renderPath);
+            }
 
             var grid = window.FleetDataGrid;
             Require(grid.Columns.Count == 12, "fleet grid column contract drifted");
@@ -182,6 +242,9 @@ internal static class Program
             Require(
                 VirtualizingPanel.GetVirtualizationMode(grid) == VirtualizationMode.Recycling,
                 "row recycling is disabled");
+            Require(
+                VirtualizingPanel.GetIsVirtualizingWhenGrouping(grid),
+                "grouped rows do not retain virtualization");
             Require(grid.EnableRowVirtualization, "DataGrid row virtualization is disabled");
             Require(grid.EnableColumnVirtualization, "DataGrid column virtualization is disabled");
             Require(
@@ -191,8 +254,12 @@ internal static class Program
                 AutomationProperties.GetName(window.InspectorRegion) == "Selected device inspector",
                 "inspector has no stable accessible name");
             Require(window.InspectorRegion.Focusable, "inspector cannot receive keyboard focus");
-            var batchCheckBox = FindVisualDescendant<CheckBox>(
-                grid.Columns[0].GetCellContent(grid.Items[0])) ??
+            var inspectorPeer = new ScrollViewerAutomationPeer(
+                (ScrollViewer)window.InspectorRegion);
+            Require(
+                inspectorPeer.GetName() == "Selected device inspector",
+                "inspector automation peer lost its accessible name");
+            var batchCheckBox = FindVisualDescendant<CheckBox>(grid) ??
                 throw new InvalidOperationException("visible batch checkbox was not realized");
             Require(
                 batchCheckBox is { IsEnabled: true, IsHitTestVisible: true },
@@ -212,8 +279,7 @@ internal static class Program
                 $"native UI Automation did not toggle batch membership: " +
                 $"checkbox={batchCheckBox.IsChecked}, model={first.IsBatchSelected}");
 
-            var realized = Enumerable.Range(0, projection.Rows.Count)
-                .Count(index => grid.ItemContainerGenerator.ContainerFromIndex(index) is not null);
+            var realized = CountVisualDescendants<DataGridRow>(grid);
             Require(realized is > 0 and < 250, "virtualized grid realized an invalid row set");
             var columnWidths = grid.Columns
                 .Select(column => Math.Round(column.ActualWidth, 1))
@@ -228,13 +294,20 @@ internal static class Program
                 "native DataGrid automation peer was not preserved");
             Require(peer.GetName() == "Fleet devices", "automation peer lost grid name");
 
-            var renderPath = ReadOptionalValue(arguments, "--render");
-            if (renderPath is not null)
+            if (presentWindow && window.IsVisible)
             {
-                RenderVisual(rootVisual, renderPath);
-            }
+                var presentationFrame = new DispatcherFrame();
+                void StopPresentation(object? sender, EventArgs eventArgs) =>
+                    presentationFrame.Continue = false;
 
-            window.Close();
+                window.Closed += StopPresentation;
+                Dispatcher.PushFrame(presentationFrame);
+                window.Closed -= StopPresentation;
+            }
+            else
+            {
+                window.Close();
+            }
 
             var receipt = new
             {
@@ -250,12 +323,17 @@ internal static class Program
                 native_datagrid = true,
                 recycling_virtualization = true,
                 native_automation_peer = true,
+                inspector_automation_peer = true,
                 pointer_batch_toggle = true,
                 accessible_batch_toggle = true,
                 loopback_hub_only = true,
                 bounded_hub_response = true,
                 live_hub_checked = liveHubChecked,
                 projection_identity_fail_closed = true,
+                canonical_scope = true,
+                grouped_virtualization = true,
+                hidden_selection_preserved = true,
+                inspector_outside_scope_preserved = true,
                 theme_dependency = "none",
                 batch_selection_preserved = true,
                 inspector_capability_families = inspector.Capabilities.Count,
@@ -362,6 +440,29 @@ internal static class Program
         return null;
     }
 
+    private static int CountVisualDescendants<T>(DependencyObject? parent)
+        where T : DependencyObject
+    {
+        if (parent is null)
+        {
+            return 0;
+        }
+
+        var count = 0;
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T)
+            {
+                count++;
+            }
+
+            count += CountVisualDescendants<T>(child);
+        }
+
+        return count;
+    }
+
     private static string RunFleetctl(string repoRoot, int count)
     {
         var start = new ProcessStartInfo
@@ -417,16 +518,23 @@ internal static class Program
             cancellationToken.ThrowIfCancellationRequested();
             LastQuery = query;
             QueryCount++;
+            var matched = projection.Rows
+                .Where(row => Matches(query.Expression, row))
+                .ToArray();
+            var window = matched
+                .Skip(query.Offset)
+                .Take(query.Limit)
+                .ToArray();
             return Task.FromResult(new FleetQueryResult
             {
                 Schema = projection.Schema,
                 Query = echoQuery ? query : projection.Query,
                 ResultRevision = projection.ResultRevision,
                 AsOfMs = projection.AsOfMs,
-                TotalCount = projection.TotalCount,
-                WindowOffset = projection.WindowOffset,
-                WindowCount = projection.WindowCount,
-                Rows = projection.Rows
+                TotalCount = matched.Length,
+                WindowOffset = query.Offset,
+                WindowCount = window.Length,
+                Rows = window
             });
         }
 
@@ -466,6 +574,56 @@ internal static class Program
                         "failed" or "critical")
                     .ToArray()
             });
+        }
+
+        private static bool Matches(object? expression, DeviceRowProjection row)
+        {
+            if (expression is null)
+            {
+                return true;
+            }
+
+            return MatchesElement(
+                JsonSerializer.SerializeToElement(expression, FleetJson.Options),
+                row);
+        }
+
+        private static bool MatchesElement(
+            JsonElement expression,
+            DeviceRowProjection row)
+        {
+            var kind = expression.GetProperty("kind").GetString();
+            if (kind is "and" or "or")
+            {
+                var values = expression.GetProperty("expressions")
+                    .EnumerateArray()
+                    .Select(item => MatchesElement(item, row));
+                return kind == "and" ? values.All(value => value) : values.Any(value => value);
+            }
+
+            if (kind != "predicate")
+            {
+                throw new InvalidOperationException($"Unsupported test query kind {kind}.");
+            }
+
+            var field = expression.GetProperty("field").GetString();
+            var comparison = expression.GetProperty("comparison").GetString();
+            var expected = expression.GetProperty("value").GetString() ?? string.Empty;
+            var actual = field switch
+            {
+                "display_name" => row.Identity.DisplayName,
+                "device_id" => row.Identity.DeviceId,
+                "freshness" => row.Freshness,
+                _ => throw new InvalidOperationException(
+                    $"Unsupported test query field {field}.")
+            };
+            return comparison switch
+            {
+                "contains" => actual.Contains(expected, StringComparison.OrdinalIgnoreCase),
+                "equals" => actual.Equals(expected, StringComparison.OrdinalIgnoreCase),
+                _ => throw new InvalidOperationException(
+                    $"Unsupported test comparison {comparison}.")
+            };
         }
     }
 }

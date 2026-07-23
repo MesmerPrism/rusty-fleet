@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Net.Http;
 using System.Text.Json;
+using System.Windows.Data;
 using RustyFleet.FleetConsole.Contracts;
 using RustyFleet.FleetConsole.Services;
 
@@ -12,24 +14,34 @@ namespace RustyFleet.FleetConsole.ViewModels;
 public sealed class FleetWorkspaceViewModel : ObservableObject
 {
     private readonly Func<Uri, IFleetDataSource>? _sourceFactory;
+    private readonly Dictionary<string, ulong> _batchSelection = new(StringComparer.Ordinal);
     private IFleetDataSource? _source;
     private string _hubAddress = "http://127.0.0.1:8741/";
     private string _searchText = string.Empty;
+    private string _selectedFreshness = "All";
+    private string _selectedGrouping = "None";
+    private string _appliedSearchText = string.Empty;
+    private string _appliedFreshness = "All";
+    private string _appliedGrouping = "None";
     private string _statusMessage = "Disconnected · enter a local Hub address and connect";
     private string _summaryText = "No fleet data loaded";
     private string _scopeText = "0 devices";
     private string _asOfText = "No accepted snapshot";
+    private string _activeScopeText = "Active scope · all devices · grouped by none";
+    private string _inspectorContextText = "No selected device";
     private bool _isBusy;
     private DeviceRowViewModel? _selectedDevice;
     private DeviceInspectorViewModel? _inspector;
+    private string? _inspectedStableKey;
     private CancellationTokenSource? _requestCancellation;
 
     public FleetWorkspaceViewModel(Func<Uri, IFleetDataSource> sourceFactory)
     {
         _sourceFactory = sourceFactory;
+        RowsView = CollectionViewSource.GetDefaultView(Rows);
         ConnectCommand = new AsyncCommand(ConnectAsync, () => !IsBusy);
         RefreshCommand = new AsyncCommand(RefreshAsync, () => !IsBusy && _source is not null);
-        ApplySearchCommand = new AsyncCommand(RefreshAsync, () => !IsBusy && _source is not null);
+        ApplySearchCommand = new AsyncCommand(ApplyScopeAsync, () => !IsBusy && _source is not null);
         ClearSearchCommand = new AsyncCommand(ClearSearchAsync, () => !IsBusy);
         ClearBatchSelectionCommand = new RelayCommand(ClearBatchSelection);
         SelectAllVisibleCommand = new RelayCommand(SelectAllVisible);
@@ -43,6 +55,14 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     }
 
     public ObservableCollection<DeviceRowViewModel> Rows { get; } = [];
+
+    public ICollectionView RowsView { get; }
+
+    public IReadOnlyList<string> FreshnessOptions { get; } =
+        ["All", "Fresh", "Stale", "Offline", "Unknown"];
+
+    public IReadOnlyList<string> GroupingOptions { get; } =
+        ["None", "Cohort", "Model", "Freshness", "Application"];
 
     public AsyncCommand ConnectCommand { get; }
 
@@ -68,6 +88,18 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         set => SetProperty(ref _searchText, value);
     }
 
+    public string SelectedFreshness
+    {
+        get => _selectedFreshness;
+        set => SetProperty(ref _selectedFreshness, value);
+    }
+
+    public string SelectedGrouping
+    {
+        get => _selectedGrouping;
+        set => SetProperty(ref _selectedGrouping, value);
+    }
+
     public string StatusMessage
     {
         get => _statusMessage;
@@ -90,6 +122,18 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     {
         get => _asOfText;
         private set => SetProperty(ref _asOfText, value);
+    }
+
+    public string ActiveScopeText
+    {
+        get => _activeScopeText;
+        private set => SetProperty(ref _activeScopeText, value);
+    }
+
+    public string InspectorContextText
+    {
+        get => _inspectorContextText;
+        private set => SetProperty(ref _inspectorContextText, value);
     }
 
     public bool IsBusy
@@ -123,8 +167,12 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     {
         get
         {
-            var selected = Rows.Count(row => row.IsBatchSelected);
-            return $"{selected} selected · {Rows.Count} visible";
+            var visibleSelected = Rows.Count(row => row.IsBatchSelected);
+            var hiddenSelected = _batchSelection.Count - visibleSelected;
+            return hiddenSelected > 0
+                ? $"{_batchSelection.Count} selected · {hiddenSelected} hidden by scope · " +
+                  $"{Rows.Count} shown"
+                : $"{_batchSelection.Count} selected · {Rows.Count} shown";
         }
     }
 
@@ -135,11 +183,15 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         SelectedDevice = device;
         if (device is null)
         {
+            _inspectedStableKey = null;
             Inspector = null;
+            InspectorContextText = "No selected device";
             return;
         }
 
+        _inspectedStableKey = device.StableKey;
         Inspector = DeviceInspectorViewModel.FromRow(device.Projection);
+        InspectorContextText = "Selected device is in the active scope";
         if (_source is null)
         {
             return;
@@ -154,7 +206,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 projection,
                 device.Projection);
 
-            if (SelectedDevice?.StableKey == device.StableKey)
+            if (_inspectedStableKey == device.StableKey)
             {
                 Inspector = new DeviceInspectorViewModel(projection);
             }
@@ -175,10 +227,25 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         }
 
         device.IsBatchSelected = !device.IsBatchSelected;
-        OnPropertyChanged(nameof(BatchSelectionText));
     }
 
-    public async Task RefreshAsync()
+    public Task RefreshAsync() => LoadScopeAsync(
+        _appliedSearchText,
+        _appliedFreshness,
+        _appliedGrouping,
+        acceptEditorScope: false);
+
+    public Task ApplyScopeAsync() => LoadScopeAsync(
+        SearchText,
+        SelectedFreshness,
+        SelectedGrouping,
+        acceptEditorScope: true);
+
+    private async Task LoadScopeAsync(
+        string searchText,
+        string freshness,
+        string grouping,
+        bool acceptEditorScope)
     {
         if (_source is null)
         {
@@ -193,12 +260,31 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         StatusMessage = "Refreshing canonical fleet scope";
         try
         {
-            var query = FleetQuery.Create(SearchText);
+            var query = FleetQuery.Create(searchText, freshness);
             var queryTask = _source.QueryAsync(query, _requestCancellation.Token);
             var summaryTask = _source.SummaryAsync(_requestCancellation.Token);
             await Task.WhenAll(queryTask, summaryTask);
-            ApplyResult(await queryTask, await summaryTask, query);
-            StatusMessage = "Connected · ordering stable · no background re-sort";
+            var invalidatedSelections = ApplyResult(
+                await queryTask,
+                await summaryTask,
+                query);
+            if (acceptEditorScope)
+            {
+                _appliedSearchText = searchText.Trim();
+                _appliedFreshness = NormalizeOption(freshness, "All");
+                _appliedGrouping = NormalizeOption(grouping, "None");
+                ApplyGrouping(_appliedGrouping);
+                UpdateActiveScopeText();
+            }
+            else
+            {
+                RowsView.Refresh();
+            }
+
+            StatusMessage = invalidatedSelections == 0
+                ? "Connected · ordering stable · no background re-sort"
+                : $"Connected · {invalidatedSelections} batch selection invalidated by " +
+                  "an identity revision";
         }
         catch (Exception error) when (
             error is HttpRequestException or JsonException or TaskCanceledException or
@@ -238,7 +324,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         }
     }
 
-    private void ApplyResult(
+    private int ApplyResult(
         FleetQueryResult result,
         FleetSummaryProjection summary,
         FleetQuery requestedQuery)
@@ -248,14 +334,23 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             summary,
             requestedQuery);
 
-        var selectedKey = SelectedDevice?.StableKey;
         var existing = Rows.ToDictionary(row => row.StableKey, StringComparer.Ordinal);
         var incomingKeys = new HashSet<string>(StringComparer.Ordinal);
+        var invalidatedSelections = 0;
 
         for (var index = 0; index < result.Rows.Count; index++)
         {
             var projection = result.Rows[index];
             var key = $"{projection.Identity.DeviceId}@{projection.Identity.IdentityRevision}";
+            if (_batchSelection.TryGetValue(
+                    projection.Identity.DeviceId,
+                    out var selectedRevision) &&
+                selectedRevision != projection.Identity.IdentityRevision)
+            {
+                _batchSelection.Remove(projection.Identity.DeviceId);
+                invalidatedSelections++;
+            }
+
             incomingKeys.Add(key);
             if (existing.TryGetValue(key, out var row))
             {
@@ -269,6 +364,11 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             else
             {
                 var newRow = new DeviceRowViewModel(projection);
+                newRow.IsBatchSelected =
+                    _batchSelection.TryGetValue(
+                        projection.Identity.DeviceId,
+                        out var batchRevision) &&
+                    batchRevision == projection.Identity.IdentityRevision;
                 newRow.PropertyChanged += OnRowPropertyChanged;
                 Rows.Insert(index, newRow);
             }
@@ -283,12 +383,14 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             }
         }
 
-        SelectedDevice = selectedKey is null
+        SelectedDevice = _inspectedStableKey is null
             ? null
-            : Rows.FirstOrDefault(row => row.StableKey == selectedKey);
-        if (SelectedDevice is null)
+            : Rows.FirstOrDefault(row => row.StableKey == _inspectedStableKey);
+        if (Inspector is not null)
         {
-            Inspector = null;
+            InspectorContextText = SelectedDevice is null
+                ? "Selected device is outside the active scope · cached accepted evidence"
+                : "Selected device is in the active scope";
         }
 
         SummaryText =
@@ -300,12 +402,15 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             $"result revision {result.ResultRevision}";
         AsOfText = $"As of {FormatInstant(result.AsOfMs)}";
         OnPropertyChanged(nameof(BatchSelectionText));
+        return invalidatedSelections;
     }
 
     public async Task ClearSearchAsync()
     {
         SearchText = string.Empty;
-        await RefreshAsync();
+        SelectedFreshness = "All";
+        SelectedGrouping = "None";
+        await ApplyScopeAsync();
     }
 
     private void ClearBatchSelection()
@@ -315,6 +420,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             row.IsBatchSelected = false;
         }
 
+        _batchSelection.Clear();
         OnPropertyChanged(nameof(BatchSelectionText));
     }
 
@@ -330,11 +436,61 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
     private void OnRowPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)
     {
-        if (eventArgs.PropertyName == nameof(DeviceRowViewModel.IsBatchSelected))
+        if (eventArgs.PropertyName == nameof(DeviceRowViewModel.IsBatchSelected) &&
+            sender is DeviceRowViewModel row)
         {
+            if (row.IsBatchSelected)
+            {
+                _batchSelection[row.DeviceId] = row.Projection.Identity.IdentityRevision;
+            }
+            else if (_batchSelection.TryGetValue(row.DeviceId, out var revision) &&
+                     revision == row.Projection.Identity.IdentityRevision)
+            {
+                _batchSelection.Remove(row.DeviceId);
+            }
+
             OnPropertyChanged(nameof(BatchSelectionText));
         }
     }
+
+    private void ApplyGrouping(string grouping)
+    {
+        using (RowsView.DeferRefresh())
+        {
+            RowsView.GroupDescriptions.Clear();
+            var propertyName = grouping switch
+            {
+                "Cohort" => nameof(DeviceRowViewModel.CohortGroup),
+                "Model" => nameof(DeviceRowViewModel.Model),
+                "Freshness" => nameof(DeviceRowViewModel.FreshnessGroup),
+                "Application" => nameof(DeviceRowViewModel.ApplicationGroup),
+                _ => null
+            };
+            if (propertyName is not null)
+            {
+                RowsView.GroupDescriptions.Add(
+                    new PropertyGroupDescription(propertyName));
+            }
+        }
+    }
+
+    private void UpdateActiveScopeText()
+    {
+        var parts = new List<string> { "Active scope" };
+        parts.Add(string.IsNullOrWhiteSpace(_appliedSearchText)
+            ? "all identities"
+            : $"identity contains “{_appliedSearchText}”");
+        if (_appliedFreshness != "All")
+        {
+            parts.Add($"freshness = {_appliedFreshness.ToLowerInvariant()}");
+        }
+
+        parts.Add($"grouped by {_appliedGrouping.ToLowerInvariant()}");
+        ActiveScopeText = string.Join(" · ", parts);
+    }
+
+    private static string NormalizeOption(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
     private static string FormatInstant(long value)
     {

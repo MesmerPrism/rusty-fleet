@@ -36,10 +36,6 @@ public partial class MainWindow : Window
         {
             await _viewModel.SelectDeviceAsync(selected);
         }
-        else
-        {
-            await _viewModel.SelectDeviceAsync(null);
-        }
     }
 
     private async void OnPreviewKeyDown(object sender, KeyEventArgs e)

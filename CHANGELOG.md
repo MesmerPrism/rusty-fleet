@@ -41,6 +41,7 @@ The project follows Semantic Versioning once runtime releases begin.
   this checkpoint.
 - First native WPF M1 operator projection with a dense recycling-virtualized
   fleet table, persistent device inspector, distinct inspection and batch
-  selection, loopback-only Hub access, fail-closed projection correlation,
-  native keyboard/UI Automation semantics, and package-free 1,000-device
-  validation.
+  selection, canonical search/freshness scope, explicit grouping, hidden
+  selection and out-of-scope inspector preservation, loopback-only Hub
+  access, fail-closed projection correlation, native keyboard/UI Automation
+  semantics, and package-free 1,000-device validation.

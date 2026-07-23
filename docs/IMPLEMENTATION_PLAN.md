@@ -602,7 +602,10 @@ stack. The accepted source foundation remains documented in
 ingress and authority behavior are documented in
 [Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Durable restart
 recovery and the first bounded Quest checkpoint are now present. Finish the
-shared WPF/CLI/API projection and accessibility slice, remaining negative-path
-integration, Standard and Deep gates, instruction-impact review, and
-publication. Do not create transport-, screen-, or test-sized M1 sub-units.
-Corrections remain inside this active stack.
+remaining WPF/CLI/API scope parity and manual accessibility gates, remaining
+negative-path integration, Standard and Deep gates, instruction-impact review,
+and publication. The native 1,000-device table/inspector, canonical
+search/freshness scope, grouping, stable hidden selection, out-of-scope
+inspector context, and presented keyboard/UI Automation path are now present.
+Do not create transport-, screen-, or test-sized M1 sub-units. Corrections
+remain inside this active stack.

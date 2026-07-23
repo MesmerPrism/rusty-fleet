@@ -5,7 +5,7 @@
 `fleet-hub-local` is the first runnable Rusty Fleet ingress. It accepts
 permission-minimal, low-rate Quest check-ins over an explicitly configured
 local HTTP endpoint and projects accepted state through the same `FleetApi`
-used by the CLI and future WPF Console.
+used by the CLI and WPF Console.
 
 The runtime does not discover devices, create enrollment, enable ADB, carry
 commands, accept files or media, or provide remote relay. Source presence does
@@ -118,18 +118,20 @@ The M1 workspace uses the native WPF `DataGrid` and native UI Automation peer
 without a theme dependency. It provides:
 
 - a 12-column, recycling-virtualized fleet table and frozen device identity;
-- visible summary, query, result-revision, snapshot-time, and batch-selection
-  scope;
+- visible summary, applied canonical search/freshness scope, grouping,
+  result-revision, snapshot-time, and batch-selection scope;
 - inspection selection that is separate from batch membership;
 - pointer, keyboard, and UI Automation batch-toggle paths that update the same
   visible selection scope;
-- stable row view models that retain batch selection across explicit refresh;
+- stable row view models that retain batch selection across refresh, filtering,
+  grouping, and virtualization, including a visible hidden-selection count;
 - a persistent inspector for independent observations, capabilities,
-  condition provenance, work, and streams;
+  condition provenance, work, and streams, retained as cached evidence when
+  the selected device falls outside the applied scope;
 - keyboard search (`Ctrl+F`), region navigation (`F6`), inspection (`Enter`),
   and batch-toggle (`Space`);
 - system color resources, visible text labels, stable accessible names, and
-  native `DataGridAutomationPeer` semantics.
+  native grid and inspector automation peers.
 
 The local API client has a 10-second request deadline and a 16 MiB response
 budget. Before changing visible state, the Console verifies the exact query
@@ -138,13 +140,16 @@ condition/capability families, and selected inspector identity. Invalid
 evidence leaves the last accepted projection visible and reports the failure.
 
 The package-free validation executable consumes the real 1,000-device
-`fleetctl` query result, verifies canonical search shape, stable rows and
-selection, native automation, recycling virtualization, bounded realized
-containers, 12 declared columns, and independent capability families. It
-records measured timings but does not convert one run into a supported-scale
-claim. It also rejects non-loopback Hub addresses, mismatched query receipts,
-and wrong-device inspector evidence. Narrator, high-contrast, text-size, and
-multi-scaling checks remain manual M1 acceptance gates.
+`fleetctl` query result, verifies canonical search/freshness AND/OR shape,
+stable rows, grouped virtualization, hidden selection, out-of-scope inspector
+context, native automation, bounded realized containers, 12 declared columns,
+and independent capability families. A presented-window input pass verifies
+that `Ctrl+F` focuses search, `F6` reaches the fleet grid, `Space` changes
+batch membership, and `Enter` exposes focus through the inspector automation
+peer. The suite records measured timings but does not convert one run into a
+supported-scale claim. It also rejects non-loopback Hub addresses, mismatched
+query receipts, and wrong-device inspector evidence. Narrator, high-contrast,
+text-size, and multi-scaling checks remain manual M1 acceptance gates.
 
 ## Focused validation
 

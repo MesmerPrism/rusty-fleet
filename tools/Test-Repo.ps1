@@ -352,11 +352,16 @@ function Test-WpfConsole {
         $receipt.native_datagrid -eq $true -and
         $receipt.recycling_virtualization -eq $true -and
         $receipt.native_automation_peer -eq $true -and
+        $receipt.inspector_automation_peer -eq $true -and
         $receipt.pointer_batch_toggle -eq $true -and
         $receipt.accessible_batch_toggle -eq $true -and
         $receipt.loopback_hub_only -eq $true -and
         $receipt.bounded_hub_response -eq $true -and
         $receipt.projection_identity_fail_closed -eq $true -and
+        $receipt.canonical_scope -eq $true -and
+        $receipt.grouped_virtualization -eq $true -and
+        $receipt.hidden_selection_preserved -eq $true -and
+        $receipt.inspector_outside_scope_preserved -eq $true -and
         $receipt.theme_dependency -eq "none" -and
         $receipt.batch_selection_preserved -eq $true -and
         $receipt.inspector_capability_families -ge 3 -and

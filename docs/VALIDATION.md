@@ -24,9 +24,11 @@ Quick is safe during normal editing and checks:
 - exact `fleetctl`/local-API projection parity.
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
   against the real 1,000-device Rust projection;
-- native UI Automation peer/name, recycling virtualization, bounded realized
-  rows, readable default column widths, stable view models, pointer/keyboard/
-  UI Automation batch selection, and preserved batch scope;
+- native grid/inspector UI Automation peers and names, grouped recycling
+  virtualization, bounded realized rows, readable default column widths,
+  stable view models, canonical search/freshness expressions,
+  pointer/keyboard/UI Automation batch selection, hidden-selection
+  preservation, and retained out-of-scope inspector context;
 - fail-closed non-loopback Hub, bounded response, mismatched-query, and
   wrong-device inspector fixtures.
 
@@ -172,6 +174,12 @@ claim.
 
 Screenshot matrices detect layout drift but do not replace keyboard, UI
 Automation, screen-reader, or interaction tests.
+
+The optional `--present` argument opens the same package-free validation
+surface as a real WPF window for bounded focus, keyboard, screen-reader, and
+visual review. It does not start a Hub or contact a device. Presented-window
+evidence complements the default off-screen regression run and does not make
+Narrator, high-contrast, large-text, or scaling gates automatic.
 
 ## Evidence vocabulary
 

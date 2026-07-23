@@ -12,8 +12,11 @@ pinned Manifold peer authority, an explicit bounded local Hub runtime, durable
 two-slot restart recovery, and one cleaned private Quest Wi-Fi proof. Nothing
 listens by default: the operator must supply a valid enrollment config,
 absolute private state directory, and explicitly permit a non-loopback bind.
-The first native WPF table/inspector slice and its 1,000-device automated
-validation are present. Manual Narrator, high-contrast, scaling, final M1
+The native WPF table/inspector slice now includes canonical search and
+freshness scope, explicit cohort/model/freshness/application grouping,
+hidden-selection preservation, and retained inspector context across scope
+changes. Its package-free 1,000-device and presented-window keyboard/UI
+Automation checks pass. Manual Narrator, high-contrast, scaling, final M1
 consolidation, media, and remote relay remain pending.
 
 The accepted operator-information architecture uses a dense virtualized fleet
@@ -61,11 +64,12 @@ The current implementation is split into:
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets plus damage and lifecycle mutations;
 - `fleetctl`: a structured JSON projection over the same local API;
-- `fleet-console-wpf`: a native WPF `DataGrid`, visible fleet scope,
-  distinct inspection and batch selection, and a persistent selected-device
-  inspector over the canonical local API;
+- `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical scope and
+  grouping, distinct inspection and batch selection, and a persistent
+  selected-device inspector over the canonical local API;
 - `fleet-console-wpf.tests`: package-free native UI Automation,
-  virtualization, stable-row, capability-family, and 1,000-device checks.
+  grouped virtualization, stable-context, capability-family, presented
+  keyboard, and 1,000-device checks.
 
 See the [Milestone 0 source foundation](docs/M0_SOURCE_FOUNDATION.md) for the
 accepted source boundary, the
@@ -173,8 +177,10 @@ paired with the active M1 local-monitoring stack. The runtime source is
 present but activates no socket, service, device route, or platform permission
 by default. The bounded Quest checkpoint and a producer-stopped durable Hub
 restart have passed with private evidence and complete device cleanup. M1
-now also has its first native WPF table/inspector and automated 1,000-device
-virtualization/UI Automation baseline. Acceptance remains pending until the
+now also has its native WPF table/inspector, canonical scope/grouping,
+stable-context behavior, and automated 1,000-device virtualization/UI
+Automation baseline. A real presented-window pass verifies search, grid,
+batch, and inspector keyboard focus. Acceptance remains pending until the
 manual Narrator, high-contrast, scaling, full Standard, Deep, workflow, and
 publication gates pass.
 

@@ -76,6 +76,8 @@ public sealed class DeviceRowViewModel(DeviceRowProjection projection) : Observa
 
     public string RouteText => Title(_projection.Route);
 
+    public string FreshnessGroup => Title(_projection.Freshness);
+
     public string PowerText => _projection.BatteryPercent is int battery
         ? $"{battery}%{(_projection.Charging == true ? " · charging" : string.Empty)}"
         : "Unknown";
@@ -90,6 +92,11 @@ public sealed class DeviceRowViewModel(DeviceRowProjection projection) : Observa
             return $"{app} · {Title(_projection.KioskState)}";
         }
     }
+
+    public string ApplicationGroup =>
+        _projection.Application?.PackageName ??
+        _projection.ForegroundApp ??
+        "Unknown app";
 
     public string ControlText =>
         $"Mon {DescribeCapability(FindCapability("monitoring", "capability.monitoring"))} · " +
@@ -123,6 +130,10 @@ public sealed class DeviceRowViewModel(DeviceRowProjection projection) : Observa
         ? cohort
         : string.Join(", ", _projection.Identity.Tags.Select(entry => $"{entry.Key}={entry.Value}"));
 
+    public string CohortGroup => _projection.Identity.Tags.TryGetValue("cohort", out var cohort)
+        ? cohort
+        : "No cohort";
+
     public string AccessibleName =>
         $"{DisplayName}, {Model}, {FreshnessText}, route {RouteText}, power {PowerText}, " +
         $"application {AppKioskText}, control {ControlText}, privileged {PrivilegedText}";
@@ -148,14 +159,17 @@ public sealed class DeviceRowViewModel(DeviceRowProjection projection) : Observa
             nameof(AttentionSummary),
             nameof(AgeText),
             nameof(FreshnessText),
+            nameof(FreshnessGroup),
             nameof(RouteText),
             nameof(PowerText),
             nameof(AppKioskText),
+            nameof(ApplicationGroup),
             nameof(ControlText),
             nameof(PrivilegedText),
             nameof(StreamsText),
             nameof(WorkText),
             nameof(TagsText),
+            nameof(CohortGroup),
             nameof(AccessibleName),
             nameof(BatchSelectionName)
         })

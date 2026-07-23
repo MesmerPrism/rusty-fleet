@@ -42,36 +42,61 @@ public sealed class FleetQuery
     [JsonPropertyName("limit")]
     public int Limit { get; init; } = 1_000;
 
-    public static FleetQuery Create(string? searchText, int limit = 1_000)
+    public static FleetQuery Create(
+        string? searchText,
+        string? freshness = null,
+        int limit = 1_000)
     {
         var normalized = searchText?.Trim();
-        object? expression = null;
+        var terms = new List<object>();
         if (!string.IsNullOrEmpty(normalized))
         {
-            expression = new Dictionary<string, object?>
+            terms.Add(new Dictionary<string, object?>
             {
                 ["kind"] = "or",
                 ["expressions"] = new object[]
                 {
-                    Predicate("display_name", normalized),
-                    Predicate("device_id", normalized)
+                    Predicate("display_name", "contains", normalized),
+                    Predicate("device_id", "contains", normalized)
                 }
-            };
+            });
+        }
+
+        var normalizedFreshness = freshness?.Trim().ToLowerInvariant();
+        if (!string.IsNullOrEmpty(normalizedFreshness) &&
+            normalizedFreshness != "all")
+        {
+            terms.Add(Predicate(
+                "freshness",
+                "equals",
+                normalizedFreshness));
         }
 
         return new FleetQuery
         {
             QueryId = $"fleet-console-{Guid.NewGuid():N}",
-            Expression = expression,
+            Expression = terms.Count switch
+            {
+                0 => null,
+                1 => terms[0],
+                _ => new Dictionary<string, object?>
+                {
+                    ["kind"] = "and",
+                    ["expressions"] = terms
+                }
+            },
             Limit = limit
         };
     }
 
-    private static Dictionary<string, object?> Predicate(string field, string value) => new()
+    private static Dictionary<string, object?> Predicate(
+        string field,
+        string comparison,
+        string value) => new()
     {
         ["kind"] = "predicate",
         ["field"] = field,
-        ["comparison"] = "contains",
+        ["comparison"] = comparison,
         ["value"] = value,
         ["qualifier"] = null
     };
