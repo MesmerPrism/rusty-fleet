@@ -128,5 +128,15 @@ retained its source epoch across service restarts, transitioned
 fresh → stale → offline while remaining visible, recovered to fresh, produced
 no fatal error, and was removed with its app-private test inputs after
 validation.
+
+A follow-up restart checkpoint exercised the durable Hub boundary with the
+producer stopped. Durable generation 8 restored with the same device row,
+source epoch, accepted revision and time, condition-history count, Manifold
+authority revision, and monitoring-evidence revision. Restarting the Quest
+producer then advanced the restored state to durable generation 9 and
+authority revision 10 without rotating the producer epoch. The follow-up also
+finished with zero package fatals, an empty Hub error log, test-package
+removal, and release of the exact local listener.
+
 Raw serial, address, SSID, key seed, profile, receipt, and log evidence remains
 private.

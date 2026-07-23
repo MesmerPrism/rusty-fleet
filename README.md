@@ -151,9 +151,10 @@ These commands do not contact or mutate a headset.
 The accepted M0 baseline and inert Morphospace protocol-v2 workspace are now
 paired with the active M1 local-monitoring stack. The runtime source is
 present but activates no socket, service, device route, or platform permission
-by default. The bounded Quest checkpoint has passed with private evidence and
-complete device cleanup. M1 acceptance remains pending until the complete
-Host, WPF/accessibility, Standard, Deep, workflow, and publication gates pass.
+by default. The bounded Quest checkpoint and a producer-stopped durable Hub
+restart have passed with private evidence and complete device cleanup. M1
+acceptance remains pending until the complete Host, WPF/accessibility,
+Standard, Deep, workflow, and publication gates pass.
 
 ## License
 
