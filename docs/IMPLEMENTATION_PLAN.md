@@ -18,7 +18,10 @@ An operator can:
 - see every enrolled headset currently checking in without requiring ADB;
 - understand battery, charging, lifecycle, foreground, kiosk, connectivity,
   capability, and staleness state per headset;
+- compare independent status families without losing the active fleet view;
 - filter, group, select, and act on one or many devices;
+- preview exact target membership, exclusions, risk, and changed facts before
+  a fleet action;
 - use participating-app controls when ADB is absent;
 - open full file-management and administrative utilities when USB or Wi-Fi ADB
   is independently available and authorized;
@@ -48,6 +51,20 @@ An operator can:
     selected, approved, and effectively reported.
 12. **Public-safe evidence:** this repo holds contracts and sanitized fixtures,
     never private device evidence.
+13. **Condition vectors:** enrollment, freshness, power, app, route,
+    authorization, privilege, media, work, and alerts are independent
+    timestamped conditions, not one health score.
+14. **Stable operator context:** live data does not silently discard filters,
+    navigation, selection, focus, scroll, or confirmation scope.
+15. **Inspectable batches:** target snapshots, per-target preflight, lifecycle,
+    cleanup, retry, and cancellation are product contracts.
+16. **Accessible scale:** keyboard, UI Automation, high contrast, scaling, and
+    representative fleet sizes are milestone acceptance concerns.
+
+The normative UI behavior is in
+[Operator UI Architecture](OPERATOR_UI.md); its external design pressure and
+provenance are in
+[the source ledger](research/FLEET_UI_SOURCE_LEDGER.md).
 
 ## Initial technical shape
 
@@ -105,12 +122,18 @@ permissions, ADB, media, or relay are active.
 - Record product-boundary, threat-model, persistence, identity, and protocol
   ADRs.
 - Define versioned device identity, status snapshot, capability snapshot,
-  status-source, staleness, command-lifecycle, and audit contracts.
+  canonical status-condition, status-source, staleness, command-lifecycle, and
+  audit contracts.
+- Define separate versioned fleet-row, inspector, full-detail, summary-count,
+  operation-ledger, canonical-query, saved-view, and navigation-restoration
+  projections.
 - Add valid, damaged, replayed, stale, reordered, and partial-capability
   fixtures.
 - Implement an in-memory Hub state engine and deterministic clock.
 - Implement a simulator that can create, update, disconnect, reorder, and
   damage at least a representative fleet, not just one happy-path device.
+- Include deterministic 4, 50, 250, 1,000, and 5,000-device datasets without
+  claiming that every size is supported.
 - Expose list, inspect, filter, and watch through `fleetctl` and a local API.
 - Add scenario tests for concurrent check-in, expiry, duplicate identity,
   capability downgrade, and restart projection.
@@ -121,8 +144,14 @@ permissions, ADB, media, or relay are active.
 
 - One command runs the deterministic scenario suite.
 - CLI and local API return the same canonical device projections.
+- Canonical queries return result revision, `as_of`, count, and window
+  information, and saved views preserve their actual scope.
 - Stale, offline, rejected, and downgraded devices are distinguishable.
+- Independent condition families retain source, age, reason, authority, and
+  freshness; no aggregate health score becomes authority.
 - Invalid or replayed status cannot advance accepted state.
+- Scale fixtures remain deterministic and bounded, and their use does not
+  introduce UI or runtime effects.
 - The feature lock remains empty and effect-free.
 - Quick and Standard repository gates pass.
 
@@ -149,7 +178,12 @@ headsets.
 - Define truthful sources for battery, charging, lifecycle, self/participating
   foreground state, and platform-limited foreground state.
 - Add the first WPF fleet table with filtering, grouping, detail inspection,
-  staleness, and capability badges.
+  a persistent selected-device inspector, independent status grammar, visible
+  active scope, stable live ordering, staleness, and capability projections.
+- Run the native WPF `DataGrid` and shell/theme dependency spike with at least
+  1,000 simulated devices. Test virtualization, UI Automation, keyboard,
+  Narrator, high contrast, scaling, focus, selection, license, and removal
+  cost before adopting a theme library.
 - Preserve complete CLI/local API parity.
 - Add reconnect, sleep/wake, route loss, duplicate check-in, stale revision,
   key rotation, and agent-upgrade scenarios.
@@ -162,6 +196,12 @@ headsets.
 - The UI never presents a platform-limited fact as authoritative foreground
   state.
 - Loss of transport or capability produces a visible degraded state.
+- Detail navigation and refresh preserve query, filters, grouping, sort,
+  selection, scroll anchor, focus, and inspector context.
+- Keyboard, UI Automation, Narrator, high-contrast, large-text, and scaling
+  gates pass for the fleet table and inspector.
+- Order-affecting live changes do not move interaction-bound rows without
+  explicit operator application.
 - No ADB permission or File Manager dependency enters the base profile.
 - Device cleanup and zero bounded fatal evidence accompany the live checkpoint.
 
@@ -180,11 +220,17 @@ devices without ADB, with per-device acceptance and application receipts.
 
 - Define command proposal, target set, review, dispatch, owner completion,
   rejection, expiry, cancellation, and aggregate projection contracts.
+- Make the target set an inspectable, expiring snapshot keyed by device and
+  identity revision; scheduled dynamic selectors remain explicit and preserve
+  both planned and actual membership.
 - Bind commands to device identity, app identity, capability, authority
   revision, request ID, expiry, and replay protection.
 - Add a Kiosk client adapter without moving Kiosk action semantics into Fleet.
 - Add fleet selection, dry-run/preview, confirmation, progress, retry-policy,
-  and per-device result views.
+  cancellation, cleanup, and per-device result views.
+- Preflight every target for identity, support, enablement, authorization,
+  reachability, freshness, owner readiness, conflict, policy, resources,
+  idempotency, and unresolved cleanup.
 - Add identical `fleetctl` commands and structured reports.
 - Test mixed-capability selection, partial failure, client restart, duplicate
   dispatch, stale grant, owner rejection, timeout, cancellation, and cleanup.
@@ -195,6 +241,8 @@ devices without ADB, with per-device acceptance and application receipts.
 
 - Transport acknowledgement never appears as applied completion.
 - Every target retains its own decision and terminal result.
+- Confirmation shows exact target scope, exclusions, warnings, changed facts,
+  concurrency, expiry, and risk.
 - Nonparticipating or stale-capability apps fail closed.
 - A batch can be retried without replaying already terminal non-idempotent work.
 - Kiosk remains independently usable and releasable.
@@ -260,6 +308,8 @@ payloads to the fleet control channel.
 - Adopt existing Rusty Morphospace media sources through adapters, beginning
   receiver-first.
 - Add one preview surface and equivalent CLI/API session reports.
+- Keep previews explicitly selected and bounded; never decode media in fleet
+  rows or create an automatic all-device wall.
 - Add bandwidth limits, operator selection, backpressure, loss, reconfigure,
   reconnect, and terminal cleanup behavior.
 - Test wrong-source, stale-session, unauthorized route, codec mismatch,
@@ -336,6 +386,10 @@ operator overload.
   policy.
 - Add bounded concurrency, fair scheduling, grouping, saved views, alert
   suppression, maintenance windows, and rollout rings.
+- Group alerts by actionable root cause and affected-device count so one
+  adapter failure does not fan out into a fleet of duplicate incidents.
+- Ratify or replace measured UI/query/preview budgets using 50, 250, 1,000,
+  and 5,000-device datasets, windowed Hub queries, and stable-order churn.
 - Add Hub restart, database damage, adapter crash, provider fresh-epoch,
   device churn, relay partition, and operator reconnect scenarios.
 - Add performance, soak, memory, recovery-time, and observability gates.
@@ -366,6 +420,9 @@ did not build it.
 - Validate install, enrollment, upgrade, key rotation, normal operations,
   rollback, cleanup, and decommissioning.
 - Complete operator, security, privacy, troubleshooting, and incident runbooks.
+- Complete the release accessibility gate with keyboard-only, Narrator,
+  Accessibility Insights, high contrast, large text, scaling, and
+  multi-monitor evidence for primary workflows.
 - Preserve failed attempts and rerun any touched owner after reliability fixes.
 - Seal exact commits and trees in a release capsule.
 - Publish source first and the planning/accounting state last when multiple
@@ -415,6 +472,16 @@ Every milestone answers:
 - **Privacy:** what is retained, exported, or deliberately absent?
 - **Rollback:** how is the feature disabled and state safely restored?
 - **Cost:** which validation tier is justified by the change?
+- **Projection:** do row, inspector, detail, alert, operation, and media views
+  remain projections over accepted facts?
+- **Scope:** can the operator and automation inspect the canonical query,
+  result revision, selection, target snapshot, and exclusions?
+- **Stability:** do refresh and navigation preserve operator context without
+  weakening current-fact preflight?
+- **Accessibility:** can keyboard, UI Automation, Narrator, high contrast, and
+  supported scaling complete the same workflow?
+- **Scale:** which deterministic fleet profile and measured budget support the
+  claim?
 
 ## Next implementation action
 
@@ -423,4 +490,5 @@ Review the proposed
 stack. Once its scope, contracts, language/runtime choices, and acceptance
 budgets are approved, transition that single unit to `ready` through the
 Morphospace workflow. Do not pre-create M0.1, M0.2, or schema-per-unit work
-items.
+items. The new operator UI contracts strengthen this same proposed stack; they
+do not create another lifecycle unit.

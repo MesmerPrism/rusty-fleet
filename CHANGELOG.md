@@ -14,3 +14,7 @@ The project follows Semantic Versioning once runtime releases begin.
 - Stacked milestone workflow with Quick, Standard, device, and Deep gates.
 - Inert Rusty Morphospace protocol-v2 project workspace.
 - Self-contained repository validation and GitHub Actions entrypoints.
+- Evidence-backed operator UI architecture with a dense fleet table,
+  persistent inspector, independent status grammar, target-snapshot batch
+  workflow, accessibility gates, scale fixtures, wireframes, product-pattern
+  matrix, and public source ledger.

@@ -30,6 +30,8 @@ Standard includes Quick and adds:
 - project/feature/workspace identity consistency;
 - milestone-stack and inert-lock assertions;
 - repository instruction and CI surface checks.
+- operator-UI planning links, reference-ledger links, and public-safe research
+  provenance.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Standard
@@ -87,6 +89,31 @@ entrypoints remain:
 When an implementation language and build system land in Milestone 0, update
 this document, `AGENTS.md`, the README, CI, and `Test-Repo.ps1` in that same
 milestone.
+
+## Operator UI validation
+
+The normative behavior and candidate budgets are in
+[Operator UI Architecture](OPERATOR_UI.md). The gates accumulate only when a
+WPF surface exists:
+
+| Check | M0 | M1+ edit loop | WPF milestone | Release |
+| --- | ---: | ---: | ---: | ---: |
+| canonical condition/query/projection fixtures | required | focused | Standard | Deep |
+| deterministic 4/50/250/1k/5k datasets | required | affected profile | Standard | Deep |
+| Console/CLI/API membership and reason parity | contract only | focused | Standard | Deep |
+| keyboard and UI Automation regression | not applicable | focused | Standard | Standard |
+| Narrator, high contrast, large text, scaling | not applicable | targeted | manual milestone gate | full release gate |
+| stable ordering, hidden selection, navigation restoration | contract fixture | focused | scenario gate | regression |
+| target snapshot and per-target ledger | M2 contract | focused | M2 Standard | regression |
+| measured latency, memory, and update churn | candidate fixtures | nearest profile | declared milestone | Deep |
+
+Performance thresholds in the UI guide are candidates until a milestone
+records reference hardware, data profile, method, distribution, achieved
+result, and headroom. Do not convert a single fast run into a supported-scale
+claim.
+
+Screenshot matrices detect layout drift but do not replace keyboard, UI
+Automation, screen-reader, or interaction tests.
 
 ## Evidence vocabulary
 

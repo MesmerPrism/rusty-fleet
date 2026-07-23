@@ -19,6 +19,8 @@ Rusty Fleet owns:
 - a durable device directory distinct from an active peer mesh;
 - accepted device-status projections and truthful staleness;
 - fleet-level selection, filtering, grouping, and action planning;
+- canonical query, saved-view, navigation-restoration, and operator-projection
+  contracts;
 - command fan-out tracking, per-device result aggregation, and audit views;
 - the Windows dashboard, CLI, and local API;
 - product policy for when adapters are offered to an operator.
@@ -146,6 +148,36 @@ Each accepted device projection includes:
 The device directory can retain offline enrolled devices. Active peer-mesh
 membership remains a separate, bounded Manifold concept.
 
+## Operator projection model
+
+The authoritative operator-information architecture is
+[Operator UI Architecture](OPERATOR_UI.md). Fleet Hub emits versioned,
+presentation-neutral projections for:
+
+- summary counts and their query revision;
+- fleet rows;
+- the selected-device inspector;
+- full device detail;
+- alerts and grouped causes;
+- operation summaries and per-target ledgers;
+- selected media-session readiness;
+- saved views and navigation restoration.
+
+These are projections over accepted domain facts, not parallel domain models.
+Every mutable condition carries its source and timing chain, accepting
+authority and revision, freshness, reason, and sensitivity where applicable.
+Independent condition families must not be collapsed into a health score.
+
+Console, CLI, and local API use the same canonical query expression and result
+revision. The Console may virtualize and window presentation, but it cannot
+change result membership, target scope, action availability, or evidence
+semantics.
+
+Live cell values may update in place. Order- or group-affecting changes are
+queued while an operator interacts and are applied explicitly. This protects
+focus, selection, batch scope, and confirmation context without weakening
+current-fact preflight.
+
 ## Command lifecycle
 
 ```mermaid
@@ -169,6 +201,11 @@ sequenceDiagram
 A dispatch acknowledgement is intermediate evidence. Completion requires the
 current owner receipt and any selected cleanup receipt. Fleet fan-out never
 collapses per-device failures into a false aggregate success.
+
+A multi-device action uses an inspectable target snapshot plus per-target
+preflight. Aggregate counts are navigation into the per-target ledger, never a
+replacement for it. Retry and cancellation create explicit lineage, and
+cleanup remains a separate terminal dimension.
 
 ## Kiosk and foreground control
 
