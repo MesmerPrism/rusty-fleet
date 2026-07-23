@@ -40,8 +40,8 @@ Live device work is never implied by a source or documentation task.
 - `crates/fleet-hub`: deterministic in-memory state and the local API;
 - `crates/fleet-manifold-adapter`: exact pinned Manifold enrollment/status
   admission plus transactional signed-check-in projection;
-- `apps/fleet-hub-local`: explicit bounded local ingress and canonical HTTP
-  projection adapter;
+- `apps/fleet-hub-local`: explicit bounded local ingress, durable two-slot
+  runtime state, and canonical HTTP projection adapter;
 - `crates/fleet-simulator`: synthetic fleet and damage scenarios;
 - `apps/fleetctl`: structured JSON CLI over the same local API;
 - `schemas`: versioned JSON Schema projection;
@@ -175,8 +175,10 @@ enrolled peer and active key to the Fleet observation; and sign RFC 8785/JCS
 claims with the v1 domain separator. The trusted ingress—not independent
 devices—binds the fleet-global expected authority revision immediately before
 review. Preview both state transitions and commit neither when either
-authority rejects. Device source time is signed evidence; Hub received time is
-supplied by the ingress adapter.
+authority rejects. Persist the matching Fleet and Manifold snapshots before
+acknowledging an accepted check-in; damaged state must recover from a valid
+prior slot or fail closed. Device source time is signed evidence; Hub received
+time is supplied by the ingress adapter.
 
 Keep `AGENTS.md` concise. Put detailed procedures in linked docs or runbooks and
 update the nearest README/router plus relevant skills when ownership,

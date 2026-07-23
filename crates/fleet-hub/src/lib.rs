@@ -24,11 +24,12 @@ const DETAIL_SCHEMA: &str = "rusty.fleet.device_detail.v1";
 const SUMMARY_SCHEMA: &str = "rusty.fleet.summary.v1";
 const RESULT_SCHEMA: &str = "rusty.fleet.query_result.v1";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubPolicy {
     pub stale_after_ms: i64,
     pub offline_after_ms: i64,
     pub history_limit_per_device: usize,
+    pub source_epoch_limit_per_device: usize,
     pub event_limit: usize,
 }
 
@@ -38,6 +39,7 @@ impl Default for HubPolicy {
             stale_after_ms: 60_000,
             offline_after_ms: 300_000,
             history_limit_per_device: 128,
+            source_epoch_limit_per_device: 128,
             event_limit: 10_000,
         }
     }
@@ -54,6 +56,7 @@ pub enum RejectionReason {
     IdentityConflict,
     SourceEpochChangedWithoutRestart,
     SourceEpochReplay,
+    SourceEpochEvidenceLimitExceeded,
     ReceiveTimeRegression,
 }
 
@@ -114,13 +117,23 @@ pub trait FleetApi {
     fn watch(&self, after_sequence: u64, limit: usize) -> Vec<WatchEvent>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct DeviceRecord {
     observation: DeviceObservation,
     accepted_at_ms: i64,
     accepted_revision: u64,
     condition_history: Vec<StatusCondition>,
-    seen_source_epochs: BTreeSet<String>,
+    seen_source_epochs: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FleetHubSnapshot {
+    schema: String,
+    policy: HubPolicy,
+    devices: BTreeMap<String, DeviceRecord>,
+    result_revision: u64,
+    event_sequence: u64,
+    events: Vec<WatchEvent>,
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +152,7 @@ impl FleetHub {
             policy.stale_after_ms > 0
                 && policy.offline_after_ms > policy.stale_after_ms
                 && policy.history_limit_per_device > 0
+                && policy.source_epoch_limit_per_device > 0
                 && policy.event_limit > 0,
             "Hub policy must contain positive, ordered, finite limits"
         );
@@ -159,6 +173,104 @@ impl FleetHub {
     #[must_use]
     pub fn result_revision(&self) -> u64 {
         self.result_revision
+    }
+
+    #[must_use]
+    pub const fn policy(&self) -> HubPolicy {
+        self.policy
+    }
+
+    #[must_use]
+    pub fn device_ids(&self) -> Vec<String> {
+        self.devices.keys().cloned().collect()
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> FleetHubSnapshot {
+        FleetHubSnapshot {
+            schema: "rusty.fleet.hub_snapshot.v1".to_owned(),
+            policy: self.policy,
+            devices: self.devices.clone(),
+            result_revision: self.result_revision,
+            event_sequence: self.event_sequence,
+            events: self.events.clone(),
+        }
+    }
+
+    pub fn restore(policy: HubPolicy, snapshot: FleetHubSnapshot) -> Result<Self, HubError> {
+        if snapshot.schema != "rusty.fleet.hub_snapshot.v1" {
+            return Err(HubError::new(
+                "snapshot_schema_invalid",
+                "Fleet Hub snapshot schema is not supported",
+            ));
+        }
+        if snapshot.policy != policy {
+            return Err(HubError::new(
+                "snapshot_policy_mismatch",
+                "Fleet Hub snapshot policy does not match current configuration",
+            ));
+        }
+        if snapshot.result_revision == 0
+            || snapshot.events.len() > policy.event_limit
+            || snapshot
+                .events
+                .last()
+                .is_some_and(|event| event.event_sequence > snapshot.event_sequence)
+        {
+            return Err(HubError::new(
+                "snapshot_limits_invalid",
+                "Fleet Hub snapshot revisions or event limits are invalid",
+            ));
+        }
+        if snapshot.events.windows(2).any(|events| {
+            events[0].event_sequence >= events[1].event_sequence
+                || events[0].schema != "rusty.fleet.watch_event.v1"
+        }) || snapshot
+            .events
+            .last()
+            .is_some_and(|event| event.schema != "rusty.fleet.watch_event.v1")
+        {
+            return Err(HubError::new(
+                "snapshot_events_invalid",
+                "Fleet Hub snapshot events are not strictly ordered",
+            ));
+        }
+        for (device_id, record) in &snapshot.devices {
+            if record.observation.identity.device_id != *device_id
+                || record.observation.validate().is_err()
+                || record.accepted_at_ms < 0
+                || record.accepted_revision == 0
+                || record.accepted_revision > snapshot.result_revision
+                || record.condition_history.len() > policy.history_limit_per_device
+                || record.seen_source_epochs.is_empty()
+                || record.seen_source_epochs.len() > policy.source_epoch_limit_per_device
+                || !record
+                    .seen_source_epochs
+                    .contains(&record.observation.source_epoch)
+                || record
+                    .seen_source_epochs
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != record.seen_source_epochs.len()
+                || record
+                    .condition_history
+                    .iter()
+                    .any(|condition| condition.validate().is_err())
+            {
+                return Err(HubError::new(
+                    "snapshot_device_invalid",
+                    format!("Fleet Hub snapshot record is invalid for {device_id}"),
+                ));
+            }
+        }
+        Ok(Self {
+            policy,
+            devices: snapshot.devices,
+            result_revision: snapshot.result_revision,
+            event_sequence: snapshot.event_sequence,
+            events: snapshot.events,
+        })
     }
 
     pub fn accept_observation(
@@ -208,6 +320,10 @@ impl FleetHub {
                     .contains(&observation.source_epoch)
             {
                 Some(RejectionReason::SourceEpochReplay)
+            } else if observation.source_epoch != existing.observation.source_epoch
+                && existing.seen_source_epochs.len() >= self.policy.source_epoch_limit_per_device
+            {
+                Some(RejectionReason::SourceEpochEvidenceLimitExceeded)
             } else if observation.identity.identity_revision
                 == existing.observation.identity.identity_revision
                 && observation.source_epoch != existing.observation.source_epoch
@@ -262,8 +378,14 @@ impl FleetHub {
         let mut seen_source_epochs = self
             .devices
             .get(&device_id)
-            .map_or_else(BTreeSet::new, |record| record.seen_source_epochs.clone());
-        seen_source_epochs.insert(observation.source_epoch.clone());
+            .map_or_else(Vec::new, |record| record.seen_source_epochs.clone());
+        if !seen_source_epochs.contains(&observation.source_epoch) {
+            seen_source_epochs.push(observation.source_epoch.clone());
+        }
+        debug_assert!(
+            seen_source_epochs.len() <= self.policy.source_epoch_limit_per_device,
+            "new source epochs must fail closed when evidence is full"
+        );
         let source_revision = observation.source_revision;
         self.devices.insert(
             device_id.clone(),
@@ -816,6 +938,54 @@ mod tests {
                 .source_epoch,
             "agent-epoch-3"
         );
+    }
+
+    #[test]
+    fn source_epoch_evidence_limit_fails_closed_without_evicting_replay_history() {
+        let policy = HubPolicy {
+            source_epoch_limit_per_device: 2,
+            ..HubPolicy::default()
+        };
+        let mut hub = FleetHub::new(policy);
+        let first = ScenarioBuilder::new(1).build().initial.remove(0);
+        assert!(matches!(
+            hub.accept_observation(first.clone(), BASE_TIME_MS),
+            ObservationDecision::Accepted { .. }
+        ));
+
+        let mut second = first.clone();
+        second.source_epoch = "agent-epoch-2".to_owned();
+        second.source_revision = 1;
+        second.source_time_ms = BASE_TIME_MS + 1;
+        second.received_time_ms = BASE_TIME_MS + 1;
+        assert!(matches!(
+            hub.accept_observation(second, BASE_TIME_MS + 1),
+            ObservationDecision::Accepted { .. }
+        ));
+
+        let mut third = first.clone();
+        third.source_epoch = "agent-epoch-3".to_owned();
+        third.source_revision = 1;
+        third.source_time_ms = BASE_TIME_MS + 2;
+        third.received_time_ms = BASE_TIME_MS + 2;
+        assert!(matches!(
+            hub.accept_observation(third, BASE_TIME_MS + 2),
+            ObservationDecision::Rejected {
+                reason: RejectionReason::SourceEpochEvidenceLimitExceeded,
+                ..
+            }
+        ));
+
+        let mut replay = first;
+        replay.source_time_ms = BASE_TIME_MS + 3;
+        replay.received_time_ms = BASE_TIME_MS + 3;
+        assert!(matches!(
+            hub.accept_observation(replay, BASE_TIME_MS + 3),
+            ObservationDecision::Rejected {
+                reason: RejectionReason::SourceEpochReplay,
+                ..
+            }
+        ));
     }
 
     #[test]

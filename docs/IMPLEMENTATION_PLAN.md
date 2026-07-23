@@ -600,9 +600,9 @@ Complete the active
 stack. The accepted source foundation remains documented in
 [Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md); the active bounded
 ingress and authority behavior are documented in
-[Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Finish durable
-restart recovery, the shared WPF/CLI/API projection and accessibility slice,
-negative-path integration, one bounded Quest checkpoint, Standard and Deep
-gates, instruction-impact review, and publication. Do not create transport-,
-screen-, or test-sized M1 sub-units. Corrections remain inside this active
-stack.
+[Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Durable restart
+recovery and the first bounded Quest checkpoint are now present. Finish the
+shared WPF/CLI/API projection and accessibility slice, remaining negative-path
+integration, Standard and Deep gates, instruction-impact review, and
+publication. Do not create transport-, screen-, or test-sized M1 sub-units.
+Corrections remain inside this active stack.

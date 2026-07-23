@@ -23,9 +23,10 @@ The configuration schema is `rusty.fleet.local_hub_config.v1` and contains:
 
 - one exact IP socket address in `bind`;
 - `allow_non_loopback`, which must be `true` for any LAN bind;
+- one absolute private `state_directory`;
 - one or more trusted Manifold operator identifiers;
 - zero or more configured public credential enrollments; and
-- finite stale, offline, history, and event limits.
+- finite stale, offline, condition-history, source-epoch, and event limits.
 
 Enrollment entries contain public keys and authority input, not private signing
 seeds. Even so, active device identifiers, endpoints, and enrollment material
@@ -66,20 +67,40 @@ or authority-rejected requests do not advance accepted state.
 7. Rebind the authority-owned Manifold optimistic lock to current
    fleet-global state.
 8. Review the signed device status through the exact pinned Manifold owner.
-9. Commit both states, or neither.
+9. Write a bounded durable snapshot of both candidate states.
+10. Commit both in-memory states and acknowledge the check-in, or commit
+    neither.
 
 Independent devices therefore retain monotonic per-peer status and per-epoch
 source revisions without attempting to coordinate Manifold's fleet-global
 authority revision.
 
-## Current restart boundary
+## Durable restart boundary
 
-The local runtime is intentionally in-memory at this checkpoint. Restart
-requires reloading the private enrollment configuration and loses accepted
-device/status history. Durable bounded recovery remains a required M1
-acceptance item before the runtime is presented as restart-safe; the
-configuration and state-engine boundaries are kept separate so persistence
-does not become transport or device authority.
+The local runtime writes two alternating JSON state slots below the configured
+private `state_directory`. Each accepted check-in advances a durable
+generation only after the complete Hub and Manifold candidate snapshot has
+been serialized within a 16 MiB ceiling, written to a temporary in the same
+directory, flushed, and moved into its slot. The network acknowledgement is
+sent only after this write succeeds.
+
+At startup, both slots are parsed and validated against the current Hub policy
+and active enrollment configuration. The newest valid generation is restored.
+If the newest slot is damaged, the prior valid slot is used and later
+check-ins can replay the missing suffix forward. If slots exist but neither is
+valid, startup fails closed instead of presenting an empty fleet. Temporary
+files are never treated as accepted state.
+
+The snapshot retains the accepted device directory, condition history, watch
+sequence, Manifold authority revision, recent unexpired check-in replay
+evidence, and source-epoch tombstones. Every collection has a finite policy
+bound. When a device exhausts its source-epoch evidence allowance, a new
+epoch fails closed rather than evicting an old tombstone and permitting a
+previous producer epoch to reappear.
+
+`GET /fleet/v1/health` reports the current durable generation and whether the
+process is new or has restored/persisted state, but never exposes the private
+state path.
 
 The Quest producer separately persists its producer epoch and next revisions
 in app-private state. Ordinary service restarts retain the epoch. An app,
@@ -95,8 +116,17 @@ cargo clippy -p fleet-manifold-adapter -p fleet-hub-local --all-targets --locked
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
 ```
 
-The focused tests cover signed acceptance, replay rejection, authority
-rebinding, all-or-neither state mutation, canonical query parity, explicit LAN
-activation, content type, body size, and finite credential rate. Live Quest
-validation remains a separate serial-scoped device gate with private evidence
-and cleanup.
+The focused tests cover signed acceptance, replay rejection before and after
+restart, authority rebinding, all-or-neither state mutation, canonical query
+parity, explicit LAN activation, content type, body size, finite credential
+rate, bounded source-epoch evidence, durable restoration, and damaged-newest
+slot fallback.
+
+A private serial-scoped Quest checkpoint has also exercised the Wi-Fi route
+without an ADB tunnel: the enrolled device advanced eight signed check-ins,
+retained its source epoch across service restarts, transitioned
+fresh → stale → offline while remaining visible, recovered to fresh, produced
+no fatal error, and was removed with its app-private test inputs after
+validation.
+Raw serial, address, SSID, key seed, profile, receipt, and log evidence remains
+private.

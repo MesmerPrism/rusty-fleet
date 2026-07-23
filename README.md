@@ -8,10 +8,11 @@ only when the device reports the required capability and authority.
 Milestone 0 is accepted and published. Milestone 1 is active on its working
 branch. The current checkpoint adds provenance-bearing Quest observation
 facts, a signed check-in envelope admitted transactionally through the exact
-pinned Manifold peer authority, and an explicit bounded local Hub runtime.
-Nothing listens by default: the operator must supply a valid enrollment config
-and explicitly permit a non-loopback bind. Android device proof, durable
-persistence, WPF, media, and remote relay remain pending.
+pinned Manifold peer authority, an explicit bounded local Hub runtime, durable
+two-slot restart recovery, and one cleaned private Quest Wi-Fi proof. Nothing
+listens by default: the operator must supply a valid enrollment config,
+absolute private state directory, and explicitly permit a non-loopback bind.
+WPF, final M1 consolidation, media, and remote relay remain pending.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -118,7 +119,9 @@ cargo run --locked -p fleet-hub-local -- --config <private-local-config.json>
 ```
 
 Non-loopback binding additionally requires `allow_non_loopback=true` in that
-private config. See the [M1 runtime guide](docs/M1_LOCAL_MONITORING.md).
+private config. Durable state additionally requires an absolute private
+`state_directory`. See the
+[M1 runtime guide](docs/M1_LOCAL_MONITORING.md).
 
 ## Validation
 
@@ -148,9 +151,9 @@ These commands do not contact or mutate a headset.
 The accepted M0 baseline and inert Morphospace protocol-v2 workspace are now
 paired with the active M1 local-monitoring stack. The runtime source is
 present but activates no socket, service, device route, or platform permission
-by default. M1 acceptance remains pending until the complete Host,
-WPF/accessibility,
-Standard, one bounded Quest, Deep, workflow, and publication gates pass.
+by default. The bounded Quest checkpoint has passed with private evidence and
+complete device cleanup. M1 acceptance remains pending until the complete
+Host, WPF/accessibility, Standard, Deep, workflow, and publication gates pass.
 
 ## License
 

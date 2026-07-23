@@ -3,7 +3,7 @@
 
 //! Authenticated low-rate check-in admission through exact Manifold authority.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use fleet_contracts::{
@@ -49,6 +49,14 @@ pub struct CheckInReceipt {
     pub fleet_decision: Option<ObservationDecision>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FleetManifoldAdapterSnapshot {
+    schema: String,
+    accepted_peers: ManifoldAcceptedPeerState,
+    seen_checkins: BTreeMap<String, i64>,
+}
+
+#[derive(Clone, Debug)]
 pub struct FleetManifoldAdapter {
     enrollment: ManifoldPeerEnrollmentState,
     accepted_peers: ManifoldAcceptedPeerState,
@@ -80,6 +88,81 @@ impl FleetManifoldAdapter {
     #[must_use]
     pub const fn accepted_peers(&self) -> &ManifoldAcceptedPeerState {
         &self.accepted_peers
+    }
+
+    #[must_use]
+    pub fn accepted_peer_ids(&self) -> Vec<String> {
+        self.accepted_peers
+            .peers
+            .iter()
+            .map(|peer| peer.identity.peer_id.to_string())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> FleetManifoldAdapterSnapshot {
+        FleetManifoldAdapterSnapshot {
+            schema: "rusty.fleet.manifold_adapter_snapshot.v1".to_owned(),
+            accepted_peers: self.accepted_peers.clone(),
+            seen_checkins: self.seen_checkins.clone(),
+        }
+    }
+
+    pub fn restore_session(
+        &mut self,
+        mut snapshot: FleetManifoldAdapterSnapshot,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        if snapshot.schema != "rusty.fleet.manifold_adapter_snapshot.v1" {
+            return Err("Fleet Manifold adapter snapshot schema is not supported".to_owned());
+        }
+        if snapshot.seen_checkins.len() > MAX_SEEN_CHECKINS
+            || snapshot.accepted_peers.applied_proposal_ids.len() > MAX_SEEN_CHECKINS
+        {
+            return Err("Fleet Manifold adapter snapshot exceeds evidence limits".to_owned());
+        }
+        let peer_ids: BTreeSet<_> = snapshot
+            .accepted_peers
+            .peers
+            .iter()
+            .map(|peer| peer.identity.peer_id.clone())
+            .collect();
+        if peer_ids.len() != snapshot.accepted_peers.peers.len()
+            || snapshot
+                .accepted_peers
+                .applied_proposal_ids
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+                != snapshot.accepted_peers.applied_proposal_ids.len()
+        {
+            return Err(
+                "Fleet Manifold adapter snapshot contains duplicate authority evidence".to_owned(),
+            );
+        }
+        for peer in &snapshot.accepted_peers.peers {
+            let matching_credential = self.enrollment.credentials.iter().any(|credential| {
+                let fingerprint = credential
+                    .public_key_sha256
+                    .strip_prefix("sha256:")
+                    .map(|digest| format!("fingerprint.{digest}"));
+                credential.peer_id == peer.identity.peer_id
+                    && credential.status == ManifoldPeerCredentialStatus::Active
+                    && fingerprint.as_deref() == Some(peer.identity.key_fingerprint.as_str())
+            });
+            if !matching_credential {
+                return Err(format!(
+                    "accepted peer {} is not bound to a current active enrollment",
+                    peer.identity.peer_id
+                ));
+            }
+        }
+        snapshot
+            .seen_checkins
+            .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+        self.accepted_peers = snapshot.accepted_peers;
+        self.seen_checkins = snapshot.seen_checkins;
+        Ok(())
     }
 
     pub fn apply_enrollment(
@@ -247,6 +330,10 @@ impl FleetManifoldAdapter {
         }
         if let Some(state) = decision.accepted_state.clone() {
             self.accepted_peers = state;
+            if self.accepted_peers.applied_proposal_ids.len() > MAX_SEEN_CHECKINS {
+                let remove = self.accepted_peers.applied_proposal_ids.len() - MAX_SEEN_CHECKINS;
+                self.accepted_peers.applied_proposal_ids.drain(..remove);
+            }
         }
         *hub = candidate_hub;
         self.seen_checkins

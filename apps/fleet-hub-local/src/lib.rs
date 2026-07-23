@@ -7,19 +7,22 @@
 //! check-in, Manifold admission, or projection semantics.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::SocketAddr;
+use std::path::{Path as FilePath, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::to_bytes;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Path as AxumPath, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use fleet_contracts::{FleetQuery, SignedFleetCheckIn};
-use fleet_hub::{FleetApi, FleetHub, HubPolicy};
-use fleet_manifold_adapter::FleetManifoldAdapter;
+use fleet_hub::{FleetApi, FleetHub, FleetHubSnapshot, HubPolicy};
+use fleet_manifold_adapter::{FleetManifoldAdapter, FleetManifoldAdapterSnapshot};
 use rusty_manifold_model::{DottedId, SchemaId};
 use rusty_manifold_peer::{
     ManifoldPeerCredentialRecord, ManifoldPeerCredentialStatus, ManifoldPeerEnrollmentAction,
@@ -33,7 +36,9 @@ use tower::limit::GlobalConcurrencyLimitLayer;
 const CONFIG_SCHEMA: &str = "rusty.fleet.local_hub_config.v1";
 const HEALTH_SCHEMA: &str = "rusty.fleet.local_hub_health.v1";
 const ERROR_SCHEMA: &str = "rusty.fleet.local_api_error.v1";
+const STATE_SCHEMA: &str = "rusty.fleet.local_hub_durable_state.v1";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHECKIN_BYTES: usize = 256 * 1024;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 64;
@@ -47,6 +52,7 @@ pub struct LocalHubPolicy {
     pub stale_after_ms: i64,
     pub offline_after_ms: i64,
     pub history_limit_per_device: usize,
+    pub source_epoch_limit_per_device: usize,
     pub event_limit: usize,
 }
 
@@ -57,6 +63,7 @@ impl Default for LocalHubPolicy {
             stale_after_ms: policy.stale_after_ms,
             offline_after_ms: policy.offline_after_ms,
             history_limit_per_device: policy.history_limit_per_device,
+            source_epoch_limit_per_device: policy.source_epoch_limit_per_device,
             event_limit: policy.event_limit,
         }
     }
@@ -68,6 +75,7 @@ impl From<LocalHubPolicy> for HubPolicy {
             stale_after_ms: value.stale_after_ms,
             offline_after_ms: value.offline_after_ms,
             history_limit_per_device: value.history_limit_per_device,
+            source_epoch_limit_per_device: value.source_epoch_limit_per_device,
             event_limit: value.event_limit,
         }
     }
@@ -86,6 +94,7 @@ pub struct LocalHubConfig {
     pub bind: String,
     #[serde(default)]
     pub allow_non_loopback: bool,
+    pub state_directory: PathBuf,
     pub trusted_operator_ids: Vec<DottedId>,
     #[serde(default)]
     pub enrollments: Vec<ConfiguredEnrollment>,
@@ -107,6 +116,12 @@ impl LocalHubConfig {
                 "non-loopback binding requires explicit allow_non_loopback=true".to_owned(),
             );
         }
+        if !self.state_directory.is_absolute() {
+            return Err("state_directory must be an absolute private path".to_owned());
+        }
+        if self.state_directory.exists() && !self.state_directory.is_dir() {
+            return Err("state_directory must name a directory".to_owned());
+        }
         if self.trusted_operator_ids.is_empty() {
             return Err("at least one trusted operator is required".to_owned());
         }
@@ -124,6 +139,7 @@ impl LocalHubConfig {
         if self.hub_policy.stale_after_ms <= 0
             || self.hub_policy.offline_after_ms <= self.hub_policy.stale_after_ms
             || self.hub_policy.history_limit_per_device == 0
+            || self.hub_policy.source_epoch_limit_per_device == 0
             || self.hub_policy.event_limit == 0
         {
             return Err("hub policy limits must be positive and freshness ordered".to_owned());
@@ -136,6 +152,22 @@ struct RuntimeState {
     hub: FleetHub,
     adapter: FleetManifoldAdapter,
     rate_limiter: IngressRateLimiter,
+    state_store: DurableStateStore,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LocalHubDurableState {
+    schema: String,
+    generation: u64,
+    written_at_ms: i64,
+    hub: FleetHubSnapshot,
+    adapter: FleetManifoldAdapterSnapshot,
+}
+
+struct DurableStateStore {
+    directory: PathBuf,
+    generation: u64,
+    restored: bool,
 }
 
 #[derive(Default)]
@@ -172,6 +204,149 @@ impl IngressRateLimiter {
     }
 }
 
+impl DurableStateStore {
+    fn open(
+        directory: &FilePath,
+        hub: &mut FleetHub,
+        adapter: &mut FleetManifoldAdapter,
+        now_ms: i64,
+    ) -> Result<Self, String> {
+        fs::create_dir_all(directory)
+            .map_err(|error| format!("cannot create state directory: {error}"))?;
+        let Some(state) = load_latest_state(directory)? else {
+            return Ok(Self {
+                directory: directory.to_path_buf(),
+                generation: 0,
+                restored: false,
+            });
+        };
+        let restored_hub = FleetHub::restore(hub.policy(), state.hub)
+            .map_err(|error| format!("cannot restore Fleet Hub state: {error}"))?;
+        adapter
+            .restore_session(state.adapter, now_ms)
+            .map_err(|error| format!("cannot restore Manifold adapter state: {error}"))?;
+        let hub_ids: BTreeSet<_> = restored_hub.device_ids().into_iter().collect();
+        let accepted_ids: BTreeSet<_> = adapter.accepted_peer_ids().into_iter().collect();
+        if hub_ids != accepted_ids {
+            return Err(
+                "durable Fleet Hub devices do not match accepted Manifold peers".to_owned(),
+            );
+        }
+        *hub = restored_hub;
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            generation: state.generation,
+            restored: true,
+        })
+    }
+
+    fn persist(
+        &mut self,
+        hub: &FleetHub,
+        adapter: &FleetManifoldAdapter,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        let hub_ids: BTreeSet<_> = hub.device_ids().into_iter().collect();
+        let accepted_ids: BTreeSet<_> = adapter.accepted_peer_ids().into_iter().collect();
+        if hub_ids != accepted_ids {
+            return Err(
+                "refusing to persist mismatched Fleet Hub and Manifold authority".to_owned(),
+            );
+        }
+        let generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| "durable state generation is exhausted".to_owned())?;
+        let state = LocalHubDurableState {
+            schema: STATE_SCHEMA.to_owned(),
+            generation,
+            written_at_ms: now_ms,
+            hub: hub.snapshot(),
+            adapter: adapter.snapshot(),
+        };
+        let bytes = serde_json::to_vec(&state)
+            .map_err(|error| format!("cannot serialize durable state: {error}"))?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_STATE_BYTES {
+            return Err("durable state exceeds the 16 MiB limit".to_owned());
+        }
+        fs::create_dir_all(&self.directory)
+            .map_err(|error| format!("cannot create state directory: {error}"))?;
+        let slot = generation % 2;
+        let target = state_slot_path(&self.directory, slot);
+        let temporary = self.directory.join(format!("fleet-hub-state.{slot}.tmp"));
+        if temporary.exists() {
+            fs::remove_file(&temporary)
+                .map_err(|error| format!("cannot remove stale state temporary: {error}"))?;
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| format!("cannot create state temporary: {error}"))?;
+        file.write_all(&bytes)
+            .map_err(|error| format!("cannot write state temporary: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("cannot sync state temporary: {error}"))?;
+        drop(file);
+        if target.exists() {
+            fs::remove_file(&target)
+                .map_err(|error| format!("cannot replace prior state slot: {error}"))?;
+        }
+        fs::rename(&temporary, &target)
+            .map_err(|error| format!("cannot publish durable state slot: {error}"))?;
+        self.generation = generation;
+        self.restored = true;
+        Ok(())
+    }
+}
+
+fn load_latest_state(directory: &FilePath) -> Result<Option<LocalHubDurableState>, String> {
+    let mut states = Vec::new();
+    let mut found_slot = false;
+    let mut failures = Vec::new();
+    for slot in 0..=1 {
+        let path = state_slot_path(directory, slot);
+        if !path.exists() {
+            continue;
+        }
+        found_slot = true;
+        match read_state_slot(&path) {
+            Ok(state) => states.push(state),
+            Err(error) => failures.push(format!("{}: {error}", path.display())),
+        }
+    }
+    states.sort_by_key(|state| state.generation);
+    if let Some(state) = states.pop() {
+        return Ok(Some(state));
+    }
+    if found_slot {
+        return Err(format!(
+            "no valid durable state slot remains: {}",
+            failures.join("; ")
+        ));
+    }
+    Ok(None)
+}
+
+fn read_state_slot(path: &FilePath) -> Result<LocalHubDurableState, String> {
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("cannot inspect state slot: {error}"))?;
+    if metadata.len() > MAX_STATE_BYTES {
+        return Err("state slot exceeds the 16 MiB limit".to_owned());
+    }
+    let bytes = fs::read(path).map_err(|error| format!("cannot read state slot: {error}"))?;
+    let state: LocalHubDurableState =
+        serde_json::from_slice(&bytes).map_err(|error| format!("invalid state JSON: {error}"))?;
+    if state.schema != STATE_SCHEMA || state.generation == 0 || state.written_at_ms < 0 {
+        return Err("state slot header is invalid".to_owned());
+    }
+    Ok(state)
+}
+
+fn state_slot_path(directory: &FilePath, slot: u64) -> PathBuf {
+    directory.join(format!("fleet-hub-state.{slot}.json"))
+}
+
 #[derive(Clone)]
 pub struct LocalHubState {
     runtime: Arc<Mutex<RuntimeState>>,
@@ -202,11 +377,15 @@ impl LocalHubState {
                 ));
             }
         }
+        let mut hub = FleetHub::new(config.hub_policy.clone().into());
+        let state_store =
+            DurableStateStore::open(&config.state_directory, &mut hub, &mut adapter, now_ms)?;
         Ok(Self {
             runtime: Arc::new(Mutex::new(RuntimeState {
-                hub: FleetHub::new(config.hub_policy.clone().into()),
+                hub,
                 adapter,
                 rate_limiter: IngressRateLimiter::default(),
+                state_store,
             })),
         })
     }
@@ -226,6 +405,8 @@ struct HealthProjection {
     now_ms: i64,
     enrolled_credentials: usize,
     accepted_devices: usize,
+    durable_generation: u64,
+    durable_state: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,6 +475,12 @@ async fn health(State(state): State<LocalHubState>) -> Response {
         now_ms,
         enrolled_credentials: runtime.adapter.enrollment().credentials.len(),
         accepted_devices: runtime.hub.device_count(),
+        durable_generation: runtime.state_store.generation,
+        durable_state: if runtime.state_store.restored {
+            "restored_or_persisted"
+        } else {
+            "new"
+        },
     })
     .into_response()
 }
@@ -345,8 +532,26 @@ async fn checkin(State(state): State<LocalHubState>, request: Request) -> Respon
             "the bounded local check-in rate was exceeded",
         );
     }
-    let RuntimeState { hub, adapter, .. } = &mut *runtime;
-    let receipt = adapter.accept(hub, signed, now_ms);
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        ..
+    } = &mut *runtime;
+    let mut candidate_hub = hub.clone();
+    let mut candidate_adapter = adapter.clone();
+    let receipt = candidate_adapter.accept(&mut candidate_hub, signed, now_ms);
+    if receipt.accepted {
+        if let Err(error) = state_store.persist(&candidate_hub, &candidate_adapter, now_ms) {
+            return api_error(
+                StatusCode::INSUFFICIENT_STORAGE,
+                "durable_state_failed",
+                error,
+            );
+        }
+        *hub = candidate_hub;
+        *adapter = candidate_adapter;
+    }
     let status = if receipt.accepted {
         StatusCode::OK
     } else {
@@ -403,7 +608,7 @@ async fn summary(State(state): State<LocalHubState>) -> Response {
 
 async fn device_inspect(
     State(state): State<LocalHubState>,
-    Path(device_id): Path<String>,
+    AxumPath(device_id): AxumPath<String>,
 ) -> Response {
     let now_ms = match unix_time_ms() {
         Ok(value) => value,
@@ -418,7 +623,7 @@ async fn device_inspect(
 
 async fn device_detail(
     State(state): State<LocalHubState>,
-    Path(device_id): Path<String>,
+    AxumPath(device_id): AxumPath<String>,
 ) -> Response {
     let now_ms = match unix_time_ms() {
         Ok(value) => value,
@@ -522,6 +727,10 @@ fn schema_id(value: &str) -> Result<SchemaId, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header};
     use ed25519_dalek::{Signer, SigningKey};
@@ -541,17 +750,20 @@ mod tests {
 
     use super::{
         ConfiguredEnrollment, IngressRateLimiter, LocalHubConfig, LocalHubState,
-        MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, router, unix_time_ms,
+        MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, router, state_slot_path, unix_time_ms,
     };
+
+    static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
     #[tokio::test]
     async fn signed_checkin_query_and_replay_share_one_authority() {
         let now_ms = unix_time_ms().expect("current time");
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let (config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
         let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
         let app = router(state);
-        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms);
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
 
         let accepted = app
             .clone()
@@ -613,6 +825,40 @@ mod tests {
         let replay_json: Value = serde_json::from_slice(&replay_body).expect("replay JSON");
         assert_eq!(replay_json["accepted"], false);
         assert_eq!(replay_json["rejection_reason"], "replay");
+
+        let restored = LocalHubState::from_config(&config, now_ms + 3).expect("restored config");
+        let restored_app = router(restored);
+        let restored_query = restored_app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/query",
+                serde_json::to_vec(&query).expect("query JSON"),
+            ))
+            .await
+            .expect("restored query response");
+        assert_eq!(restored_query.status(), StatusCode::OK);
+        let restored_body = to_bytes(restored_query.into_body(), 64 * 1024)
+            .await
+            .expect("restored query body");
+        let restored_json: Value =
+            serde_json::from_slice(&restored_body).expect("restored query JSON");
+        assert_eq!(restored_json["total_count"], 1);
+
+        let restored_replay = restored_app
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("restored replay response");
+        assert_eq!(restored_replay.status(), StatusCode::CONFLICT);
+        let restored_replay_body = to_bytes(restored_replay.into_body(), 64 * 1024)
+            .await
+            .expect("restored replay body");
+        let restored_replay_json: Value =
+            serde_json::from_slice(&restored_replay_body).expect("restored replay JSON");
+        assert_eq!(restored_replay_json["rejection_reason"], "replay");
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
     #[tokio::test]
@@ -620,6 +866,7 @@ mod tests {
         let now_ms = unix_time_ms().expect("current time");
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let (config, _) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
         let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
         let app = router(state);
 
@@ -644,6 +891,50 @@ mod tests {
             .expect("request");
         let response = app.oneshot(oversize).await.expect("oversize response");
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn damaged_newest_state_slot_falls_back_and_can_be_replayed_forward() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let (config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let app = router(LocalHubState::from_config(&config, now_ms).expect("valid config"));
+        let first = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let second = signed_checkin(&signing_key, key_id.as_str(), now_ms + 10, 2);
+
+        for signed in [&first, &second] {
+            let response = app
+                .clone()
+                .oneshot(json_request(
+                    "/fleet/v1/checkins",
+                    serde_json::to_vec(signed).expect("signed JSON"),
+                ))
+                .await
+                .expect("check-in response");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        drop(app);
+
+        fs::write(state_slot_path(&state_directory, 0), b"{damaged")
+            .expect("damage newest state slot");
+        let restored =
+            LocalHubState::from_config(&config, now_ms + 20).expect("fallback state restored");
+        {
+            let runtime = restored.runtime.lock().await;
+            assert_eq!(runtime.state_store.generation, 1);
+            assert_eq!(runtime.hub.device_count(), 1);
+        }
+        let replay_forward = router(restored)
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&second).expect("second signed JSON"),
+            ))
+            .await
+            .expect("replay-forward response");
+        assert_eq!(replay_forward.status(), StatusCode::OK);
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
     #[test]
@@ -682,6 +973,7 @@ mod tests {
                 schema: "rusty.fleet.local_hub_config.v1".to_owned(),
                 bind: "127.0.0.1:8741".to_owned(),
                 allow_non_loopback: false,
+                state_directory: test_state_directory(),
                 trusted_operator_ids: vec![operator_id.clone()],
                 enrollments: vec![ConfiguredEnrollment {
                     request_id: dotted("request.enroll.quest.1"),
@@ -708,7 +1000,12 @@ mod tests {
         )
     }
 
-    fn signed_checkin(signing_key: &SigningKey, key_id: &str, now_ms: i64) -> SignedFleetCheckIn {
+    fn signed_checkin(
+        signing_key: &SigningKey,
+        key_id: &str,
+        now_ms: i64,
+        revision: u64,
+    ) -> SignedFleetCheckIn {
         let peer_id = dotted("device.quest.1");
         let fingerprint = {
             let digest = hex::encode(Sha256::digest(signing_key.verifying_key().to_bytes()));
@@ -716,6 +1013,7 @@ mod tests {
         };
         let mut observation = ScenarioBuilder::new(1).build().initial.remove(0);
         observation.identity.device_id = peer_id.to_string();
+        observation.source_revision = revision;
         observation.source_time_ms = now_ms;
         observation.received_time_ms = 0;
         for provenance in [
@@ -749,7 +1047,7 @@ mod tests {
         }
         let proposal = ManifoldPeerStatusProposal {
             schema_id: schema("rusty.manifold.peer.status_proposal.v1"),
-            proposal_id: dotted("proposal.status.quest.1"),
+            proposal_id: dotted(&format!("proposal.status.quest.{revision}")),
             expected_authority_revision: Revision::INITIAL,
             proposer_id: dotted("adapter.quest.fleet-agent"),
             identity: ManifoldPeerIdentity {
@@ -762,7 +1060,7 @@ mod tests {
             status: ManifoldPeerStatus {
                 schema_id: schema("rusty.manifold.peer.status.v1"),
                 peer_id,
-                status_revision: Revision::INITIAL,
+                status_revision: Revision::new(revision).expect("positive status revision"),
                 observed_at_ms: u64::try_from(now_ms).expect("positive"),
                 expires_at_ms: u64::try_from(now_ms + 60_000).expect("positive"),
                 availability: ManifoldPeerAvailability::Ready,
@@ -772,7 +1070,7 @@ mod tests {
         };
         let claims = FleetCheckInClaims {
             schema: "rusty.fleet.checkin_claims.v1".to_owned(),
-            checkin_id: "checkin.quest.1".to_owned(),
+            checkin_id: format!("checkin.quest.{revision}"),
             issued_at_ms: now_ms,
             expires_at_ms: now_ms + 60_000,
             manifold_peer_status_proposal: serde_json::to_value(proposal).expect("proposal JSON"),
@@ -804,5 +1102,13 @@ mod tests {
 
     fn schema(value: &str) -> SchemaId {
         SchemaId::new(value.to_owned()).expect("schema id")
+    }
+
+    fn test_state_directory() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "rusty-fleet-local-hub-test-{}-{}",
+            std::process::id(),
+            STATE_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ))
     }
 }

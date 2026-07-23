@@ -87,6 +87,22 @@ authenticated route.
 - Discovery remains a later, separate proposal mechanism and cannot enroll or
   select a device by itself.
 
+## Durable-state realization
+
+M1 implements the decision as two alternating, generation-numbered state
+slots below an explicitly configured absolute private directory. A check-in is
+acknowledged only after the candidate Fleet and Manifold snapshots fit the
+fixed state-size ceiling and the new slot has been flushed and published.
+Startup chooses the newest fully valid slot, falls back to the prior valid slot
+when only the newest is damaged, and fails closed when no valid slot remains.
+
+The restored snapshot must agree with the current Hub policy and active
+enrollment bindings. Fleet device identities must exactly match accepted
+Manifold peers. Condition history, watch events, unexpired replay evidence,
+applied proposal evidence, and source-epoch tombstones remain finite. A full
+source-epoch tombstone allowance rejects further epoch rotation instead of
+evicting evidence that would let an old producer epoch return.
+
 ## Rejected alternatives
 
 - **Unbounded HTTP/WebSocket body or connection handling:** authentication
