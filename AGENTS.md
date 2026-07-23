@@ -54,11 +54,14 @@ UI handlers collect parameters, invoke owned routes, show progress, and project
 structured evidence. Every operator action requires CLI or local API parity.
 
 The detailed cross-stream contract is
-[docs/DATASTREAMS.md](docs/DATASTREAMS.md). Preserve logical stream identity,
-provider generation, authority revision, named clock domains, bounded queues,
-admission budgets, and separate transport/payload/decode/sink/cleanup evidence.
-Do not infer stream health from discovery, a running process, an open socket,
-or byte flow alone.
+[docs/DATASTREAMS.md](docs/DATASTREAMS.md). Preserve logical stream identity;
+generic and native descriptors; auditable source selection; source, route,
+processing, and sink epochs; authority revision; raw clock/correlation
+lineage; per-edge bounded queues; scientific recording/replay provenance;
+admission budgets; and separate transport/payload/decode/sink/cleanup evidence.
+Never select the first discovery result implicitly. Do not infer stream health
+from discovery, a running process, an open socket, probe success, or byte flow
+alone.
 
 ## Operator UI guardrails
 

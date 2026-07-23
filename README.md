@@ -16,9 +16,10 @@ See the [operator UI guide](docs/OPERATOR_UI.md).
 
 The datastream architecture composes LSL, status, spatial, media, and future
 relay streams without forcing them through one transport. It standardizes
-identity, provider generations, clocks, health, bounded queues, admission
-budgets, cleanup, and evidence while preserving every owner boundary. See the
-[datastream guide](docs/DATASTREAMS.md).
+generic/native descriptors, source selection, component epochs, timing,
+profile health, per-edge queues, scientific recording/replay, admission
+budgets, cleanup, and evidence while preserving every owner boundary. See
+the [datastream guide](docs/DATASTREAMS.md).
 
 ## Product shape
 
@@ -46,7 +47,8 @@ device, relay, media, and operator authority into one application.
 3. Review the [architecture and ownership boundaries](docs/ARCHITECTURE.md).
 4. Review [datastream management](docs/DATASTREAMS.md), the
    [current Morphospace stream matrix](docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md),
-   and the [primary-source ledger](docs/research/DATASTREAM_REFERENCE_LEDGER.md).
+   [primary-source ledger](docs/research/DATASTREAM_REFERENCE_LEDGER.md), and
+   [research integration review](docs/research/FLEET_RESEARCH_INTEGRATION_REVIEW.md).
 5. Review the [operator UI architecture](docs/OPERATOR_UI.md) and its
    [reference ledger](docs/research/FLEET_UI_SOURCE_LEDGER.md).
 6. Use the [validation matrix](docs/VALIDATION.md) to select the smallest

@@ -115,14 +115,51 @@ Command cleanup pending | 2 affected | oldest 4m
 ```text
 Available 24 | Active 3 | Requested 1 | Degraded 1 | Cleanup pending 1
 
-Device/stream   Kind     Gen  Route   Payload stage     Sink      Age
-Quest-04/head   Pose     12   LSL     Samples advance  Detail    18ms
-Quest-18/s92    Display   7   Relay   Frames advance   Preview   2.4s stale
-Quest-44/s93    Camera    3   Failed  No frames        Waiting   —
+Device/stream   Kind     Path  Route   Payload stage     Sink      Age
+Quest-04/head   Pose     p12   LSL     Samples advance  Detail    18ms
+Quest-18/s92    Display   p7   Relay   Frames advance   Preview   2.4s stale
+Quest-44/s93    Camera    p3   Failed  No frames        Waiting   —
 
 Selected preview: Quest-18/s92
-Route delayed; control plane normal; provider generation 7
-[Stop] [Change route] [Open timing] [Open evidence]
+Route delayed; control plane normal
+Epochs: source 4 | route 7 | processing 2 | sink 9
+[Stop] [Change route] [Open timing] [Open lineage] [Open evidence]
+```
+
+## Ambiguous scientific source
+
+```text
+Source selection: Ambiguous
+Rule: type = EEG AND source_id = amplifier-07
+Expected: exactly 1 | Found: 3
+
+Candidate                         Native UID   Created    Metadata
+EEG / amplifier-07 / Quest-02    …7f          12:01:04   64 ch | 1 kHz
+EEG / amplifier-07 / Quest-02    …9a          12:14:32   64 ch | 1 kHz
+EEG / amplifier-07 / unknown     …c1          12:14:40   32 ch | 500 Hz
+
+[Refresh] [Pin candidate…] [Edit saved rule]
+```
+
+## Scientific recording preflight
+
+```text
+Run: Balance-VR | protocol 3.2
+Required streams: 3 | Ready: 2 | Missing: 1
+Optional streams: 4 of 5 ready
+
+Missing required
+Experiment markers | no candidate found
+
+Timing
+EEG ±0.4 ms | Eye tracking ±1.8 ms
+Head pose calibration expired
+
+Storage and policy
+Estimated 42 GB | Available 181 GB
+Retention 90 days | Encrypted storage verified
+
+[Cancel] [Resolve missing stream] [Record with documented deviation…]
 ```
 
 ## Empty and degraded fixtures

@@ -16,7 +16,8 @@ The evidence and product comparisons behind this decision are recorded in:
 
 - [the product-pattern matrix](research/FLEET_UI_PRODUCT_MATRIX.md);
 - [the reference and provenance ledger](research/FLEET_UI_SOURCE_LEDGER.md);
-- [the low-fidelity wireframes](research/FLEET_UI_WIREFRAMES.md).
+- [the low-fidelity wireframes](research/FLEET_UI_WIREFRAMES.md);
+- [the cross-report integration review](research/FLEET_RESEARCH_INTEGRATION_REVIEW.md).
 
 ## Scope
 
@@ -286,20 +287,35 @@ Full device detail adds enrollment identity and rotation, complete adapter
 evidence, longer command/media history, audit lineage, exports, and the
 QuestIonAble File Manager deep link when authorized.
 
+Before a scientific recording begins, the Streams surface presents a
+recording preflight with required/optional stream readiness, ambiguity and
+missing-stream reasons, timing/calibration quality, storage estimate and
+headroom, retention and encryption-at-rest policy, and any deviation requiring
+explicit authority. The final recording result remains independent from
+preview health.
+
 ### Selected-stream detail
 
 The Streams tab follows
 [Datastream Management](DATASTREAMS.md). It reveals details in layers:
 
 1. available and selected semantic streams, sensitivity, and cost;
-2. current lifecycle, accepted subscription/session, expiry, and provider
-   generation;
-3. source/processor/route/socket/codec/sink/cleanup owner chain;
-4. source clock, correlation, receive time, and freshness;
-5. transport, byte, sample/frame, decode/schema, sink, and cleanup progress;
-6. cadence, latency, jitter, loss, drops, queue pressure, and budget use;
-7. no-data, stall, freeze, recovery, fallback, and terminal reasons;
-8. recording/retention/export policy and sanitized evidence.
+2. saved source-selection rule, expected/found cardinality, candidates,
+   selection method, complete native descriptor access, and digest;
+3. current lifecycle, accepted subscription/session, expiry, source, route,
+   processing, and sink epoch lineage;
+4. acquisition/serializer/encoder/framing/route/demux/validator/decoder/sink/
+   cleanup owner chain;
+5. raw source clocks, correlation observations, uncertainty, transformations,
+   calibration, receive time, and freshness;
+6. transport, byte, sample/frame, decode/schema, sink, recording, and cleanup
+   progress, with required/optional/not-applicable stages visible;
+7. nominal, accepted, and measured cadence; silence/heartbeat policy; latency,
+   jitter, loss, drops, per-edge queue pressure, and budget use;
+8. ambiguity, missing configuration/keyframe, byte-only activity, no-data,
+   stall, freeze, recovery, fallback, and terminal reasons;
+9. scientific run, recording artifact, replay, retention/export policy, and
+   sanitized evidence.
 
 The row never decodes media and never attempts to summarize this chain as one
 green or red dot. A selected preview is bounded and independently stoppable.
@@ -341,6 +357,12 @@ actionable conditions but must not become a health score.
 | degraded | warning shape plus remaining behavior | useful subset remains available |
 | failed | error shape plus reason | operation or component ended unsuccessfully |
 | critical | high-priority alert shape plus text | immediate intervention required |
+| ambiguous | branching/candidate shape plus count | selection cannot proceed without a deterministic choice |
+| awaiting configuration / keyframe | media-stage shape plus label | route has payload but decode cannot safely begin |
+| byte-only | transport shape plus label | bytes advance without complete semantic payload |
+| decoded, not rendered | split stage label | decoder advances while the selected sink does not |
+| recording stalled | recorder shape plus elapsed time | durable artifact progress stopped |
+| clock degraded | clock shape plus uncertainty | correlation exists but misses the selected profile |
 
 Normal facts do not flood the table with green. Success color is reserved for
 explicit recent success; warning and error colors are paired with shapes,

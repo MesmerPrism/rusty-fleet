@@ -29,15 +29,20 @@ authority.
 Require:
 
 - exactly one payload plane per stream;
-- logical stream identity plus provider generation and authority revision;
+- logical stream identity plus source, route, processing, and sink epochs,
+  a composite path generation, and authority revision;
+- normalized descriptors plus complete native descriptors, or role-controlled
+  native references and digests, with auditable source selection;
 - named raw timestamp domains and explicit correlation policy;
-- bounded lifecycle, queues, recovery, fan-out, retention, and cleanup;
+- bounded lifecycle, per-edge queues, recovery, fan-out, retention, and cleanup;
 - separate evidence for accepted session, transport/process, bytes,
-  sample/frame progress, decode/schema validity, sink progress, and cleanup;
+  sample/frame progress, decode/schema validity, sink progress, recording, and
+  cleanup;
 - explicit no-data, stall, freeze, stale, degraded, and failed conditions;
 - protected control capacity plus per-device/provider/route/host/relay/global
   admission budgets and fairness;
 - selected media preview with no automatic all-device wall;
+- scientific run, recording-artifact, XDF compatibility, and replay provenance;
 - low-cardinality metrics and Console/CLI/local API parity.
 
 Treat Rusty LSL as a bounded timestamped observation adapter. Treat FFmpeg as a
@@ -55,6 +60,24 @@ bounded Hostess process adapter. Neither becomes Fleet or Manifold authority.
   described as supported until owner promotion.
 - Remote relay selection remains deferred until identity, tenancy, congestion,
   retention, security, and measured route evidence are available.
+
+## 2026-07-23 research clarification
+
+`Provider generation` in the original decision is retained only as the
+optional composite `path_generation` projection. It is not the authority for
+component continuity. Source, route/connection, processing, and sink owners
+advance their own epochs, and current evidence names every applicable epoch.
+
+Queue policy is owned per producer-consumer edge. Preview, recorder, relay, and
+analysis branches from one logical stream can therefore have different finite
+bounds and overflow/failure behavior without creating competing stream
+identity.
+
+Stream progress is profile-specific: each common stage is required, optional,
+or not applicable. Native descriptor preservation, source-selection
+cardinality, timing transformations/calibration, and scientific recording/
+replay receipts are part of the same planning decision rather than a new
+transport selection.
 
 ## Rejected alternatives
 

@@ -123,6 +123,7 @@ function Test-RequiredFiles {
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
         "docs/research/DATASTREAM_REFERENCE_LEDGER.md",
+        "docs/research/FLEET_RESEARCH_INTEGRATION_REVIEW.md",
         "docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md",
         "morphospace/project.spec.json",
         "morphospace/feature.lock.json",
@@ -181,9 +182,12 @@ function Test-DatastreamPlanning {
     $ledger = Get-Content -LiteralPath (Join-Path $repoRoot "docs/research/DATASTREAM_REFERENCE_LEDGER.md") -Raw
 
     foreach ($phrase in @(
-        "provider generation",
+        "native descriptor",
+        "source selection",
+        "component epochs",
         "timestamp domains",
-        "bounded",
+        "per-edge",
+        "Scientific session, recording, and replay",
         "no data",
         "stalled",
         "frozen",

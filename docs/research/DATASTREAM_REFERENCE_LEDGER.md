@@ -12,10 +12,14 @@ milestone selects a dependency.
 
 | Reference | Rule adopted | Overreach rejected |
 | --- | --- | --- |
+| [Peer-reviewed LSL overview](https://doi.org/10.1162/IMAG.a.136) | treat LSL's value as an end-to-end scientific workflow spanning low-friction sources, LAN discovery, timing, recovery, recording, XDF, and analysis interoperability | treating one transport mechanism as the whole reason for scientific adoption |
 | [LSL user guide](https://labstreaminglayer.readthedocs.io/info/user_guide.html) | model discovery, lazy inlet connection, and recoverable streams as distinct lifecycle stages | treating discovery as Fleet enrollment or Manifold admission |
+| [liblsl StreamInfo reference](https://labstreaminglayer.readthedocs.io/projects/liblsl/ref/streaminfo.html) | retain core fields, complete native XML, `source_id`, concrete outlet `uid`, creation time, and extended metadata | treating a name/type or owner-provided `source_id` as authenticated global identity |
 | [LSL time synchronization](https://labstreaminglayer.readthedocs.io/info/time_synchronization.html) | preserve raw sample timestamps and offset history; make online correction/dejitter explicit | rewriting every sample into host wall time |
 | [LSL FAQ](https://labstreaminglayer.readthedocs.io/info/faqs.html) | bound newest-only backlog; record known fixed latency; measure chunk latency/overhead; surface ambiguous resolution | hard-coding one chunk size or silently selecting an unordered resolve result |
 | [liblsl stream inlet reference](https://labstreaminglayer.readthedocs.io/projects/liblsl/ref/inlet.html) | require stable source identity for recoverable behavior and bound recovery | claiming every discovered stream is recoverable |
+| [LabRecorder](https://github.com/labstreaminglayer/App-LabRecorder) and [XDF specification/tools](https://github.com/sccn/xdf) | model required/optional source preflight, native metadata, raw timestamps, clock history, artifact lifecycle, and replay/import verification | replacing XDF, equating preview with recording, or claiming scientific provenance from sample transport alone |
+| [MNE-LSL](https://mne.tools/mne-lsl/stable/index.html) and [EEGLAB import guidance](https://eeglab.org/tutorials/04_Import/Importing_Continuous_and_Epoched_Data.html) | treat downstream analysis and replay compatibility as part of the scientific workflow | claiming compatibility without exact dependency versions and round-trip evidence |
 
 ## FFmpeg and media pipelines
 
@@ -25,7 +29,9 @@ milestone selects a dependency.
 | [ffprobe documentation](https://ffmpeg.org/ffprobe.html) | use explicit JSON or another machine-readable writer for input/capability probing | treating a successful probe as decoded/rendered-frame proof |
 | [FFmpeg formats](https://ffmpeg.org/ffmpeg-formats.html) | use frame hashes for bounded decoded-progress tests; declare tee maps, per-output isolation, and failure policy | assuming fan-out outputs share one reliability/latency policy |
 | [FFmpeg protocols](https://ffmpeg.org/ffmpeg-protocols.html) | set protocol-specific timeouts, reconnect, and buffers; test termination responsiveness | a universal undocumented “low latency” flag set |
+| [FFmpeg security notices](https://ffmpeg.org/security.html) | pin and patch the exposed parser/codec toolchain and bound its accepted protocol, format, codec, dimension, and resource surface | treating media input as trusted or permitting every compiled-in component |
 | [GStreamer queue](https://gstreamer.freedesktop.org/documentation/coreelements/queue.html) | express queue limits in buffers, bytes, and/or time and name the leaky direction | importing GStreamer as a product dependency or leaving queue semantics implicit |
+| [GStreamer bus](https://gstreamer.freedesktop.org/documentation/application-development/basics/bus.html), [states](https://gstreamer.freedesktop.org/documentation/additional/design/states.html), and [QoS](https://gstreamer.freedesktop.org/documentation/additional/design/qos.html) | adapt structured component events, lifecycle, timing, processing, and drop evidence into Hostess contracts | selecting GStreamer merely to copy its vocabulary |
 | [scrcpy video guide](https://github.com/Genymobile/scrcpy/blob/master/doc/video.md) and [developer guide](https://github.com/Genymobile/scrcpy/blob/master/doc/develop.md) | make display selection, buffering, demux/decode/display/record separation, and independent channel lifecycles explicit | copying implementation source or making scrcpy the Rusty authority |
 
 ## Android capture, codec, and local discovery
@@ -51,17 +57,20 @@ milestone selects a dependency.
 | Reference | Useful pressure | Current decision |
 | --- | --- | --- |
 | [SRT project](https://github.com/Haivision/srt) | encryption, ARQ, bounded latency, and rendezvous for difficult networks | research candidate only; not the default relay |
+| [RIST technical recommendations](https://vsf.tv/technical-recommendations/) and [librist](https://code.videolan.org/rist/librist) | standardized reliable-contribution profiles and interoperability pressure | research candidate only; broadcast-oriented assumptions require an exact Fleet payload fit |
 | [WebRTC specification](https://www.w3.org/TR/webrtc/) | standardized real-time media/session behavior and a mature browser/operator ecosystem | research candidate only; do not create a second authority engine |
 | [QUIC transport](https://www.rfc-editor.org/rfc/rfc9000.html) and [QUIC datagrams](https://www.rfc-editor.org/rfc/rfc9221.html) | reliable streams and unreliable datagrams can share authenticated, congestion-controlled transport | research pressure only; no custom QUIC media protocol is selected |
+| [RTP/RTCP](https://www.rfc-editor.org/rfc/rfc3550.html) | adopt sequence, timestamp, loss, jitter, and sender/receiver-report vocabulary for route evidence | assuming RTP supplies delivery, congestion control, identity, or authorization |
 
 ## Consolidated decisions
 
 The references support:
 
 - raw-time preservation plus explicit correlation;
-- identity plus provider-generation lineage;
-- bounded recovery and queueing;
-- separate connection, byte, sample/frame, decode, sink, and cleanup evidence;
+- identity plus source, route, processing, and sink epoch lineage;
+- bounded recovery and per-edge queueing;
+- separate connection, byte, sample/frame, decode, sink, recording, and cleanup
+  evidence;
 - selected and admitted media rather than ambient preview;
 - machine-readable process adapters;
 - low-cardinality fleet metrics;
