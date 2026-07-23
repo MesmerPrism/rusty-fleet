@@ -33,3 +33,9 @@ The project follows Semantic Versioning once runtime releases begin.
 - M0 source-boundary threat model with restart-safe producer epochs, replay and
   identity-conflict rejection, receive-time ordering, and finite contract
   limits before any real ingress is introduced.
+- First M1 authority checkpoint with provenance-bearing Fleet Agent, power, and
+  application facts; an Ed25519/JCS signed check-in contract and public golden
+  vector; exact pinned Manifold enrollment/status admission; bounded replay
+  state; host-owned received time; and transactional all-or-neither
+  Manifold/Fleet application. No listener or device effect is activated by
+  this checkpoint.

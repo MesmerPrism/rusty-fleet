@@ -56,6 +56,36 @@
       "properties": {
         "schema": {
           "const": "rusty.fleet.device_row.v1"
+        },
+        "agent": {
+          "oneOf": [
+            {
+              "$ref": "rusty.fleet.device_observation.v1.schema.json#/$defs/application"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "power": {
+          "oneOf": [
+            {
+              "$ref": "rusty.fleet.device_observation.v1.schema.json#/$defs/power"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "application": {
+          "oneOf": [
+            {
+              "$ref": "rusty.fleet.device_observation.v1.schema.json#/$defs/application"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },

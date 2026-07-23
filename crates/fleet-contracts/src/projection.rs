@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    CapabilitySnapshot, ConditionFamily, ContractViolation, DeviceIdentity, FleetQuery,
-    OperationLedger, StatusCondition, StreamDescriptor, ValidateContract, finish, require_nonempty,
+    ApplicationObservation, CapabilitySnapshot, ConditionFamily, ContractViolation, DeviceIdentity,
+    FleetQuery, OperationLedger, PowerObservation, StatusCondition, StreamDescriptor,
+    ValidateContract, finish, require_nonempty,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +33,9 @@ pub struct DeviceRowProjection {
     pub battery_percent: Option<u8>,
     pub charging: Option<bool>,
     pub foreground_app: Option<String>,
+    pub agent: Option<ApplicationObservation>,
+    pub power: Option<PowerObservation>,
+    pub application: Option<ApplicationObservation>,
     pub kiosk_state: String,
     pub route: String,
     #[serde(default)]
@@ -70,6 +74,30 @@ impl ValidateContract for DeviceRowProjection {
                 "battery_percent",
                 "battery percentage must be between 0 and 100",
             ));
+        }
+        if let Some(agent) = &self.agent
+            && let Err(nested) = agent.validate()
+        {
+            failures.extend(nested.into_iter().map(|failure| ContractViolation {
+                path: format!("agent.{}", failure.path),
+                ..failure
+            }));
+        }
+        if let Some(power) = &self.power
+            && let Err(nested) = power.validate()
+        {
+            failures.extend(nested.into_iter().map(|failure| ContractViolation {
+                path: format!("power.{}", failure.path),
+                ..failure
+            }));
+        }
+        if let Some(application) = &self.application
+            && let Err(nested) = application.validate()
+        {
+            failures.extend(nested.into_iter().map(|failure| ContractViolation {
+                path: format!("application.{}", failure.path),
+                ..failure
+            }));
         }
         if self.conditions.len() > 16 || self.extensions.len() > 64 {
             failures.push(ContractViolation::new(

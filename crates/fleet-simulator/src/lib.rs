@@ -6,11 +6,13 @@
 use std::collections::BTreeMap;
 
 use fleet_contracts::{
-    AuthorizationState, CapabilitySnapshot, CapabilityState, ConditionFamily, ConditionState,
-    ContentProgressPolicy, DeviceIdentity, DeviceObservation, EnablementState, EpochContinuity,
-    ExperimentRun, FreshnessState, KioskState, ProgressApplicability, ProgressStage,
-    ProgressStageEvidence, ReachabilityState, RecordingArtifact, RecordingArtifactState,
-    SelectionMethod, Sensitivity, StatusCondition, StatusSource, StreamDescriptor, SupportState,
+    ApplicationLifecycle, ApplicationObservation, AuthorizationState, CapabilitySnapshot,
+    CapabilityState, ConditionFamily, ConditionState, ContentProgressPolicy, DeviceIdentity,
+    DeviceObservation, EnablementState, EpochContinuity, ExperimentRun, FactProvenance,
+    ForegroundAuthority, ForegroundState, FreshnessState, KioskState, PowerObservation,
+    ProgressApplicability, ProgressStage, ProgressStageEvidence, ReachabilityState,
+    RecordingArtifact, RecordingArtifactState, SelectionMethod, Sensitivity, StatusCondition,
+    StatusSource, StreamDescriptor, SupportState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -656,6 +658,40 @@ fn observation(
         battery_percent: Some(battery_percent),
         charging: Some(index.is_multiple_of(5)),
         foreground_app: Some("org.example.synthetic.kiosk".to_owned()),
+        agent: Some(ApplicationObservation {
+            package_name: Some("io.github.mesmerprism.rustyquest.fleetagent".to_owned()),
+            lifecycle: ApplicationLifecycle::Background,
+            foreground_state: ForegroundState::Background,
+            foreground_authority: ForegroundAuthority::SelfReport,
+            provenance: FactProvenance {
+                owner: "rusty-quest".to_owned(),
+                adapter_id: "synthetic-quest-agent".to_owned(),
+                observed_at_ms: observed_at,
+                fresh_until_ms: observed_at + 60_000,
+            },
+        }),
+        power: Some(PowerObservation {
+            battery_percent,
+            charging: index.is_multiple_of(5),
+            provenance: FactProvenance {
+                owner: "rusty-quest".to_owned(),
+                adapter_id: "synthetic-quest-agent".to_owned(),
+                observed_at_ms: observed_at,
+                fresh_until_ms: observed_at + 60_000,
+            },
+        }),
+        application: Some(ApplicationObservation {
+            package_name: Some("org.example.synthetic.kiosk".to_owned()),
+            lifecycle: ApplicationLifecycle::Foreground,
+            foreground_state: ForegroundState::Foreground,
+            foreground_authority: ForegroundAuthority::ParticipatingApp,
+            provenance: FactProvenance {
+                owner: "org.example.synthetic.kiosk".to_owned(),
+                adapter_id: "synthetic-participating-app".to_owned(),
+                observed_at_ms: observed_at,
+                fresh_until_ms: observed_at + 60_000,
+            },
+        }),
         kiosk_state: KioskState::Active,
         conditions,
         capabilities: CapabilitySnapshot {

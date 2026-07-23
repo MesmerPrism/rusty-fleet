@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.checkin_signing_vector.v1.schema.json",
+  "title": "Rusty Fleet test-only check-in signing vector v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "test_only",
+    "claims_fixture",
+    "claims_jcs_sha256",
+    "signature_domain_utf8",
+    "algorithm",
+    "private_seed_hex",
+    "public_key_hex",
+    "public_key_sha256",
+    "signing_message_sha256",
+    "signature_hex"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.checkin_signing_vector.v1"
+    },
+    "test_only": {
+      "const": true
+    },
+    "claims_fixture": {
+      "const": "checkin-claims.valid.json"
+    },
+    "claims_jcs_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "signature_domain_utf8": {
+      "const": "rusty.fleet.signed_checkin.v1\u0000"
+    },
+    "algorithm": {
+      "const": "ed25519-jcs"
+    },
+    "private_seed_hex": {
+      "description": "Deterministic public test seed; never a production credential.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "public_key_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "public_key_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "signing_message_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "signature_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  },
+  "additionalProperties": false
+}

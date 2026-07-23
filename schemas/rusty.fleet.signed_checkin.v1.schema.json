@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.signed_checkin.v1.schema.json",
+  "title": "Rusty Fleet signed check-in v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "key_id",
+    "algorithm",
+    "signature_hex",
+    "claims"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.signed_checkin.v1"
+    },
+    "key_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "algorithm": {
+      "const": "ed25519-jcs",
+      "description": "Ed25519 over the v1 domain separator followed by RFC 8785/JCS-encoded claims."
+    },
+    "signature_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    },
+    "claims": {
+      "$ref": "rusty.fleet.checkin_claims.v1.schema.json"
+    }
+  },
+  "additionalProperties": false
+}

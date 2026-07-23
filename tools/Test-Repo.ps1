@@ -88,7 +88,7 @@ function Get-TransitionBinding {
     )
     $matchingEvents = @($events | Where-Object { $_.event_id -eq $EventId })
     Assert-True -Condition ($matchingEvents.Count -eq 1) `
-        -Message "$ExpectedStatus Milestone 0 must have exactly one owned transition event."
+        -Message "$ExpectedStatus workflow unit must have exactly one owned transition event."
     Assert-True -Condition (
         $matchingEvents[0].event_type -eq "state-transition" -and
         $matchingEvents[0].unit_id -eq $Unit.unit_id -and
@@ -100,7 +100,7 @@ function Get-TransitionBinding {
                 $State.next_ready_unit -eq $ExpectedNextReadyUnit
             )
         )
-    ) -Message "$ExpectedStatus Milestone 0 is not bound to workspace state."
+    ) -Message "$ExpectedStatus workflow unit is not bound to workspace state."
 
     $transactionId = "$EventId-transition"
     $intentPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.intent.json"
@@ -108,7 +108,7 @@ function Get-TransitionBinding {
     Assert-True -Condition (
         (Test-Path -LiteralPath $intentPath -PathType Leaf) -and
         (Test-Path -LiteralPath $completionPath -PathType Leaf)
-    ) -Message "$ExpectedStatus Milestone 0 is missing its transition-ledger receipts."
+    ) -Message "$ExpectedStatus workflow unit is missing its transition-ledger receipts."
     $intent = Get-Content -LiteralPath $intentPath -Raw | ConvertFrom-Json -Depth 100
     $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 100
     $intentSha256 = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -135,7 +135,7 @@ function Get-TransitionBinding {
         $unitProjection -ceq $targetUnitProjection -and
         $stateMatches -and
         $completion.intent.sha256 -eq $intentSha256
-    ) -Message "$ExpectedStatus Milestone 0 transition receipts are stale or damaged."
+    ) -Message "$ExpectedStatus workflow transition receipts are stale or damaged."
 
     return [pscustomobject]@{
         event = $matchingEvents[0]
@@ -207,20 +207,29 @@ function Test-RequiredFiles {
         "apps/fleetctl/src/lib.rs",
         "apps/fleetctl/src/main.rs",
         "crates/fleet-contracts/Cargo.toml",
+        "crates/fleet-contracts/src/checkin.rs",
         "crates/fleet-contracts/src/lib.rs",
         "crates/fleet-hub/Cargo.toml",
         "crates/fleet-hub/src/lib.rs",
+        "crates/fleet-manifold-adapter/Cargo.toml",
+        "crates/fleet-manifold-adapter/src/lib.rs",
         "crates/fleet-simulator/Cargo.toml",
         "crates/fleet-simulator/src/lib.rs",
+        "fixtures/contracts/checkin-claims.valid.json",
+        "fixtures/contracts/checkin-claims.damaged.json",
+        "fixtures/contracts/checkin-signing-vector.valid.json",
         "fixtures/contracts/device-observation.valid.json",
         "fixtures/contracts/device-observation.damaged.json",
         "fixtures/contracts/query.valid.json",
         "fixtures/contracts/stream-descriptor.valid.json",
         "fixtures/scenarios/scale-and-damage.v1.json",
+        "schemas/rusty.fleet.checkin_claims.v1.schema.json",
+        "schemas/rusty.fleet.checkin_signing_vector.v1.schema.json",
         "schemas/rusty.fleet.device_observation.v1.schema.json",
         "schemas/rusty.fleet.operation_ledger.v1.schema.json",
         "schemas/rusty.fleet.operator_projection.v1.schema.json",
         "schemas/rusty.fleet.query.v1.schema.json",
+        "schemas/rusty.fleet.signed_checkin.v1.schema.json",
         "schemas/rusty.fleet.stream_descriptor.v1.schema.json",
         "docs/ARCHITECTURE.md",
         "docs/DATASTREAMS.md",
@@ -233,6 +242,8 @@ function Test-RequiredFiles {
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
         "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
+        "docs/decisions/0005-m1-checkin-authority.md",
+        "docs/decisions/0006-m1-local-ingress-threat-model.md",
         "docs/research/DATASTREAM_REFERENCE_LEDGER.md",
         "docs/research/FLEET_RESEARCH_INTEGRATION_REVIEW.md",
         "docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md",
@@ -267,23 +278,21 @@ function Test-SourceImplementation {
         "apps/fleetctl",
         "crates/fleet-contracts",
         "crates/fleet-hub",
+        "crates/fleet-manifold-adapter",
         "crates/fleet-simulator"
     )) {
         Assert-True -Condition ($workspace.Contains("`"$member`"")) `
-            -Message "Cargo workspace is missing source-only member: $member"
+            -Message "Cargo workspace is missing required member: $member"
     }
 
     $lock = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.lock") -Raw
     foreach ($forbiddenPackage in @(
-        'name = "tokio"',
-        'name = "reqwest"',
-        'name = "hyper"',
         'name = "windows"',
         'name = "ffmpeg"',
         'name = "liblsl"'
     )) {
         Assert-True -Condition (-not $lock.Contains($forbiddenPackage)) `
-            -Message "Milestone 0 must remain source-only and inert: $forbiddenPackage"
+            -Message "Current M0/M1 owner boundary does not permit this package: $forbiddenPackage"
     }
 
     foreach ($schemaFile in Get-ChildItem -LiteralPath (Join-Path $repoRoot "schemas") -Filter "*.schema.json") {
@@ -410,6 +419,57 @@ function Test-PlanningInvariants {
     )) {
         Assert-True -Condition ($threatModel.Contains($phrase, [StringComparison]::OrdinalIgnoreCase)) `
             -Message "Milestone 0 threat-model guardrail is missing: $phrase"
+    }
+
+    $m1UnitPath = Join-Path $repoRoot "morphospace/iteration-units/fleet-m1-local-no-adb-monitoring.json"
+    Assert-True -Condition (Test-Path -LiteralPath $m1UnitPath -PathType Leaf) `
+        -Message "The Milestone 1 local-monitoring stack is missing."
+    $m1Unit = Get-Content -LiteralPath $m1UnitPath -Raw | ConvertFrom-Json -Depth 100
+    Assert-True -Condition (
+        $m1Unit.unit_id -eq "fleet-m1-local-no-adb-monitoring" -and
+        $m1Unit.status -in @("active", "validating", "accepted") -and
+        @($m1Unit.allowed_repositories.repo_id) -contains "rusty-fleet" -and
+        @($m1Unit.allowed_repositories.repo_id) -contains "rusty-quest" -and
+        @($m1Unit.acceptance.acceptance_id) -contains "authenticated-no-adb-checkin" -and
+        @($m1Unit.acceptance.acceptance_id) -contains "cli-api-ui-parity" -and
+        @($m1Unit.acceptance.acceptance_id) -contains "stacked-validation-and-cleanup"
+    ) -Message "Milestone 1 is not one complete local-monitoring stack."
+    if ($m1Unit.status -eq "active") {
+        Get-TransitionBinding -Unit $m1Unit -State $state `
+            -EventId "$($m1Unit.unit_id)-claimed-0007" `
+            -ExpectedStatus "active" -ExpectedCurrentUnit $m1Unit.unit_id `
+            -ExpectedNextReadyUnit $null | Out-Null
+    }
+
+    $m1Text = $m1Unit | ConvertTo-Json -Depth 100 -Compress
+    foreach ($requiredBoundary in @(
+        "5c3679b5b7faaacfe65daecfaf48d442af279870",
+        "d0782ea5a79bf88ef16b5d0adb8792803d5705ea",
+        "without ADB",
+        "unpublished Rusty LSL P68 candidate",
+        "platform-limited foreground"
+    )) {
+        Assert-True -Condition (
+            $m1Text.Contains($requiredBoundary, [StringComparison]::OrdinalIgnoreCase)
+        ) -Message "Milestone 1 owner or support boundary is missing: $requiredBoundary"
+    }
+
+    foreach ($decision in @(
+        "docs/decisions/0005-m1-checkin-authority.md",
+        "docs/decisions/0006-m1-local-ingress-threat-model.md"
+    )) {
+        $decisionText = Get-Content -LiteralPath (Join-Path $repoRoot $decision) -Raw
+        foreach ($requiredDecisionPhrase in @(
+            "Manifold",
+            "no ADB",
+            "bounded",
+            "replay",
+            "received time"
+        )) {
+            Assert-True -Condition (
+                $decisionText.Contains($requiredDecisionPhrase, [StringComparison]::OrdinalIgnoreCase)
+            ) -Message "$decision is missing M1 guardrail: $requiredDecisionPhrase"
+        }
     }
 }
 

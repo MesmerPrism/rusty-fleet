@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.checkin_claims.v1.schema.json",
+  "title": "Rusty Fleet authenticated check-in claims v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "checkin_id",
+    "issued_at_ms",
+    "expires_at_ms",
+    "manifold_peer_status_proposal",
+    "observation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.checkin_claims.v1"
+    },
+    "checkin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "issued_at_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expires_at_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "manifold_peer_status_proposal": {
+      "type": "object"
+    },
+    "observation": {
+      "$ref": "rusty.fleet.device_observation.v1.schema.json",
+      "description": "Signed source facts. received_time_ms must be zero and is replaced by the Hub ingress adapter after admission."
+    }
+  },
+  "additionalProperties": true
+}

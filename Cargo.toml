@@ -3,6 +3,7 @@ members = [
     "apps/fleetctl",
     "crates/fleet-contracts",
     "crates/fleet-hub",
+    "crates/fleet-manifold-adapter",
     "crates/fleet-simulator",
 ]
 resolver = "3"
@@ -16,7 +17,13 @@ repository = "https://github.com/MesmerPrism/rusty-fleet"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_jcs = "=0.2.0"
 serde_json = "1.0"
+ed25519-dalek = { version = "=2.1.1", default-features = false, features = ["std"] }
+hex = "0.4"
+rusty-manifold-model = { git = "https://github.com/MesmerPrism/rusty-manifold", rev = "5c3679b5b7faaacfe65daecfaf48d442af279870", features = ["serde"] }
+rusty-manifold-peer = { git = "https://github.com/MesmerPrism/rusty-manifold", rev = "5c3679b5b7faaacfe65daecfaf48d442af279870" }
+sha2 = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

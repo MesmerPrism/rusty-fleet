@@ -5,10 +5,12 @@ Meta Quest dashboard. It is designed to show every enrolled headset that is
 checking in, even when ADB is unavailable, and to expose stronger operations
 only when the device reports the required capability and authority.
 
-Milestone 0 is now active as a source-only Rust workspace. It contains
-versioned contracts, deterministic synthetic fleets, an in-memory Hub, and
-CLI/local-API projections. No runtime listener, Android permission, device
-mutation, media route, persistence service, or remote relay is active.
+Milestone 0 is accepted and published. Milestone 1 is active on its working
+branch. Its first inert source checkpoint adds provenance-bearing Quest
+observation facts plus a signed check-in envelope admitted transactionally
+through the exact pinned Manifold peer authority. No runtime listener, Android
+permission, device mutation, media route, persistence service, or remote relay
+is active yet.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -47,6 +49,9 @@ The current source-only implementation is split into:
   projection, command, and datastream contracts;
 - `fleet-hub`: deterministic in-memory acceptance, freshness, query, inspect,
   summary, and watch behavior;
+- `fleet-manifold-adapter`: exact Manifold enrollment/status admission,
+  Ed25519/JCS verification, replay-window enforcement, and all-or-neither
+  Manifold/Fleet state application;
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets plus damage and lifecycle mutations;
 - `fleetctl`: a structured JSON projection over the same local API.
@@ -62,7 +67,10 @@ bounded dependency, authority, activation, and instruction audit.
 2. Read the [stacked milestone workflow](docs/WORKFLOW.md).
 3. Review the [architecture and ownership boundaries](docs/ARCHITECTURE.md).
    The executable M0 trust boundary is recorded in
-   [ADR 0004](docs/decisions/0004-m0-source-boundary-and-threat-model.md).
+   [ADR 0004](docs/decisions/0004-m0-source-boundary-and-threat-model.md);
+   M1 check-in authority and local-ingress security are recorded in
+   [ADR 0005](docs/decisions/0005-m1-checkin-authority.md) and
+   [ADR 0006](docs/decisions/0006-m1-local-ingress-threat-model.md).
 4. Review [datastream management](docs/DATASTREAMS.md), the
    [current Morphospace stream matrix](docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md),
    [primary-source ledger](docs/research/DATASTREAM_REFERENCE_LEDGER.md), and
@@ -73,11 +81,11 @@ bounded dependency, authority, activation, and instruction audit.
    sufficient check.
 7. Resume project state from [the Morphospace workspace](morphospace/README.md).
 
-The active implementation stack is
-`fleet-m0-foundation-and-simulator`. It produces contracts, a deterministic
-multi-device simulator, and a CLI/API-observable Hub skeleton as one coherent
-vertical slice. It is not split into separate lifecycle units for each schema,
-class, command, or test.
+The active implementation stack is `fleet-m1-local-no-adb-monitoring`. It
+delivers the authenticated local check-in, bounded Hub runtime, Quest Fleet
+Agent, shared CLI/API/WPF projections, negative paths, and final device proof
+as one coherent vertical slice. It is not split into separate lifecycle units
+for each schema, field, transport handler, control, or test.
 
 ## Source workflow
 
@@ -97,7 +105,8 @@ cargo run --locked -p fleetctl -- inspect sim-00001 4
 cargo run --locked -p fleetctl -- watch 4
 ```
 
-These commands create synthetic in-memory data only.
+These commands create synthetic in-memory data only. The M1 check-in adapter is
+also inert unless a caller supplies enrolled Manifold state and signed input.
 
 ## Validation
 
@@ -124,11 +133,11 @@ These commands do not contact or mutate a headset.
 
 ## Status
 
-The accepted planning baseline and inert Morphospace protocol-v2 workspace are
-now paired with the active Milestone 0 source foundation. The implementation
-does not activate a stream, socket, service, device route, or platform
-permission. Milestone acceptance remains pending until the complete Standard
-gate, workflow receipts, and publication checkpoint pass.
+The accepted M0 baseline and inert Morphospace protocol-v2 workspace are now
+paired with the active M1 local-monitoring stack. The contract checkpoint does
+not activate a socket, service, device route, or platform permission. M1
+acceptance remains pending until the complete Host, WPF/accessibility,
+Standard, one bounded Quest, Deep, workflow, and publication gates pass.
 
 ## License
 

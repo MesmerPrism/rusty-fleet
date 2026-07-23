@@ -1,0 +1,34 @@
+{
+  "schema": "rusty.fleet.checkin_claims.v1",
+  "checkin_id": "checkin.synthetic.damaged",
+  "issued_at_ms": 2000000000000,
+  "expires_at_ms": 2000000600001,
+  "manifold_peer_status_proposal": [],
+  "observation": {
+    "schema": "rusty.fleet.device_observation.v1",
+    "identity": {
+      "device_id": "",
+      "identity_revision": 0,
+      "display_name": "",
+      "model": "",
+      "hardware_class": "",
+      "tags": {}
+    },
+    "source_epoch": "",
+    "source_revision": 0,
+    "source_time_ms": 2000000000000,
+    "received_time_ms": 1,
+    "battery_percent": 101,
+    "charging": false,
+    "foreground_app": null,
+    "agent": null,
+    "power": null,
+    "application": null,
+    "kiosk_state": "unknown",
+    "conditions": [],
+    "capabilities": {
+      "capabilities": {}
+    },
+    "streams": []
+  }
+}

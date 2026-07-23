@@ -38,6 +38,8 @@ Live device work is never implied by a source or documentation task.
 - `crates/fleet-contracts`: public source-only contracts and cross-field
   validation;
 - `crates/fleet-hub`: deterministic in-memory state and the local API;
+- `crates/fleet-manifold-adapter`: exact pinned Manifold enrollment/status
+  admission plus transactional signed-check-in projection;
 - `crates/fleet-simulator`: synthetic fleet and damage scenarios;
 - `apps/fleetctl`: structured JSON CLI over the same local API;
 - `schemas`: versioned JSON Schema projection;
@@ -45,6 +47,9 @@ Live device work is never implied by a source or documentation task.
 
 The implementation boundary and closed adapter edges are documented in
 [docs/M0_SOURCE_FOUNDATION.md](docs/M0_SOURCE_FOUNDATION.md).
+The active M1 authority and ingress boundaries are recorded in
+[ADR 0005](docs/decisions/0005-m1-checkin-authority.md) and
+[ADR 0006](docs/decisions/0006-m1-local-ingress-threat-model.md).
 
 ## Ownership
 
@@ -159,6 +164,12 @@ through authenticated app-level networking. ADB, on-device loopback,
 accessibility, device-owner, file operations, media streaming, and relay access
 are separate opt-in capabilities with explicit grants and truthful degraded
 states.
+
+For M1 check-ins, preserve the exact Manifold peer proposal, bind its enrolled
+peer and active key to the Fleet observation, sign RFC 8785/JCS claims with the
+v1 domain separator, preview both state transitions, and commit neither when
+either authority rejects. Device source time is signed evidence; Hub received
+time is supplied by the ingress adapter.
 
 Keep `AGENTS.md` concise. Put detailed procedures in linked docs or runbooks and
 update the nearest README/router plus relevant skills when ownership,
