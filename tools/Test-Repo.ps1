@@ -125,6 +125,7 @@ function Test-RequiredFiles {
         "docs/research/DATASTREAM_REFERENCE_LEDGER.md",
         "docs/research/FLEET_RESEARCH_INTEGRATION_REVIEW.md",
         "docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md",
+        "morphospace/.gitattributes",
         "morphospace/project.spec.json",
         "morphospace/feature.lock.json",
         "morphospace/workspace.state.json",
