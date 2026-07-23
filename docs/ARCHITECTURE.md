@@ -104,14 +104,21 @@ Adapters may produce observations or discovery proposals through:
 Observations do not silently become accepted membership, command authority, or
 media routes. The Hub displays source, age, confidence, and authority state.
 Timestamped samples preserve their source domain and correlation evidence.
-Recovery or producer restart creates a visible provider generation.
+Recovery and producer restart remain distinguishable through separate route
+and source epochs.
 
 ### Media plane
 
 Media is selected, separately authorized, and independently observable:
 
 ```text
-source -> processor -> route/socket provider -> codec -> sink
+source/acquisition
+  -> encoder or serializer
+  -> framing/packetization
+  -> route/socket provider
+  -> depacketizer/demux
+  -> decoder or schema validator
+  -> sink
 ```
 
 Manifold owns accepted session and stream references. Rusty Quest owns platform
@@ -119,10 +126,11 @@ capture/adoption. Every selected source and sink reports its own effective
 receipt. The dashboard never assumes that a status connection can carry media.
 
 The normative product contract for all planes is
-[Datastream Management](DATASTREAMS.md). It defines the common descriptor,
-provider generations, time correlation, lifecycle, progress/health stages,
-bounded queues, admission budgets, observability, privacy, and validation
-without defining a universal wire protocol.
+[Datastream Management](DATASTREAMS.md). It defines the common and native
+descriptors, auditable source selection, component epochs, time correlation,
+cadence, lifecycle, profile-specific progress/health stages, per-edge bounded
+queues, scientific recording/replay, admission budgets, observability,
+privacy, and validation without defining a universal wire protocol.
 
 ## Datastream control loop
 
@@ -139,9 +147,11 @@ flowchart LR
 
 Fleet admission preserves protected control capacity and applies bounded
 per-device, provider, route, host, relay, and global budgets. A stable stream
-identity plus provider generation and accepted authority revision keys current
-evidence. Transport/process activity, bytes, sample/frame progress,
-decode/schema validity, sink progress, and cleanup remain independent facts.
+identity plus the relevant source, route, processing, and sink epochs and
+accepted authority revision keys current evidence. A composite path generation
+may summarize that lineage but cannot replace it. Transport/process activity,
+bytes, sample/frame progress, decode/schema validity, sink progress, recording,
+and cleanup remain independent facts.
 
 ## Device capability model
 
@@ -170,7 +180,7 @@ Each accepted device projection includes:
 - battery level, charging state, and thermal/power warnings when available;
 - lifecycle and foreground facts with the reporting authority named;
 - network route summaries without exposing private endpoint data by default;
-- available and selected stream summaries with provider generation, timestamp
+- available and selected stream summaries with component epochs, timestamp
   domains, freshness, progress stage, queue pressure, and budget state;
 - active participating app and kiosk state;
 - ADB, file-management, media, and relay capability states;

@@ -1,10 +1,10 @@
 {
-  "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/657cf021686df1f0cf30c23f347637486ca786f2/schemas/iteration-unit.schema.json",
+  "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/6b75d944614a8f863dd612c9b114d7c68f0862b0/schemas/iteration-unit.schema.json",
   "schema": "rusty.morphospace.workflow.iteration_unit.v1",
   "unit_id": "fleet-m0-foundation-and-simulator",
   "project_id": "rusty-fleet",
   "status": "proposed",
-  "objective": "Deliver the source-only Rusty Fleet foundation as one coherent vertical stack: accepted product, operator-projection, and datastream-composition boundaries; versioned identity, condition, query, saved-view, fleet-row, inspector, detail, operation-ledger, command-lifecycle, stream-descriptor, provider-generation, time-domain, progress-health, queue-policy, admission-budget, and cleanup contracts; damaged and representative-scale fixtures; a deterministic multi-device simulator; an in-memory Hub state engine; and CLI/local-API parity without opening sockets, WPF, platform permissions, ADB, media, relay, or device work.",
+  "objective": "Deliver the source-only Rusty Fleet foundation as one coherent vertical stack: accepted product, operator-projection, and datastream-composition boundaries; versioned identity, condition, query, saved-view, fleet-row, inspector, detail, operation-ledger, command-lifecycle, generic/native stream-descriptor, source-selection, component-epoch, time-correlation, cadence/absence, profile-progress, per-edge queue-policy, scientific-run/recording, admission-budget, and cleanup contracts; damaged and representative-scale fixtures; a deterministic multi-device simulator; an in-memory Hub state engine; and CLI/local-API parity without opening sockets, WPF, platform permissions, ADB, media, relay, or device work.",
   "tags": [
     "contracts",
     "fleet-directory",
@@ -141,7 +141,7 @@
     },
     {
       "acceptance_id": "canonical-datastream-projections",
-      "proof": "Versioned source-only contracts compose owner stream manifests into logical identity, provider generation, payload plane, named time domains, lifecycle, strongest progress stage, queue policy, admission budget, sensitivity, and cleanup projections. Deterministic fixtures distinguish no data, stall, byte-only activity, freeze, decode/schema failure, sink failure, stale generation, budget rejection, recovery, and cleanup failure without activating any transport.",
+      "proof": "Versioned source-only contracts compose owner stream manifests into logical identity, generic/native descriptors, auditable source selection, source/route/processing/sink epochs, payload plane, named time domains and correlation, cadence/absence, profile-specific strongest progress stage, per-edge queue policy, scientific-run/recording, admission budget, sensitivity, and cleanup projections. Deterministic fixtures distinguish ambiguity, native drift, component discontinuity, clock reset/degradation, valid silence, no data, stall, byte-only activity, changing/static content, decode/schema failure, sink/recording failure, budget rejection, recovery, replay, and cleanup failure without activating any transport.",
       "command": "Run the Milestone 0 datastream contract, damaged-fixture, and admission-simulation suite."
     },
     {
@@ -188,7 +188,7 @@
   ],
   "outputs": [
     "Accepted product-boundary and threat-model ADRs.",
-    "Versioned product-owned identity, condition, query, saved-view, fleet-row, inspector, detail, operation-ledger, command-lifecycle, stream-descriptor, provider-generation, time-domain, progress-health, queue-policy, admission-budget, and cleanup schemas with valid, boundary, damaged, replay, staleness, freeze, and downgrade fixtures.",
+    "Versioned product-owned identity, condition, query, saved-view, fleet-row, inspector, detail, operation-ledger, command-lifecycle, generic/native stream-descriptor, source-selection, component-epoch, time-correlation, cadence/absence, profile-progress, per-edge queue-policy, scientific-run/recording, admission-budget, and cleanup schemas with valid, boundary, damaged, replay, staleness, static/changing-content, and downgrade fixtures.",
     "Deterministic 4, 50, 250, 1,000, and 5,000-device simulator datasets and an in-memory Fleet Hub state engine.",
     "fleetctl and local API list, inspect, filter, and watch parity.",
     "Milestone scenario suite, diagnostics, public documentation, and rollback evidence."

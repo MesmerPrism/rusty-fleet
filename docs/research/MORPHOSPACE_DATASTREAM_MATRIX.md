@@ -23,7 +23,9 @@ deliberately omitted.
 | device status | Rusty Quest plus reporting app | authenticated app channel; future local/relay routes | latest accepted state, source and receive time, family freshness | planned Fleet adapter over existing platform observations | base no-ADB condition families with protected capacity |
 | command/session/stream authority | Rusty Manifold | revisioned low-rate control routes | identity, revision, replay, TTL, expiry | accepted model/fixture surface | admission and lifecycle authority; never a high-rate payload carrier |
 | stream registry/subscription | Rusty Manifold | manifest snapshots/diffs and accepted subscription routes | registry revision, provider/authority epoch, bounded lease | accepted model/fixture surface | canonical catalog input and subscription evidence |
-| LSL markers and samples | Rusty LSL | LSL discovery plus TCP sample path; host interop adapters | source monotonic timestamps, clock-offset history, ordered samples/chunks | narrow published feature-candidate; broader qualification in progress | optional observation adapter with explicit unsupported states |
+| LSL markers and samples | Rusty LSL | LSL discovery plus TCP sample path; host interop adapters | source monotonic timestamps, clock-offset history, ordered samples/chunks | narrow published feature-candidate; broader qualification in progress | preserve generic plus native descriptors, candidate selection, source/route epochs, cadence, and explicit unsupported states |
+| LabRecorder/XDF recording | LSL/XDF community; Fleet run policy | selected native LSL streams into one XDF artifact | raw sample/event timestamps, metadata snapshots, clock-offset history, artifact lifecycle | mature external workflow; no Fleet-controlled adapter accepted yet | interoperability and provenance target; preserve XDF plus a Fleet run/artifact receipt |
+| XDF replay/import | declaring analysis/import tool | XDF readers and replay adapters | post-hoc clock fit, gap/reset interpretation, deterministic replay | mature external ecosystem; Fleet conformance planned | M0 artifact projections and fixtures; M1 compatibility test; broader promotion remains exact-profile |
 | BLE rendezvous | Rusty Quest / Manifold boundary | authenticated BLE advertisement/GATT proposal | low-rate, bounded, expiring | accepted rendezvous direction; product grants remain Manifold-owned | discovery/topology evidence only |
 | BLE status/control | declaring app/Quest adapter | GATT notify/write or bounded RFCOMM profile | low-rate, bounded messages | accepted lab validation for status/control | optional low-rate adapter; never media |
 | ZeroMQ bridge | Rusty Manifold adapter | bounded PUB/SUB or declared pattern | transport-specific delivery and queue policy | contract/probe surface | compatibility bridge with explicit loss/backpressure |
@@ -39,7 +41,7 @@ deliberately omitted.
 | WPF media presentation | Rusty Hostess | native decode/presentation path; FFmpeg-compatible process adapter may assist | decode/render progress and queue timing | current implementation candidate | selected inspector preview with CLI/API evidence parity |
 | ADB screen stream | QuestIonAble File Manager/Hostess diagnostic boundary | serial-scoped ADB `screenrecord` or compatibility tool | process lifetime and H.264 progress | bounded device evidence; platform support is not guaranteed | explicit privileged diagnostic source, not base media |
 | file transfer | QuestIonAble File Manager | USB/Wi-Fi ADB or approved app route | chunk/progress/completion semantics | existing product capability | utility operation, not observation/media |
-| online media relay | future relay adapter under Manifold authority | candidates include SRT, WebRTC, or QUIC-based routes | congestion, latency, loss, relay lease, end-to-end identity | planned/research only | select only after M5 threat, tenancy, retention, and measurements |
+| online media relay | future relay adapter under Manifold authority | candidates include SRT, RIST, WebRTC, or QUIC-based routes | congestion, latency, loss, relay lease, end-to-end identity | planned/research only | select only after M5 threat, tenancy, retention, and measurements |
 
 ## Contract surfaces already available
 
@@ -106,8 +108,8 @@ The claims remain intentionally narrow:
   assumed;
 - ambient or unbounded discovery and operation remain out of scope;
 - current host/device breadth is incomplete;
-- recovery requires a usable stable source identity and becomes a new Fleet
-  provider generation;
+- recovery requires a usable stable source identity; reconnect and producer
+  restart advance route and source epochs respectively;
 - observations and advisory proposals never become Manifold authority.
 
 Fleet M0 should model the descriptor, time, health, queue, and unsupported-case
@@ -118,19 +120,23 @@ promoted Rusty LSL contract.
 
 1. One product descriptor/projection that composes existing owner manifests
    without replacing them.
-2. Provider-generation semantics across LSL recovery, capture restart, route
-   replacement, and codec recreation.
-3. Explicit clock-domain and correlation records shared by status, LSL, and
-   media projections.
-4. Uniform no-data/stall/freeze/decode/sink/cleanup vocabulary.
-5. Per-class queue bounds, drop policy, control-plane reserve, and slow-consumer
-   behavior.
-6. Per-device/provider/host/route/relay/global budgets plus fair admission.
-7. Low-cardinality metrics and detailed evidence that remain useful at fleet
+2. Dual generic/native descriptors plus deterministic candidate selection and
+   ambiguity evidence.
+3. Source, route, processing, and sink epochs across LSL recovery, capture
+   restart, route replacement, codec recreation, and presenter replacement.
+4. Explicit clock-domain, offset/uncertainty, transformation, reset, and
+   calibration records shared by status, LSL, and media projections.
+5. Cadence/absence plus profile-specific no-data/stall/freeze/decode/sink/
+   recording/cleanup vocabulary.
+6. Per-edge queue bounds, drop policy, control-plane reserve, and
+   slow-consumer behavior.
+7. Per-device/provider/host/route/relay/global budgets plus fair admission.
+8. Low-cardinality metrics and detailed evidence that remain useful at fleet
    scale.
-8. Exact recording, retention, sensitivity, export, and relay policy.
-9. Selected-stream UI and CLI/API parity without an ambient video wall.
-10. Owner-promotion gates so candidate and lab evidence cannot masquerade as
+9. Scientific run, recording artifact, XDF replay, retention, sensitivity,
+   export, and relay policy.
+10. Selected-stream UI and CLI/API parity without an ambient video wall.
+11. Owner-promotion gates so candidate and lab evidence cannot masquerade as
     supported product capability.
 
 The normative solution is

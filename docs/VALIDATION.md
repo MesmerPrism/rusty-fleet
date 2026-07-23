@@ -101,18 +101,20 @@ become a supported capability without the exact owner-repository promotion.
 
 | Check | M0 | M1 | M4 | Relay/release |
 | --- | ---: | ---: | ---: | ---: |
-| descriptor, generation, plane, time, lifecycle, and health fixtures | required | focused | Standard | Deep |
+| generic/native descriptor, selection, component epochs, plane, time, cadence, lifecycle, and profile health | required | focused | Standard | Deep |
 | no-data, stall, freeze, decode/sink, and cleanup distinctions | simulated | observation path | device/profile matrix | regression |
-| finite queue/drop/recovery/fan-out policy | contract | status/LSL path | measured | soak |
+| finite per-edge queue/drop/recovery/fan-out policy | contract | status/LSL path | measured | soak |
 | control-capacity reserve and fair admission | simulated | local transport | measured media load | remote/tenant load |
 | Console/CLI/API stream catalog and reason parity | contract | observation projection | Standard | regression |
 | low-cardinality metrics and units | contract | focused | measured | Deep |
 | source/route/socket/codec/sink owner evidence | not applicable | exact adapter | exact promoted profiles | exact relay profiles |
-| consent, recording, retention, redaction, and cleanup | contract | affected source | device/security gate | Deep |
+| scientific run, XDF record/replay, consent, retention, redaction, and cleanup | contract | compatibility | device/security gate | Deep |
 
 An FFmpeg adapter is tested at four independent levels: allowlisted command
-construction, machine-readable probe/progress parsing, deterministic fixture
-media including decoded-frame progress/freeze detection, and bounded process
+construction plus protocol/codec/resource limits; machine-readable
+probe/progress parsing plus Hostess watchdogs; deterministic fixture media
+including configuration/keyframe, decoded/rendered, changing/static-content,
+and branch-local queue behavior; and bounded full-process-tree
 termination/cleanup. Live device tests are required only for exact promoted
 Quest source/route/sink combinations.
 
@@ -154,14 +156,18 @@ Keep these facts distinct:
 
 For streams, also keep distinct:
 
-- **available:** the current owner manifest/generation can be considered;
+- **available:** the current owner manifest/source epoch can be considered;
 - **admitted:** a current authority accepted the subscription/session;
 - **connected/running:** the selected route or process is active;
-- **progressing:** samples or frames advance under the current generation;
+- **progressing:** samples or frames advance under the current component
+  epochs;
 - **decoded/validated:** codec or schema application succeeds;
 - **sunk:** the selected consumer applies or renders current payload;
 - **stalled/frozen:** transport or content progress is not healthy even if
   another stage remains active.
+- **recording:** durable artifact progress is independently healthy or failed;
+- **replayed:** the selected artifact preserved the required native metadata,
+  timing, sample/event, and integrity evidence.
 
 An aggregate fleet result is a projection over per-device facts, not a
 replacement for them.
