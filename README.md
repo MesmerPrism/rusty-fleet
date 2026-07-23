@@ -5,9 +5,10 @@ Meta Quest dashboard. It is designed to show every enrolled headset that is
 checking in, even when ADB is unavailable, and to expose stronger operations
 only when the device reports the required capability and authority.
 
-The initial repository is deliberately planning-first. No runtime feature,
-listener, Android permission, device mutation, media route, or remote relay is
-active in this baseline.
+Milestone 0 is now active as a source-only Rust workspace. It contains
+versioned contracts, deterministic synthetic fleets, an in-memory Hub, and
+CLI/local-API projections. No runtime listener, Android permission, device
+mutation, media route, persistence service, or remote relay is active.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -40,6 +41,19 @@ adapters. Media transport remains a separate data plane.
 This avoids turning QuestIonAble File Manager into a fleet controller or putting
 device, relay, media, and operator authority into one application.
 
+The current source-only implementation is split into:
+
+- `fleet-contracts`: versioned identity, condition, capability, query,
+  projection, command, and datastream contracts;
+- `fleet-hub`: deterministic in-memory acceptance, freshness, query, inspect,
+  summary, and watch behavior;
+- `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
+  datasets plus damage and lifecycle mutations;
+- `fleetctl`: a structured JSON projection over the same local API.
+
+See the [Milestone 0 source foundation](docs/M0_SOURCE_FOUNDATION.md) for the
+current boundary and scenario model.
+
 ## Start here
 
 1. Read the [implementation plan](docs/IMPLEMENTATION_PLAN.md).
@@ -55,11 +69,31 @@ device, relay, media, and operator authority into one application.
    sufficient check.
 7. Resume project state from [the Morphospace workspace](morphospace/README.md).
 
-The first proposed implementation stack is
+The active implementation stack is
 `fleet-m0-foundation-and-simulator`. It produces contracts, a deterministic
 multi-device simulator, and a CLI/API-observable Hub skeleton as one coherent
 vertical slice. It is not split into separate lifecycle units for each schema,
 class, command, or test.
+
+## Source workflow
+
+The repository pins Rust 1.96 and edition 2024. Run focused checks directly:
+
+```powershell
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Inspect the deterministic four-device projection:
+
+```powershell
+cargo run --locked -p fleetctl -- list 4
+cargo run --locked -p fleetctl -- inspect sim-00001 4
+cargo run --locked -p fleetctl -- watch 4
+```
+
+These commands create synthetic in-memory data only.
 
 ## Validation
 
@@ -86,11 +120,11 @@ These commands do not contact or mutate a headset.
 
 ## Status
 
-The repository currently contains the accepted planning baseline and an inert
-Morphospace protocol-v2 project workspace. The planning baseline now includes
-the consolidated datastream contract and inventory; it activates no stream or
-runtime. Implementation begins only after the first milestone stack is
-reviewed into `ready`.
+The accepted planning baseline and inert Morphospace protocol-v2 workspace are
+now paired with the active Milestone 0 source foundation. The implementation
+does not activate a stream, socket, service, device route, or platform
+permission. Milestone acceptance remains pending until the complete Standard
+gate, workflow receipts, and publication checkpoint pass.
 
 ## License
 

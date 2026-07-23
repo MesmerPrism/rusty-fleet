@@ -1,0 +1,57 @@
+{
+  "schema": "rusty.fleet.device_observation.v1",
+  "identity": {
+    "device_id": "sim-00001",
+    "identity_revision": 1,
+    "display_name": "Quest 0001",
+    "model": "Quest 3",
+    "hardware_class": "standalone_xr",
+    "tags": {
+      "cohort": "lab-a",
+      "fixture": "synthetic"
+    }
+  },
+  "source_revision": 1,
+  "source_time_ms": 2000000000000,
+  "received_time_ms": 2000000000000,
+  "battery_percent": 82,
+  "charging": true,
+  "foreground_app": "org.example.synthetic.kiosk",
+  "kiosk_state": "active",
+  "conditions": [
+    {
+      "family": "freshness",
+      "state": "current",
+      "reason": "local",
+      "message": "local",
+      "source_time_ms": 2000000000000,
+      "received_time_ms": 2000000000000,
+      "accepted_revision": 1,
+      "fresh_until_ms": 2000000060000,
+      "source": {
+        "adapter_id": "synthetic-fixture",
+        "owner": "fleet-simulator",
+        "authority_revision": 1
+      },
+      "sensitivity": "operator"
+    }
+  ],
+  "capabilities": {
+    "capabilities": {
+      "monitoring": {
+        "capability_id": "monitoring",
+        "support": "supported",
+        "enablement": "enabled",
+        "authorization": "authorized",
+        "reachability": "reachable",
+        "freshness": "current",
+        "evidence_revision": 1,
+        "observed_at_ms": 2000000000000,
+        "fresh_until_ms": 2000000060000,
+        "owner": "fleet_agent",
+        "reason": "ready"
+      }
+    }
+  },
+  "streams": []
+}

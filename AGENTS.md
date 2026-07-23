@@ -33,6 +33,19 @@ Live device work is never implied by a source or documentation task.
 9. `docs/DATASTREAMS.md`
 10. `docs/VALIDATION.md`
 
+## Source map
+
+- `crates/fleet-contracts`: public source-only contracts and cross-field
+  validation;
+- `crates/fleet-hub`: deterministic in-memory state and the local API;
+- `crates/fleet-simulator`: synthetic fleet and damage scenarios;
+- `apps/fleetctl`: structured JSON CLI over the same local API;
+- `schemas`: versioned JSON Schema projection;
+- `fixtures`: small committed contracts and deterministic scenario manifests.
+
+The implementation boundary and closed adapter edges are documented in
+[docs/M0_SOURCE_FOUNDATION.md](docs/M0_SOURCE_FOUNDATION.md).
+
 ## Ownership
 
 - Rusty Fleet owns product composition, the Fleet Hub, Fleet Console,
@@ -123,6 +136,9 @@ matrix requires it. Never use a device suite to prove a docs-only edit.
 Run:
 
 ```powershell
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Standard
 git diff --check

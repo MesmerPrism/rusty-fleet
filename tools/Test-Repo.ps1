@@ -187,9 +187,32 @@ function Test-RequiredFiles {
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "SECURITY.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        "apps/fleetctl/Cargo.toml",
+        "apps/fleetctl/src/lib.rs",
+        "apps/fleetctl/src/main.rs",
+        "crates/fleet-contracts/Cargo.toml",
+        "crates/fleet-contracts/src/lib.rs",
+        "crates/fleet-hub/Cargo.toml",
+        "crates/fleet-hub/src/lib.rs",
+        "crates/fleet-simulator/Cargo.toml",
+        "crates/fleet-simulator/src/lib.rs",
+        "fixtures/contracts/device-observation.valid.json",
+        "fixtures/contracts/device-observation.damaged.json",
+        "fixtures/contracts/query.valid.json",
+        "fixtures/contracts/stream-descriptor.valid.json",
+        "fixtures/scenarios/scale-and-damage.v1.json",
+        "schemas/rusty.fleet.device_observation.v1.schema.json",
+        "schemas/rusty.fleet.operation_ledger.v1.schema.json",
+        "schemas/rusty.fleet.operator_projection.v1.schema.json",
+        "schemas/rusty.fleet.query.v1.schema.json",
+        "schemas/rusty.fleet.stream_descriptor.v1.schema.json",
         "docs/ARCHITECTURE.md",
         "docs/DATASTREAMS.md",
         "docs/IMPLEMENTATION_PLAN.md",
+        "docs/M0_SOURCE_FOUNDATION.md",
         "docs/OPERATOR_UI.md",
         "docs/WORKFLOW.md",
         "docs/VALIDATION.md",
@@ -212,6 +235,63 @@ function Test-RequiredFiles {
         Assert-True -Condition (Test-Path -LiteralPath (Join-Path $repoRoot $relative) -PathType Leaf) `
             -Message "Required file is missing: $relative"
     }
+}
+
+function Invoke-Cargo {
+    param([Parameter(Mandatory)][string[]] $Arguments)
+
+    & cargo @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Cargo failed: cargo $($Arguments -join ' ')"
+    }
+}
+
+function Test-SourceImplementation {
+    $workspace = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.toml") -Raw
+    foreach ($member in @(
+        "apps/fleetctl",
+        "crates/fleet-contracts",
+        "crates/fleet-hub",
+        "crates/fleet-simulator"
+    )) {
+        Assert-True -Condition ($workspace.Contains("`"$member`"")) `
+            -Message "Cargo workspace is missing source-only member: $member"
+    }
+
+    $lock = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.lock") -Raw
+    foreach ($forbiddenPackage in @(
+        'name = "tokio"',
+        'name = "reqwest"',
+        'name = "hyper"',
+        'name = "windows"',
+        'name = "ffmpeg"',
+        'name = "liblsl"'
+    )) {
+        Assert-True -Condition (-not $lock.Contains($forbiddenPackage)) `
+            -Message "Milestone 0 must remain source-only and inert: $forbiddenPackage"
+    }
+
+    foreach ($schemaFile in Get-ChildItem -LiteralPath (Join-Path $repoRoot "schemas") -Filter "*.schema.json") {
+        $schema = Get-Content -LiteralPath $schemaFile.FullName -Raw | ConvertFrom-Json -Depth 100
+        Assert-True -Condition (
+            $schema.'$schema' -eq "https://json-schema.org/draft/2020-12/schema" -and
+            -not [string]::IsNullOrWhiteSpace($schema.'$id') -and
+            -not [string]::IsNullOrWhiteSpace($schema.title)
+        ) -Message "Versioned schema metadata is incomplete: $($schemaFile.Name)"
+    }
+
+    $scenarioManifest = Get-Content -LiteralPath (
+        Join-Path $repoRoot "fixtures/scenarios/scale-and-damage.v1.json"
+    ) -Raw | ConvertFrom-Json -Depth 100
+    Assert-True -Condition (
+        $scenarioManifest.schema -eq "rusty.fleet.fixture_manifest.v1" -and
+        $scenarioManifest.seed -eq 5932739705870634068 -and
+        (@($scenarioManifest.sizes) -join ",") -eq "4,50,250,1000,5000" -and
+        @($scenarioManifest.mutations).Count -ge 7
+    ) -Message "Deterministic simulator fixture manifest is stale or damaged."
+
+    Invoke-Cargo -Arguments @("fmt", "--all", "--", "--check")
+    Invoke-Cargo -Arguments @("test", "--workspace", "--locked")
 }
 
 function Test-PlanningInvariants {
@@ -393,11 +473,32 @@ try {
     Test-JsonDocuments
     Test-PublicBoundary
     Test-PlanningInvariants
+    Test-SourceImplementation
     Test-DatastreamPlanning
     Invoke-Git diff --check
 
     if ($Tier -in @("Standard", "Deep")) {
         Test-MarkdownLinks
+        Invoke-Cargo -Arguments @(
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+        )
+
+        $cliList = & cargo run --quiet --locked -p fleetctl -- list 4
+        if ($LASTEXITCODE -ne 0) {
+            throw "fleetctl list smoke test failed."
+        }
+        $cliProjection = $cliList | ConvertFrom-Json -Depth 100
+        Assert-True -Condition (
+            $cliProjection.schema -eq "rusty.fleet.query_result.v1" -and
+            $cliProjection.total_count -eq 4 -and
+            $cliProjection.window_count -eq 4
+        ) -Message "fleetctl list did not return the canonical four-device projection."
 
         if ($WorkEnvironmentRoot) {
             $validator = Join-Path $WorkEnvironmentRoot "scripts/Test-WorkflowContracts.ps1"

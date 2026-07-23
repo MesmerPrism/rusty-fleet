@@ -592,10 +592,12 @@ Every milestone answers:
 
 ## Next implementation action
 
-Review the proposed
+Complete the active
 `morphospace/iteration-units/fleet-m0-foundation-and-simulator.json` as one
-stack. Once its scope, contracts, language/runtime choices, and acceptance
-budgets are approved, transition that single unit to `ready` through the
-Morphospace workflow. Do not pre-create M0.1, M0.2, or schema-per-unit work
-items. The new operator UI contracts strengthen this same proposed stack; they
-do not create another lifecycle unit.
+stack. The pinned Rust source foundation, deterministic simulator, in-memory
+Hub, and CLI/local-API parity surface are documented in
+[Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md). Finish damaged and
+boundary coverage, run the declared Standard and workflow-contract gates,
+record instruction-impact review, and publish one reviewable milestone. Do not
+pre-create M0.1, M0.2, or schema-per-unit work items. Corrections remain inside
+this active stack.

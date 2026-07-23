@@ -1,0 +1,23 @@
+{
+  "schema": "rusty.fleet.fixture_manifest.v1",
+  "generator": "fleet-simulator 0.1.0",
+  "seed": 5932739705870634068,
+  "sizes": [
+    4,
+    50,
+    250,
+    1000,
+    5000
+  ],
+  "mutations": [
+    "reconnect",
+    "replay",
+    "reordered_revision",
+    "duplicate_identity",
+    "reenrollment",
+    "capability_downgrade",
+    "partial_families",
+    "damaged_message"
+  ],
+  "notes": "Datasets are generated deterministically during validation; fixture size is not a supported-scale claim."
+}

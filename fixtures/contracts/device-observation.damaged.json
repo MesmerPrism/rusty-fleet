@@ -1,0 +1,23 @@
+{
+  "schema": "rusty.fleet.device_observation.v1",
+  "identity": {
+    "device_id": "",
+    "identity_revision": 0,
+    "display_name": "Damaged synthetic observation",
+    "model": "synthetic",
+    "hardware_class": "standalone_xr",
+    "tags": {}
+  },
+  "source_revision": 0,
+  "source_time_ms": 2000000000000,
+  "received_time_ms": 2000000000000,
+  "battery_percent": 240,
+  "charging": null,
+  "foreground_app": null,
+  "kiosk_state": "unknown",
+  "conditions": [],
+  "capabilities": {
+    "capabilities": {}
+  },
+  "streams": []
+}

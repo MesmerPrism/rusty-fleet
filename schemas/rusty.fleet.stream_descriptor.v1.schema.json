@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.stream_descriptor.v1.schema.json",
+  "title": "Rusty Fleet stream descriptor v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "logical_stream_id",
+    "semantic",
+    "native_descriptor",
+    "selection",
+    "epochs",
+    "accepted_authority_revision",
+    "timing",
+    "cadence",
+    "progress",
+    "queues",
+    "budget",
+    "experiment_run",
+    "recording"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.stream_descriptor.v1"
+    },
+    "logical_stream_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "semantic": {
+      "type": "object",
+      "required": [
+        "family",
+        "class",
+        "schema_profile",
+        "plane",
+        "sensitivity"
+      ]
+    },
+    "native_descriptor": {
+      "type": "object",
+      "required": [
+        "kind",
+        "adapter_version",
+        "native_protocol_version",
+        "digest_sha256",
+        "captured_at_ms",
+        "document",
+        "reference"
+      ],
+      "properties": {
+        "digest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "required": [
+        "query_language",
+        "query",
+        "expected_cardinality",
+        "candidate_count",
+        "candidate_descriptor_digests",
+        "chosen_native_instance",
+        "method",
+        "valid_until_ms"
+      ]
+    },
+    "epochs": {
+      "type": "object",
+      "required": [
+        "source",
+        "route",
+        "processing",
+        "sink",
+        "path_generation"
+      ]
+    },
+    "accepted_authority_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timing": {
+      "type": "object",
+      "required": [
+        "domains",
+        "transforms",
+        "clock_reset_count",
+        "fixed_latency_ms",
+        "fixed_latency_uncertainty_ms",
+        "calibration_reference"
+      ]
+    },
+    "cadence": {
+      "type": "object",
+      "required": [
+        "mode",
+        "measurement_window_ms",
+        "sequence_semantics"
+      ]
+    },
+    "progress": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "content_progress",
+        "stages"
+      ]
+    },
+    "queues": {
+      "type": "array"
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "bandwidth_bytes_per_second",
+        "samples_or_frames_per_second",
+        "decode_slots",
+        "queue_bytes",
+        "queue_duration_ms",
+        "disk_bytes",
+        "recorder_slots",
+        "priority_class"
+      ]
+    },
+    "experiment_run": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "recording": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

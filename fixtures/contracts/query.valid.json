@@ -1,0 +1,32 @@
+{
+  "schema": "rusty.fleet.query.v1",
+  "query_id": "lab-a-low-battery",
+  "expression": {
+    "kind": "and",
+    "expressions": [
+      {
+        "kind": "predicate",
+        "field": "tag",
+        "comparison": "equals",
+        "value": "lab-a",
+        "qualifier": "cohort"
+      },
+      {
+        "kind": "predicate",
+        "field": "battery_percent",
+        "comparison": "less_than",
+        "value": 20,
+        "qualifier": null
+      }
+    ]
+  },
+  "sort": [
+    {
+      "field": "display_name",
+      "direction": "ascending",
+      "qualifier": null
+    }
+  ],
+  "offset": 0,
+  "limit": 250
+}

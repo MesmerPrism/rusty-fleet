@@ -1,0 +1,19 @@
+[package]
+name = "fleet-hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-memory, source-only Rusty Fleet state engine and local API."
+
+[dependencies]
+fleet-contracts = { path = "../fleet-contracts" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+fleet-simulator = { path = "../fleet-simulator" }
+
+[lints]
+workspace = true
