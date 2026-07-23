@@ -54,7 +54,80 @@ function Get-PublicFiles {
                 $candidate.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
                 $candidate -eq $_
             })
-        }
+    }
+}
+
+function Get-TransitionBinding {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Unit,
+
+        [Parameter(Mandatory)]
+        [object] $State,
+
+        [Parameter(Mandatory)]
+        [string] $EventId,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedStatus,
+
+        [AllowNull()]
+        [object] $ExpectedCurrentUnit,
+
+        [AllowNull()]
+        [object] $ExpectedNextReadyUnit
+    )
+
+    $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
+    $events = @(
+        Get-Content -LiteralPath $eventsPath |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { $_ | ConvertFrom-Json -Depth 100 }
+    )
+    $matchingEvents = @($events | Where-Object { $_.event_id -eq $EventId })
+    Assert-True -Condition ($matchingEvents.Count -eq 1) `
+        -Message "$ExpectedStatus Milestone 0 must have exactly one owned transition event."
+    Assert-True -Condition (
+        $matchingEvents[0].event_type -eq "state-transition" -and
+        $matchingEvents[0].unit_id -eq $Unit.unit_id -and
+        $State.last_event_id -eq $EventId -and
+        $State.current_unit -eq $ExpectedCurrentUnit -and
+        $State.next_ready_unit -eq $ExpectedNextReadyUnit
+    ) -Message "$ExpectedStatus Milestone 0 is not bound to workspace state."
+
+    $transactionId = "$EventId-transition"
+    $intentPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.intent.json"
+    $completionPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.completion.json"
+    Assert-True -Condition (
+        (Test-Path -LiteralPath $intentPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $completionPath -PathType Leaf)
+    ) -Message "$ExpectedStatus Milestone 0 is missing its transition-ledger receipts."
+    $intent = Get-Content -LiteralPath $intentPath -Raw | ConvertFrom-Json -Depth 100
+    $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 100
+    $intentSha256 = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $unitProjection = $Unit | ConvertTo-Json -Depth 100 -Compress
+    $targetUnitProjection = $intent.target.unit.document | ConvertTo-Json -Depth 100 -Compress
+    $stateProjection = $State | ConvertTo-Json -Depth 100 -Compress
+    $targetStateProjection = $intent.target.state.document | ConvertTo-Json -Depth 100 -Compress
+    Assert-True -Condition (
+        $intent.transaction_id -eq $transactionId -and
+        $intent.event.event_id -eq $EventId -and
+        $intent.target.unit.document.status -eq $ExpectedStatus -and
+        $completion.transaction_id -eq $transactionId -and
+        $completion.event_id -eq $EventId -and
+        $completion.status -eq "committed" -and
+        $completion.unit_sha256 -eq $intent.target.unit.sha256 -and
+        $completion.state_sha256 -eq $intent.target.state.sha256 -and
+        $unitProjection -ceq $targetUnitProjection -and
+        $stateProjection -ceq $targetStateProjection -and
+        $completion.intent.sha256 -eq $intentSha256
+    ) -Message "$ExpectedStatus Milestone 0 transition receipts are stale or damaged."
+
+    return [pscustomobject]@{
+        event = $matchingEvents[0]
+        intent = $intent
+        completion = $completion
+    }
 }
 
 function Test-JsonDocuments {
@@ -167,54 +240,46 @@ function Test-PlanningInvariants {
     $unit = Get-Content -LiteralPath $unitPath -Raw | ConvertFrom-Json -Depth 100
     Assert-True -Condition ($unit.unit_id -eq "fleet-m0-foundation-and-simulator") `
         -Message "Unexpected Milestone 0 unit ID."
-    Assert-True -Condition ($unit.status -in @("proposed", "ready")) `
-        -Message "Milestone 0 may be proposed or ready only at the planning checkpoint."
+    Assert-True -Condition ($unit.status -in @("proposed", "ready", "active")) `
+        -Message "Milestone 0 may be proposed, ready, or active only at this implementation checkpoint."
     if ($unit.status -eq "ready") {
         $readyEventId = "$($unit.unit_id)-ready-0001"
-        $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
-        $events = @(
-            Get-Content -LiteralPath $eventsPath |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-                ForEach-Object { $_ | ConvertFrom-Json -Depth 100 }
-        )
-        $readyEvents = @($events | Where-Object { $_.event_id -eq $readyEventId })
-        Assert-True -Condition ($readyEvents.Count -eq 1) `
-            -Message "Ready Milestone 0 must have exactly one owned ready transition event."
-        Assert-True -Condition (
-            $readyEvents[0].event_type -eq "state-transition" -and
-            $readyEvents[0].unit_id -eq $unit.unit_id -and
-            $state.last_event_id -eq $readyEventId -and
-            $state.next_ready_unit -eq $unit.unit_id -and
-            $null -eq $state.current_unit
-        ) -Message "Ready Milestone 0 is not bound to workspace state."
+        Get-TransitionBinding -Unit $unit -State $state -EventId $readyEventId `
+            -ExpectedStatus "ready" -ExpectedCurrentUnit $null `
+            -ExpectedNextReadyUnit $unit.unit_id | Out-Null
+    }
+    if ($unit.status -eq "active") {
+        $claimedEventId = "$($unit.unit_id)-claimed-0002"
+        Get-TransitionBinding -Unit $unit -State $state -EventId $claimedEventId `
+            -ExpectedStatus "active" -ExpectedCurrentUnit $unit.unit_id `
+            -ExpectedNextReadyUnit $null | Out-Null
 
-        $transactionId = "$readyEventId-transition"
-        $intentPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.intent.json"
-        $completionPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.completion.json"
+        $claimPath = Join-Path $repoRoot "morphospace/receipts/$($unit.unit_id)-claim.json"
+        Assert-True -Condition (Test-Path -LiteralPath $claimPath -PathType Leaf) `
+            -Message "Active Milestone 0 is missing its claim receipt."
+        $claim = Get-Content -LiteralPath $claimPath -Raw | ConvertFrom-Json -Depth 100
+        $repositoryStates = @($claim.preservation.repository_states)
+        $repositoryHeads = @($state.repository_heads)
         Assert-True -Condition (
-            (Test-Path -LiteralPath $intentPath -PathType Leaf) -and
-            (Test-Path -LiteralPath $completionPath -PathType Leaf)
-        ) -Message "Ready Milestone 0 is missing its transition-ledger receipts."
-        $intent = Get-Content -LiteralPath $intentPath -Raw | ConvertFrom-Json -Depth 100
-        $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 100
-        $intentSha256 = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $unitProjection = $unit | ConvertTo-Json -Depth 100 -Compress
-        $targetUnitProjection = $intent.target.unit.document | ConvertTo-Json -Depth 100 -Compress
-        $stateProjection = $state | ConvertTo-Json -Depth 100 -Compress
-        $targetStateProjection = $intent.target.state.document | ConvertTo-Json -Depth 100 -Compress
-        Assert-True -Condition (
-            $intent.transaction_id -eq $transactionId -and
-            $intent.event.event_id -eq $readyEventId -and
-            $intent.target.unit.document.status -eq "ready" -and
-            $completion.transaction_id -eq $transactionId -and
-            $completion.event_id -eq $readyEventId -and
-            $completion.status -eq "committed" -and
-            $completion.unit_sha256 -eq $intent.target.unit.sha256 -and
-            $completion.state_sha256 -eq $intent.target.state.sha256 -and
-            $unitProjection -ceq $targetUnitProjection -and
-            $stateProjection -ceq $targetStateProjection -and
-            $completion.intent.sha256 -eq $intentSha256
-        ) -Message "Ready Milestone 0 transition receipts are stale or damaged."
+            $claim.action -eq "Claim" -and
+            $claim.executed -eq $true -and
+            $claim.transition -eq "ready-to-active" -and
+            $claim.status_before -eq "ready" -and
+            $claim.status_after -eq "active" -and
+            $claim.current_unit_after -eq $unit.unit_id -and
+            $claim.event_id -eq $claimedEventId -and
+            $claim.preservation.git_mutation_performed -eq $false -and
+            $claim.preservation.device_mutation_performed -eq $false -and
+            $repositoryStates.Count -eq 1 -and
+            $repositoryHeads.Count -eq 1 -and
+            $repositoryStates[0].repo_id -eq "rusty-fleet" -and
+            $repositoryStates[0].head -eq $repositoryHeads[0].head -and
+            $repositoryStates[0].branch -eq $repositoryHeads[0].branch -and
+            $repositoryStates[0].dirty -eq $false -and
+            $repositoryStates[0].relation -eq "synchronized" -and
+            $repositoryHeads[0].head -eq "1f9a4ba833bae9b0684bb91758fe304c526699da" -and
+            $repositoryHeads[0].branch -eq "main"
+        ) -Message "Active Milestone 0 claim baseline is stale or damaged."
     }
     Assert-True -Condition (@($unit.acceptance).Count -ge 5) `
         -Message "Milestone 0 must remain a vertical stack with complete acceptance coverage."
