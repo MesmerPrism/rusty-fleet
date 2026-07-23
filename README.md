@@ -9,6 +9,11 @@ The initial repository is deliberately planning-first. No runtime feature,
 listener, Android permission, device mutation, media route, or remote relay is
 active in this baseline.
 
+The accepted operator-information architecture uses a dense virtualized fleet
+table, a persistent selected-device inspector, independent timestamped status
+conditions, visible query/selection scope, and per-device operation evidence.
+See the [operator UI guide](docs/OPERATOR_UI.md).
+
 ## Product shape
 
 Rusty Fleet is a Hostess/operator product composed of three projections over
@@ -33,9 +38,11 @@ device, relay, media, and operator authority into one application.
 1. Read the [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 2. Read the [stacked milestone workflow](docs/WORKFLOW.md).
 3. Review the [architecture and ownership boundaries](docs/ARCHITECTURE.md).
-4. Use the [validation matrix](docs/VALIDATION.md) to select the smallest
+4. Review the [operator UI architecture](docs/OPERATOR_UI.md) and its
+   [reference ledger](docs/research/FLEET_UI_SOURCE_LEDGER.md).
+5. Use the [validation matrix](docs/VALIDATION.md) to select the smallest
    sufficient check.
-5. Resume project state from [the Morphospace workspace](morphospace/README.md).
+6. Resume project state from [the Morphospace workspace](morphospace/README.md).
 
 The first proposed implementation stack is
 `fleet-m0-foundation-and-simulator`. It produces contracts, a deterministic

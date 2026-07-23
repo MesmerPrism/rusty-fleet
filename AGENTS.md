@@ -50,6 +50,34 @@ Live device work is never implied by a source or documentation task.
 UI handlers collect parameters, invoke owned routes, show progress, and project
 structured evidence. Every operator action requires CLI or local API parity.
 
+## Operator UI guardrails
+
+The detailed contract is [docs/OPERATOR_UI.md](docs/OPERATOR_UI.md).
+
+- Keep the dense virtualized fleet table and persistent selected-device
+  inspector as the primary workspace; do not replace them with a device-card
+  grid.
+- Preserve query, filters, grouping, sort, selection, scroll, focus, and
+  inspector state across detail navigation and live refresh.
+- Never collapse enrollment, freshness, power, app, route, authorization,
+  privilege, media, work, and alerts into one health score or color.
+- Keep source, age, accepted authority, reason, and freshness inspectable for
+  every mutable fact.
+- Distinguish unsupported, disabled, unauthorized, disconnected, unavailable,
+  stale, unknown, degraded, busy, and failed.
+- Do not live-reorder an interaction-bound row. Queue order-affecting changes
+  for explicit application.
+- Batch actions require a target snapshot, per-target preflight and reasons,
+  risk-proportional confirmation, bounded dispatch, per-target progress,
+  retry/cancel semantics, cleanup, and audit.
+- Do not rely on color, an icon, a tooltip, or one progress bar as the sole
+  meaning.
+- Theme libraries may style the shell but must not own fleet semantics,
+  selection, query, accessibility, or virtualization behavior.
+- A WPF surface is not accepted from a four-device happy path; use the
+  milestone's keyboard, UI Automation, high-contrast, scaling, and scale
+  fixtures.
+
 ## Stacked milestone rule
 
 The planning and acceptance unit is a coherent milestone stack, not a single
