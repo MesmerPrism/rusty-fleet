@@ -1,0 +1,153 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/6b75d944614a8f863dd612c9b114d7c68f0862b0/schemas/validation-receipt.schema.json",
+  "schema": "rusty.morphospace.workflow.validation_receipt.v1",
+  "receipt_id": "fleet-m0-foundation-and-simulator-standard-validation",
+  "project_id": "rusty-fleet",
+  "unit_id": "fleet-m0-foundation-and-simulator",
+  "created_at": "2026-07-23T19:00:00Z",
+  "tier": "standard",
+  "result": "pass",
+  "repository_revisions": [
+    {
+      "repo_id": "rusty-fleet",
+      "base_revision": "1f9a4ba833bae9b0684bb91758fe304c526699da",
+      "head_revision": "83fe05caa22cde4d38d1f64ae92d8417b3730329",
+      "branch": "codex/fleet-m0-foundation"
+    }
+  ],
+  "changed_paths": [
+    { "repo_id": "rusty-fleet", "path": "AGENTS.md" },
+    { "repo_id": "rusty-fleet", "path": "apps/fleetctl/Cargo.toml" },
+    { "repo_id": "rusty-fleet", "path": "apps/fleetctl/src/lib.rs" },
+    { "repo_id": "rusty-fleet", "path": "apps/fleetctl/src/main.rs" },
+    { "repo_id": "rusty-fleet", "path": "Cargo.lock" },
+    { "repo_id": "rusty-fleet", "path": "Cargo.toml" },
+    { "repo_id": "rusty-fleet", "path": "CHANGELOG.md" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/Cargo.toml" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/src/capability.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/src/command.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/src/condition.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/src/identity.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/src/lib.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/src/projection.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/src/query.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/src/stream.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/tests/contracts.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-contracts/tests/fixtures.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-hub/Cargo.toml" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-hub/src/lib.rs" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-simulator/Cargo.toml" },
+    { "repo_id": "rusty-fleet", "path": "crates/fleet-simulator/src/lib.rs" },
+    { "repo_id": "rusty-fleet", "path": "docs/decisions/0004-m0-source-boundary-and-threat-model.md" },
+    { "repo_id": "rusty-fleet", "path": "docs/IMPLEMENTATION_PLAN.md" },
+    { "repo_id": "rusty-fleet", "path": "docs/M0_GRAPH_AND_INSTRUCTION_REVIEW.md" },
+    { "repo_id": "rusty-fleet", "path": "docs/M0_SOURCE_FOUNDATION.md" },
+    { "repo_id": "rusty-fleet", "path": "docs/VALIDATION.md" },
+    { "repo_id": "rusty-fleet", "path": "fixtures/contracts/device-observation.damaged.json" },
+    { "repo_id": "rusty-fleet", "path": "fixtures/contracts/device-observation.valid.json" },
+    { "repo_id": "rusty-fleet", "path": "fixtures/contracts/query.valid.json" },
+    { "repo_id": "rusty-fleet", "path": "fixtures/contracts/stream-descriptor.valid.json" },
+    { "repo_id": "rusty-fleet", "path": "fixtures/README.md" },
+    { "repo_id": "rusty-fleet", "path": "fixtures/scenarios/scale-and-damage.v1.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/iteration-events.jsonl" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/iteration-units/fleet-m0-foundation-and-simulator.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m0-foundation-and-simulator-begin-validation.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m0-foundation-and-simulator-claim.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m0-foundation-and-simulator-standard-evidence.md" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m0-foundation-and-simulator-standard-validation.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/workspace.state.json" },
+    { "repo_id": "rusty-fleet", "path": "README.md" },
+    { "repo_id": "rusty-fleet", "path": "schemas/README.md" },
+    { "repo_id": "rusty-fleet", "path": "schemas/rusty.fleet.device_observation.v1.schema.json" },
+    { "repo_id": "rusty-fleet", "path": "schemas/rusty.fleet.operation_ledger.v1.schema.json" },
+    { "repo_id": "rusty-fleet", "path": "schemas/rusty.fleet.operator_projection.v1.schema.json" },
+    { "repo_id": "rusty-fleet", "path": "schemas/rusty.fleet.query.v1.schema.json" },
+    { "repo_id": "rusty-fleet", "path": "schemas/rusty.fleet.stream_descriptor.v1.schema.json" },
+    { "repo_id": "rusty-fleet", "path": "tools/Test-Repo.ps1" }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "standard-validation-evidence",
+      "kind": "validation-summary",
+      "path": "fleet-m0-foundation-and-simulator-standard-evidence.md",
+      "sha256": "54b874eb07aaf6d655939d0e73ba54efdd19aa60b39e7a7f7a4a0c00b53c4a24"
+    }
+  ],
+  "criteria": [
+    {
+      "acceptance_id": "versioned-fleet-contracts",
+      "status": "pass",
+      "command": "Run the Milestone 0 contract and damaged-fixture suite.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "canonical-operator-projections",
+      "status": "pass",
+      "command": "Run the Milestone 0 projection, query, saved-view, and parity fixtures.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "canonical-datastream-projections",
+      "status": "pass",
+      "command": "Run the Milestone 0 datastream contract, damaged-fixture, and admission-simulation suite.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "deterministic-multi-device-simulator",
+      "status": "pass",
+      "command": "Run the Milestone 0 simulator scenario suite.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "hub-state-engine",
+      "status": "pass",
+      "command": "Run the Fleet Hub unit and property tests.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "cli-api-parity",
+      "status": "pass",
+      "command": "Run the Milestone 0 CLI/local API parity suite.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "inert-platform-closure",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "stacked-workflow-and-public-boundary",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard",
+      "evidence_refs": ["standard-validation-evidence"]
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "validation-quick",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Quick",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "gate_id": "validation-standard",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "gate_id": "validation-workflow-contract",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File <work-environment-root>/scripts/Test-WorkflowContracts.ps1 -WorkspaceRoot <project-root>/morphospace",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "gate_id": "instruction-synchronization",
+      "status": "pass",
+      "command": "Verify every declared instruction surface is complete and validated.",
+      "evidence_refs": ["standard-validation-evidence"]
+    }
+  ],
+  "device_validation": null
+}

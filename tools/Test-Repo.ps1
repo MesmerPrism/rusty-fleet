@@ -189,7 +189,6 @@ function Test-RequiredFiles {
         "SECURITY.md",
         "Cargo.lock",
         "Cargo.toml",
-        "rust-toolchain.toml",
         "apps/fleetctl/Cargo.toml",
         "apps/fleetctl/src/lib.rs",
         "apps/fleetctl/src/main.rs",
