@@ -56,7 +56,7 @@
     },
     {
       "parameter": "device.file-operation",
-      "owner": "meta-quest-file-manager",
+      "owner": "questionable-file-manager",
       "adapters": [
         "fleet-file-manager-adapter"
       ]

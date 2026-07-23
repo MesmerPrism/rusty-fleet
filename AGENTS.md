@@ -41,7 +41,7 @@ Live device work is never implied by a source or documentation task.
 - Rusty Quest owns Android/Quest lifecycle, permissions, platform observation,
   packaging, and effective device receipts.
 - Kiosk owns app-local kiosk actions and their effective application receipts.
-- Meta Quest File Manager owns file operations and ADB-backed device utilities.
+- QuestIonAble File Manager owns file operations and ADB-backed device utilities.
 - Rusty LSL may provide LSL-compatible observations or discovery proposals; it
   does not become fleet command or admission authority.
 - Media sources, processors, route/socket providers, codecs, and sinks remain

@@ -3,7 +3,7 @@
 ## Decision
 
 Rusty Fleet is a dedicated Hostess/operator product. It is not a mode inside
-Meta Quest File Manager and it does not absorb Manifold, Quest, Kiosk, LSL, or
+QuestIonAble File Manager and it does not absorb Manifold, Quest, Kiosk, LSL, or
 media authority.
 
 The product uses one authority-aware Fleet Hub with two equivalent operator
@@ -183,7 +183,7 @@ the UI.
 
 ## File management boundary
 
-Meta Quest File Manager remains the owner of file and ADB utilities. The first
+QuestIonAble File Manager remains the owner of file and ADB utilities. The first
 Fleet adapter should call its versioned JSON CLI/local API and project
 structured progress into Fleet Hub. A future shared package is allowed only
 after a neutral contract and second-consumer/conformance gate.

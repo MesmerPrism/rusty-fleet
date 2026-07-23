@@ -25,7 +25,7 @@ owns accepted command, session, peer, and stream authority. Existing Kiosk and
 File Manager products remain independent applications behind versioned
 adapters. Media transport remains a separate data plane.
 
-This avoids turning Meta Quest File Manager into a fleet controller or putting
+This avoids turning QuestIonAble File Manager into a fleet controller or putting
 device, relay, media, and operator authority into one application.
 
 ## Start here
