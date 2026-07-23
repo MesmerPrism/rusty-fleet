@@ -125,6 +125,7 @@ function Test-RequiredFiles {
         "docs/research/DATASTREAM_REFERENCE_LEDGER.md",
         "docs/research/FLEET_RESEARCH_INTEGRATION_REVIEW.md",
         "docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md",
+        "morphospace/.gitattributes",
         "morphospace/project.spec.json",
         "morphospace/feature.lock.json",
         "morphospace/workspace.state.json",
@@ -164,10 +165,57 @@ function Test-PlanningInvariants {
     Assert-True -Condition (Test-Path -LiteralPath $unitPath -PathType Leaf) `
         -Message "The proposed Milestone 0 stack is missing."
     $unit = Get-Content -LiteralPath $unitPath -Raw | ConvertFrom-Json -Depth 100
-    Assert-True -Condition ($unit.status -eq "proposed") `
-        -Message "Milestone 0 must remain proposed until an owned workflow transition reviews it."
     Assert-True -Condition ($unit.unit_id -eq "fleet-m0-foundation-and-simulator") `
         -Message "Unexpected Milestone 0 unit ID."
+    Assert-True -Condition ($unit.status -in @("proposed", "ready")) `
+        -Message "Milestone 0 may be proposed or ready only at the planning checkpoint."
+    if ($unit.status -eq "ready") {
+        $readyEventId = "$($unit.unit_id)-ready-0001"
+        $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
+        $events = @(
+            Get-Content -LiteralPath $eventsPath |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                ForEach-Object { $_ | ConvertFrom-Json -Depth 100 }
+        )
+        $readyEvents = @($events | Where-Object { $_.event_id -eq $readyEventId })
+        Assert-True -Condition ($readyEvents.Count -eq 1) `
+            -Message "Ready Milestone 0 must have exactly one owned ready transition event."
+        Assert-True -Condition (
+            $readyEvents[0].event_type -eq "state-transition" -and
+            $readyEvents[0].unit_id -eq $unit.unit_id -and
+            $state.last_event_id -eq $readyEventId -and
+            $state.next_ready_unit -eq $unit.unit_id -and
+            $null -eq $state.current_unit
+        ) -Message "Ready Milestone 0 is not bound to workspace state."
+
+        $transactionId = "$readyEventId-transition"
+        $intentPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.intent.json"
+        $completionPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.completion.json"
+        Assert-True -Condition (
+            (Test-Path -LiteralPath $intentPath -PathType Leaf) -and
+            (Test-Path -LiteralPath $completionPath -PathType Leaf)
+        ) -Message "Ready Milestone 0 is missing its transition-ledger receipts."
+        $intent = Get-Content -LiteralPath $intentPath -Raw | ConvertFrom-Json -Depth 100
+        $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 100
+        $intentSha256 = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $unitProjection = $unit | ConvertTo-Json -Depth 100 -Compress
+        $targetUnitProjection = $intent.target.unit.document | ConvertTo-Json -Depth 100 -Compress
+        $stateProjection = $state | ConvertTo-Json -Depth 100 -Compress
+        $targetStateProjection = $intent.target.state.document | ConvertTo-Json -Depth 100 -Compress
+        Assert-True -Condition (
+            $intent.transaction_id -eq $transactionId -and
+            $intent.event.event_id -eq $readyEventId -and
+            $intent.target.unit.document.status -eq "ready" -and
+            $completion.transaction_id -eq $transactionId -and
+            $completion.event_id -eq $readyEventId -and
+            $completion.status -eq "committed" -and
+            $completion.unit_sha256 -eq $intent.target.unit.sha256 -and
+            $completion.state_sha256 -eq $intent.target.state.sha256 -and
+            $unitProjection -ceq $targetUnitProjection -and
+            $stateProjection -ceq $targetStateProjection -and
+            $completion.intent.sha256 -eq $intentSha256
+        ) -Message "Ready Milestone 0 transition receipts are stale or damaged."
+    }
     Assert-True -Condition (@($unit.acceptance).Count -ge 5) `
         -Message "Milestone 0 must remain a vertical stack with complete acceptance coverage."
     Assert-True -Condition (@($unit.acceptance.acceptance_id) -contains "canonical-datastream-projections") `
