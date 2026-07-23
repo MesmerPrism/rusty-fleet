@@ -82,8 +82,9 @@ effect, or an optional adapter into a base requirement.
     partial-result, and cleanup-failed projections have fixtures.
 17. **Scale is an acceptance condition.** A four-device happy path is useful
     for visual review but insufficient for UI acceptance.
-18. **Media is separately bounded.** Monitoring and command interaction remain
-    responsive when media is absent, overloaded, reconnecting, or stopped.
+18. **Datastreams are separately bounded.** Monitoring and command interaction
+    remain responsive when an optional observation or media stream is absent,
+    overloaded, reconnecting, frozen, or stopped.
 
 ## Information architecture
 
@@ -102,9 +103,10 @@ Operations
   Commands and deployments
   Scheduled operations
   Completed operations
-Media
-  Sessions
-  Sources and routes
+Streams
+  Catalog and subscriptions
+  Media sessions
+  Sources, routes, and budgets
   Cleanup failures
 Enrollment
   Enrolled devices
@@ -132,12 +134,12 @@ The page hierarchy is:
 | --- | --- | --- |
 | Fleet summary | Orient without replacing inventory | total, freshness, offline, attention, active-work, data-as-of, and adapter state |
 | Device collection | Primary workspace | query controls, filters, grouping, virtualized rows, and batch selection |
-| Compact device row | Scan independent dimensions | identity, age, route, power, app, control, privilege, media, work, and alerts |
+| Compact device row | Scan independent dimensions | identity, age, route, power, app, control, privilege, streams, work, and alerts |
 | Selected-device inspector | Diagnose while retaining context | attention, observations, capabilities, current work, and quick actions |
-| Full device detail | Deep and longitudinal diagnosis | status, capabilities, commands, media, history, audit, and enrollment |
+| Full device detail | Deep and longitudinal diagnosis | status, capabilities, commands, streams/media, history, audit, and enrollment |
 | Operation ledger | Track work across devices | aggregate counts plus per-target stages, evidence, retry, cancel, and cleanup |
 | Alerts and exceptions | Prioritize intervention | grouped causes, affected targets, acknowledgement, suppression, and maintenance |
-| Media sessions | Diagnose selected paths | source, processor, route, codec, sink, frame readiness, and bounded preview |
+| Stream operations | Diagnose selected paths | catalog, subscription/session, source, generation, timing, route, codec/schema, sink, health, budget, and bounded preview |
 
 ## Fleet workspace
 
@@ -178,7 +180,7 @@ it.
 | 7 | App / Kiosk | participating app, lifecycle, Kiosk state, and observation authority |
 | 8 | Control | base monitoring and participating-app control readiness |
 | 9 | Privileged | USB ADB, Wi-Fi ADB, File Manager, or privileged-adapter state |
-| 10 | Media | source, session, route, sink, and frame-readiness summary |
+| 10 | Streams | available/selected sample or media streams, strongest progress stage, and attention |
 | 11 | Work | active count and most recent exceptional result |
 | 12 | Tags / cohort | location, cohort, rollout ring, or operator tag |
 
@@ -277,12 +279,32 @@ Inspector tabs are:
 | Status | every status family, source, timestamps, revision, conflict, and freshness |
 | Capabilities | support, enablement, authorization, reachability, freshness, and evidence |
 | Commands | active and recent command lifecycle and receipts |
-| Media | source, route, sink, frame readiness, and selected preview |
+| Streams | catalog, subscription/session, generation, timing, health, cost, and selected sample/media view |
 | History | significant state transitions and audit links |
 
 Full device detail adds enrollment identity and rotation, complete adapter
 evidence, longer command/media history, audit lineage, exports, and the
 QuestIonAble File Manager deep link when authorized.
+
+### Selected-stream detail
+
+The Streams tab follows
+[Datastream Management](DATASTREAMS.md). It reveals details in layers:
+
+1. available and selected semantic streams, sensitivity, and cost;
+2. current lifecycle, accepted subscription/session, expiry, and provider
+   generation;
+3. source/processor/route/socket/codec/sink/cleanup owner chain;
+4. source clock, correlation, receive time, and freshness;
+5. transport, byte, sample/frame, decode/schema, sink, and cleanup progress;
+6. cadence, latency, jitter, loss, drops, queue pressure, and budget use;
+7. no-data, stall, freeze, recovery, fallback, and terminal reasons;
+8. recording/retention/export policy and sanitized evidence.
+
+The row never decodes media and never attempts to summarize this chain as one
+green or red dot. A selected preview is bounded and independently stoppable.
+The same catalog, health, budget, and terminal fields are available through
+CLI and local API.
 
 ## Status-condition contract
 
@@ -503,6 +525,8 @@ Candidate budgets must be measured and either accepted or replaced:
 | inspector selection to meaningful content | under 150 ms |
 | batch preview first aggregate for 1,000 targets | under 1 second |
 | telemetry churn | bounded memory and no unbounded UI-dispatch backlog |
+| selected stream refresh | coalesced, bounded, and unable to starve status or input |
+| preview count and decode budget | explicit admission; no ambient all-device decode |
 
 Milestone acceptance records the reference hardware, dataset, update profile,
 measurement method, achieved distribution, and headroom. A single fast run is
@@ -512,11 +536,11 @@ not a support claim.
 
 | Milestone | Operator-projection acceptance |
 | --- | --- |
-| M0 | canonical condition, query, operator projection, damaged fixtures, scale datasets, and CLI/API parity |
-| M1 | fleet grid, inspector, status grammar, stale/offline/degraded states, keyboard/UIA baseline, and WPF dependency decision |
+| M0 | canonical condition/query/operator and stream-health projections, damaged fixtures, scale datasets, and CLI/API parity |
+| M1 | fleet grid, inspector, status/LSL observation grammar, stale/offline/degraded states, keyboard/UIA baseline, and WPF dependency decision |
 | M2 | target snapshot, preflight, confirmation, per-target ledger, retry, cancellation, and cleanup |
 | M3 | ADB/File Manager remains independent; wrong-device, privilege-age, and route-loss projections |
-| M4 | media-chain readiness, selected preview, no-frame and cleanup states; control remains responsive |
+| M4 | stream catalog/admission, clock and generation detail, selected sample/media views, no-data/stall/freeze/cleanup states; control remains responsive |
 | M5 | local/relay/hybrid routes, partitions, tenancy, and role downgrade remain explicit |
 | M6 | saved views, grouping, alert suppression, maintenance windows, measured 1k/5k performance, and soak |
 | M7 | operator runbook, complete accessibility gate, rollback, and exact artifact/revision agreement |

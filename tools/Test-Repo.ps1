@@ -115,10 +115,15 @@ function Test-RequiredFiles {
         "CONTRIBUTING.md",
         "SECURITY.md",
         "docs/ARCHITECTURE.md",
+        "docs/DATASTREAMS.md",
         "docs/IMPLEMENTATION_PLAN.md",
+        "docs/OPERATOR_UI.md",
         "docs/WORKFLOW.md",
         "docs/VALIDATION.md",
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
+        "docs/decisions/0003-datastream-lifecycle-and-authority.md",
+        "docs/research/DATASTREAM_REFERENCE_LEDGER.md",
+        "docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md",
         "morphospace/project.spec.json",
         "morphospace/feature.lock.json",
         "morphospace/workspace.state.json",
@@ -164,6 +169,47 @@ function Test-PlanningInvariants {
         -Message "Unexpected Milestone 0 unit ID."
     Assert-True -Condition (@($unit.acceptance).Count -ge 5) `
         -Message "Milestone 0 must remain a vertical stack with complete acceptance coverage."
+    Assert-True -Condition (@($unit.acceptance.acceptance_id) -contains "canonical-datastream-projections") `
+        -Message "Milestone 0 must include source-only datastream contract acceptance."
+}
+
+function Test-DatastreamPlanning {
+    $datastreams = Get-Content -LiteralPath (Join-Path $repoRoot "docs/DATASTREAMS.md") -Raw
+    $architecture = Get-Content -LiteralPath (Join-Path $repoRoot "docs/ARCHITECTURE.md") -Raw
+    $implementation = Get-Content -LiteralPath (Join-Path $repoRoot "docs/IMPLEMENTATION_PLAN.md") -Raw
+    $operatorUi = Get-Content -LiteralPath (Join-Path $repoRoot "docs/OPERATOR_UI.md") -Raw
+    $ledger = Get-Content -LiteralPath (Join-Path $repoRoot "docs/research/DATASTREAM_REFERENCE_LEDGER.md") -Raw
+
+    foreach ($phrase in @(
+        "provider generation",
+        "timestamp domains",
+        "bounded",
+        "no data",
+        "stalled",
+        "frozen",
+        "admission",
+        "FFmpeg",
+        "LSL adapter contract"
+    )) {
+        Assert-True -Condition ($datastreams.Contains($phrase, [StringComparison]::OrdinalIgnoreCase)) `
+            -Message "Datastream planning guardrail is missing: $phrase"
+    }
+
+    Assert-True -Condition ($architecture.Contains("Datastream Management")) `
+        -Message "Architecture must route to the normative datastream contract."
+    Assert-True -Condition ($implementation.Contains("Selected datastream and media operations")) `
+        -Message "Implementation plan must retain the selected-stream milestone stack."
+    Assert-True -Condition ($operatorUi.Contains("Selected-stream detail")) `
+        -Message "Operator UI must retain layered selected-stream detail."
+    foreach ($source in @(
+        "labstreaminglayer.readthedocs.io",
+        "ffmpeg.org",
+        "developer.android.com",
+        "prometheus.io"
+    )) {
+        Assert-True -Condition ($ledger.Contains($source)) `
+            -Message "Datastream primary-source ledger is missing: $source"
+    }
 }
 
 function Test-MarkdownLinks {
@@ -230,6 +276,7 @@ try {
     Test-JsonDocuments
     Test-PublicBoundary
     Test-PlanningInvariants
+    Test-DatastreamPlanning
     Invoke-Git diff --check
 
     if ($Tier -in @("Standard", "Deep")) {

@@ -14,6 +14,12 @@ table, a persistent selected-device inspector, independent timestamped status
 conditions, visible query/selection scope, and per-device operation evidence.
 See the [operator UI guide](docs/OPERATOR_UI.md).
 
+The datastream architecture composes LSL, status, spatial, media, and future
+relay streams without forcing them through one transport. It standardizes
+identity, provider generations, clocks, health, bounded queues, admission
+budgets, cleanup, and evidence while preserving every owner boundary. See the
+[datastream guide](docs/DATASTREAMS.md).
+
 ## Product shape
 
 Rusty Fleet is a Hostess/operator product composed of three projections over
@@ -38,11 +44,14 @@ device, relay, media, and operator authority into one application.
 1. Read the [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 2. Read the [stacked milestone workflow](docs/WORKFLOW.md).
 3. Review the [architecture and ownership boundaries](docs/ARCHITECTURE.md).
-4. Review the [operator UI architecture](docs/OPERATOR_UI.md) and its
+4. Review [datastream management](docs/DATASTREAMS.md), the
+   [current Morphospace stream matrix](docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md),
+   and the [primary-source ledger](docs/research/DATASTREAM_REFERENCE_LEDGER.md).
+5. Review the [operator UI architecture](docs/OPERATOR_UI.md) and its
    [reference ledger](docs/research/FLEET_UI_SOURCE_LEDGER.md).
-5. Use the [validation matrix](docs/VALIDATION.md) to select the smallest
+6. Use the [validation matrix](docs/VALIDATION.md) to select the smallest
    sufficient check.
-6. Resume project state from [the Morphospace workspace](morphospace/README.md).
+7. Resume project state from [the Morphospace workspace](morphospace/README.md).
 
 The first proposed implementation stack is
 `fleet-m0-foundation-and-simulator`. It produces contracts, a deterministic
@@ -76,8 +85,10 @@ These commands do not contact or mutate a headset.
 ## Status
 
 The repository currently contains the accepted planning baseline and an inert
-Morphospace protocol-v2 project workspace. Runtime implementation begins only
-after the first milestone stack is reviewed into `ready`.
+Morphospace protocol-v2 project workspace. The planning baseline now includes
+the consolidated datastream contract and inventory; it activates no stream or
+runtime. Implementation begins only after the first milestone stack is
+reviewed into `ready`.
 
 ## License
 

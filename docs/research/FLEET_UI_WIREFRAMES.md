@@ -10,7 +10,7 @@ selection.
 
 ```text
 ┌ Rusty Fleet ────────────────────────────────────────────────────────────────┐
-│ Fleet  Attention  Operations  Media  Enrollment  Audit  Settings  Hub Local│
+│ Fleet  Attention  Operations  Streams Enrollment Audit Settings  Hub Local│
 ├──────────────┬──────────────────────────────────────────────────────────────┤
 │ Saved views  │ 1,284 devices | 1,201 fresh | 26 stale | 44 offline        │
 │ All devices  │ 13 attention | 18 active | As of 14:32:05                 │
@@ -110,19 +110,19 @@ Command cleanup pending | 2 affected | oldest 4m
 [Open operations]
 ```
 
-## Media sessions
+## Stream and media sessions
 
 ```text
-Active 3 | Requested 1 | Degraded 1 | Cleanup pending 1
+Available 24 | Active 3 | Requested 1 | Degraded 1 | Cleanup pending 1
 
-Device/session  Source  Processor  Route   Codec  Sink     Frame age
-Quest-04/s91    Ready   Ready      Local   H.264  Preview  120ms
-Quest-18/s92    Ready   Ready      Relay   H.264  Preview  2.4s stale
-Quest-44/s93    Ready   Ready      Failed  —      Waiting  No frames
+Device/stream   Kind     Gen  Route   Payload stage     Sink      Age
+Quest-04/head   Pose     12   LSL     Samples advance  Detail    18ms
+Quest-18/s92    Display   7   Relay   Frames advance   Preview   2.4s stale
+Quest-44/s93    Camera    3   Failed  No frames        Waiting   —
 
 Selected preview: Quest-18/s92
-Route delayed; control plane normal
-[Stop] [Change route] [Open evidence]
+Route delayed; control plane normal; provider generation 7
+[Stop] [Change route] [Open timing] [Open evidence]
 ```
 
 ## Empty and degraded fixtures

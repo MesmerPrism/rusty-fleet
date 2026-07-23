@@ -18,3 +18,8 @@ The project follows Semantic Versioning once runtime releases begin.
   persistent inspector, independent status grammar, target-snapshot batch
   workflow, accessibility gates, scale fixtures, wireframes, product-pattern
   matrix, and public source ledger.
+- Consolidated datastream architecture for status, LSL, spatial, media, and
+  future relay paths, including owner boundaries, provider generations, clock
+  domains, progress/freeze semantics, bounded queues, admission budgets,
+  FFmpeg process-adapter rules, a current Morphospace stream matrix, and a
+  primary-source reference ledger.

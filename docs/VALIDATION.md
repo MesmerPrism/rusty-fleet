@@ -32,6 +32,8 @@ Standard includes Quick and adds:
 - repository instruction and CI surface checks.
 - operator-UI planning links, reference-ledger links, and public-safe research
   provenance.
+- datastream architecture, current-state matrix, primary-source ledger, and
+  cross-plane planning invariants.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Standard
@@ -90,6 +92,30 @@ When an implementation language and build system land in Milestone 0, update
 this document, `AGENTS.md`, the README, CI, and `Test-Repo.ps1` in that same
 milestone.
 
+## Datastream validation
+
+The normative contract and fixture families are in
+[Datastream Management](DATASTREAMS.md). Validation preserves owner maturity:
+a candidate or lab result can inform a damaged/negative fixture but cannot
+become a supported capability without the exact owner-repository promotion.
+
+| Check | M0 | M1 | M4 | Relay/release |
+| --- | ---: | ---: | ---: | ---: |
+| descriptor, generation, plane, time, lifecycle, and health fixtures | required | focused | Standard | Deep |
+| no-data, stall, freeze, decode/sink, and cleanup distinctions | simulated | observation path | device/profile matrix | regression |
+| finite queue/drop/recovery/fan-out policy | contract | status/LSL path | measured | soak |
+| control-capacity reserve and fair admission | simulated | local transport | measured media load | remote/tenant load |
+| Console/CLI/API stream catalog and reason parity | contract | observation projection | Standard | regression |
+| low-cardinality metrics and units | contract | focused | measured | Deep |
+| source/route/socket/codec/sink owner evidence | not applicable | exact adapter | exact promoted profiles | exact relay profiles |
+| consent, recording, retention, redaction, and cleanup | contract | affected source | device/security gate | Deep |
+
+An FFmpeg adapter is tested at four independent levels: allowlisted command
+construction, machine-readable probe/progress parsing, deterministic fixture
+media including decoded-frame progress/freeze detection, and bounded process
+termination/cleanup. Live device tests are required only for exact promoted
+Quest source/route/sink combinations.
+
 ## Operator UI validation
 
 The normative behavior and candidate budgets are in
@@ -125,6 +151,17 @@ Keep these facts distinct:
 - **applied:** the owning consumer reported the effect;
 - **cleaned:** terminal cleanup was independently observed;
 - **rejected/expired/cancelled:** no successful application is claimed.
+
+For streams, also keep distinct:
+
+- **available:** the current owner manifest/generation can be considered;
+- **admitted:** a current authority accepted the subscription/session;
+- **connected/running:** the selected route or process is active;
+- **progressing:** samples or frames advance under the current generation;
+- **decoded/validated:** codec or schema application succeeds;
+- **sunk:** the selected consumer applies or renders current payload;
+- **stalled/frozen:** transport or content progress is not healthy even if
+  another stage remains active.
 
 An aggregate fleet result is a projection over per-device facts, not a
 replacement for them.

@@ -36,6 +36,8 @@ Rusty Fleet does not own:
 - file-system or ADB command semantics;
 - media codecs, capture, socket ownership, or rendering;
 - LSL protocol compatibility;
+- a universal transport, clock, queue, or recording policy that overrides the
+  declaring owner;
 - arbitrary control of nonparticipating foreground applications;
 - hidden privilege escalation or automatic ADB enablement.
 
@@ -101,6 +103,8 @@ Adapters may produce observations or discovery proposals through:
 
 Observations do not silently become accepted membership, command authority, or
 media routes. The Hub displays source, age, confidence, and authority state.
+Timestamped samples preserve their source domain and correlation evidence.
+Recovery or producer restart creates a visible provider generation.
 
 ### Media plane
 
@@ -113,6 +117,31 @@ source -> processor -> route/socket provider -> codec -> sink
 Manifold owns accepted session and stream references. Rusty Quest owns platform
 capture/adoption. Every selected source and sink reports its own effective
 receipt. The dashboard never assumes that a status connection can carry media.
+
+The normative product contract for all planes is
+[Datastream Management](DATASTREAMS.md). It defines the common descriptor,
+provider generations, time correlation, lifecycle, progress/health stages,
+bounded queues, admission budgets, observability, privacy, and validation
+without defining a universal wire protocol.
+
+## Datastream control loop
+
+```mermaid
+flowchart LR
+    Proposal["Owner manifest or discovery proposal"] --> Authority["Manifold admission / session authority"]
+    Authority --> Catalog["Fleet catalog + budget projection"]
+    Catalog --> Selection["Operator or policy selection"]
+    Selection --> Owners["Source / route / codec / sink owners"]
+    Owners --> Evidence["Progress, health, cost, and cleanup evidence"]
+    Evidence --> Catalog
+    Catalog --> Console["Console / CLI / local API"]
+```
+
+Fleet admission preserves protected control capacity and applies bounded
+per-device, provider, route, host, relay, and global budgets. A stable stream
+identity plus provider generation and accepted authority revision keys current
+evidence. Transport/process activity, bytes, sample/frame progress,
+decode/schema validity, sink progress, and cleanup remain independent facts.
 
 ## Device capability model
 
@@ -141,6 +170,8 @@ Each accepted device projection includes:
 - battery level, charging state, and thermal/power warnings when available;
 - lifecycle and foreground facts with the reporting authority named;
 - network route summaries without exposing private endpoint data by default;
+- available and selected stream summaries with provider generation, timestamp
+  domains, freshness, progress stage, queue pressure, and budget state;
 - active participating app and kiosk state;
 - ADB, file-management, media, and relay capability states;
 - outstanding command count and last terminal command result.
