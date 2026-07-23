@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quick:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Quick validation
+        shell: pwsh
+        run: .\tools\Test-Repo.ps1 -Tier Quick
+
+  standard:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    needs: quick
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Standard validation
+        shell: pwsh
+        run: .\tools\Test-Repo.ps1 -Tier Standard

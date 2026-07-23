@@ -1,0 +1,177 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/657cf021686df1f0cf30c23f347637486ca786f2/schemas/iteration-unit.schema.json",
+  "schema": "rusty.morphospace.workflow.iteration_unit.v1",
+  "unit_id": "fleet-m0-foundation-and-simulator",
+  "project_id": "rusty-fleet",
+  "status": "proposed",
+  "objective": "Deliver the source-only Rusty Fleet foundation as one coherent vertical stack: accepted product boundaries, versioned fleet status and command-lifecycle contracts, damaged fixtures, a deterministic multi-device simulator, an in-memory Hub state engine, and CLI/local-API parity without opening sockets, platform permissions, ADB, media, relay, or device work.",
+  "tags": [
+    "contracts",
+    "fleet-directory",
+    "hub",
+    "simulator",
+    "source-only",
+    "stacked-milestone"
+  ],
+  "change_categories": [
+    "authority",
+    "implementation",
+    "module-layout",
+    "repo-routing",
+    "validation"
+  ],
+  "instruction_impact": "update",
+  "instruction_surfaces": [
+    {
+      "surface_kind": "agents",
+      "path": "AGENTS.md",
+      "owner": "rusty-fleet",
+      "change_reason": "Route the landed source/build layout, focused checks, and unchanged authority boundaries.",
+      "action": "update",
+      "status": "planned",
+      "validation": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard",
+      "skill_id": null
+    },
+    {
+      "surface_kind": "readme",
+      "path": "README.md",
+      "owner": "rusty-fleet",
+      "change_reason": "Replace planning-only setup with build, simulation, CLI, and local API entrypoints.",
+      "action": "update",
+      "status": "planned",
+      "validation": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard",
+      "skill_id": null
+    },
+    {
+      "surface_kind": "validation-doc",
+      "path": "docs/VALIDATION.md",
+      "owner": "rusty-fleet",
+      "change_reason": "Register the selected implementation toolchain, focused component checks, and Milestone 0 scenario suite.",
+      "action": "update",
+      "status": "planned",
+      "validation": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard",
+      "skill_id": null
+    },
+    {
+      "surface_kind": "skill",
+      "path": "<skills-root>/rusty-morphospace-context/SKILL.md",
+      "owner": "workflow-maintainer",
+      "change_reason": "Review whether the new public Hostess/operator product changes repo-family routing; retain unchanged if existing lane rules are sufficient.",
+      "action": "review-no-change",
+      "status": "planned",
+      "validation": "Review the installed skill and record the result before acceptance.",
+      "skill_id": "rusty-morphospace-context"
+    },
+    {
+      "surface_kind": "skill",
+      "path": "<skills-root>/system-engineering/SKILL.md",
+      "owner": "workflow-maintainer",
+      "change_reason": "Review whether the fleet directory, projection, and simulator contracts add reusable authority guidance; retain unchanged if existing rules are sufficient.",
+      "action": "review-no-change",
+      "status": "planned",
+      "validation": "Review the installed skill and record the result before acceptance.",
+      "skill_id": "system-engineering"
+    },
+    {
+      "surface_kind": "skill",
+      "path": "<skills-root>/rust-work-graph/SKILL.md",
+      "owner": "workflow-maintainer",
+      "change_reason": "Review the initial source-root and instruction graph routing after implementation lands.",
+      "action": "review-no-change",
+      "status": "planned",
+      "validation": "Run the bounded tracked-file inventory and record the review before acceptance.",
+      "skill_id": "rust-work-graph"
+    }
+  ],
+  "instruction_none_justification": null,
+  "prerequisites": [],
+  "allowed_repositories": [
+    {
+      "repo_id": "rusty-fleet",
+      "allowed_paths": [
+        ".github/",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "README.md",
+        "apps/",
+        "crates/",
+        "docs/",
+        "fixtures/",
+        "morphospace/",
+        "schemas/",
+        "tests/",
+        "tools/",
+        "Cargo.lock",
+        "Cargo.toml",
+        "Directory.Build.props",
+        "Directory.Packages.props",
+        "global.json"
+      ]
+    }
+  ],
+  "non_scope": [
+    "Real network listeners, discovery, BLE, LSL, ZeroMQ, Manifold transport, persistence service, online relay, or cloud deployment.",
+    "Quest, Android, OpenXR, Spatial SDK, APK, permissions, foreground observation, package lifecycle, ADB, File Manager, Kiosk mutation, or device validation.",
+    "Media sources, processors, sockets, routes, codecs, sinks, frames, audio, meshes, depth, or high-rate tracking.",
+    "Feature activation, runtime effects, private payloads, production credentials, or local machine evidence.",
+    "Separate lifecycle units for individual schemas, fixtures, model types, CLI commands, tests, documentation edits, or repairs discovered inside this milestone."
+  ],
+  "acceptance": [
+    {
+      "acceptance_id": "versioned-fleet-contracts",
+      "proof": "Public product-owned contracts define device identity, status source, status/capability snapshots, staleness, command lifecycle, per-device results, and audit projections with explicit owners, bounds, and unknown-field policy.",
+      "command": "Run the Milestone 0 contract and damaged-fixture suite."
+    },
+    {
+      "acceptance_id": "deterministic-multi-device-simulator",
+      "proof": "One deterministic scenario runner creates and evolves a representative fleet, including reconnect, reordering, replay, duplicate identity, staleness, offline state, capability downgrade, and damaged messages.",
+      "command": "Run the Milestone 0 simulator scenario suite."
+    },
+    {
+      "acceptance_id": "hub-state-engine",
+      "proof": "The in-memory Hub advances accepted device state only through valid identity/revision/freshness transitions and preserves independent device outcomes under concurrent simulated check-in.",
+      "command": "Run the Fleet Hub unit and property tests."
+    },
+    {
+      "acceptance_id": "cli-api-parity",
+      "proof": "List, inspect, filter, and watch operations from fleetctl and the local API produce the same canonical projections and error vocabulary.",
+      "command": "Run the Milestone 0 CLI/local API parity suite."
+    },
+    {
+      "acceptance_id": "inert-platform-closure",
+      "proof": "No socket, Android, Quest, ADB, Kiosk, File Manager, media, relay, permission, service, route, stream, marker, device, or runtime effect is selected or introduced.",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard"
+    },
+    {
+      "acceptance_id": "stacked-workflow-and-public-boundary",
+      "proof": "The milestone remains one reviewable stack, public files contain only synthetic evidence, instruction surfaces are synchronized, and the repository Standard gate passes.",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard"
+    }
+  ],
+  "risk_tier": "standard",
+  "device_requirement": "forbidden",
+  "validation": [
+    {
+      "profile_id": "quick",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Quick"
+    },
+    {
+      "profile_id": "standard",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard"
+    },
+    {
+      "profile_id": "workflow-contract",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File <work-environment-root>/scripts/Test-WorkflowContracts.ps1 -WorkspaceRoot <project-root>/morphospace"
+    }
+  ],
+  "outputs": [
+    "Accepted product-boundary and threat-model ADRs.",
+    "Versioned product-owned schemas with valid, boundary, damaged, replay, staleness, and downgrade fixtures.",
+    "Deterministic multi-device simulator and in-memory Fleet Hub state engine.",
+    "fleetctl and local API list, inspect, filter, and watch parity.",
+    "Milestone scenario suite, diagnostics, public documentation, and rollback evidence."
+  ],
+  "commit_policy": "Commit coherent internal layers such as contracts plus fixtures, engine plus tests, and projections plus parity evidence. Do not create file-sized lifecycle units or preserve meaningless intermediate breakage. Accept and publish only after the complete milestone Standard gate passes.",
+  "push_checkpoint": "integration-batch"
+}

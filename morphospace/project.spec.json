@@ -1,0 +1,164 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/657cf021686df1f0cf30c23f347637486ca786f2/schemas/project-spec-v2.schema.json",
+  "schema": "rusty.morphospace.workflow.project_spec.v2",
+  "project_id": "rusty-fleet",
+  "revision": 1,
+  "owner": "rusty-fleet-maintainers",
+  "purpose": "Plan and implement a multi-headset monitoring and control dashboard with explicit Manifold, Hostess, Quest, Kiosk, File Manager, and media authority boundaries.",
+  "activation_model": {
+    "default": "disabled",
+    "unlisted_modules": "inert",
+    "runtime_rule": "selected-lock-and-runtime-input"
+  },
+  "composition": {
+    "selected_features": [],
+    "denied_features": [],
+    "selected_modules": [],
+    "denied_modules": [],
+    "allowed_permissions": [],
+    "denied_permissions": [],
+    "data_classes": []
+  },
+  "authority_map": [
+    {
+      "parameter": "project.composition",
+      "owner": "rusty-fleet",
+      "adapters": []
+    },
+    {
+      "parameter": "fleet.directory",
+      "owner": "fleet-hub",
+      "adapters": [
+        "fleet-console",
+        "fleetctl"
+      ]
+    },
+    {
+      "parameter": "fleet.command-acceptance",
+      "owner": "rusty-manifold",
+      "adapters": [
+        "fleet-hub"
+      ]
+    },
+    {
+      "parameter": "device.platform-state",
+      "owner": "rusty-quest",
+      "adapters": [
+        "quest-fleet-agent"
+      ]
+    },
+    {
+      "parameter": "device.kiosk-action",
+      "owner": "rusty-kiosk",
+      "adapters": [
+        "fleet-kiosk-adapter"
+      ]
+    },
+    {
+      "parameter": "device.file-operation",
+      "owner": "meta-quest-file-manager",
+      "adapters": [
+        "fleet-file-manager-adapter"
+      ]
+    },
+    {
+      "parameter": "fleet.media-session",
+      "owner": "rusty-manifold",
+      "adapters": [
+        "fleet-media-adapter"
+      ]
+    }
+  ],
+  "repositories": [
+    {
+      "repo_id": "rusty-fleet",
+      "role": "planning-and-product-shell",
+      "path": "..",
+      "allowed_paths": [
+        ".github/",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "README.md",
+        "SECURITY.md",
+        "apps/",
+        "crates/",
+        "docs/",
+        "fixtures/",
+        "morphospace/",
+        "schemas/",
+        "tests/",
+        "tools/",
+        "Cargo.lock",
+        "Cargo.toml",
+        "Directory.Build.props",
+        "Directory.Packages.props",
+        "global.json"
+      ]
+    }
+  ],
+  "modules": [],
+  "non_scope": [
+    "Modules and features not declared in this specification.",
+    "Private evidence outside the declared project boundary.",
+    "ADB as a prerequisite for base fleet monitoring.",
+    "Arbitrary control of nonparticipating foreground applications.",
+    "File Manager, Kiosk, Manifold, Quest, LSL, or media owner behavior reimplemented as Fleet authority.",
+    "High-rate media payloads carried by the low-rate status and command plane."
+  ],
+  "validation_profiles": [
+    {
+      "profile_id": "quick",
+      "commands": [
+        "pwsh -NoProfile -ExecutionPolicy Bypass -File <project-root>/tools/Test-Repo.ps1 -Tier Quick"
+      ]
+    },
+    {
+      "profile_id": "standard",
+      "commands": [
+        "pwsh -NoProfile -ExecutionPolicy Bypass -File <project-root>/tools/Test-Repo.ps1 -Tier Standard"
+      ]
+    },
+    {
+      "profile_id": "deep",
+      "commands": [
+        "pwsh -NoProfile -ExecutionPolicy Bypass -File <project-root>/tools/Test-Repo.ps1 -Tier Deep"
+      ]
+    },
+    {
+      "profile_id": "workflow-contract",
+      "commands": [
+        "pwsh -NoProfile -ExecutionPolicy Bypass -File <work-environment-root>/scripts/Test-WorkflowContracts.ps1 -WorkspaceRoot <project-root>/morphospace"
+      ]
+    }
+  ],
+  "acceptance_profiles": [
+    {
+      "profile_id": "rollback",
+      "commands": [
+        "Resolve an empty feature lock and verify that no permission, service, route, stream, input, scene, marker, asset, tool, or native library effect remains."
+      ]
+    }
+  ],
+  "release_policy": {
+    "versioning": "semver",
+    "commit_policy": "Commit coherent internal layers inside one milestone stack; do not create file-sized lifecycle units. Push green recovery checkpoints and publish after the milestone Standard gate.",
+    "push_checkpoint": "integration-batch",
+    "source_first": true,
+    "planning_last": true,
+    "force_push_allowed": false
+  },
+  "public_boundary": {
+    "mode": "mixed",
+    "private_overlay": "local/",
+    "prohibited_evidence": [
+      "workstation paths and repository maps",
+      "device serials and real endpoints",
+      "private package identities",
+      "raw logs and captures",
+      "signing, enrollment, and pairing material",
+      "credentials and private payloads"
+    ]
+  }
+}

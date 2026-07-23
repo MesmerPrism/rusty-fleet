@@ -1,0 +1,18 @@
+name: Deep validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deep:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Deep validation
+        shell: pwsh
+        run: .\tools\Test-Repo.ps1 -Tier Deep
