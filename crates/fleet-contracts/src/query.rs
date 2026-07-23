@@ -119,6 +119,16 @@ impl QueryExpression {
                         "query value type or comparison is incompatible with the field",
                     ));
                 }
+                if value
+                    .as_ref()
+                    .is_some_and(|value| !query_value_is_bounded(value))
+                {
+                    failures.push(ContractViolation::new(
+                        "query_value_too_large",
+                        path,
+                        "query text is limited to 1024 characters and lists to 10000 values",
+                    ));
+                }
             }
             Self::And { expressions } | Self::Or { expressions } => {
                 if expressions.len() < 2 {
@@ -134,6 +144,27 @@ impl QueryExpression {
             }
             Self::Not { expression } => {
                 expression.validate_into(&format!("{path}.expression"), failures)
+            }
+        }
+    }
+
+    fn shape(&self, depth: usize) -> (usize, usize) {
+        match self {
+            Self::Predicate { .. } => (1, depth),
+            Self::And { expressions } | Self::Or { expressions } => {
+                expressions
+                    .iter()
+                    .fold((1, depth), |accumulator, expression| {
+                        let (nodes, maximum_depth) = expression.shape(depth.saturating_add(1));
+                        (
+                            accumulator.0.saturating_add(nodes),
+                            accumulator.1.max(maximum_depth),
+                        )
+                    })
+            }
+            Self::Not { expression } => {
+                let (nodes, maximum_depth) = expression.shape(depth.saturating_add(1));
+                (nodes.saturating_add(1), maximum_depth)
             }
         }
     }
@@ -190,6 +221,21 @@ impl ValidateContract for FleetQuery {
         }
         if let Some(expression) = &self.expression {
             expression.validate_into("expression", &mut failures);
+            let (nodes, depth) = expression.shape(1);
+            if nodes > 256 || depth > 16 {
+                failures.push(ContractViolation::new(
+                    "query_shape_exceeded",
+                    "expression",
+                    "queries support at most 256 nodes and 16 levels",
+                ));
+            }
+        }
+        if self.sort.len() > 8 {
+            failures.push(ContractViolation::new(
+                "too_many_sort_keys",
+                "sort",
+                "queries support at most eight sort keys",
+            ));
         }
         for (index, key) in self.sort.iter().enumerate() {
             if key
@@ -219,6 +265,16 @@ impl ValidateContract for FleetQuery {
             }
         }
         finish(failures)
+    }
+}
+
+fn query_value_is_bounded(value: &QueryValue) -> bool {
+    match value {
+        QueryValue::Text(value) => value.len() <= 1_024,
+        QueryValue::Integer(_) | QueryValue::Boolean(_) => true,
+        QueryValue::TextList(values) => {
+            values.len() <= 10_000 && values.iter().all(|value| value.len() <= 1_024)
+        }
     }
 }
 

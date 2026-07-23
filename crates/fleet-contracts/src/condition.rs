@@ -105,6 +105,13 @@ impl ValidateContract for StatusCondition {
                 "freshness deadline must not precede receive time",
             ));
         }
+        if self.extensions.len() > 32 {
+            failures.push(ContractViolation::new(
+                "condition_too_large",
+                "extensions",
+                "status conditions support at most 32 extension fields",
+            ));
+        }
         finish(failures)
     }
 }

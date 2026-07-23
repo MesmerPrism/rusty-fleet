@@ -35,7 +35,8 @@ Windows API, Android API, device tool, codec, LSL library, or database.
 
 The v1 source contracts cover:
 
-- enrolled identity and identity revision;
+- enrolled identity and identity revision plus producer source epoch and
+  within-epoch revision;
 - independent condition families with source, receive, acceptance, authority,
   sensitivity, and freshness;
 - capability support, enablement, authorization, reachability, and freshness;
@@ -66,7 +67,10 @@ An observation is rejected when:
 - the source revision is duplicate or older;
 - identity revision rolls back;
 - an identity revision changes without restarting the source revision at one;
-- stable identity fields conflict at the same identity revision.
+- stable identity fields conflict at the same identity revision;
+- a new producer epoch does not begin at revision one;
+- a previously seen producer epoch returns;
+- receive time moves backward inside one producer epoch.
 
 Accepted device records advance independently. A rejection creates a watch
 event but does not change the last accepted device state. Stale and offline
@@ -138,3 +142,6 @@ Clippy, Markdown/link checks, a structured CLI smoke run, and optional portable
 workflow validation.
 
 No M0 validation command invokes a headset or device tool.
+
+The accepted source trust boundary and deferred security work are in
+[ADR 0004](decisions/0004-m0-source-boundary-and-threat-model.md).

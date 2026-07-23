@@ -8,9 +8,10 @@ use fleet_contracts::{
     ConditionState, ContentProgressPolicy, EdgeQueuePolicy, EpochContinuity, ExperimentRun,
     FleetQuery, NativeDescriptor, NavigationRestoration, OperationLedger, OperationTargetResult,
     OverflowPolicy, ProgressApplicability, ProgressProfile, ProgressStage, ProgressStageEvidence,
-    QueueLimits, RecordingArtifact, RecordingArtifactState, SavedView, SelectionMethod,
-    Sensitivity, SourceSelection, StreamDescriptor, StreamPlane, StreamSemantic, TargetEligibility,
-    TargetSnapshot, TimingCorrelation, TimingDomain, TimingTransform, ValidateContract,
+    QueryExpression, QueueLimits, RecordingArtifact, RecordingArtifactState, SavedView,
+    SelectionMethod, Sensitivity, SourceSelection, StreamDescriptor, StreamPlane, StreamSemantic,
+    TargetEligibility, TargetSnapshot, TimingCorrelation, TimingDomain, TimingTransform,
+    ValidateContract,
 };
 use serde_json::json;
 
@@ -363,4 +364,40 @@ fn saved_view_and_operation_ledger_preserve_scope_and_per_target_results() {
     };
     assert!(ledger.validate().is_ok());
     assert_ne!(ledger.targets[0].lifecycle, ledger.targets[1].lifecycle);
+}
+
+#[test]
+fn contract_limits_reject_amplification_shapes() {
+    let mut query = all_query();
+    let mut expression = QueryExpression::Predicate {
+        field: fleet_contracts::QueryField::DisplayName,
+        comparison: fleet_contracts::Comparison::Equals,
+        value: Some(fleet_contracts::QueryValue::Text("device".to_owned())),
+        qualifier: None,
+    };
+    for _ in 0..17 {
+        expression = QueryExpression::Not {
+            expression: Box::new(expression),
+        };
+    }
+    query.expression = Some(expression);
+    assert!(
+        query
+            .validate()
+            .expect_err("deep query must fail")
+            .iter()
+            .any(|failure| failure.code == "query_shape_exceeded")
+    );
+
+    let mut stream = valid_stream();
+    stream.native_descriptor.document = Some(json!({
+        "oversized": "x".repeat(1024 * 1024 + 1)
+    }));
+    assert!(
+        stream
+            .validate()
+            .expect_err("oversized native descriptor must fail")
+            .iter()
+            .any(|failure| failure.code == "native_descriptor_too_large")
+    );
 }

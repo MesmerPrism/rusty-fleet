@@ -201,6 +201,43 @@ pub struct ProgressProfile {
     pub stages: BTreeMap<ProgressStage, ProgressStageEvidence>,
 }
 
+impl ProgressProfile {
+    /// Returns the most actionable condition among required stages.
+    ///
+    /// Ties resolve to the later stage so a sink or cleanup failure is not
+    /// hidden by an equally severe upstream condition.
+    #[must_use]
+    pub fn strongest_required_condition(&self) -> Option<(ProgressStage, ConditionState)> {
+        self.stages
+            .iter()
+            .filter_map(|(stage, evidence)| {
+                (evidence.applicability == ProgressApplicability::Required)
+                    .then_some(evidence.state.map(|state| (*stage, state)))
+                    .flatten()
+            })
+            .max_by_key(|(stage, state)| (condition_rank(*state), *stage))
+    }
+}
+
+fn condition_rank(state: ConditionState) -> u8 {
+    match state {
+        ConditionState::Current => 0,
+        ConditionState::InProgress => 1,
+        ConditionState::Busy => 2,
+        ConditionState::Unknown => 3,
+        ConditionState::Unsupported => 4,
+        ConditionState::Disabled => 5,
+        ConditionState::Restricted => 6,
+        ConditionState::Disconnected => 7,
+        ConditionState::Unavailable => 8,
+        ConditionState::Stale => 9,
+        ConditionState::Degraded => 10,
+        ConditionState::Unauthorized => 11,
+        ConditionState::Failed => 12,
+        ConditionState::Critical => 13,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueLimits {
     pub items: usize,
@@ -356,6 +393,19 @@ impl ValidateContract for StreamDescriptor {
                 "exactly one native document or role-controlled reference is required",
             ));
         }
+        if self
+            .native_descriptor
+            .document
+            .as_ref()
+            .and_then(|document| serde_json::to_vec(document).ok())
+            .is_some_and(|bytes| bytes.len() > 1024 * 1024)
+        {
+            failures.push(ContractViolation::new(
+                "native_descriptor_too_large",
+                "native_descriptor.document",
+                "inline native descriptors are limited to 1 MiB",
+            ));
+        }
         require_nonempty(
             &mut failures,
             &self.selection.query_language,
@@ -369,6 +419,13 @@ impl ValidateContract for StreamDescriptor {
                 "invalid_selection_cardinality",
                 "selection",
                 "expected cardinality must be nonzero and candidate count must match evidence",
+            ));
+        }
+        if self.selection.candidate_count > 128 {
+            failures.push(ContractViolation::new(
+                "candidate_set_too_large",
+                "selection.candidate_count",
+                "source selection retains at most 128 candidates",
             ));
         }
         if self
@@ -434,6 +491,18 @@ impl ValidateContract for StreamDescriptor {
                 "accepted authority revision must be greater than zero",
             ));
         }
+        if self.timing.domains.len() > 32
+            || self.timing.transforms.len() > 128
+            || self.progress.stages.len() > 16
+            || self.queues.len() > 64
+            || self.extensions.len() > 64
+        {
+            failures.push(ContractViolation::new(
+                "stream_descriptor_too_large",
+                "stream_descriptor",
+                "stream descriptor collection limits were exceeded",
+            ));
+        }
         for (index, domain) in self.timing.domains.iter().enumerate() {
             require_nonempty(
                 &mut failures,
@@ -483,6 +552,19 @@ impl ValidateContract for StreamDescriptor {
                 ));
             }
         }
+        let transform_ids = self
+            .timing
+            .transforms
+            .iter()
+            .map(|transform| transform.transform_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if transform_ids.len() != self.timing.transforms.len() {
+            failures.push(ContractViolation::new(
+                "duplicate_time_transform",
+                "timing.transforms",
+                "timing-transform IDs must be unique",
+            ));
+        }
         if self.timing.fixed_latency_ms.is_some()
             != self.timing.fixed_latency_uncertainty_ms.is_some()
             || self.timing.fixed_latency_ms.is_some() && self.timing.calibration_reference.is_none()
@@ -493,6 +575,21 @@ impl ValidateContract for StreamDescriptor {
                 "fixed latency requires uncertainty and a calibration reference",
             ));
         }
+        if self
+            .timing
+            .fixed_latency_ms
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
+            || self
+                .timing
+                .fixed_latency_uncertainty_ms
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            failures.push(ContractViolation::new(
+                "invalid_latency_calibration",
+                "timing",
+                "fixed latency and uncertainty must be finite and nonnegative",
+            ));
+        }
         if self.cadence.measurement_window_ms == 0
             || matches!(self.cadence.mode, CadenceMode::Regular)
                 && self.cadence.nominal_rate_hz.is_none()
@@ -501,6 +598,17 @@ impl ValidateContract for StreamDescriptor {
                 "invalid_cadence",
                 "cadence",
                 "cadence needs a measurement window and regular streams need a nominal rate",
+            ));
+        }
+        if self
+            .cadence
+            .nominal_rate_hz
+            .is_some_and(|value| !value.is_finite() || value <= 0.0)
+        {
+            failures.push(ContractViolation::new(
+                "invalid_nominal_rate",
+                "cadence.nominal_rate_hz",
+                "nominal cadence must be finite and positive when present",
             ));
         }
         if let (Some(minimum), Some(maximum)) = (
@@ -530,8 +638,15 @@ impl ValidateContract for StreamDescriptor {
             "progress.profile_id",
         );
         for (stage, evidence) in &self.progress.stages {
+            require_nonempty(
+                &mut failures,
+                &evidence.reason,
+                &format!("progress.stages.{stage:?}.reason"),
+            );
             if evidence.applicability == ProgressApplicability::Required
-                && (evidence.deadline_ms.is_none() || evidence.state.is_none())
+                && (evidence.deadline_ms.is_none()
+                    || evidence.state.is_none()
+                    || evidence.observed_revision.is_none())
             {
                 failures.push(ContractViolation::new(
                     "incomplete_required_stage",
@@ -605,6 +720,19 @@ impl ValidateContract for StreamDescriptor {
                 "admission budget must bound queue bytes and duration",
             ));
         }
+        if !self.budget.samples_or_frames_per_second.is_finite()
+            || self.budget.samples_or_frames_per_second < 0.0
+            || self
+                .budget
+                .maximum_clock_uncertainty_ms
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            failures.push(ContractViolation::new(
+                "invalid_admission_budget",
+                "budget",
+                "rate and clock-uncertainty budgets must be finite and nonnegative",
+            ));
+        }
         if let Some(recording) = &self.recording {
             require_nonempty(
                 &mut failures,
@@ -621,6 +749,33 @@ impl ValidateContract for StreamDescriptor {
                     "invalid_digest",
                     "recording.checksum_sha256",
                     "recording checksum must be lowercase SHA-256",
+                ));
+            }
+            if recording.native_metadata_digests.len() > 128 {
+                failures.push(ContractViolation::new(
+                    "recording_metadata_too_large",
+                    "recording.native_metadata_digests",
+                    "recording provenance supports at most 128 native metadata digests",
+                ));
+            }
+            if recording
+                .native_metadata_digests
+                .iter()
+                .any(|digest| !is_sha256(digest))
+            {
+                failures.push(ContractViolation::new(
+                    "invalid_digest",
+                    "recording.native_metadata_digests",
+                    "native metadata digests must be lowercase SHA-256",
+                ));
+            }
+            if recording.state == RecordingArtifactState::Complete
+                && recording.checksum_sha256.is_none()
+            {
+                failures.push(ContractViolation::new(
+                    "complete_recording_without_checksum",
+                    "recording.checksum_sha256",
+                    "complete recordings require a checksum",
                 ));
             }
         }
@@ -653,6 +808,16 @@ impl ValidateContract for StreamDescriptor {
                     "invalid_revision",
                     "experiment_run.recording_policy_revision",
                     "recording policy revision must be greater than zero",
+                ));
+            }
+            if run.required_stream_rules.len() > 128
+                || run.optional_stream_rules.len() > 128
+                || run.approved_deviations.len() > 128
+            {
+                failures.push(ContractViolation::new(
+                    "experiment_run_too_large",
+                    "experiment_run",
+                    "experiment-run rule and deviation collections are limited to 128 entries",
                 ));
             }
         }

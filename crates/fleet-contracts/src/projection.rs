@@ -24,6 +24,7 @@ pub enum ProjectionFreshness {
 pub struct DeviceRowProjection {
     pub schema: String,
     pub identity: DeviceIdentity,
+    pub source_epoch: String,
     pub accepted_revision: u64,
     pub accepted_at_ms: i64,
     pub age_ms: i64,
@@ -55,6 +56,7 @@ impl ValidateContract for DeviceRowProjection {
         if let Err(mut nested) = self.identity.validate() {
             failures.append(&mut nested);
         }
+        require_nonempty(&mut failures, &self.source_epoch, "source_epoch");
         if self.accepted_revision == 0 || self.age_ms < 0 {
             failures.push(ContractViolation::new(
                 "invalid_projection_revision_or_age",
@@ -67,6 +69,13 @@ impl ValidateContract for DeviceRowProjection {
                 "invalid_battery",
                 "battery_percent",
                 "battery percentage must be between 0 and 100",
+            ));
+        }
+        if self.conditions.len() > 16 || self.extensions.len() > 64 {
+            failures.push(ContractViolation::new(
+                "row_projection_too_large",
+                "conditions",
+                "row projections support bounded condition and extension collections",
             ));
         }
         require_nonempty(&mut failures, &self.kiosk_state, "kiosk_state");
@@ -118,6 +127,16 @@ impl ValidateContract for DeviceInspectorProjection {
         if let Err(mut nested) = self.row.validate() {
             failures.append(&mut nested);
         }
+        if self.attention.len() > 64
+            || self.streams.len() > 32
+            || self.active_operations.len() > 128
+        {
+            failures.push(ContractViolation::new(
+                "inspector_projection_too_large",
+                "inspector",
+                "inspector collection limits were exceeded",
+            ));
+        }
         for (index, condition) in self.attention.iter().enumerate() {
             if let Err(nested) = condition.validate() {
                 failures.extend(nested.into_iter().map(|failure| ContractViolation {
@@ -168,6 +187,13 @@ impl ValidateContract for DeviceDetailProjection {
         }
         if let Err(mut nested) = self.inspector.validate() {
             failures.append(&mut nested);
+        }
+        if self.condition_history.len() > 128 || self.operation_history.len() > 1_000 {
+            failures.push(ContractViolation::new(
+                "detail_projection_too_large",
+                "detail",
+                "detail history limits were exceeded",
+            ));
         }
         for (index, condition) in self.condition_history.iter().enumerate() {
             if let Err(nested) = condition.validate() {
@@ -304,6 +330,13 @@ impl ValidateContract for SavedView {
         require_nonempty(&mut failures, &self.view_id, "view_id");
         require_nonempty(&mut failures, &self.name, "name");
         require_nonempty(&mut failures, &self.density, "density");
+        if self.columns.len() > 64 || self.restoration.collapsed_groups.len() > 512 {
+            failures.push(ContractViolation::new(
+                "saved_view_too_large",
+                "saved_view",
+                "saved-view column and collapsed-group limits were exceeded",
+            ));
+        }
         if self.schema_version == 0 {
             failures.push(ContractViolation::new(
                 "invalid_schema_version",

@@ -52,13 +52,17 @@ The current source-only implementation is split into:
 - `fleetctl`: a structured JSON projection over the same local API.
 
 See the [Milestone 0 source foundation](docs/M0_SOURCE_FOUNDATION.md) for the
-current boundary and scenario model.
+current boundary and scenario model, and the
+[M0 graph/instruction review](docs/M0_GRAPH_AND_INSTRUCTION_REVIEW.md) for the
+bounded dependency, authority, activation, and instruction audit.
 
 ## Start here
 
 1. Read the [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 2. Read the [stacked milestone workflow](docs/WORKFLOW.md).
 3. Review the [architecture and ownership boundaries](docs/ARCHITECTURE.md).
+   The executable M0 trust boundary is recorded in
+   [ADR 0004](docs/decisions/0004-m0-source-boundary-and-threat-model.md).
 4. Review [datastream management](docs/DATASTREAMS.md), the
    [current Morphospace stream matrix](docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md),
    [primary-source ledger](docs/research/DATASTREAM_REFERENCE_LEDGER.md), and

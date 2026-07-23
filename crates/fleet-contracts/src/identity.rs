@@ -53,6 +53,13 @@ impl ValidateContract for DeviceIdentity {
                 "tag keys and values must not be empty",
             ));
         }
+        if self.tags.len() > 128 || self.extensions.len() > 64 {
+            failures.push(ContractViolation::new(
+                "identity_too_large",
+                "identity",
+                "identity supports at most 128 tags and 64 extension fields",
+            ));
+        }
         finish(failures)
     }
 }
@@ -70,6 +77,7 @@ pub enum KioskState {
 pub struct DeviceObservation {
     pub schema: String,
     pub identity: DeviceIdentity,
+    pub source_epoch: String,
     pub source_revision: u64,
     pub source_time_ms: i64,
     pub received_time_ms: i64,
@@ -99,6 +107,7 @@ impl ValidateContract for DeviceObservation {
         if let Err(mut nested) = self.identity.validate() {
             failures.append(&mut nested);
         }
+        require_nonempty(&mut failures, &self.source_epoch, "source_epoch");
         if self.source_revision == 0 {
             failures.push(ContractViolation::new(
                 "invalid_revision",
@@ -113,6 +122,24 @@ impl ValidateContract for DeviceObservation {
                 "invalid_battery",
                 "battery_percent",
                 "battery percentage must be between 0 and 100",
+            ));
+        }
+        if self.conditions.len() > 64
+            || self.streams.len() > 32
+            || self.capabilities.capabilities.len() > 128
+            || self.extensions.len() > 64
+        {
+            failures.push(ContractViolation::new(
+                "observation_too_large",
+                "observation",
+                "observation collection limits were exceeded",
+            ));
+        }
+        if serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() > 2 * 1024 * 1024) {
+            failures.push(ContractViolation::new(
+                "observation_bytes_exceeded",
+                "observation",
+                "serialized observation exceeds the 2 MiB contract limit",
             ));
         }
         for (index, condition) in self.conditions.iter().enumerate() {

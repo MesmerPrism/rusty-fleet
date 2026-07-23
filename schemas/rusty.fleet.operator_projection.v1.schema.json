@@ -47,6 +47,7 @@
       "required": [
         "schema",
         "identity",
+        "source_epoch",
         "accepted_revision",
         "accepted_at_ms",
         "age_ms",

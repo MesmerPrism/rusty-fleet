@@ -104,6 +104,24 @@ impl ValidateContract for TargetSnapshot {
                 "all target identity revisions must be greater than zero",
             ));
         }
+        if self
+            .identity_revisions
+            .keys()
+            .any(|device_id| device_id.trim().is_empty())
+        {
+            failures.push(ContractViolation::new(
+                "invalid_device_id",
+                "identity_revisions",
+                "target device IDs must not be empty",
+            ));
+        }
+        if self.identity_revisions.len() > 10_000 || self.extensions.len() > 64 {
+            failures.push(ContractViolation::new(
+                "target_snapshot_too_large",
+                "identity_revisions",
+                "target snapshots support at most 10000 targets and 64 extension fields",
+            ));
+        }
         if let Err(mut nested) = self.query.validate() {
             failures.append(&mut nested);
         }
@@ -164,8 +182,22 @@ impl ValidateContract for OperationLedger {
         }
         require_nonempty(&mut failures, &self.operation_id, "operation_id");
         require_nonempty(&mut failures, &self.action_id, "action_id");
+        if self.targets.len() > 10_000 || self.extensions.len() > 64 {
+            failures.push(ContractViolation::new(
+                "operation_ledger_too_large",
+                "targets",
+                "operation ledgers support at most 10000 targets and 64 extension fields",
+            ));
+        }
         if let Err(mut nested) = self.target_snapshot.validate() {
             failures.append(&mut nested);
+        }
+        if self.targets.len() != self.target_snapshot.identity_revisions.len() {
+            failures.push(ContractViolation::new(
+                "target_ledger_mismatch",
+                "targets",
+                "operation ledger must retain one result for every snapshotted target",
+            ));
         }
         let mut seen = BTreeMap::new();
         for (index, target) in self.targets.iter().enumerate() {
@@ -179,6 +211,11 @@ impl ValidateContract for OperationLedger {
                 &target.reason_code,
                 &format!("targets[{index}].reason_code"),
             );
+            require_nonempty(
+                &mut failures,
+                &target.message,
+                &format!("targets[{index}].message"),
+            );
             if target.identity_revision == 0 {
                 failures.push(ContractViolation::new(
                     "invalid_identity_revision",
@@ -191,6 +228,18 @@ impl ValidateContract for OperationLedger {
                     "duplicate_target",
                     &format!("targets[{index}].device_id"),
                     "operation target occurs more than once",
+                ));
+            }
+            if self
+                .target_snapshot
+                .identity_revisions
+                .get(&target.device_id)
+                .is_none_or(|revision| *revision != target.identity_revision)
+            {
+                failures.push(ContractViolation::new(
+                    "target_snapshot_binding_mismatch",
+                    &format!("targets[{index}]"),
+                    "target identity must match the frozen target snapshot",
                 ));
             }
         }

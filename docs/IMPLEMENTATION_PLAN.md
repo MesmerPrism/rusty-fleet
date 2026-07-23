@@ -140,7 +140,10 @@ permissions, ADB, media, or relay are active.
 ### Stack
 
 - Record product-boundary, threat-model, persistence, identity, and protocol
-  ADRs.
+  ADRs. The M0 source boundary and threat model are accepted in
+  [ADR 0004](decisions/0004-m0-source-boundary-and-threat-model.md); real
+  ingress authentication and persistence selection remain closed later
+  decisions.
 - Define versioned device identity, status snapshot, capability snapshot,
   canonical status-condition, status-source, staleness, command-lifecycle, and
   audit contracts.

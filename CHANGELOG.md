@@ -30,3 +30,6 @@ The project follows Semantic Versioning once runtime releases begin.
   `fleetctl`/local-API projection parity. The source foundation remains inert:
   no listener, device, permission, media, persistence, or relay path is
   activated.
+- M0 source-boundary threat model with restart-safe producer epochs, replay and
+  identity-conflict rejection, receive-time ordering, and finite contract
+  limits before any real ingress is introduced.

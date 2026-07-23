@@ -9,7 +9,8 @@ Milestone 0 defines versioned Rusty Fleet product contracts here:
 - operation ledgers.
 
 Rust validation remains normative for cross-field invariants that JSON Schema
-cannot express clearly, including revision transitions, source-selection
+cannot express clearly, including identity/source-epoch/revision transitions,
+source-selection
 cardinality, component-epoch continuity, timing transforms, per-edge bounds,
 and operation lifecycle.
 

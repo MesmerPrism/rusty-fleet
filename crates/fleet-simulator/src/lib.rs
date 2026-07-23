@@ -7,8 +7,10 @@ use std::collections::BTreeMap;
 
 use fleet_contracts::{
     AuthorizationState, CapabilitySnapshot, CapabilityState, ConditionFamily, ConditionState,
-    DeviceIdentity, DeviceObservation, EnablementState, FreshnessState, KioskState,
-    ReachabilityState, Sensitivity, StatusCondition, StatusSource, SupportState,
+    ContentProgressPolicy, DeviceIdentity, DeviceObservation, EnablementState, EpochContinuity,
+    ExperimentRun, FreshnessState, KioskState, ProgressApplicability, ProgressStage,
+    ProgressStageEvidence, ReachabilityState, RecordingArtifact, RecordingArtifactState,
+    SelectionMethod, Sensitivity, StatusCondition, StatusSource, StreamDescriptor, SupportState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +20,7 @@ pub const BASE_TIME_MS: i64 = 2_000_000_000_000;
 #[serde(rename_all = "snake_case")]
 pub enum ScenarioMutationKind {
     Reconnect,
+    AgentRestart,
     Replay,
     ReorderedRevision,
     DuplicateIdentity,
@@ -40,6 +43,363 @@ pub struct FleetScenario {
     pub seed: u64,
     pub initial: Vec<DeviceObservation>,
     pub mutations: Vec<ScenarioMutation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DatastreamScenarioKind {
+    AmbiguousSelection,
+    NativeDescriptorDrift,
+    ComponentDiscontinuity,
+    ClockReset,
+    ClockDegraded,
+    ValidSilence,
+    NoData,
+    Stalled,
+    ByteOnlyActivity,
+    ChangingContent,
+    StaticContent,
+    DecodeOrSchemaFailure,
+    SinkFailure,
+    RecordingFailure,
+    BudgetRejected,
+    Recovering,
+    ReplayValidated,
+    CleanupFailure,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DatastreamScenario {
+    pub schema: String,
+    pub kind: DatastreamScenarioKind,
+    pub expected_stage: ProgressStage,
+    pub expected_condition: ConditionState,
+    pub descriptor: StreamDescriptor,
+}
+
+#[must_use]
+pub fn datastream_scenarios() -> Vec<DatastreamScenario> {
+    use DatastreamScenarioKind::{
+        AmbiguousSelection, BudgetRejected, ByteOnlyActivity, ChangingContent, CleanupFailure,
+        ClockDegraded, ClockReset, ComponentDiscontinuity, DecodeOrSchemaFailure,
+        NativeDescriptorDrift, NoData, RecordingFailure, Recovering, ReplayValidated, SinkFailure,
+        Stalled, StaticContent, ValidSilence,
+    };
+
+    let kinds = [
+        AmbiguousSelection,
+        NativeDescriptorDrift,
+        ComponentDiscontinuity,
+        ClockReset,
+        ClockDegraded,
+        ValidSilence,
+        NoData,
+        Stalled,
+        ByteOnlyActivity,
+        ChangingContent,
+        StaticContent,
+        DecodeOrSchemaFailure,
+        SinkFailure,
+        RecordingFailure,
+        BudgetRejected,
+        Recovering,
+        ReplayValidated,
+        CleanupFailure,
+    ];
+    kinds
+        .into_iter()
+        .map(|kind| {
+            let mut descriptor = base_stream_descriptor();
+            let (expected_stage, expected_condition) =
+                configure_stream_scenario(kind, &mut descriptor);
+            DatastreamScenario {
+                schema: "rusty.fleet.datastream_scenario.v1".to_owned(),
+                kind,
+                expected_stage,
+                expected_condition,
+                descriptor,
+            }
+        })
+        .collect()
+}
+
+fn base_stream_descriptor() -> StreamDescriptor {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/stream-descriptor.valid.json"
+    ))
+    .expect("repository stream fixture must deserialize")
+}
+
+fn configure_stream_scenario(
+    kind: DatastreamScenarioKind,
+    descriptor: &mut StreamDescriptor,
+) -> (ProgressStage, ConditionState) {
+    use DatastreamScenarioKind::{
+        AmbiguousSelection, BudgetRejected, ByteOnlyActivity, ChangingContent, CleanupFailure,
+        ClockDegraded, ClockReset, ComponentDiscontinuity, DecodeOrSchemaFailure,
+        NativeDescriptorDrift, NoData, RecordingFailure, Recovering, ReplayValidated, SinkFailure,
+        Stalled, StaticContent, ValidSilence,
+    };
+
+    match kind {
+        AmbiguousSelection => {
+            descriptor.selection.method = SelectionMethod::UnresolvedAmbiguous;
+            descriptor.selection.candidate_count = 2;
+            descriptor.selection.candidate_descriptor_digests.push(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+            );
+            descriptor.selection.chosen_native_instance = None;
+            insert_stage(
+                descriptor,
+                ProgressStage::SourceReceipt,
+                ConditionState::Unavailable,
+                "ambiguous_selection",
+            );
+            (ProgressStage::SourceReceipt, ConditionState::Unavailable)
+        }
+        NativeDescriptorDrift => {
+            descriptor.native_descriptor.digest_sha256 =
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned();
+            descriptor.epochs.source.predecessor = Some(descriptor.epochs.source.id.clone());
+            descriptor.epochs.source.id = "source-2".to_owned();
+            descriptor.epochs.source.reason = "native_descriptor_drift".to_owned();
+            descriptor.epochs.source.continuity = EpochContinuity::Discontinuous;
+            insert_stage(
+                descriptor,
+                ProgressStage::SourceReceipt,
+                ConditionState::Degraded,
+                "native_descriptor_drift",
+            );
+            (ProgressStage::SourceReceipt, ConditionState::Degraded)
+        }
+        ComponentDiscontinuity => {
+            if let Some(route) = &mut descriptor.epochs.route {
+                route.predecessor = Some(route.id.clone());
+                route.id = "route-2".to_owned();
+                route.reason = "route_replaced".to_owned();
+                route.continuity = EpochContinuity::Discontinuous;
+            }
+            insert_stage(
+                descriptor,
+                ProgressStage::Route,
+                ConditionState::Degraded,
+                "component_discontinuity",
+            );
+            (ProgressStage::Route, ConditionState::Degraded)
+        }
+        ClockReset => {
+            descriptor.timing.clock_reset_count = 1;
+            insert_stage(
+                descriptor,
+                ProgressStage::SourceReceipt,
+                ConditionState::Degraded,
+                "clock_reset",
+            );
+            (ProgressStage::SourceReceipt, ConditionState::Degraded)
+        }
+        ClockDegraded => {
+            descriptor.timing.transforms[0].uncertainty_ms = 8.0;
+            insert_stage(
+                descriptor,
+                ProgressStage::SourceReceipt,
+                ConditionState::Degraded,
+                "clock_uncertainty_exceeds_budget",
+            );
+            (ProgressStage::SourceReceipt, ConditionState::Degraded)
+        }
+        ValidSilence => {
+            descriptor.cadence.mode = fleet_contracts::CadenceMode::EventDriven;
+            descriptor.cadence.nominal_rate_hz = None;
+            descriptor.cadence.accepted_rate_min_hz = None;
+            descriptor.cadence.accepted_rate_max_hz = None;
+            descriptor.cadence.no_data_deadline_ms = None;
+            descriptor.cadence.heartbeat = None;
+            descriptor.progress.content_progress = ContentProgressPolicy::NotApplicable;
+            insert_stage(
+                descriptor,
+                ProgressStage::Route,
+                ConditionState::Current,
+                "valid_event_silence",
+            );
+            (ProgressStage::Route, ConditionState::Current)
+        }
+        NoData => {
+            insert_stage(
+                descriptor,
+                ProgressStage::CompletePayload,
+                ConditionState::Failed,
+                "no_data_deadline_exceeded",
+            );
+            (ProgressStage::CompletePayload, ConditionState::Failed)
+        }
+        Stalled => {
+            insert_stage(
+                descriptor,
+                ProgressStage::CompletePayload,
+                ConditionState::Degraded,
+                "payload_stalled",
+            );
+            (ProgressStage::CompletePayload, ConditionState::Degraded)
+        }
+        ByteOnlyActivity => {
+            insert_stage(
+                descriptor,
+                ProgressStage::Bytes,
+                ConditionState::Current,
+                "bytes_advancing",
+            );
+            insert_stage(
+                descriptor,
+                ProgressStage::CompletePayload,
+                ConditionState::Failed,
+                "byte_only_activity",
+            );
+            (ProgressStage::CompletePayload, ConditionState::Failed)
+        }
+        ChangingContent => {
+            descriptor.progress.content_progress = ContentProgressPolicy::ChangingIdentity;
+            insert_stage(
+                descriptor,
+                ProgressStage::Sink,
+                ConditionState::Current,
+                "content_identity_advancing",
+            );
+            (ProgressStage::Sink, ConditionState::Current)
+        }
+        StaticContent => {
+            descriptor.progress.content_progress = ContentProgressPolicy::ExpectedStatic;
+            insert_stage(
+                descriptor,
+                ProgressStage::Sink,
+                ConditionState::Current,
+                "expected_static_content",
+            );
+            (ProgressStage::Sink, ConditionState::Current)
+        }
+        DecodeOrSchemaFailure => {
+            insert_stage(
+                descriptor,
+                ProgressStage::DecodeOrSchema,
+                ConditionState::Failed,
+                "schema_validation_failed",
+            );
+            (ProgressStage::DecodeOrSchema, ConditionState::Failed)
+        }
+        SinkFailure => {
+            insert_stage(
+                descriptor,
+                ProgressStage::Sink,
+                ConditionState::Failed,
+                "sink_apply_failed",
+            );
+            (ProgressStage::Sink, ConditionState::Failed)
+        }
+        RecordingFailure => {
+            add_recording(descriptor, RecordingArtifactState::Failed, "write_failed");
+            insert_stage(
+                descriptor,
+                ProgressStage::Recording,
+                ConditionState::Failed,
+                "recording_write_failed",
+            );
+            (ProgressStage::Recording, ConditionState::Failed)
+        }
+        BudgetRejected => {
+            insert_stage(
+                descriptor,
+                ProgressStage::Admission,
+                ConditionState::Failed,
+                "budget_rejected",
+            );
+            (ProgressStage::Admission, ConditionState::Failed)
+        }
+        Recovering => {
+            insert_stage(
+                descriptor,
+                ProgressStage::Route,
+                ConditionState::InProgress,
+                "bounded_recovery_attempt_1",
+            );
+            (ProgressStage::Route, ConditionState::InProgress)
+        }
+        ReplayValidated => {
+            add_recording(
+                descriptor,
+                RecordingArtifactState::Complete,
+                "xdf_round_trip_passed",
+            );
+            insert_stage(
+                descriptor,
+                ProgressStage::Recording,
+                ConditionState::Current,
+                "replay_validated",
+            );
+            (ProgressStage::Recording, ConditionState::Current)
+        }
+        CleanupFailure => {
+            insert_stage(
+                descriptor,
+                ProgressStage::Cleanup,
+                ConditionState::Failed,
+                "cleanup_residue",
+            );
+            (ProgressStage::Cleanup, ConditionState::Failed)
+        }
+    }
+}
+
+fn insert_stage(
+    descriptor: &mut StreamDescriptor,
+    stage: ProgressStage,
+    state: ConditionState,
+    reason: &str,
+) {
+    descriptor.progress.stages.insert(
+        stage,
+        ProgressStageEvidence {
+            applicability: ProgressApplicability::Required,
+            deadline_ms: Some(2_000),
+            state: Some(state),
+            observed_revision: Some(descriptor.accepted_authority_revision),
+            last_progress_ms: Some(BASE_TIME_MS),
+            reason: reason.to_owned(),
+        },
+    );
+}
+
+fn add_recording(
+    descriptor: &mut StreamDescriptor,
+    state: RecordingArtifactState,
+    replay_validation: &str,
+) {
+    descriptor.experiment_run = Some(ExperimentRun {
+        run_id: "synthetic-run-1".to_owned(),
+        protocol_id: "synthetic-protocol".to_owned(),
+        protocol_version: "1".to_owned(),
+        participant_reference: Some("synthetic-participant".to_owned()),
+        required_stream_rules: vec!["EEG".to_owned()],
+        optional_stream_rules: Vec::new(),
+        marker_schema: None,
+        selection_snapshot_id: "synthetic-selection-1".to_owned(),
+        started_at_ms: BASE_TIME_MS,
+        recording_policy_revision: 1,
+        approved_deviations: Vec::new(),
+    });
+    descriptor.recording = Some(RecordingArtifact {
+        artifact_id: "synthetic-artifact-1".to_owned(),
+        format: "xdf".to_owned(),
+        state,
+        bytes_written: 4_096,
+        last_write_ms: Some(BASE_TIME_MS + 1_000),
+        native_metadata_digests: vec![descriptor.native_descriptor.digest_sha256.clone()],
+        clock_history_present: true,
+        checksum_sha256: (state == RecordingArtifactState::Complete)
+            .then(|| "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_owned()),
+        encrypted_at_rest: true,
+        retention_until_ms: Some(BASE_TIME_MS + 86_400_000),
+        cleanup_receipt_id: None,
+        replay_validation: Some(replay_validation.to_owned()),
+    });
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -91,8 +451,24 @@ impl ScenarioBuilder {
                 kind: ScenarioMutationKind::ReorderedRevision,
                 observation: reordered,
             });
+            let mut restart = first.clone();
+            restart.source_epoch = "agent-epoch-2".to_owned();
+            restart.source_revision = 1;
+            mutations.push(ScenarioMutation {
+                at_ms: BASE_TIME_MS + 8_500,
+                kind: ScenarioMutationKind::AgentRestart,
+                observation: restart,
+            });
+            let mut old_epoch_replay = first.clone();
+            old_epoch_replay.source_revision = 4;
+            mutations.push(ScenarioMutation {
+                at_ms: BASE_TIME_MS + 8_501,
+                kind: ScenarioMutationKind::Replay,
+                observation: old_epoch_replay,
+            });
             let mut reenrollment = first.clone();
             reenrollment.identity.identity_revision = 2;
+            reenrollment.source_epoch = "agent-epoch-3".to_owned();
             reenrollment.source_revision = 1;
             reenrollment
                 .identity
@@ -273,6 +649,7 @@ fn observation(
             tags,
             extensions: BTreeMap::new(),
         },
+        source_epoch: "agent-epoch-1".to_owned(),
         source_revision,
         source_time_ms: observed_at,
         received_time_ms: observed_at,
@@ -357,9 +734,13 @@ fn capability(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use fleet_contracts::ValidateContract;
 
-    use super::{ScenarioBuilder, ScenarioMutationKind, supported_scale_fixtures};
+    use super::{
+        ScenarioBuilder, ScenarioMutationKind, datastream_scenarios, supported_scale_fixtures,
+    };
 
     #[test]
     fn every_declared_scale_is_deterministic_and_valid() {
@@ -392,5 +773,29 @@ mod tests {
                 .iter()
                 .any(|mutation| mutation.kind == ScenarioMutationKind::CapabilityDowngrade)
         );
+    }
+
+    #[test]
+    fn datastream_matrix_is_complete_valid_and_truthful() {
+        let scenarios = datastream_scenarios();
+        assert_eq!(scenarios.len(), 18);
+        let kinds = scenarios
+            .iter()
+            .map(|scenario| scenario.kind)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(kinds.len(), scenarios.len());
+        for scenario in scenarios {
+            assert!(
+                scenario.descriptor.validate().is_ok(),
+                "{:?} descriptor must validate",
+                scenario.kind
+            );
+            assert_eq!(
+                scenario.descriptor.progress.strongest_required_condition(),
+                Some((scenario.expected_stage, scenario.expected_condition)),
+                "{:?} strongest condition must match the fixture expectation",
+                scenario.kind
+            );
+        }
     }
 }

@@ -8,6 +8,7 @@
     "hardware_class": "standalone_xr",
     "tags": {}
   },
+  "source_epoch": "",
   "source_revision": 0,
   "source_time_ms": 2000000000000,
   "received_time_ms": 2000000000000,

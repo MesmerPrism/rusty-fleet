@@ -120,6 +120,13 @@ impl CapabilitySnapshot {
 impl ValidateContract for CapabilitySnapshot {
     fn validate(&self) -> Result<(), Vec<ContractViolation>> {
         let mut failures = Vec::new();
+        if self.capabilities.len() > 128 || self.extensions.len() > 64 {
+            failures.push(ContractViolation::new(
+                "capability_snapshot_too_large",
+                "capabilities",
+                "capability snapshots support at most 128 entries and 64 extension fields",
+            ));
+        }
         for (key, capability) in &self.capabilities {
             if key != &capability.capability_id {
                 failures.push(ContractViolation::new(

@@ -213,11 +213,13 @@ function Test-RequiredFiles {
         "docs/DATASTREAMS.md",
         "docs/IMPLEMENTATION_PLAN.md",
         "docs/M0_SOURCE_FOUNDATION.md",
+        "docs/M0_GRAPH_AND_INSTRUCTION_REVIEW.md",
         "docs/OPERATOR_UI.md",
         "docs/WORKFLOW.md",
         "docs/VALIDATION.md",
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
+        "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
         "docs/research/DATASTREAM_REFERENCE_LEDGER.md",
         "docs/research/FLEET_RESEARCH_INTEGRATION_REVIEW.md",
         "docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md",
@@ -287,7 +289,8 @@ function Test-SourceImplementation {
         $scenarioManifest.schema -eq "rusty.fleet.fixture_manifest.v1" -and
         $scenarioManifest.seed -eq 5932739705870634068 -and
         (@($scenarioManifest.sizes) -join ",") -eq "4,50,250,1000,5000" -and
-        @($scenarioManifest.mutations).Count -ge 7
+        @($scenarioManifest.mutations).Count -ge 7 -and
+        @($scenarioManifest.datastream_conditions).Count -eq 18
     ) -Message "Deterministic simulator fixture manifest is stale or damaged."
 
     Invoke-Cargo -Arguments @("fmt", "--all", "--", "--check")
@@ -320,8 +323,8 @@ function Test-PlanningInvariants {
     $unit = Get-Content -LiteralPath $unitPath -Raw | ConvertFrom-Json -Depth 100
     Assert-True -Condition ($unit.unit_id -eq "fleet-m0-foundation-and-simulator") `
         -Message "Unexpected Milestone 0 unit ID."
-    Assert-True -Condition ($unit.status -in @("proposed", "ready", "active")) `
-        -Message "Milestone 0 may be proposed, ready, or active only at this implementation checkpoint."
+    Assert-True -Condition ($unit.status -in @("proposed", "ready", "active", "validating", "accepted")) `
+        -Message "Milestone 0 has an unsupported workflow status."
     if ($unit.status -eq "ready") {
         $readyEventId = "$($unit.unit_id)-ready-0001"
         Get-TransitionBinding -Unit $unit -State $state -EventId $readyEventId `
@@ -361,10 +364,40 @@ function Test-PlanningInvariants {
             $repositoryHeads[0].branch -eq "main"
         ) -Message "Active Milestone 0 claim baseline is stale or damaged."
     }
+    if ($unit.status -eq "validating") {
+        Assert-True -Condition (
+            $state.current_unit -eq $unit.unit_id -and
+            $state.next_ready_unit -eq $null
+        ) -Message "Validating Milestone 0 is not the current workflow authority."
+    }
+    if ($unit.status -eq "accepted") {
+        $acceptedEventId = "$($unit.unit_id)-accepted-0005"
+        Get-TransitionBinding -Unit $unit -State $state -EventId $acceptedEventId `
+            -ExpectedStatus "accepted" -ExpectedCurrentUnit $null `
+            -ExpectedNextReadyUnit $null | Out-Null
+        Assert-True -Condition (
+            $state.validation_checkpoint.result -eq "pass" -and
+            $state.last_accepted_receipt -eq $state.validation_checkpoint.receipt -and
+            @($unit.instruction_surfaces | Where-Object { $_.status -ne "complete" }).Count -eq 0
+        ) -Message "Accepted Milestone 0 is missing passing validation or instruction completion."
+    }
     Assert-True -Condition (@($unit.acceptance).Count -ge 5) `
         -Message "Milestone 0 must remain a vertical stack with complete acceptance coverage."
     Assert-True -Condition (@($unit.acceptance.acceptance_id) -contains "canonical-datastream-projections") `
         -Message "Milestone 0 must include source-only datastream contract acceptance."
+    $threatModel = Get-Content -LiteralPath (
+        Join-Path $repoRoot "docs/decisions/0004-m0-source-boundary-and-threat-model.md"
+    ) -Raw
+    foreach ($phrase in @(
+        "source epoch",
+        "previously seen",
+        "finite contract limits",
+        "pre-deserialization",
+        "accepted for Milestone 0"
+    )) {
+        Assert-True -Condition ($threatModel.Contains($phrase, [StringComparison]::OrdinalIgnoreCase)) `
+            -Message "Milestone 0 threat-model guardrail is missing: $phrase"
+    }
 }
 
 function Test-DatastreamPlanning {

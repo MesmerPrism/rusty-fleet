@@ -52,6 +52,9 @@ pub enum RejectionReason {
     IdentityRevisionRollback,
     IdentityRevisionChangedWithoutRestart,
     IdentityConflict,
+    SourceEpochChangedWithoutRestart,
+    SourceEpochReplay,
+    ReceiveTimeRegression,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +120,7 @@ struct DeviceRecord {
     accepted_at_ms: i64,
     accepted_revision: u64,
     condition_history: Vec<StatusCondition>,
+    seen_source_epochs: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -198,16 +202,36 @@ impl FleetHub {
                 && observation.source_revision != 1
             {
                 Some(RejectionReason::IdentityRevisionChangedWithoutRestart)
+            } else if observation.source_epoch != existing.observation.source_epoch
+                && existing
+                    .seen_source_epochs
+                    .contains(&observation.source_epoch)
+            {
+                Some(RejectionReason::SourceEpochReplay)
             } else if observation.identity.identity_revision
                 == existing.observation.identity.identity_revision
+                && observation.source_epoch != existing.observation.source_epoch
+                && observation.source_revision != 1
+            {
+                Some(RejectionReason::SourceEpochChangedWithoutRestart)
+            } else if observation.identity.identity_revision
+                == existing.observation.identity.identity_revision
+                && observation.source_epoch == existing.observation.source_epoch
                 && observation.source_revision == existing.observation.source_revision
             {
                 Some(RejectionReason::DuplicateRevision)
             } else if observation.identity.identity_revision
                 == existing.observation.identity.identity_revision
+                && observation.source_epoch == existing.observation.source_epoch
                 && observation.source_revision < existing.observation.source_revision
             {
                 Some(RejectionReason::StaleRevision)
+            } else if observation.identity.identity_revision
+                == existing.observation.identity.identity_revision
+                && observation.source_epoch == existing.observation.source_epoch
+                && observation.received_time_ms < existing.observation.received_time_ms
+            {
+                Some(RejectionReason::ReceiveTimeRegression)
             } else {
                 None
             };
@@ -235,6 +259,11 @@ impl FleetHub {
             let keep_from = history.len() - self.policy.history_limit_per_device;
             history.drain(..keep_from);
         }
+        let mut seen_source_epochs = self
+            .devices
+            .get(&device_id)
+            .map_or_else(BTreeSet::new, |record| record.seen_source_epochs.clone());
+        seen_source_epochs.insert(observation.source_epoch.clone());
         let source_revision = observation.source_revision;
         self.devices.insert(
             device_id.clone(),
@@ -243,6 +272,7 @@ impl FleetHub {
                 accepted_at_ms: now_ms,
                 accepted_revision: self.result_revision,
                 condition_history: history,
+                seen_source_epochs,
             },
         );
         let decision = ObservationDecision::Accepted {
@@ -281,6 +311,7 @@ impl FleetHub {
         DeviceRowProjection {
             schema: ROW_SCHEMA.to_owned(),
             identity: record.observation.identity.clone(),
+            source_epoch: record.observation.source_epoch.clone(),
             accepted_revision: record.accepted_revision,
             accepted_at_ms: record.accepted_at_ms,
             age_ms,
@@ -772,8 +803,16 @@ mod tests {
         }
         assert!(reasons.contains(&RejectionReason::StaleRevision));
         assert!(reasons.contains(&RejectionReason::IdentityConflict));
+        assert!(reasons.contains(&RejectionReason::SourceEpochReplay));
         assert!(reasons.contains(&RejectionReason::ContractInvalid));
         assert_eq!(hub.device_count(), 4);
+        assert_eq!(
+            hub.inspect("sim-00001", BASE_TIME_MS + 10_000)
+                .expect("device")
+                .row
+                .source_epoch,
+            "agent-epoch-3"
+        );
     }
 
     #[test]
@@ -839,5 +878,30 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.window_count, 7);
         assert_eq!(first.total_count, 25);
+    }
+
+    #[test]
+    fn five_thousand_device_fixture_remains_windowed() {
+        let scenario = ScenarioBuilder::new(5_000).build();
+        let mut hub = FleetHub::new(HubPolicy::default());
+        for observation in scenario.initial {
+            assert!(matches!(
+                hub.accept_observation(observation, BASE_TIME_MS),
+                ObservationDecision::Accepted { .. }
+            ));
+        }
+        let result = hub
+            .list(&all_query(250), BASE_TIME_MS)
+            .expect("large deterministic query");
+        assert_eq!(result.total_count, 5_000);
+        assert_eq!(result.window_count, 250);
+        assert_eq!(
+            result.rows.first().expect("first row").identity.device_id,
+            "sim-00001"
+        );
+        assert_eq!(
+            result.rows.last().expect("last row").identity.device_id,
+            "sim-00250"
+        );
     }
 }
