@@ -60,11 +60,26 @@ An operator can:
     cleanup, retry, and cancellation are product contracts.
 16. **Accessible scale:** keyboard, UI Automation, high contrast, scaling, and
     representative fleet sizes are milestone acceptance concerns.
+17. **Stream identity:** a logical stream, provider generation, and accepted
+    authority revision jointly identify current stream evidence.
+18. **Explicit time:** source clocks, LSL correction, media PTS, receive time,
+    and wall time remain named domains with inspectable correlation.
+19. **Bounded flow:** every queue, retry, recovery, recording, and fan-out path
+    has a declared bound and policy.
+20. **Progress truth:** discovery, admission, transport/process, bytes,
+    samples/frames, decode/schema, sink progress, and cleanup remain separate.
+21. **Admission budgets:** protected control capacity and fair per-device,
+    provider, route, host, relay, and global limits precede optional streams.
 
 The normative UI behavior is in
 [Operator UI Architecture](OPERATOR_UI.md); its external design pressure and
 provenance are in
 [the source ledger](research/FLEET_UI_SOURCE_LEDGER.md).
+The normative cross-stream behavior is in
+[Datastream Management](DATASTREAMS.md); current implementation maturity and
+external design pressure are in the
+[Morphospace stream matrix](research/MORPHOSPACE_DATASTREAM_MATRIX.md) and
+[datastream source ledger](research/DATASTREAM_REFERENCE_LEDGER.md).
 
 ## Initial technical shape
 
@@ -124,11 +139,16 @@ permissions, ADB, media, or relay are active.
 - Define versioned device identity, status snapshot, capability snapshot,
   canonical status-condition, status-source, staleness, command-lifecycle, and
   audit contracts.
+- Define source-only stream descriptor, provider-generation, timestamp-domain,
+  progress/health, queue-policy, admission-budget, and cleanup projections.
 - Define separate versioned fleet-row, inspector, full-detail, summary-count,
   operation-ledger, canonical-query, saved-view, and navigation-restoration
   projections.
 - Add valid, damaged, replayed, stale, reordered, and partial-capability
   fixtures.
+- Add stream fixtures for generation discontinuity, missing clock
+  correlation, no data, stall, byte-only activity, frozen frames, decode/sink
+  failure, queue saturation, budget rejection, recovery, and cleanup failure.
 - Implement an in-memory Hub state engine and deterministic clock.
 - Implement a simulator that can create, update, disconnect, reorder, and
   damage at least a representative fleet, not just one happy-path device.
@@ -149,6 +169,11 @@ permissions, ADB, media, or relay are active.
 - Stale, offline, rejected, and downgraded devices are distinguishable.
 - Independent condition families retain source, age, reason, authority, and
   freshness; no aggregate health score becomes authority.
+- Simulated stream projections distinguish availability, admission, transport,
+  payload progress, decode/schema, sink, and cleanup, and reject stale
+  generation or authority evidence.
+- Every simulated queue and budget is finite; status/control reserve remains
+  available during simulated high-rate pressure.
 - Invalid or replayed status cannot advance accepted state.
 - Scale fixtures remain deterministic and bounded, and their use does not
   introduce UI or runtime effects.
@@ -177,6 +202,13 @@ headsets.
   fields and effective capability evidence.
 - Define truthful sources for battery, charging, lifecycle, self/participating
   foreground state, and platform-limited foreground state.
+- Admit one bounded timestamped-observation path against an exact promoted
+  owner contract. Rusty LSL is the preferred compatibility adapter when its
+  declared format, shape, discovery, recovery, clock, and queue surface fits;
+  unsupported cases remain explicit.
+- Project raw source time, clock-correlation evidence, provider generation,
+  sample progress, loss, backlog, recovery, and cleanup without making LSL
+  discovery a device-enrollment or command-authority route.
 - Add the first WPF fleet table with filtering, grouping, detail inspection,
   a persistent selected-device inspector, independent status grammar, visible
   active scope, stable live ordering, staleness, and capability projections.
@@ -196,6 +228,9 @@ headsets.
 - The UI never presents a platform-limited fact as authoritative foreground
   state.
 - Loss of transport or capability produces a visible degraded state.
+- An ambiguous discovery result, missing recovery identity, stale provider
+  generation, or unsupported stream shape fails closed with an inspectable
+  reason.
 - Detail navigation and refresh preserve query, filters, grouping, sort,
   selection, scroll anchor, focus, and inspector context.
 - Keyboard, UI Automation, Narrator, high-contrast, large-text, and scaling
@@ -291,44 +326,70 @@ base agent.
 Automatic ADB enablement, hidden developer-mode changes, broad shell authority,
 and relay-to-ADB tunneling.
 
-## Milestone 4 — Selectable media sessions
+## Milestone 4 — Selected datastream and media operations
 
 ### Outcome
 
-The dashboard discovers available media sources, requests a selected session,
-and renders or hands off an explicitly chosen stream without coupling media
-payloads to the fleet control channel.
+The dashboard composes available stream manifests, admits bounded
+subscriptions or media sessions, and renders, hands off, records, or inspects
+an explicitly chosen stream without coupling high-rate payloads to the fleet
+control channel.
 
 ### Stack
 
-- Define product-level source catalog and layout selection over accepted
-  Manifold stream/session references.
+- Implement the product-level stream catalog, lifecycle, provider-generation,
+  time-correlation, health, sensitivity, cost, and layout projections over
+  accepted Manifold manifests, subscriptions, and session references.
 - Keep source, processor, route/socket provider, codec, sink, and cleanup
   receipts distinct.
-- Adopt existing Rusty Morphospace media sources through adapters, beginning
-  receiver-first.
-- Add one preview surface and equivalent CLI/API session reports.
+- Add per-device/provider/route/host and global admission budgets, protected
+  control capacity, fair scheduling, deterministic rejection reasons, and
+  bounded preemption.
+- Adopt exact promoted Rusty Morphospace sample and media sources through
+  adapters, beginning receiver-first for media.
+- Add one selected sample/detail surface and one selected media preview, with
+  equivalent CLI/API catalog, subscription, session, health, cost, and
+  terminal reports.
 - Keep previews explicitly selected and bounded; never decode media in fleet
   rows or create an automatic all-device wall.
-- Add bandwidth limits, operator selection, backpressure, loss, reconfigure,
-  reconnect, and terminal cleanup behavior.
-- Test wrong-source, stale-session, unauthorized route, codec mismatch,
-  sink-without-frame, and cleanup failure.
+- Define the Hostess FFmpeg process-adapter boundary: allowlisted argument
+  templates, `ffprobe` machine-readable probing, `-progress` ingestion,
+  protocol-specific timeouts, exact binary/pipeline identity, bounded output,
+  graceful/forced termination, redaction, and cleanup.
+- Keep consent-based display capture, privileged direct capture, ADB
+  diagnostics, and compatibility tools as separate source classes. Select the
+  effective display/source explicitly.
+- Add bandwidth/decode/memory/disk limits, queue and drop policy, loss,
+  reconfigure, reconnect, route fallback, fan-out isolation, recording/
+  retention policy, and terminal cleanup behavior.
+- Test wrong/ambiguous source, stale session or generation, unauthorized route,
+  channel/format/codec/framing mismatch, missing clock correlation, no data,
+  byte-only activity, decode failure, sink-without-frame, frozen frames, slow
+  consumer, budget rejection, unfair admission, partial fan-out, revoked
+  consent, and cleanup failure.
 - Run device/performance validation only for the selected source/route/sink
-  combinations being promoted.
+  combinations being promoted, after their owning repositories have accepted
+  the exact contracts.
 
 ### Acceptance
 
 - Control-plane status remains responsive under media load.
-- A stream is active only when the sink observes frames under the current
-  accepted session.
+- A stream is reported only at its strongest evidenced stage; active sink
+  health requires advancing samples/frames under the current generation and
+  accepted subscription/session.
+- Source timestamps and clock correlation remain inspectable; derived display
+  time never destroys raw evidence.
+- Queue, recovery, preview, recording, fan-out, and process lifetime remain
+  bounded, and slow consumers cannot create unbounded memory or hidden latency.
+- Admission is fair, auditable, respects protected control capacity, and
+  reports resource exhaustion without optimistic fallback.
 - Media permission or transport does not leak into the base monitoring profile.
 - Terminal cleanup is independently observed.
 
 ### Deferred
 
-An ambient all-device video wall, automatic high-bandwidth streaming, and
-unbounded recording.
+An ambient all-device video wall, automatic high-bandwidth streaming,
+unbounded recording, and a universal stream transport.
 
 ## Milestone 5 — Online relay and remote operations
 
@@ -347,6 +408,12 @@ revocation.
   short-lived leases, replay protection, expiry, and audit.
 - Define local-preferred, hybrid, and remote route selection with truthful
   failover.
+- Evaluate remote data and media routes by payload class, congestion behavior,
+  latency, reliability, encryption, fan-out, observability, recording/
+  retention, and cost. SRT, WebRTC, and QUIC-based routes remain candidates
+  until measured and explicitly selected.
+- Treat failover as a new accepted route/generation decision; do not silently
+  continue sequence, timestamp, or cleanup evidence across providers.
 - Add remote Console and CLI/API behavior without creating a second authority
   engine.
 - Simulate partitions, duplicated delivery, delayed delivery, clock skew,
@@ -386,6 +453,9 @@ operator overload.
   policy.
 - Add bounded concurrency, fair scheduling, grouping, saved views, alert
   suppression, maintenance windows, and rollout rings.
+- Ratify stream admission, control reserve, queue, decode, fan-out, and
+  recording budgets from measured profiles. Add overload, slow-consumer, and
+  priority-inversion scenarios.
 - Group alerts by actionable root cause and affected-device count so one
   adapter failure does not fan out into a fleet of duplicate incidents.
 - Ratify or replace measured UI/query/preview budgets using 50, 250, 1,000,
@@ -393,6 +463,9 @@ operator overload.
 - Add Hub restart, database damage, adapter crash, provider fresh-epoch,
   device churn, relay partition, and operator reconnect scenarios.
 - Add performance, soak, memory, recovery-time, and observability gates.
+- Enforce low-cardinality metrics, event timestamps instead of changing-age
+  labels, seconds for durations, bytes for byte measures, and drill-down
+  evidence outside metric labels.
 - Refresh the tracked source/dependency/instruction graph.
 
 ### Acceptance
@@ -444,7 +517,7 @@ flowchart LR
     M0["M0 Foundation + simulator"] --> M1["M1 Local monitoring"]
     M1 --> M2["M2 App/Kiosk control"]
     M1 --> M3["M3 ADB/File Manager"]
-    M2 --> M4["M4 Media sessions"]
+    M2 --> M4["M4 Selected streams + media"]
     M3 --> M6["M6 Scale + resilience"]
     M4 --> M6
     M2 --> M5["M5 Online relay"]
@@ -465,6 +538,14 @@ Every milestone answers:
 - **Identity:** which device, app, operator, adapter, and authority revision?
 - **Capability:** what exact current grant makes the action available?
 - **Freshness:** how are age, replay, expiry, and restart handled?
+- **Generation:** which concrete provider epoch produced the evidence?
+- **Time:** which raw clock domains and correlation/uncertainty are preserved?
+- **Progress:** what separately proves transport, bytes, payload advancement,
+  decode/schema, sink, and cleanup?
+- **Flow:** what bounds queues, recovery, fan-out, recording, and slow
+  consumers?
+- **Admission:** what protects control capacity and enforces fair
+  per-device/provider/route/host/relay/global budgets?
 - **Parity:** do Console, CLI, and local API invoke the same route?
 - **Evidence:** what proves transport, acceptance, application, and cleanup?
 - **Degradation:** what remains useful when ADB, media, relay, or privilege is

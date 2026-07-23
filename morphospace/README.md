@@ -21,6 +21,7 @@ Resume in this order:
 5. only the event tail and receipts referenced by state
 6. `../docs/IMPLEMENTATION_PLAN.md`
 7. `../docs/WORKFLOW.md`
+8. `../docs/DATASTREAMS.md`
 
 The first proposed unit,
 `iteration-units/fleet-m0-foundation-and-simulator.json`, is one vertical

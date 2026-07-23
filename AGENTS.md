@@ -30,7 +30,8 @@ Live device work is never implied by a source or documentation task.
 6. `docs/IMPLEMENTATION_PLAN.md`
 7. `docs/WORKFLOW.md`
 8. `docs/ARCHITECTURE.md`
-9. `docs/VALIDATION.md`
+9. `docs/DATASTREAMS.md`
+10. `docs/VALIDATION.md`
 
 ## Ownership
 
@@ -44,11 +45,20 @@ Live device work is never implied by a source or documentation task.
 - QuestIonAble File Manager owns file operations and ADB-backed device utilities.
 - Rusty LSL may provide LSL-compatible observations or discovery proposals; it
   does not become fleet command or admission authority.
+- Rusty Hostess owns bounded Windows process execution, normalization, decode,
+  presentation, and evidence adapters, including an optional FFmpeg adapter.
 - Media sources, processors, route/socket providers, codecs, and sinks remain
   explicit and separate from the low-rate control plane.
 
 UI handlers collect parameters, invoke owned routes, show progress, and project
 structured evidence. Every operator action requires CLI or local API parity.
+
+The detailed cross-stream contract is
+[docs/DATASTREAMS.md](docs/DATASTREAMS.md). Preserve logical stream identity,
+provider generation, authority revision, named clock domains, bounded queues,
+admission budgets, and separate transport/payload/decode/sink/cleanup evidence.
+Do not infer stream health from discovery, a running process, an open socket,
+or byte flow alone.
 
 ## Operator UI guardrails
 
