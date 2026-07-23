@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.query.v1.schema.json",
+  "title": "Rusty Fleet canonical query v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "query_id",
+    "expression",
+    "sort",
+    "offset",
+    "limit"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.query.v1"
+    },
+    "query_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expression": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/expression"
+        }
+      ]
+    },
+    "sort": {
+      "type": "array"
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    }
+  },
+  "$defs": {
+    "expression": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "predicate",
+            "and",
+            "or",
+            "not"
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

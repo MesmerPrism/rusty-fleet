@@ -1,0 +1,18 @@
+[package]
+name = "fleetctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Source-only CLI projection for Rusty Fleet simulations."
+
+[dependencies]
+fleet-contracts = { path = "../../crates/fleet-contracts" }
+fleet-hub = { path = "../../crates/fleet-hub" }
+fleet-simulator = { path = "../../crates/fleet-simulator" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

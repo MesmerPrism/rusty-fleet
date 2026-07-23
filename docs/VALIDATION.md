@@ -17,6 +17,11 @@ Quick is safe during normal editing and checks:
 - whitespace through `git diff --check`;
 - public-boundary and secret-like patterns;
 - key planning/workflow invariants.
+- pinned Rust formatting and the complete source-only workspace test suite;
+- committed valid/damaged contract fixtures;
+- deterministic 4/50/250/1,000/5,000 simulator generation;
+- Hub revision, replay, staleness, identity, and projection behavior;
+- exact `fleetctl`/local-API projection parity.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
@@ -34,6 +39,8 @@ Standard includes Quick and adds:
   provenance.
 - datastream architecture, current-state matrix, primary-source ledger, and
   cross-plane planning invariants.
+- Clippy with warnings denied across all workspace targets;
+- a structured four-device `fleetctl list` smoke projection.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Standard
@@ -88,9 +95,22 @@ entrypoints remain:
 - repository Quick/Standard/Deep gate;
 - explicit device suite when required.
 
-When an implementation language and build system land in Milestone 0, update
-this document, `AGENTS.md`, the README, CI, and `Test-Repo.ps1` in that same
-milestone.
+Rust 1.96, edition 2024, and the Cargo workspace are the selected Milestone 0
+source toolchain. CI calls `Test-Repo.ps1`, so local and hosted Quick/Standard
+gates exercise the same locked dependency graph and source suite.
+
+Focused commands:
+
+```powershell
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo run --locked -p fleetctl -- list 4
+```
+
+The deterministic scale suite generates its datasets in memory. It does not
+commit large data files and does not claim that every fixture size is a
+supported production fleet.
 
 ## Datastream validation
 

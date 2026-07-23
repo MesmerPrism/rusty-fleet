@@ -54,7 +54,80 @@ function Get-PublicFiles {
                 $candidate.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
                 $candidate -eq $_
             })
-        }
+    }
+}
+
+function Get-TransitionBinding {
+    param(
+        [Parameter(Mandatory)]
+        [object] $Unit,
+
+        [Parameter(Mandatory)]
+        [object] $State,
+
+        [Parameter(Mandatory)]
+        [string] $EventId,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedStatus,
+
+        [AllowNull()]
+        [object] $ExpectedCurrentUnit,
+
+        [AllowNull()]
+        [object] $ExpectedNextReadyUnit
+    )
+
+    $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
+    $events = @(
+        Get-Content -LiteralPath $eventsPath |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { $_ | ConvertFrom-Json -Depth 100 }
+    )
+    $matchingEvents = @($events | Where-Object { $_.event_id -eq $EventId })
+    Assert-True -Condition ($matchingEvents.Count -eq 1) `
+        -Message "$ExpectedStatus Milestone 0 must have exactly one owned transition event."
+    Assert-True -Condition (
+        $matchingEvents[0].event_type -eq "state-transition" -and
+        $matchingEvents[0].unit_id -eq $Unit.unit_id -and
+        $State.last_event_id -eq $EventId -and
+        $State.current_unit -eq $ExpectedCurrentUnit -and
+        $State.next_ready_unit -eq $ExpectedNextReadyUnit
+    ) -Message "$ExpectedStatus Milestone 0 is not bound to workspace state."
+
+    $transactionId = "$EventId-transition"
+    $intentPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.intent.json"
+    $completionPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.completion.json"
+    Assert-True -Condition (
+        (Test-Path -LiteralPath $intentPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $completionPath -PathType Leaf)
+    ) -Message "$ExpectedStatus Milestone 0 is missing its transition-ledger receipts."
+    $intent = Get-Content -LiteralPath $intentPath -Raw | ConvertFrom-Json -Depth 100
+    $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 100
+    $intentSha256 = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $unitProjection = $Unit | ConvertTo-Json -Depth 100 -Compress
+    $targetUnitProjection = $intent.target.unit.document | ConvertTo-Json -Depth 100 -Compress
+    $stateProjection = $State | ConvertTo-Json -Depth 100 -Compress
+    $targetStateProjection = $intent.target.state.document | ConvertTo-Json -Depth 100 -Compress
+    Assert-True -Condition (
+        $intent.transaction_id -eq $transactionId -and
+        $intent.event.event_id -eq $EventId -and
+        $intent.target.unit.document.status -eq $ExpectedStatus -and
+        $completion.transaction_id -eq $transactionId -and
+        $completion.event_id -eq $EventId -and
+        $completion.status -eq "committed" -and
+        $completion.unit_sha256 -eq $intent.target.unit.sha256 -and
+        $completion.state_sha256 -eq $intent.target.state.sha256 -and
+        $unitProjection -ceq $targetUnitProjection -and
+        $stateProjection -ceq $targetStateProjection -and
+        $completion.intent.sha256 -eq $intentSha256
+    ) -Message "$ExpectedStatus Milestone 0 transition receipts are stale or damaged."
+
+    return [pscustomobject]@{
+        event = $matchingEvents[0]
+        intent = $intent
+        completion = $completion
+    }
 }
 
 function Test-JsonDocuments {
@@ -114,14 +187,38 @@ function Test-RequiredFiles {
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "SECURITY.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "apps/fleetctl/Cargo.toml",
+        "apps/fleetctl/src/lib.rs",
+        "apps/fleetctl/src/main.rs",
+        "crates/fleet-contracts/Cargo.toml",
+        "crates/fleet-contracts/src/lib.rs",
+        "crates/fleet-hub/Cargo.toml",
+        "crates/fleet-hub/src/lib.rs",
+        "crates/fleet-simulator/Cargo.toml",
+        "crates/fleet-simulator/src/lib.rs",
+        "fixtures/contracts/device-observation.valid.json",
+        "fixtures/contracts/device-observation.damaged.json",
+        "fixtures/contracts/query.valid.json",
+        "fixtures/contracts/stream-descriptor.valid.json",
+        "fixtures/scenarios/scale-and-damage.v1.json",
+        "schemas/rusty.fleet.device_observation.v1.schema.json",
+        "schemas/rusty.fleet.operation_ledger.v1.schema.json",
+        "schemas/rusty.fleet.operator_projection.v1.schema.json",
+        "schemas/rusty.fleet.query.v1.schema.json",
+        "schemas/rusty.fleet.stream_descriptor.v1.schema.json",
         "docs/ARCHITECTURE.md",
         "docs/DATASTREAMS.md",
         "docs/IMPLEMENTATION_PLAN.md",
+        "docs/M0_SOURCE_FOUNDATION.md",
+        "docs/M0_GRAPH_AND_INSTRUCTION_REVIEW.md",
         "docs/OPERATOR_UI.md",
         "docs/WORKFLOW.md",
         "docs/VALIDATION.md",
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
+        "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
         "docs/research/DATASTREAM_REFERENCE_LEDGER.md",
         "docs/research/FLEET_RESEARCH_INTEGRATION_REVIEW.md",
         "docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md",
@@ -139,6 +236,64 @@ function Test-RequiredFiles {
         Assert-True -Condition (Test-Path -LiteralPath (Join-Path $repoRoot $relative) -PathType Leaf) `
             -Message "Required file is missing: $relative"
     }
+}
+
+function Invoke-Cargo {
+    param([Parameter(Mandatory)][string[]] $Arguments)
+
+    & cargo @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Cargo failed: cargo $($Arguments -join ' ')"
+    }
+}
+
+function Test-SourceImplementation {
+    $workspace = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.toml") -Raw
+    foreach ($member in @(
+        "apps/fleetctl",
+        "crates/fleet-contracts",
+        "crates/fleet-hub",
+        "crates/fleet-simulator"
+    )) {
+        Assert-True -Condition ($workspace.Contains("`"$member`"")) `
+            -Message "Cargo workspace is missing source-only member: $member"
+    }
+
+    $lock = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.lock") -Raw
+    foreach ($forbiddenPackage in @(
+        'name = "tokio"',
+        'name = "reqwest"',
+        'name = "hyper"',
+        'name = "windows"',
+        'name = "ffmpeg"',
+        'name = "liblsl"'
+    )) {
+        Assert-True -Condition (-not $lock.Contains($forbiddenPackage)) `
+            -Message "Milestone 0 must remain source-only and inert: $forbiddenPackage"
+    }
+
+    foreach ($schemaFile in Get-ChildItem -LiteralPath (Join-Path $repoRoot "schemas") -Filter "*.schema.json") {
+        $schema = Get-Content -LiteralPath $schemaFile.FullName -Raw | ConvertFrom-Json -Depth 100
+        Assert-True -Condition (
+            $schema.'$schema' -eq "https://json-schema.org/draft/2020-12/schema" -and
+            -not [string]::IsNullOrWhiteSpace($schema.'$id') -and
+            -not [string]::IsNullOrWhiteSpace($schema.title)
+        ) -Message "Versioned schema metadata is incomplete: $($schemaFile.Name)"
+    }
+
+    $scenarioManifest = Get-Content -LiteralPath (
+        Join-Path $repoRoot "fixtures/scenarios/scale-and-damage.v1.json"
+    ) -Raw | ConvertFrom-Json -Depth 100
+    Assert-True -Condition (
+        $scenarioManifest.schema -eq "rusty.fleet.fixture_manifest.v1" -and
+        $scenarioManifest.seed -eq 5932739705870634068 -and
+        (@($scenarioManifest.sizes) -join ",") -eq "4,50,250,1000,5000" -and
+        @($scenarioManifest.mutations).Count -ge 7 -and
+        @($scenarioManifest.datastream_conditions).Count -eq 18
+    ) -Message "Deterministic simulator fixture manifest is stale or damaged."
+
+    Invoke-Cargo -Arguments @("fmt", "--all", "--", "--check")
+    Invoke-Cargo -Arguments @("test", "--workspace", "--locked")
 }
 
 function Test-PlanningInvariants {
@@ -167,59 +322,81 @@ function Test-PlanningInvariants {
     $unit = Get-Content -LiteralPath $unitPath -Raw | ConvertFrom-Json -Depth 100
     Assert-True -Condition ($unit.unit_id -eq "fleet-m0-foundation-and-simulator") `
         -Message "Unexpected Milestone 0 unit ID."
-    Assert-True -Condition ($unit.status -in @("proposed", "ready")) `
-        -Message "Milestone 0 may be proposed or ready only at the planning checkpoint."
+    Assert-True -Condition ($unit.status -in @("proposed", "ready", "active", "validating", "accepted")) `
+        -Message "Milestone 0 has an unsupported workflow status."
     if ($unit.status -eq "ready") {
         $readyEventId = "$($unit.unit_id)-ready-0001"
-        $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
-        $events = @(
-            Get-Content -LiteralPath $eventsPath |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-                ForEach-Object { $_ | ConvertFrom-Json -Depth 100 }
-        )
-        $readyEvents = @($events | Where-Object { $_.event_id -eq $readyEventId })
-        Assert-True -Condition ($readyEvents.Count -eq 1) `
-            -Message "Ready Milestone 0 must have exactly one owned ready transition event."
-        Assert-True -Condition (
-            $readyEvents[0].event_type -eq "state-transition" -and
-            $readyEvents[0].unit_id -eq $unit.unit_id -and
-            $state.last_event_id -eq $readyEventId -and
-            $state.next_ready_unit -eq $unit.unit_id -and
-            $null -eq $state.current_unit
-        ) -Message "Ready Milestone 0 is not bound to workspace state."
+        Get-TransitionBinding -Unit $unit -State $state -EventId $readyEventId `
+            -ExpectedStatus "ready" -ExpectedCurrentUnit $null `
+            -ExpectedNextReadyUnit $unit.unit_id | Out-Null
+    }
+    if ($unit.status -eq "active") {
+        $claimedEventId = "$($unit.unit_id)-claimed-0002"
+        Get-TransitionBinding -Unit $unit -State $state -EventId $claimedEventId `
+            -ExpectedStatus "active" -ExpectedCurrentUnit $unit.unit_id `
+            -ExpectedNextReadyUnit $null | Out-Null
 
-        $transactionId = "$readyEventId-transition"
-        $intentPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.intent.json"
-        $completionPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.completion.json"
+        $claimPath = Join-Path $repoRoot "morphospace/receipts/$($unit.unit_id)-claim.json"
+        Assert-True -Condition (Test-Path -LiteralPath $claimPath -PathType Leaf) `
+            -Message "Active Milestone 0 is missing its claim receipt."
+        $claim = Get-Content -LiteralPath $claimPath -Raw | ConvertFrom-Json -Depth 100
+        $repositoryStates = @($claim.preservation.repository_states)
+        $repositoryHeads = @($state.repository_heads)
         Assert-True -Condition (
-            (Test-Path -LiteralPath $intentPath -PathType Leaf) -and
-            (Test-Path -LiteralPath $completionPath -PathType Leaf)
-        ) -Message "Ready Milestone 0 is missing its transition-ledger receipts."
-        $intent = Get-Content -LiteralPath $intentPath -Raw | ConvertFrom-Json -Depth 100
-        $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 100
-        $intentSha256 = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        $unitProjection = $unit | ConvertTo-Json -Depth 100 -Compress
-        $targetUnitProjection = $intent.target.unit.document | ConvertTo-Json -Depth 100 -Compress
-        $stateProjection = $state | ConvertTo-Json -Depth 100 -Compress
-        $targetStateProjection = $intent.target.state.document | ConvertTo-Json -Depth 100 -Compress
+            $claim.action -eq "Claim" -and
+            $claim.executed -eq $true -and
+            $claim.transition -eq "ready-to-active" -and
+            $claim.status_before -eq "ready" -and
+            $claim.status_after -eq "active" -and
+            $claim.current_unit_after -eq $unit.unit_id -and
+            $claim.event_id -eq $claimedEventId -and
+            $claim.preservation.git_mutation_performed -eq $false -and
+            $claim.preservation.device_mutation_performed -eq $false -and
+            $repositoryStates.Count -eq 1 -and
+            $repositoryHeads.Count -eq 1 -and
+            $repositoryStates[0].repo_id -eq "rusty-fleet" -and
+            $repositoryStates[0].head -eq $repositoryHeads[0].head -and
+            $repositoryStates[0].branch -eq $repositoryHeads[0].branch -and
+            $repositoryStates[0].dirty -eq $false -and
+            $repositoryStates[0].relation -eq "synchronized" -and
+            $repositoryHeads[0].head -eq "1f9a4ba833bae9b0684bb91758fe304c526699da" -and
+            $repositoryHeads[0].branch -eq "main"
+        ) -Message "Active Milestone 0 claim baseline is stale or damaged."
+    }
+    if ($unit.status -eq "validating") {
         Assert-True -Condition (
-            $intent.transaction_id -eq $transactionId -and
-            $intent.event.event_id -eq $readyEventId -and
-            $intent.target.unit.document.status -eq "ready" -and
-            $completion.transaction_id -eq $transactionId -and
-            $completion.event_id -eq $readyEventId -and
-            $completion.status -eq "committed" -and
-            $completion.unit_sha256 -eq $intent.target.unit.sha256 -and
-            $completion.state_sha256 -eq $intent.target.state.sha256 -and
-            $unitProjection -ceq $targetUnitProjection -and
-            $stateProjection -ceq $targetStateProjection -and
-            $completion.intent.sha256 -eq $intentSha256
-        ) -Message "Ready Milestone 0 transition receipts are stale or damaged."
+            $state.current_unit -eq $unit.unit_id -and
+            $state.next_ready_unit -eq $null
+        ) -Message "Validating Milestone 0 is not the current workflow authority."
+    }
+    if ($unit.status -eq "accepted") {
+        $acceptedEventId = "$($unit.unit_id)-accepted-0005"
+        Get-TransitionBinding -Unit $unit -State $state -EventId $acceptedEventId `
+            -ExpectedStatus "accepted" -ExpectedCurrentUnit $null `
+            -ExpectedNextReadyUnit $null | Out-Null
+        Assert-True -Condition (
+            $state.validation_checkpoint.result -eq "pass" -and
+            $state.last_accepted_receipt -eq $state.validation_checkpoint.receipt -and
+            @($unit.instruction_surfaces | Where-Object { $_.status -ne "complete" }).Count -eq 0
+        ) -Message "Accepted Milestone 0 is missing passing validation or instruction completion."
     }
     Assert-True -Condition (@($unit.acceptance).Count -ge 5) `
         -Message "Milestone 0 must remain a vertical stack with complete acceptance coverage."
     Assert-True -Condition (@($unit.acceptance.acceptance_id) -contains "canonical-datastream-projections") `
         -Message "Milestone 0 must include source-only datastream contract acceptance."
+    $threatModel = Get-Content -LiteralPath (
+        Join-Path $repoRoot "docs/decisions/0004-m0-source-boundary-and-threat-model.md"
+    ) -Raw
+    foreach ($phrase in @(
+        "source epoch",
+        "previously seen",
+        "finite contract limits",
+        "pre-deserialization",
+        "accepted for Milestone 0"
+    )) {
+        Assert-True -Condition ($threatModel.Contains($phrase, [StringComparison]::OrdinalIgnoreCase)) `
+            -Message "Milestone 0 threat-model guardrail is missing: $phrase"
+    }
 }
 
 function Test-DatastreamPlanning {
@@ -328,11 +505,32 @@ try {
     Test-JsonDocuments
     Test-PublicBoundary
     Test-PlanningInvariants
+    Test-SourceImplementation
     Test-DatastreamPlanning
     Invoke-Git diff --check
 
     if ($Tier -in @("Standard", "Deep")) {
         Test-MarkdownLinks
+        Invoke-Cargo -Arguments @(
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+        )
+
+        $cliList = & cargo run --quiet --locked -p fleetctl -- list 4
+        if ($LASTEXITCODE -ne 0) {
+            throw "fleetctl list smoke test failed."
+        }
+        $cliProjection = $cliList | ConvertFrom-Json -Depth 100
+        Assert-True -Condition (
+            $cliProjection.schema -eq "rusty.fleet.query_result.v1" -and
+            $cliProjection.total_count -eq 4 -and
+            $cliProjection.window_count -eq 4
+        ) -Message "fleetctl list did not return the canonical four-device projection."
 
         if ($WorkEnvironmentRoot) {
             $validator = Join-Path $WorkEnvironmentRoot "scripts/Test-WorkflowContracts.ps1"

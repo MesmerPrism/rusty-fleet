@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.operator_projection.v1.schema.json",
+  "title": "Rusty Fleet operator projection envelope v1",
+  "description": "Shared envelope for summary, row, inspector, detail, query-result, and saved-view projections. Domain structs impose the detailed invariants.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/summary"
+    },
+    {
+      "$ref": "#/$defs/row"
+    },
+    {
+      "$ref": "#/$defs/inspector"
+    },
+    {
+      "$ref": "#/$defs/detail"
+    },
+    {
+      "$ref": "#/$defs/query_result"
+    },
+    {
+      "$ref": "#/$defs/saved_view"
+    }
+  ],
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "required": [
+        "schema",
+        "as_of_ms",
+        "total",
+        "fresh",
+        "stale",
+        "offline",
+        "attention",
+        "active_work"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.summary.v1"
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": [
+        "schema",
+        "identity",
+        "source_epoch",
+        "accepted_revision",
+        "accepted_at_ms",
+        "age_ms",
+        "freshness"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.device_row.v1"
+        }
+      }
+    },
+    "inspector": {
+      "type": "object",
+      "required": [
+        "schema",
+        "row",
+        "attention",
+        "streams",
+        "active_operations"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.device_inspector.v1"
+        }
+      }
+    },
+    "detail": {
+      "type": "object",
+      "required": [
+        "schema",
+        "inspector",
+        "condition_history",
+        "operation_history"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.device_detail.v1"
+        }
+      }
+    },
+    "query_result": {
+      "type": "object",
+      "required": [
+        "schema",
+        "query",
+        "result_revision",
+        "as_of_ms",
+        "total_count",
+        "window_offset",
+        "window_count",
+        "rows"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.query_result.v1"
+        }
+      }
+    },
+    "saved_view": {
+      "type": "object",
+      "required": [
+        "schema",
+        "view_id",
+        "name",
+        "query",
+        "columns",
+        "density",
+        "restoration",
+        "schema_version"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.saved_view.v1"
+        }
+      }
+    }
+  }
+}

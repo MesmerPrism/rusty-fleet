@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.device_observation.v1.schema.json",
+  "title": "Rusty Fleet device observation v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "identity",
+    "source_epoch",
+    "source_revision",
+    "source_time_ms",
+    "received_time_ms",
+    "kiosk_state",
+    "conditions",
+    "capabilities",
+    "streams"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.device_observation.v1"
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "device_id",
+        "identity_revision",
+        "display_name",
+        "model",
+        "hardware_class",
+        "tags"
+      ],
+      "properties": {
+        "device_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hardware_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "source_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_epoch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_time_ms": {
+      "type": "integer"
+    },
+    "received_time_ms": {
+      "type": "integer"
+    },
+    "battery_percent": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 100
+    },
+    "charging": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "foreground_app": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kiosk_state": {
+      "enum": [
+        "active",
+        "inactive",
+        "mismatch",
+        "unknown"
+      ]
+    },
+    "conditions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/condition"
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "capabilities"
+      ],
+      "properties": {
+        "capabilities": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "streams": {
+      "type": "array"
+    }
+  },
+  "$defs": {
+    "condition": {
+      "type": "object",
+      "required": [
+        "family",
+        "state",
+        "reason",
+        "message",
+        "source_time_ms",
+        "received_time_ms",
+        "accepted_revision",
+        "fresh_until_ms",
+        "source",
+        "sensitivity"
+      ],
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accepted_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fresh_until_ms": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

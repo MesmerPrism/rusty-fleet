@@ -1,0 +1,160 @@
+{
+  "schema": "rusty.fleet.stream_descriptor.v1",
+  "logical_stream_id": "sim-00001/lsl/eeg",
+  "semantic": {
+    "family": "eeg",
+    "class": "scalar_sample",
+    "schema_profile": "eeg.channels.v1",
+    "plane": "observation",
+    "sensitivity": "restricted"
+  },
+  "native_descriptor": {
+    "kind": "lsl.stream_info+xml",
+    "adapter_version": "rusty-lsl-fixture/1",
+    "native_protocol_version": "1.16",
+    "digest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "captured_at_ms": 2000000000000,
+    "document": {
+      "name": "Synthetic EEG",
+      "type": "EEG",
+      "source_id": "synthetic-eeg-1"
+    },
+    "reference": null
+  },
+  "selection": {
+    "query_language": "lsl_property",
+    "query": "source_id=synthetic-eeg-1",
+    "expected_cardinality": 1,
+    "candidate_count": 1,
+    "candidate_descriptor_digests": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "chosen_native_instance": "uid-1",
+    "method": "single_candidate",
+    "valid_until_ms": 2000000010000,
+    "override_actor": null,
+    "override_reason": null
+  },
+  "epochs": {
+    "source": {
+      "id": "source-1",
+      "predecessor": null,
+      "reason": "initial_outlet",
+      "continuity": "unknown",
+      "native_instance": "uid-1"
+    },
+    "route": {
+      "id": "route-1",
+      "predecessor": null,
+      "reason": "initial_connection",
+      "continuity": "source_continuity_proven",
+      "native_instance": null
+    },
+    "processing": null,
+    "sink": null,
+    "path_generation": "path-1"
+  },
+  "accepted_authority_revision": 7,
+  "timing": {
+    "domains": [
+      {
+        "domain_id": "lsl_local_clock",
+        "domain_kind": "source_monotonic",
+        "units": "seconds",
+        "time_base_numerator": 1,
+        "time_base_denominator": 1000000000,
+        "raw_timestamp_preserved": true
+      },
+      {
+        "domain_id": "hub_monotonic",
+        "domain_kind": "receive_monotonic",
+        "units": "milliseconds",
+        "time_base_numerator": 1,
+        "time_base_denominator": 1000,
+        "raw_timestamp_preserved": true
+      }
+    ],
+    "transforms": [
+      {
+        "transform_id": "lsl-offset-7",
+        "from_domain": "lsl_local_clock",
+        "to_domain": "hub_monotonic",
+        "method": "lsl_offset_observation",
+        "offset_ms": -2.4,
+        "uncertainty_ms": 0.4,
+        "valid_from_ms": 2000000000000,
+        "valid_to_ms": null,
+        "postprocessing": [
+          "clocksync"
+        ]
+      }
+    ],
+    "clock_reset_count": 0,
+    "fixed_latency_ms": 18.2,
+    "fixed_latency_uncertainty_ms": 1.1,
+    "calibration_reference": "synthetic-calibration-v1"
+  },
+  "cadence": {
+    "mode": "regular",
+    "nominal_rate_hz": 1000.0,
+    "accepted_rate_min_hz": 950.0,
+    "accepted_rate_max_hz": 1050.0,
+    "measurement_window_ms": 10000,
+    "gap_tolerance_ms": 50,
+    "no_data_deadline_ms": 500,
+    "heartbeat": null,
+    "sequence_semantics": "timestamp_only"
+  },
+  "progress": {
+    "profile_id": "lsl_regular_sample",
+    "content_progress": "timestamp",
+    "stages": {
+      "source_receipt": {
+        "applicability": "required",
+        "deadline_ms": 2000,
+        "state": "current",
+        "observed_revision": 7,
+        "last_progress_ms": 2000000000000,
+        "reason": "owner_receipt"
+      },
+      "recording": {
+        "applicability": "not_applicable",
+        "deadline_ms": null,
+        "state": null,
+        "observed_revision": null,
+        "last_progress_ms": null,
+        "reason": "not_requested"
+      }
+    }
+  },
+  "queues": [
+    {
+      "edge_id": "inlet_to_observer",
+      "producer": "rusty_lsl",
+      "consumer": "fleet_hub",
+      "limits": {
+        "items": 2000,
+        "bytes": 8388608,
+        "duration_ms": 2000
+      },
+      "overflow": "reject",
+      "producer_may_block": false,
+      "retain_codec_configuration": false,
+      "restart_requires_keyframe": false,
+      "slow_consumer_action": "degrade_observation"
+    }
+  ],
+  "budget": {
+    "bandwidth_bytes_per_second": 1000000,
+    "samples_or_frames_per_second": 1000.0,
+    "decode_slots": 0,
+    "queue_bytes": 8388608,
+    "queue_duration_ms": 2000,
+    "disk_bytes": 0,
+    "recorder_slots": 0,
+    "maximum_clock_uncertainty_ms": 2.0,
+    "priority_class": "scientific_observation"
+  },
+  "experiment_run": null,
+  "recording": null
+}
