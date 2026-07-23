@@ -5,16 +5,28 @@
 //! future UI consumers.
 
 use fleet_contracts::{
-    Comparison, FleetQuery, QueryExpression, QueryField, QueryValue, SortDirection, SortKey,
+    Comparison, FleetQuery, FleetQueryResult, FleetSummaryProjection, QueryExpression, QueryField,
+    QueryValue, SortDirection, SortKey,
 };
 use fleet_hub::{FleetApi, FleetHub, HubPolicy};
-use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder, supported_scale_fixtures};
+use fleet_simulator::{
+    BASE_TIME_MS, MixedFreshnessFixture, ScenarioBuilder, mixed_freshness_fixture,
+    supported_scale_fixtures,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliFailure {
     pub code: String,
     pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OperatorFixtureProjection {
+    pub schema: String,
+    pub profile: String,
+    pub query_result: FleetQueryResult,
+    pub summary: FleetSummaryProjection,
 }
 
 impl CliFailure {
@@ -31,7 +43,14 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
     if command == "help" {
         return Ok(serde_json::json!({
             "schema": "rusty.fleet.cli_help.v1",
-            "commands": ["list [count]", "inspect <device-id> [count]", "filter <text> [count]", "watch [count]", "scenario [count]"],
+            "commands": [
+                "list [count]",
+                "inspect <device-id> [count]",
+                "filter <text> [count]",
+                "watch [count]",
+                "scenario [count]",
+                "operator-fixture mixed-freshness [count]"
+            ],
             "scale_fixtures": supported_scale_fixtures()
         }));
     }
@@ -45,6 +64,19 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
             "unsupported_fixture_size",
             format!("count must be one of {:?}", supported_scale_fixtures()),
         ));
+    }
+    if command == "operator-fixture" {
+        let profile = arguments.get(1).ok_or_else(|| {
+            CliFailure::new("missing_profile", "operator-fixture requires a profile")
+        })?;
+        if profile != "mixed-freshness" {
+            return Err(CliFailure::new(
+                "unknown_fixture_profile",
+                format!("unknown operator fixture profile {profile}"),
+            ));
+        }
+        return serde_json::to_value(mixed_operator_fixture(count)?)
+            .map_err(|error| CliFailure::new("serialization_failed", error.to_string()));
     }
     let scenario = ScenarioBuilder::new(count).build();
     if command == "scenario" {
@@ -83,6 +115,34 @@ pub fn load_hub(count: usize) -> FleetHub {
         hub.accept_observation(observation, BASE_TIME_MS);
     }
     hub
+}
+
+#[must_use]
+pub fn load_mixed_freshness_hub(count: usize) -> (FleetHub, i64) {
+    let MixedFreshnessFixture {
+        now_ms,
+        observations,
+        ..
+    } = mixed_freshness_fixture(count);
+    let mut hub = FleetHub::new(HubPolicy::default());
+    for observation in observations {
+        let accepted_at_ms = observation.received_time_ms;
+        hub.accept_observation(observation, accepted_at_ms);
+    }
+    (hub, now_ms)
+}
+
+pub fn mixed_operator_fixture(count: usize) -> Result<OperatorFixtureProjection, CliFailure> {
+    let (hub, now_ms) = load_mixed_freshness_hub(count);
+    let query_result = hub
+        .list(&default_query(count), now_ms)
+        .map_err(|error| CliFailure::new("operation_failed", error.to_string()))?;
+    Ok(OperatorFixtureProjection {
+        schema: "rusty.fleet.operator_fixture.v1".to_owned(),
+        profile: "mixed_freshness".to_owned(),
+        query_result,
+        summary: hub.summary(now_ms),
+    })
 }
 
 #[must_use]
@@ -139,7 +199,7 @@ mod tests {
     use fleet_hub::FleetApi;
     use fleet_simulator::BASE_TIME_MS;
 
-    use super::{default_query, execute, load_hub, text_query};
+    use super::{default_query, execute, load_hub, load_mixed_freshness_hub, text_query};
 
     #[test]
     fn commands_return_structured_json() {
@@ -149,9 +209,24 @@ mod tests {
             vec!["filter".to_owned(), "Quest 0001".to_owned(), "4".to_owned()],
             vec!["watch".to_owned(), "4".to_owned()],
             vec!["scenario".to_owned(), "4".to_owned()],
+            vec![
+                "operator-fixture".to_owned(),
+                "mixed-freshness".to_owned(),
+                "4".to_owned(),
+            ],
         ] {
             assert!(execute(args).is_ok());
         }
+    }
+
+    #[test]
+    fn operator_fixture_rejects_missing_and_unknown_profiles() {
+        let missing = execute(vec!["operator-fixture".to_owned()]).expect_err("missing profile");
+        assert_eq!(missing.code, "missing_profile");
+
+        let unknown = execute(vec!["operator-fixture".to_owned(), "unknown".to_owned()])
+            .expect_err("unknown profile");
+        assert_eq!(unknown.code, "unknown_fixture_profile");
     }
 
     #[test]
@@ -202,5 +277,25 @@ mod tests {
             execute(vec!["watch".to_owned(), "4".to_owned()]).expect("CLI watch"),
             api_watch
         );
+
+        let (mixed_hub, mixed_now_ms) = load_mixed_freshness_hub(4);
+        let mixed_list = serde_json::to_value(
+            mixed_hub
+                .list(&default_query(4), mixed_now_ms)
+                .expect("mixed local API list"),
+        )
+        .expect("serialize mixed list");
+        let mixed_summary =
+            serde_json::to_value(mixed_hub.summary(mixed_now_ms)).expect("serialize mixed summary");
+        let mixed_cli = execute(vec![
+            "operator-fixture".to_owned(),
+            "mixed-freshness".to_owned(),
+            "4".to_owned(),
+        ])
+        .expect("CLI mixed fixture");
+        assert_eq!(mixed_cli["query_result"], mixed_list);
+        assert_eq!(mixed_cli["summary"], mixed_summary);
+        assert_eq!(mixed_cli["schema"], "rusty.fleet.operator_fixture.v1");
+        assert_eq!(mixed_cli["profile"], "mixed_freshness");
     }
 }

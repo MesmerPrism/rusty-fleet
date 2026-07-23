@@ -17,6 +17,7 @@ use fleet_contracts::{
 use serde::{Deserialize, Serialize};
 
 pub const BASE_TIME_MS: i64 = 2_000_000_000_000;
+pub const MIXED_FRESHNESS_TIME_MS: i64 = BASE_TIME_MS + 600_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +46,13 @@ pub struct FleetScenario {
     pub seed: u64,
     pub initial: Vec<DeviceObservation>,
     pub mutations: Vec<ScenarioMutation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MixedFreshnessFixture {
+    pub schema: String,
+    pub now_ms: i64,
+    pub observations: Vec<DeviceObservation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -546,6 +554,63 @@ pub fn supported_scale_fixtures() -> [usize; 5] {
     [4, 50, 250, 1_000, 5_000]
 }
 
+#[must_use]
+pub fn mixed_freshness_fixture(device_count: usize) -> MixedFreshnessFixture {
+    let mut observations = ScenarioBuilder::new(device_count).build().initial;
+    for (index, observation) in observations.iter_mut().enumerate() {
+        let age_ms = match index % 4 {
+            0 | 3 => 30_000,
+            1 => 120_000,
+            _ => 420_000,
+        };
+        let target_received_time_ms = MIXED_FRESHNESS_TIME_MS - age_ms;
+        let offset_ms = target_received_time_ms - observation.received_time_ms;
+        shift_observation_time(observation, offset_ms);
+
+        if index % 8 == 3
+            && let Some(control) = observation
+                .capabilities
+                .capabilities
+                .get_mut("participating_app_control")
+        {
+            control.authorization = AuthorizationState::Unauthorized;
+            control.reason = "synthetic_grant_expired".to_owned();
+        }
+    }
+
+    MixedFreshnessFixture {
+        schema: "rusty.fleet.mixed_freshness_fixture.v1".to_owned(),
+        now_ms: MIXED_FRESHNESS_TIME_MS,
+        observations,
+    }
+}
+
+fn shift_observation_time(observation: &mut DeviceObservation, offset_ms: i64) {
+    observation.source_time_ms += offset_ms;
+    observation.received_time_ms += offset_ms;
+
+    for condition in &mut observation.conditions {
+        condition.source_time_ms += offset_ms;
+        condition.received_time_ms += offset_ms;
+        condition.fresh_until_ms += offset_ms;
+    }
+    for capability in observation.capabilities.capabilities.values_mut() {
+        capability.observed_at_ms += offset_ms;
+        capability.fresh_until_ms += offset_ms;
+    }
+    for application in [observation.agent.as_mut(), observation.application.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        application.provenance.observed_at_ms += offset_ms;
+        application.provenance.fresh_until_ms += offset_ms;
+    }
+    if let Some(power) = observation.power.as_mut() {
+        power.provenance.observed_at_ms += offset_ms;
+        power.provenance.fresh_until_ms += offset_ms;
+    }
+}
+
 fn observation(
     index: usize,
     identity_revision: u64,
@@ -772,10 +837,11 @@ fn capability(
 mod tests {
     use std::collections::BTreeSet;
 
-    use fleet_contracts::ValidateContract;
+    use fleet_contracts::{AuthorizationState, ValidateContract};
 
     use super::{
-        ScenarioBuilder, ScenarioMutationKind, datastream_scenarios, supported_scale_fixtures,
+        MIXED_FRESHNESS_TIME_MS, ScenarioBuilder, ScenarioMutationKind, datastream_scenarios,
+        mixed_freshness_fixture, supported_scale_fixtures,
     };
 
     #[test]
@@ -792,6 +858,45 @@ mod tests {
                     .all(|observation| observation.validate().is_ok())
             );
         }
+    }
+
+    #[test]
+    fn mixed_freshness_fixture_is_deterministic_valid_and_bounded() {
+        let first = mixed_freshness_fixture(1_000);
+        let second = mixed_freshness_fixture(1_000);
+        assert_eq!(first, second);
+        assert_eq!(first.now_ms, MIXED_FRESHNESS_TIME_MS);
+        assert_eq!(first.observations.len(), 1_000);
+        assert!(
+            first
+                .observations
+                .iter()
+                .all(|observation| observation.validate().is_ok())
+        );
+
+        let ages = first
+            .observations
+            .iter()
+            .map(|observation| first.now_ms - observation.received_time_ms)
+            .collect::<Vec<_>>();
+        assert_eq!(ages.iter().filter(|age| **age == 30_000).count(), 500);
+        assert_eq!(ages.iter().filter(|age| **age == 120_000).count(), 250);
+        assert_eq!(ages.iter().filter(|age| **age == 420_000).count(), 250);
+        assert_eq!(
+            first
+                .observations
+                .iter()
+                .filter(|observation| {
+                    observation
+                        .capabilities
+                        .get("participating_app_control")
+                        .is_some_and(|capability| {
+                            capability.authorization == AuthorizationState::Unauthorized
+                        })
+                })
+                .count(),
+            125
+        );
     }
 
     #[test]

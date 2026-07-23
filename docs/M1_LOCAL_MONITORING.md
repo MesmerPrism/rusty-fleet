@@ -140,7 +140,9 @@ condition/capability families, and selected inspector identity. Invalid
 evidence leaves the last accepted projection visible and reports the failure.
 
 The package-free validation executable consumes the real 1,000-device
-`fleetctl` query result, verifies canonical search/freshness AND/OR shape,
+`fleetctl` mixed-freshness operator projection: 500 fresh, 250 stale, and 250
+offline rows, with deterministic low-power and capability-downgrade examples.
+It verifies canonical search/freshness AND/OR shape, empty-scope behavior,
 stable rows, grouped virtualization, hidden selection, out-of-scope inspector
 context, native automation, bounded realized containers, 12 declared columns,
 and independent capability families. A presented-window input pass verifies
@@ -156,6 +158,7 @@ text-size, and multi-scaling checks remain manual M1 acceptance gates.
 ```powershell
 cargo test -p fleet-manifold-adapter -p fleet-hub-local
 cargo clippy -p fleet-manifold-adapter -p fleet-hub-local --all-targets --locked -- -D warnings
+cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
 dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
 dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
   -c Release --no-build -- --repo-root .

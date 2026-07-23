@@ -62,7 +62,8 @@ The current implementation is split into:
 - `fleet-hub-local`: explicit bounded HTTP check-in ingress plus health,
   query, summary, inspect, detail, and watch projections over the same Hub;
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
-  datasets plus damage and lifecycle mutations;
+  datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
+  mutations;
 - `fleetctl`: a structured JSON projection over the same local API;
 - `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical scope and
   grouping, distinct inspection and batch selection, and a persistent
@@ -120,10 +121,13 @@ Inspect the deterministic four-device projection:
 cargo run --locked -p fleetctl -- list 4
 cargo run --locked -p fleetctl -- inspect sim-00001 4
 cargo run --locked -p fleetctl -- watch 4
+cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
 ```
 
-These commands create synthetic in-memory data only. The M1 local Hub remains
-inert unless it is launched with an explicit enrolled config:
+These commands create synthetic in-memory data only. The operator fixture
+projects fresh, stale, offline, low-power, and capability-downgrade examples
+through the same Hub query and summary APIs. The M1 local Hub remains inert
+unless it is launched with an explicit enrolled config:
 
 ```powershell
 cargo run --locked -p fleet-hub-local -- --config <private-local-config.json>
@@ -179,9 +183,10 @@ by default. The bounded Quest checkpoint and a producer-stopped durable Hub
 restart have passed with private evidence and complete device cleanup. M1
 now also has its native WPF table/inspector, canonical scope/grouping,
 stable-context behavior, and automated 1,000-device virtualization/UI
-Automation baseline. A real presented-window pass verifies search, grid,
-batch, and inspector keyboard focus. Acceptance remains pending until the
-manual Narrator, high-contrast, scaling, full Standard, Deep, workflow, and
+Automation baseline over a mixed 500-fresh/250-stale/250-offline canonical
+projection. A real presented-window pass verifies search, grid, batch, and
+inspector keyboard focus. Acceptance remains pending until the manual
+Narrator, high-contrast, scaling, full Standard, Deep, workflow, and
 publication gates pass.
 
 ## License

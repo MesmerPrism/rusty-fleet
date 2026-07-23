@@ -506,11 +506,14 @@ baseline. It exercises 1,000 real Rust-projected rows with canonical
 search/freshness filtering, explicit cohort/model/freshness/application
 grouping, grouped recycling virtualization, separate inspection and batch
 selection, hidden-selection accounting, and cached inspector context when the
-selected device falls outside the applied scope. A real presented-window pass
-also verifies the search → grid → batch → inspector keyboard path through
-native UI Automation. Narrator, high-contrast, large-text, and supported
-display-scaling review remain milestone gates and are not claimed by this
-checkpoint.
+selected device falls outside the applied scope. The canonical operator
+fixture supplies 500 fresh, 250 stale, and 250 offline rows plus deterministic
+low-power and capability-downgrade states; an unknown-freshness filter verifies
+the zero-match state without clearing hidden selection or cached inspection.
+A real presented-window pass also verifies the search → grid → batch →
+inspector keyboard path through native UI Automation. Narrator, high-contrast,
+large-text, and supported display-scaling review remain milestone gates and
+are not claimed by this checkpoint.
 
 WPF provides UI virtualization but not built-in data virtualization.
 Therefore:

@@ -27,13 +27,67 @@ internal static class Program
         try
         {
             var repoRoot = ReadRepoRoot(arguments);
-            var json = RunFleetctl(repoRoot, 1_000);
+            var json = RunFleetctl(
+                repoRoot,
+                "operator-fixture",
+                "mixed-freshness",
+                "1000");
             var deserializeWatch = Stopwatch.StartNew();
-            var projection = FleetJson.DeserializeQueryResult(json);
+            FleetQueryResult projection;
+            FleetSummaryProjection fixtureSummary;
+            using (var fixtureDocument = JsonDocument.Parse(json))
+            {
+                var fixture = fixtureDocument.RootElement;
+                Require(
+                    fixture.GetProperty("schema").GetString() ==
+                    "rusty.fleet.operator_fixture.v1",
+                    "wrong operator fixture schema");
+                Require(
+                    fixture.GetProperty("profile").GetString() == "mixed_freshness",
+                    "wrong operator fixture profile");
+                projection = FleetJson.DeserializeQueryResult(
+                    fixture.GetProperty("query_result").GetRawText());
+                fixtureSummary = JsonSerializer.Deserialize<FleetSummaryProjection>(
+                    fixture.GetProperty("summary").GetRawText(),
+                    FleetJson.Options) ?? throw new JsonException(
+                    "Fleet fixture summary was empty.");
+            }
             deserializeWatch.Stop();
             Require(projection.Schema == "rusty.fleet.query_result.v1", "wrong query schema");
             Require(projection.TotalCount == 1_000, "1,000-device projection was not loaded");
             Require(projection.Rows.Count == 1_000, "query window is incomplete");
+            Require(
+                fixtureSummary is
+                {
+                    Total: 1_000,
+                    Fresh: 500,
+                    Stale: 250,
+                    Offline: 250
+                },
+                "mixed-freshness summary drifted");
+            var downgradedRows = projection.Rows
+                .Where(row =>
+                    row.Capabilities.Capabilities.TryGetValue(
+                        "participating_app_control",
+                        out var capability) &&
+                    capability.Authorization == "unauthorized")
+                .ToArray();
+            Require(
+                downgradedRows.Length == 125 &&
+                new DeviceRowViewModel(downgradedRows[0]).ControlText.Contains(
+                    "Unauthorized",
+                    StringComparison.Ordinal),
+                "capability downgrade was not truthfully projected");
+            Require(
+                projection.Rows.Any(row =>
+                    row.Freshness == "stale" &&
+                    new DeviceRowViewModel(row).FreshnessText.StartsWith(
+                        "Stale",
+                        StringComparison.Ordinal)) &&
+                projection.Rows.Any(row =>
+                    row.Freshness == "offline" &&
+                    new DeviceRowViewModel(row).RouteText == "Offline"),
+                "stale/offline row grammar was not projected");
             using var loopbackClient = new FleetApiClient(new Uri("http://127.0.0.1:8741/"));
             var remoteRejected = false;
             try
@@ -103,7 +157,9 @@ internal static class Program
                     "freshness facet is not canonical");
             }
 
-            var source = new StaticFleetDataSource(projection);
+            var source = new StaticFleetDataSource(
+                projection,
+                canonicalSummary: fixtureSummary);
             var workspace = new FleetWorkspaceViewModel(source);
             var viewModelWatch = Stopwatch.StartNew();
             workspace.InitializeAsync().GetAwaiter().GetResult();
@@ -145,7 +201,9 @@ internal static class Program
             workspace.SearchText = string.Empty;
             workspace.SelectedFreshness = "Offline";
             workspace.ApplyScopeAsync().GetAwaiter().GetResult();
-            Require(workspace.Rows.Count == 0, "offline filter retained fresh devices");
+            Require(
+                workspace.Rows.Count == fixtureSummary.Offline,
+                "offline filter did not match the canonical Hub summary");
             Require(
                 workspace.BatchSelectionText.Contains("1 hidden by scope", StringComparison.Ordinal),
                 "hidden batch selection was not retained");
@@ -155,6 +213,16 @@ internal static class Program
                     "outside the active scope",
                     StringComparison.Ordinal),
                 "selected-device context was lost outside the active scope");
+
+            workspace.SelectedFreshness = "Unknown";
+            workspace.ApplyScopeAsync().GetAwaiter().GetResult();
+            Require(workspace.Rows.Count == 0, "unknown filter did not produce an empty scope");
+            Require(
+                workspace.BatchSelectionText.Contains("1 hidden by scope", StringComparison.Ordinal) &&
+                workspace.InspectorContextText.Contains(
+                    "outside the active scope",
+                    StringComparison.Ordinal),
+                "empty scope lost selection or inspector context");
 
             var queryCountBeforeClear = source.QueryCount;
             workspace.ClearSearchAsync().GetAwaiter().GetResult();
@@ -330,7 +398,14 @@ internal static class Program
                 bounded_hub_response = true,
                 live_hub_checked = liveHubChecked,
                 projection_identity_fail_closed = true,
+                mixed_freshness_fixture = true,
+                fresh_rows = fixtureSummary.Fresh,
+                stale_rows = fixtureSummary.Stale,
+                offline_rows = fixtureSummary.Offline,
+                capability_downgrade_rows = downgradedRows.Length,
+                mixed_state_grammar = true,
                 canonical_scope = true,
+                empty_scope_preserved = true,
                 grouped_virtualization = true,
                 hidden_selection_preserved = true,
                 inspector_outside_scope_preserved = true,
@@ -463,7 +538,7 @@ internal static class Program
         return count;
     }
 
-    private static string RunFleetctl(string repoRoot, int count)
+    private static string RunFleetctl(string repoRoot, params string[] arguments)
     {
         var start = new ProcessStartInfo
         {
@@ -479,8 +554,10 @@ internal static class Program
         start.ArgumentList.Add("-p");
         start.ArgumentList.Add("fleetctl");
         start.ArgumentList.Add("--");
-        start.ArgumentList.Add("list");
-        start.ArgumentList.Add(count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        foreach (var argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
         using var process = Process.Start(start) ??
                             throw new InvalidOperationException("Unable to start fleetctl.");
         var output = process.StandardOutput.ReadToEnd();
@@ -504,6 +581,7 @@ internal static class Program
 
     private sealed class StaticFleetDataSource(
         FleetQueryResult projection,
+        FleetSummaryProjection? canonicalSummary = null,
         bool echoQuery = true,
         bool wrongInspectorIdentity = false) : IFleetDataSource
     {
@@ -541,6 +619,11 @@ internal static class Program
         public Task<FleetSummaryProjection> SummaryAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (canonicalSummary is not null)
+            {
+                return Task.FromResult(canonicalSummary);
+            }
+
             return Task.FromResult(new FleetSummaryProjection
             {
                 Schema = "rusty.fleet.summary.v1",

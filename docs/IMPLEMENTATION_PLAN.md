@@ -606,6 +606,7 @@ remaining WPF/CLI/API scope parity and manual accessibility gates, remaining
 negative-path integration, Standard and Deep gates, instruction-impact review,
 and publication. The native 1,000-device table/inspector, canonical
 search/freshness scope, grouping, stable hidden selection, out-of-scope
-inspector context, and presented keyboard/UI Automation path are now present.
-Do not create transport-, screen-, or test-sized M1 sub-units. Corrections
-remain inside this active stack.
+inspector context, mixed fresh/stale/offline and empty-scope fixture, and
+presented keyboard/UI Automation path are now present. Do not create
+transport-, screen-, or test-sized M1 sub-units. Corrections remain inside
+this active stack.

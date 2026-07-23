@@ -42,7 +42,8 @@ Live device work is never implied by a source or documentation task.
   admission plus transactional signed-check-in projection;
 - `apps/fleet-hub-local`: explicit bounded local ingress, durable two-slot
   runtime state, and canonical HTTP projection adapter;
-- `crates/fleet-simulator`: synthetic fleet and damage scenarios;
+- `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator, and
+  damage scenarios;
 - `apps/fleetctl`: structured JSON CLI over the same local API;
 - `apps/fleet-console-wpf`: native WPF fleet table, canonical scope/grouping,
   persistent inspector, and loopback-only local API projection;

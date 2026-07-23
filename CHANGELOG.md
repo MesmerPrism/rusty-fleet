@@ -45,3 +45,7 @@ The project follows Semantic Versioning once runtime releases begin.
   selection and out-of-scope inspector preservation, loopback-only Hub
   access, fail-closed projection correlation, native keyboard/UI Automation
   semantics, and package-free 1,000-device validation.
+- Deterministic mixed-freshness operator fixture projected through the same
+  simulator, Hub, query, summary, CLI, and WPF boundaries, covering fresh,
+  stale, offline, low-power, capability-downgrade, and empty-scope behavior
+  without opening a listener or contacting a device.

@@ -358,7 +358,14 @@ function Test-WpfConsole {
         $receipt.loopback_hub_only -eq $true -and
         $receipt.bounded_hub_response -eq $true -and
         $receipt.projection_identity_fail_closed -eq $true -and
+        $receipt.mixed_freshness_fixture -eq $true -and
+        $receipt.fresh_rows -eq 500 -and
+        $receipt.stale_rows -eq 250 -and
+        $receipt.offline_rows -eq 250 -and
+        $receipt.capability_downgrade_rows -eq 125 -and
+        $receipt.mixed_state_grammar -eq $true -and
         $receipt.canonical_scope -eq $true -and
+        $receipt.empty_scope_preserved -eq $true -and
         $receipt.grouped_virtualization -eq $true -and
         $receipt.hidden_selection_preserved -eq $true -and
         $receipt.inspector_outside_scope_preserved -eq $true -and
