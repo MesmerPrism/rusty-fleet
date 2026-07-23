@@ -108,11 +108,52 @@ device-identity, identity-revision, or key generation change rotates the
 source epoch and resets only its source revision; the per-peer Manifold status
 revision remains monotonic.
 
+## Native Fleet Console
+
+`apps/fleet-console-wpf` is the first human projection over the same canonical
+Hub query, summary, and inspector routes used by `fleetctl`. It is inert at
+startup and accepts only an explicitly entered loopback HTTP Hub address.
+
+The M1 workspace uses the native WPF `DataGrid` and native UI Automation peer
+without a theme dependency. It provides:
+
+- a 12-column, recycling-virtualized fleet table and frozen device identity;
+- visible summary, query, result-revision, snapshot-time, and batch-selection
+  scope;
+- inspection selection that is separate from batch membership;
+- pointer, keyboard, and UI Automation batch-toggle paths that update the same
+  visible selection scope;
+- stable row view models that retain batch selection across explicit refresh;
+- a persistent inspector for independent observations, capabilities,
+  condition provenance, work, and streams;
+- keyboard search (`Ctrl+F`), region navigation (`F6`), inspection (`Enter`),
+  and batch-toggle (`Space`);
+- system color resources, visible text labels, stable accessible names, and
+  native `DataGridAutomationPeer` semantics.
+
+The local API client has a 10-second request deadline and a 16 MiB response
+budget. Before changing visible state, the Console verifies the exact query
+receipt, result window, row/identity invariants, summary counts, bounded
+condition/capability families, and selected inspector identity. Invalid
+evidence leaves the last accepted projection visible and reports the failure.
+
+The package-free validation executable consumes the real 1,000-device
+`fleetctl` query result, verifies canonical search shape, stable rows and
+selection, native automation, recycling virtualization, bounded realized
+containers, 12 declared columns, and independent capability families. It
+records measured timings but does not convert one run into a supported-scale
+claim. It also rejects non-loopback Hub addresses, mismatched query receipts,
+and wrong-device inspector evidence. Narrator, high-contrast, text-size, and
+multi-scaling checks remain manual M1 acceptance gates.
+
 ## Focused validation
 
 ```powershell
 cargo test -p fleet-manifold-adapter -p fleet-hub-local
 cargo clippy -p fleet-manifold-adapter -p fleet-hub-local --all-targets --locked -- -D warnings
+dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
+dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
+  -c Release --no-build -- --repo-root .
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
 ```
 

@@ -50,6 +50,9 @@ function Get-PublicFiles {
     Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Force |
         Where-Object {
             $candidate = [IO.Path]::GetFullPath($_.FullName)
+            $relativeSegments = [IO.Path]::GetRelativePath($repoRoot, $candidate).
+                Split([IO.Path]::DirectorySeparatorChar, [StringSplitOptions]::RemoveEmptyEntries)
+            -not ($relativeSegments | Where-Object { $_ -in @("bin", "obj", "target") }) -and
             -not ($ignoredRoots | Where-Object {
                 $candidate.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
                 $candidate -eq $_
@@ -174,7 +177,7 @@ function Test-JsonDocuments {
 function Test-PublicBoundary {
     $textExtensions = @(
         ".md", ".txt", ".json", ".jsonl", ".yml", ".yaml", ".ps1",
-        ".rs", ".cs", ".toml", ".xml"
+        ".rs", ".cs", ".toml", ".xml", ".xaml", ".csproj", ".props"
     )
     $patterns = [ordered]@{
         "local Windows user/work path" = "(?i)\b[A-Z]:\\(?:Users|Work)\\"
@@ -203,12 +206,27 @@ function Test-RequiredFiles {
         "SECURITY.md",
         "Cargo.lock",
         "Cargo.toml",
+        "global.json",
+        "Directory.Build.props",
         "apps/fleet-hub-local/Cargo.toml",
         "apps/fleet-hub-local/src/lib.rs",
         "apps/fleet-hub-local/src/main.rs",
         "apps/fleetctl/Cargo.toml",
         "apps/fleetctl/src/lib.rs",
         "apps/fleetctl/src/main.rs",
+        "apps/fleet-console-wpf/RustyFleet.FleetConsole.csproj",
+        "apps/fleet-console-wpf/App.xaml",
+        "apps/fleet-console-wpf/App.xaml.cs",
+        "apps/fleet-console-wpf/MainWindow.xaml",
+        "apps/fleet-console-wpf/MainWindow.xaml.cs",
+        "apps/fleet-console-wpf/Contracts/FleetProjectionModels.cs",
+        "apps/fleet-console-wpf/Contracts/FleetProjectionValidation.cs",
+        "apps/fleet-console-wpf/Services/FleetApiClient.cs",
+        "apps/fleet-console-wpf/ViewModels/Commands.cs",
+        "apps/fleet-console-wpf/ViewModels/DeviceViewModels.cs",
+        "apps/fleet-console-wpf/ViewModels/FleetWorkspaceViewModel.cs",
+        "apps/fleet-console-wpf.tests/RustyFleet.FleetConsole.Tests.csproj",
+        "apps/fleet-console-wpf.tests/Program.cs",
         "crates/fleet-contracts/Cargo.toml",
         "crates/fleet-contracts/src/checkin.rs",
         "crates/fleet-contracts/src/lib.rs",
@@ -274,6 +292,76 @@ function Invoke-Cargo {
     if ($LASTEXITCODE -ne 0) {
         throw "Cargo failed: cargo $($Arguments -join ' ')"
     }
+}
+
+function Invoke-DotNet {
+    param([Parameter(Mandatory)][string[]] $Arguments)
+
+    & dotnet @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet failed: dotnet $($Arguments -join ' ')"
+    }
+}
+
+function Test-WpfConsole {
+    $globalJson = Get-Content -LiteralPath (Join-Path $repoRoot "global.json") -Raw |
+        ConvertFrom-Json -Depth 20
+    Assert-True -Condition (
+        $globalJson.sdk.version -eq "10.0.201" -and
+        $globalJson.sdk.rollForward -eq "disable" -and
+        $globalJson.sdk.allowPrerelease -eq $false
+    ) -Message "The WPF toolchain must remain pinned to the stable installed .NET SDK."
+
+    $consoleProject = Get-Content -LiteralPath (
+        Join-Path $repoRoot "apps/fleet-console-wpf/RustyFleet.FleetConsole.csproj"
+    ) -Raw
+    Assert-True -Condition (
+        $consoleProject.Contains("<UseWPF>true</UseWPF>") -and
+        -not $consoleProject.Contains("<PackageReference")
+    ) -Message "The M1 Console must retain native WPF semantics without a theme package."
+
+    $testProject = Join-Path (
+        $repoRoot
+    ) "apps/fleet-console-wpf.tests/RustyFleet.FleetConsole.Tests.csproj"
+    Invoke-DotNet -Arguments @(
+        "build",
+        $testProject,
+        "-c",
+        "Release",
+        "--nologo"
+    )
+
+    $receiptLines = @(
+        & dotnet run `
+            --project $testProject `
+            -c Release `
+            --no-build `
+            -- `
+            --repo-root $repoRoot
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native WPF validation executable failed."
+    }
+    $receipt = ($receiptLines -join [Environment]::NewLine) | ConvertFrom-Json -Depth 20
+    Assert-True -Condition (
+        $receipt.schema -eq "rusty.fleet.wpf_validation.v1" -and
+        $receipt.result -eq "pass" -and
+        $receipt.projection_rows -eq 1000 -and
+        $receipt.grid_columns -eq 12 -and
+        $receipt.realized_rows -lt 250 -and
+        $receipt.native_datagrid -eq $true -and
+        $receipt.recycling_virtualization -eq $true -and
+        $receipt.native_automation_peer -eq $true -and
+        $receipt.pointer_batch_toggle -eq $true -and
+        $receipt.accessible_batch_toggle -eq $true -and
+        $receipt.loopback_hub_only -eq $true -and
+        $receipt.bounded_hub_response -eq $true -and
+        $receipt.projection_identity_fail_closed -eq $true -and
+        $receipt.theme_dependency -eq "none" -and
+        $receipt.batch_selection_preserved -eq $true -and
+        $receipt.inspector_capability_families -ge 3 -and
+        $receipt.view_model_ms -lt 2000
+    ) -Message "Native WPF scale, accessibility, or stable-context evidence is incomplete."
 }
 
 function Test-SourceImplementation {
@@ -585,6 +673,7 @@ try {
     Test-PublicBoundary
     Test-PlanningInvariants
     Test-SourceImplementation
+    Test-WpfConsole
     Test-DatastreamPlanning
     Invoke-Git diff --check
 

@@ -92,7 +92,7 @@ The product repository will grow toward:
 
 ```text
 apps/
-  fleet-console/        WPF operator projection
+  fleet-console-wpf/    native WPF operator projection
   fleetctl/             CLI projection
 crates/
   fleet-contracts/      product-owned wire/data contracts

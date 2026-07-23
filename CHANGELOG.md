@@ -39,3 +39,8 @@ The project follows Semantic Versioning once runtime releases begin.
   state; host-owned received time; and transactional all-or-neither
   Manifold/Fleet application. No listener or device effect is activated by
   this checkpoint.
+- First native WPF M1 operator projection with a dense recycling-virtualized
+  fleet table, persistent device inspector, distinct inspection and batch
+  selection, loopback-only Hub access, fail-closed projection correlation,
+  native keyboard/UI Automation semantics, and package-free 1,000-device
+  validation.

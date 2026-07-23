@@ -22,6 +22,13 @@ Quick is safe during normal editing and checks:
 - deterministic 4/50/250/1,000/5,000 simulator generation;
 - Hub revision, replay, staleness, identity, and projection behavior;
 - exact `fleetctl`/local-API projection parity.
+- stable .NET 10 WPF build plus the package-free native DataGrid validation
+  against the real 1,000-device Rust projection;
+- native UI Automation peer/name, recycling virtualization, bounded realized
+  rows, readable default column widths, stable view models, pointer/keyboard/
+  UI Automation batch selection, and preserved batch scope;
+- fail-closed non-loopback Hub, bounded response, mismatched-query, and
+  wrong-device inspector fixtures.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
@@ -106,6 +113,9 @@ cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run --locked -p fleetctl -- list 4
+dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
+dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
+  -c Release --no-build -- --repo-root .
 ```
 
 The deterministic scale suite generates its datasets in memory. It does not

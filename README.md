@@ -12,7 +12,9 @@ pinned Manifold peer authority, an explicit bounded local Hub runtime, durable
 two-slot restart recovery, and one cleaned private Quest Wi-Fi proof. Nothing
 listens by default: the operator must supply a valid enrollment config,
 absolute private state directory, and explicitly permit a non-loopback bind.
-WPF, final M1 consolidation, media, and remote relay remain pending.
+The first native WPF table/inspector slice and its 1,000-device automated
+validation are present. Manual Narrator, high-contrast, scaling, final M1
+consolidation, media, and remote relay remain pending.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -45,7 +47,7 @@ adapters. Media transport remains a separate data plane.
 This avoids turning QuestIonAble File Manager into a fleet controller or putting
 device, relay, media, and operator authority into one application.
 
-The current source-only implementation is split into:
+The current implementation is split into:
 
 - `fleet-contracts`: versioned identity, condition, capability, query,
   projection, command, and datastream contracts;
@@ -58,7 +60,12 @@ The current source-only implementation is split into:
   query, summary, inspect, detail, and watch projections over the same Hub;
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets plus damage and lifecycle mutations;
-- `fleetctl`: a structured JSON projection over the same local API.
+- `fleetctl`: a structured JSON projection over the same local API;
+- `fleet-console-wpf`: a native WPF `DataGrid`, visible fleet scope,
+  distinct inspection and batch selection, and a persistent selected-device
+  inspector over the canonical local API;
+- `fleet-console-wpf.tests`: package-free native UI Automation,
+  virtualization, stable-row, capability-family, and 1,000-device checks.
 
 See the [Milestone 0 source foundation](docs/M0_SOURCE_FOUNDATION.md) for the
 accepted source boundary, the
@@ -123,6 +130,19 @@ private config. Durable state additionally requires an absolute private
 `state_directory`. See the
 [M1 runtime guide](docs/M1_LOCAL_MONITORING.md).
 
+Build and exercise the native WPF projection against the real deterministic
+Rust query result:
+
+```powershell
+dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
+dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
+  -c Release --no-build -- --repo-root .
+```
+
+The Console starts disconnected and accepts only an explicit loopback HTTP
+Hub address. It does not start the Hub, discover devices, or activate a
+headset route.
+
 ## Validation
 
 Run the edit-sized checks:
@@ -153,8 +173,10 @@ paired with the active M1 local-monitoring stack. The runtime source is
 present but activates no socket, service, device route, or platform permission
 by default. The bounded Quest checkpoint and a producer-stopped durable Hub
 restart have passed with private evidence and complete device cleanup. M1
-acceptance remains pending until the complete Host, WPF/accessibility,
-Standard, Deep, workflow, and publication gates pass.
+now also has its first native WPF table/inspector and automated 1,000-device
+virtualization/UI Automation baseline. Acceptance remains pending until the
+manual Narrator, high-contrast, scaling, full Standard, Deep, workflow, and
+publication gates pass.
 
 ## License
 
