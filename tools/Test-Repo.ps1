@@ -203,6 +203,9 @@ function Test-RequiredFiles {
         "SECURITY.md",
         "Cargo.lock",
         "Cargo.toml",
+        "apps/fleet-hub-local/Cargo.toml",
+        "apps/fleet-hub-local/src/lib.rs",
+        "apps/fleet-hub-local/src/main.rs",
         "apps/fleetctl/Cargo.toml",
         "apps/fleetctl/src/lib.rs",
         "apps/fleetctl/src/main.rs",
@@ -236,6 +239,7 @@ function Test-RequiredFiles {
         "docs/IMPLEMENTATION_PLAN.md",
         "docs/M0_SOURCE_FOUNDATION.md",
         "docs/M0_GRAPH_AND_INSTRUCTION_REVIEW.md",
+        "docs/M1_LOCAL_MONITORING.md",
         "docs/OPERATOR_UI.md",
         "docs/WORKFLOW.md",
         "docs/VALIDATION.md",
@@ -275,6 +279,7 @@ function Invoke-Cargo {
 function Test-SourceImplementation {
     $workspace = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.toml") -Raw
     foreach ($member in @(
+        "apps/fleet-hub-local",
         "apps/fleetctl",
         "crates/fleet-contracts",
         "crates/fleet-hub",

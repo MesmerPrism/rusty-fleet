@@ -6,7 +6,10 @@
 use std::collections::BTreeMap;
 
 use ed25519_dalek::{Signature, VerifyingKey};
-use fleet_contracts::{SignedFleetCheckIn, ValidateContract};
+use fleet_contracts::{
+    ConditionFamily, ConditionState, Sensitivity, SignedFleetCheckIn, StatusCondition,
+    StatusSource, ValidateContract,
+};
 use fleet_hub::{FleetHub, ObservationDecision};
 use rusty_manifold_model::DottedId;
 use rusty_manifold_peer::{
@@ -116,7 +119,7 @@ impl FleetManifoldAdapter {
             return rejected(checkin_id, CheckInRejectionReason::EvidenceLimitExceeded);
         }
 
-        let Ok(proposal) = serde_json::from_value::<ManifoldPeerStatusProposal>(
+        let Ok(mut proposal) = serde_json::from_value::<ManifoldPeerStatusProposal>(
             signed.claims.manifold_peer_status_proposal.clone(),
         ) else {
             return rejected(checkin_id, CheckInRejectionReason::ContractInvalid);
@@ -180,6 +183,27 @@ impl FleetManifoldAdapter {
         let mut candidate_hub = hub.clone();
         let mut accepted_observation = signed.claims.observation.clone();
         accepted_observation.received_time_ms = now_ms;
+        accepted_observation.conditions.push(StatusCondition {
+            family: ConditionFamily::Freshness,
+            state: ConditionState::Current,
+            reason: "local_authenticated_checkin".to_owned(),
+            message: "The local Hub admitted a current signed device check-in.".to_owned(),
+            source_time_ms: accepted_observation.source_time_ms,
+            received_time_ms: now_ms,
+            accepted_revision: hub.result_revision().saturating_add(1),
+            fresh_until_ms: signed.claims.expires_at_ms,
+            source: StatusSource {
+                owner: "rusty-manifold".to_owned(),
+                adapter_id: "fleet.local-ingress".to_owned(),
+                authority_revision: self
+                    .accepted_peers
+                    .authority_revision
+                    .get()
+                    .saturating_add(1),
+            },
+            sensitivity: Sensitivity::Operator,
+            extensions: BTreeMap::new(),
+        });
         let fleet_decision = candidate_hub.accept_observation(accepted_observation, now_ms);
         if !matches!(fleet_decision, ObservationDecision::Accepted { .. }) {
             return CheckInReceipt {
@@ -193,6 +217,13 @@ impl FleetManifoldAdapter {
             };
         }
 
+        // The source signs its complete peer status and proposal identity, but
+        // the trusted ingress owns the optimistic lock against fleet-global
+        // Manifold state. Independent devices cannot predict or serialize that
+        // global revision. All source-owned evidence remains byte-for-byte
+        // covered by the signature; only this authority-owned field is bound
+        // to the current state immediately before review.
+        proposal.expected_authority_revision = self.accepted_peers.authority_revision;
         let case = ManifoldPeerReviewCase {
             schema_id: schema_id("rusty.manifold.peer.review_case.v1"),
             case_id,
@@ -392,20 +423,44 @@ mod tests {
         );
         assert_eq!(hub.device_count(), 1);
 
+        let first_authority_revision = adapter.accepted_peers().authority_revision;
+        let mut next_claims = signed.claims.clone();
+        next_claims.checkin_id = "checkin.quest.2".to_owned();
+        let mut next_proposal: ManifoldPeerStatusProposal =
+            serde_json::from_value(next_claims.manifold_peer_status_proposal.clone())
+                .expect("proposal");
+        next_proposal.proposal_id = dotted("proposal.status.quest.2");
+        // Devices do not serialize against the fleet-global Manifold
+        // authority revision. Ingress binds the signed status to current
+        // authority immediately before review.
+        next_proposal.expected_authority_revision = Revision::INITIAL;
+        next_proposal.status.status_revision = Revision::new(2).expect("second status revision");
+        next_claims.manifold_peer_status_proposal =
+            serde_json::to_value(next_proposal).expect("proposal serialization");
+        next_claims.observation.source_revision = 2;
+        let next = sign_checkin(&signing_key, key_id.as_str(), next_claims);
+        let next_receipt = adapter.accept(&mut hub, next, BASE_TIME_MS + 3);
+        assert!(next_receipt.accepted);
+        assert_eq!(
+            adapter.accepted_peers().authority_revision.get(),
+            first_authority_revision.get().saturating_add(1)
+        );
+
         let prior_authority_revision = adapter.accepted_peers().authority_revision;
         let prior_proposal_count = adapter.accepted_peers().applied_proposal_ids.len();
         let mut fleet_rejected_claims = signed.claims;
-        fleet_rejected_claims.checkin_id = "checkin.quest.2".to_owned();
-        let mut next_proposal: ManifoldPeerStatusProposal =
+        fleet_rejected_claims.checkin_id = "checkin.quest.3".to_owned();
+        let mut rejected_proposal: ManifoldPeerStatusProposal =
             serde_json::from_value(fleet_rejected_claims.manifold_peer_status_proposal.clone())
                 .expect("proposal");
-        next_proposal.proposal_id = dotted("proposal.status.quest.2");
-        next_proposal.expected_authority_revision = prior_authority_revision;
-        next_proposal.status.status_revision = Revision::new(2).expect("second status revision");
+        rejected_proposal.proposal_id = dotted("proposal.status.quest.3");
+        rejected_proposal.expected_authority_revision = Revision::INITIAL;
+        rejected_proposal.status.status_revision = Revision::new(3).expect("third status revision");
         fleet_rejected_claims.manifold_peer_status_proposal =
-            serde_json::to_value(next_proposal).expect("proposal serialization");
+            serde_json::to_value(rejected_proposal).expect("proposal serialization");
+        fleet_rejected_claims.observation.source_revision = 2;
         let fleet_rejected = sign_checkin(&signing_key, key_id.as_str(), fleet_rejected_claims);
-        let fleet_rejection = adapter.accept(&mut hub, fleet_rejected, BASE_TIME_MS + 3);
+        let fleet_rejection = adapter.accept(&mut hub, fleet_rejected, BASE_TIME_MS + 4);
         assert!(!fleet_rejection.accepted);
         assert_eq!(
             fleet_rejection.rejection_reason,

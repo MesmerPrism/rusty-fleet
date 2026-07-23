@@ -6,11 +6,12 @@ checking in, even when ADB is unavailable, and to expose stronger operations
 only when the device reports the required capability and authority.
 
 Milestone 0 is accepted and published. Milestone 1 is active on its working
-branch. Its first inert source checkpoint adds provenance-bearing Quest
-observation facts plus a signed check-in envelope admitted transactionally
-through the exact pinned Manifold peer authority. No runtime listener, Android
-permission, device mutation, media route, persistence service, or remote relay
-is active yet.
+branch. The current checkpoint adds provenance-bearing Quest observation
+facts, a signed check-in envelope admitted transactionally through the exact
+pinned Manifold peer authority, and an explicit bounded local Hub runtime.
+Nothing listens by default: the operator must supply a valid enrollment config
+and explicitly permit a non-loopback bind. Android device proof, durable
+persistence, WPF, media, and remote relay remain pending.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -52,12 +53,16 @@ The current source-only implementation is split into:
 - `fleet-manifold-adapter`: exact Manifold enrollment/status admission,
   Ed25519/JCS verification, replay-window enforcement, and all-or-neither
   Manifold/Fleet state application;
+- `fleet-hub-local`: explicit bounded HTTP check-in ingress plus health,
+  query, summary, inspect, detail, and watch projections over the same Hub;
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets plus damage and lifecycle mutations;
 - `fleetctl`: a structured JSON projection over the same local API.
 
 See the [Milestone 0 source foundation](docs/M0_SOURCE_FOUNDATION.md) for the
-current boundary and scenario model, and the
+accepted source boundary, the
+[M1 local monitoring runtime](docs/M1_LOCAL_MONITORING.md) for the active
+ingress contract, and the
 [M0 graph/instruction review](docs/M0_GRAPH_AND_INSTRUCTION_REVIEW.md) for the
 bounded dependency, authority, activation, and instruction audit.
 
@@ -105,8 +110,15 @@ cargo run --locked -p fleetctl -- inspect sim-00001 4
 cargo run --locked -p fleetctl -- watch 4
 ```
 
-These commands create synthetic in-memory data only. The M1 check-in adapter is
-also inert unless a caller supplies enrolled Manifold state and signed input.
+These commands create synthetic in-memory data only. The M1 local Hub remains
+inert unless it is launched with an explicit enrolled config:
+
+```powershell
+cargo run --locked -p fleet-hub-local -- --config <private-local-config.json>
+```
+
+Non-loopback binding additionally requires `allow_non_loopback=true` in that
+private config. See the [M1 runtime guide](docs/M1_LOCAL_MONITORING.md).
 
 ## Validation
 
@@ -134,9 +146,10 @@ These commands do not contact or mutate a headset.
 ## Status
 
 The accepted M0 baseline and inert Morphospace protocol-v2 workspace are now
-paired with the active M1 local-monitoring stack. The contract checkpoint does
-not activate a socket, service, device route, or platform permission. M1
-acceptance remains pending until the complete Host, WPF/accessibility,
+paired with the active M1 local-monitoring stack. The runtime source is
+present but activates no socket, service, device route, or platform permission
+by default. M1 acceptance remains pending until the complete Host,
+WPF/accessibility,
 Standard, one bounded Quest, Deep, workflow, and publication gates pass.
 
 ## License

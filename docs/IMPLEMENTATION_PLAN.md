@@ -596,11 +596,13 @@ Every milestone answers:
 ## Next implementation action
 
 Complete the active
-`morphospace/iteration-units/fleet-m0-foundation-and-simulator.json` as one
-stack. The pinned Rust source foundation, deterministic simulator, in-memory
-Hub, and CLI/local-API parity surface are documented in
-[Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md). Finish damaged and
-boundary coverage, run the declared Standard and workflow-contract gates,
-record instruction-impact review, and publish one reviewable milestone. Do not
-pre-create M0.1, M0.2, or schema-per-unit work items. Corrections remain inside
-this active stack.
+`morphospace/iteration-units/fleet-m1-local-no-adb-monitoring.json` as one
+stack. The accepted source foundation remains documented in
+[Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md); the active bounded
+ingress and authority behavior are documented in
+[Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Finish durable
+restart recovery, the shared WPF/CLI/API projection and accessibility slice,
+negative-path integration, one bounded Quest checkpoint, Standard and Deep
+gates, instruction-impact review, and publication. Do not create transport-,
+screen-, or test-sized M1 sub-units. Corrections remain inside this active
+stack.
