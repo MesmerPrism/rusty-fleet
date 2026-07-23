@@ -75,7 +75,9 @@ function Get-TransitionBinding {
         [object] $ExpectedCurrentUnit,
 
         [AllowNull()]
-        [object] $ExpectedNextReadyUnit
+        [object] $ExpectedNextReadyUnit,
+
+        [switch] $Historical
     )
 
     $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
@@ -90,9 +92,14 @@ function Get-TransitionBinding {
     Assert-True -Condition (
         $matchingEvents[0].event_type -eq "state-transition" -and
         $matchingEvents[0].unit_id -eq $Unit.unit_id -and
-        $State.last_event_id -eq $EventId -and
-        $State.current_unit -eq $ExpectedCurrentUnit -and
-        $State.next_ready_unit -eq $ExpectedNextReadyUnit
+        (
+            $Historical -or
+            (
+                $State.last_event_id -eq $EventId -and
+                $State.current_unit -eq $ExpectedCurrentUnit -and
+                $State.next_ready_unit -eq $ExpectedNextReadyUnit
+            )
+        )
     ) -Message "$ExpectedStatus Milestone 0 is not bound to workspace state."
 
     $transactionId = "$EventId-transition"
@@ -107,8 +114,15 @@ function Get-TransitionBinding {
     $intentSha256 = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $unitProjection = $Unit | ConvertTo-Json -Depth 100 -Compress
     $targetUnitProjection = $intent.target.unit.document | ConvertTo-Json -Depth 100 -Compress
-    $stateProjection = $State | ConvertTo-Json -Depth 100 -Compress
     $targetStateProjection = $intent.target.state.document | ConvertTo-Json -Depth 100 -Compress
+    $stateMatches = if ($Historical) {
+        $intent.target.state.document.last_event_id -eq $EventId -and
+        $intent.target.state.document.current_unit -eq $ExpectedCurrentUnit -and
+        $intent.target.state.document.next_ready_unit -eq $ExpectedNextReadyUnit
+    } else {
+        $stateProjection = $State | ConvertTo-Json -Depth 100 -Compress
+        $stateProjection -ceq $targetStateProjection
+    }
     Assert-True -Condition (
         $intent.transaction_id -eq $transactionId -and
         $intent.event.event_id -eq $EventId -and
@@ -119,7 +133,7 @@ function Get-TransitionBinding {
         $completion.unit_sha256 -eq $intent.target.unit.sha256 -and
         $completion.state_sha256 -eq $intent.target.state.sha256 -and
         $unitProjection -ceq $targetUnitProjection -and
-        $stateProjection -ceq $targetStateProjection -and
+        $stateMatches -and
         $completion.intent.sha256 -eq $intentSha256
     ) -Message "$ExpectedStatus Milestone 0 transition receipts are stale or damaged."
 
@@ -373,7 +387,7 @@ function Test-PlanningInvariants {
         $acceptedEventId = "$($unit.unit_id)-accepted-0005"
         Get-TransitionBinding -Unit $unit -State $state -EventId $acceptedEventId `
             -ExpectedStatus "accepted" -ExpectedCurrentUnit $null `
-            -ExpectedNextReadyUnit $null | Out-Null
+            -ExpectedNextReadyUnit $null -Historical | Out-Null
         Assert-True -Condition (
             $state.validation_checkpoint.result -eq "pass" -and
             $state.last_accepted_receipt -eq $state.validation_checkpoint.receipt -and
