@@ -77,3 +77,7 @@ The project follows Semantic Versioning once runtime releases begin.
   replay, and final canonical recovery, plus exact pinned-Manifold key
   rotation that rejects the old signer before accepting a fresh producer
   epoch.
+- M1 host-side consolidation readiness record covering passing Fleet
+  Quick/Standard/Deep/workflow checks, the exact fail-closed Rusty Quest Fleet
+  Agent `Host` gate, unchanged owner and public/private boundaries, and the
+  remaining operator-attended accessibility and formal workflow gates.

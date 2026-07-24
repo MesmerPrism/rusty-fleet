@@ -26,8 +26,12 @@ detail surface with overview, status, capability, work, stream, and retained
 condition-history tabs; returning preserves the exact fleet scope, selection,
 scroll anchor, and stable identity. Its package-free
 1,000-device and presented-window
-keyboard/UI Automation checks pass. Manual Narrator, high-contrast, scaling,
-final M1 consolidation, media, and remote relay remain pending.
+keyboard/UI Automation checks pass. The automated host-side source stack has
+also passed Quick, Standard, Deep, workflow-contract, and exact Quest-owner
+`Host` validation; see the
+[M1 consolidation readiness record](docs/M1_CONSOLIDATION_READINESS.md).
+Manual Narrator, high-contrast, large-text, scaling, the formal workflow
+transition, media, and remote relay remain pending.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -214,9 +218,10 @@ explicit queued live ordering, and automated
 pass verifies search, grid, batch, and inspector keyboard focus. Its
 self-checking lifecycle projection and exact-owner key-rotation gate cover the
 remaining Fleet-owned deterministic lifecycle cases. Acceptance remains
-pending until the manual
-Narrator, high-contrast, scaling, full Standard, Deep, workflow, and
-publication gates pass.
+pending until the manual Narrator, high-contrast, large-text, scaling, formal
+workflow transition, and publication gates pass. The completed automated
+host-side consolidation gates and exact remaining boundary are recorded in
+[M1 Consolidation Readiness](docs/M1_CONSOLIDATION_READINESS.md).
 
 ## License
 

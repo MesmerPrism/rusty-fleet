@@ -607,9 +607,12 @@ stack. The accepted source foundation remains documented in
 [Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md); the active bounded
 ingress and authority behavior are documented in
 [Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Durable restart
-recovery and the first bounded Quest checkpoint are now present. Finish the
-manual accessibility gates, final Standard and Deep gates,
-instruction-impact review, and publication. The deterministic M1 lifecycle
+recovery and the first bounded Quest checkpoint are now present. The
+[M1 consolidation readiness record](M1_CONSOLIDATION_READINESS.md) confirms
+that the final automated host-side Quick, Standard, Deep, workflow-contract,
+instruction-impact, and exact Quest-owner `Host` gates pass. Finish the manual
+Narrator, high-contrast, large-text, and scaling gates, then perform the formal
+workflow transition and publication. The deterministic M1 lifecycle
 projection now covers sleep/wake aging, route loss/recovery, duplicate and
 stale check-ins, agent upgrade, old-epoch replay, and final independent-device
 recovery; the exact pinned Manifold adapter covers key rotation and old-signer

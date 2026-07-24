@@ -137,6 +137,21 @@ dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Test
   -c Release --no-build -- --repo-root .
 ```
 
+For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
+surface separately:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File <rusty-quest-root>\tools\Test-FleetAgentAndroid.ps1 `
+  -Tier Host
+```
+
+The owner script exposes `Host` as a fail-closed declared tier and rejects
+unknown tier names. It performs source/static validation only unless `-Build`
+is added explicitly. It never implies device execution. The completed
+automated boundary and the remaining manual gates are recorded in
+[M1 Consolidation Readiness](M1_CONSOLIDATION_READINESS.md).
+
 The deterministic scale suite generates its datasets in memory. It does not
 commit large data files and does not claim that every fixture size is a
 supported production fleet.

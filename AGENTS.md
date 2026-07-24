@@ -32,6 +32,7 @@ Live device work is never implied by a source or documentation task.
 8. `docs/ARCHITECTURE.md`
 9. `docs/DATASTREAMS.md`
 10. `docs/VALIDATION.md`
+11. `docs/M1_CONSOLIDATION_READINESS.md` when completing or reviewing M1
 
 ## Source map
 
