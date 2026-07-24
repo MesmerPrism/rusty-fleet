@@ -5,8 +5,9 @@ Meta Quest dashboard. It is designed to show every enrolled headset that is
 checking in, even when ADB is unavailable, and to expose stronger operations
 only when the device reports the required capability and authority.
 
-Milestone 0 is accepted and published. Milestone 1 is active on its working
-branch. The current checkpoint adds provenance-bearing Quest observation
+Milestone 0 is accepted and published. Milestone 1's functional baseline is
+accepted on its working branch; publication remains pending. The current
+checkpoint adds provenance-bearing Quest observation
 facts, a signed check-in envelope admitted transactionally through the exact
 pinned Manifold peer authority, an explicit bounded local Hub runtime, durable
 two-slot restart recovery, and one cleaned private Quest Wi-Fi proof. Nothing
@@ -30,8 +31,9 @@ keyboard/UI Automation checks pass. The automated host-side source stack has
 also passed Quick, Standard, Deep, workflow-contract, and exact Quest-owner
 `Host` validation; see the
 [M1 consolidation readiness record](docs/M1_CONSOLIDATION_READINESS.md).
-Manual Narrator, high-contrast, large-text, scaling, the formal workflow
-transition, media, and remote relay remain pending.
+The cumulative Narrator, Accessibility Insights, high-contrast, large-text,
+scaling, and multi-monitor suite remains the Milestone 7 release gate. Media
+and remote relay remain pending.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
