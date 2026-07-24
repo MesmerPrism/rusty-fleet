@@ -92,7 +92,7 @@ The product repository will grow toward:
 
 ```text
 apps/
-  fleet-console/        WPF operator projection
+  fleet-console-wpf/    native WPF operator projection
   fleetctl/             CLI projection
 crates/
   fleet-contracts/      product-owned wire/data contracts
@@ -228,6 +228,9 @@ headsets.
 - Add the first WPF fleet table with filtering, grouping, detail inspection,
   a persistent selected-device inspector, independent status grammar, visible
   active scope, stable live ordering, staleness, and capability projections.
+- Establish Hub-owned saved-view persistence with an optimistic collection
+  revision and exact query/navigation restoration before adding full-detail
+  routes or richer view sharing; no saved scope may exist only in WPF state.
 - Run the native WPF `DataGrid` and shell/theme dependency spike with at least
   1,000 simulated devices. Test virtualization, UI Automation, keyboard,
   Narrator, high contrast, scaling, focus, selection, license, and removal
@@ -249,6 +252,9 @@ headsets.
   with an inspectable reason.
 - Detail navigation and refresh preserve query, filters, grouping, sort,
   selection, scroll anchor, focus, and inspector context.
+- WPF watch consumption is cursor-bound and bounded; accepted events trigger a
+  canonical query reread, rejected events remain distinct evidence, sequence
+  reset rebases visibly, and malformed ordering retains cached rows.
 - Keyboard, UI Automation, Narrator, high-contrast, large-text, and scaling
   gates pass for the fleet table and inspector.
 - Order-affecting live changes do not move interaction-bound rows without
@@ -595,12 +601,28 @@ Every milestone answers:
 
 ## Next implementation action
 
-Complete the active
-`morphospace/iteration-units/fleet-m0-foundation-and-simulator.json` as one
-stack. The pinned Rust source foundation, deterministic simulator, in-memory
-Hub, and CLI/local-API parity surface are documented in
-[Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md). Finish damaged and
-boundary coverage, run the declared Standard and workflow-contract gates,
-record instruction-impact review, and publish one reviewable milestone. Do not
-pre-create M0.1, M0.2, or schema-per-unit work items. Corrections remain inside
+Complete the active corrective
+`morphospace/iteration-units/fleet-m1-functional-closeout.json` without
+rewriting the immutable original M1 unit. The accepted source foundation remains documented in
+[Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md); the active bounded
+ingress and authority behavior are documented in
+[Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Durable restart
+recovery and the first bounded Quest checkpoint are now present. The
+[M1 consolidation readiness record](M1_CONSOLIDATION_READINESS.md) confirms
+that the final automated host-side Quick, Standard, Deep, workflow-contract,
+instruction-impact, and exact Quest-owner `Host` gates pass. The
+current-settings presented keyboard pass and preliminary Narrator confirmation
+are informative rather than comprehensive accessibility conformance. Keep
+automated keyboard/UI Automation regression at every WPF milestone and run the
+complete Narrator, Accessibility Insights, high-contrast, large-text, scaling,
+and multi-monitor matrix as the existing Milestone 7 cumulative release gate.
+The deterministic M1 lifecycle
+projection now covers sleep/wake aging, route loss/recovery, duplicate and
+stale check-ins, agent upgrade, old-epoch replay, and final independent-device
+recovery; the exact pinned Manifold adapter covers key rotation and old-signer
+rejection. The native 1,000-device table/inspector, canonical
+search/freshness scope, grouping, stable hidden selection, out-of-scope
+inspector context, mixed fresh/stale/offline and empty-scope fixture, and
+presented keyboard/UI Automation path are now present. Do not create
+transport-, screen-, or test-sized M1 sub-units. Corrections remain inside
 this active stack.

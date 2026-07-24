@@ -1,0 +1,257 @@
+# Milestone 1 Local Monitoring Runtime
+
+## Scope
+
+`fleet-hub-local` is the first runnable Rusty Fleet ingress. It accepts
+permission-minimal, low-rate Quest check-ins over an explicitly configured
+local HTTP endpoint and projects accepted state through the same `FleetApi`
+used by the CLI and WPF Console.
+
+The runtime does not discover devices, create enrollment, enable ADB, carry
+commands, accept files or media, or provide remote relay. Source presence does
+not open a listener.
+
+## Activation
+
+Start the runtime only with a private configuration:
+
+```powershell
+cargo run --locked -p fleet-hub-local -- --config <private-local-config.json>
+```
+
+The configuration schema is `rusty.fleet.local_hub_config.v1` and contains:
+
+- one exact IP socket address in `bind`;
+- `allow_non_loopback`, which must be `true` for any LAN bind;
+- one absolute private `state_directory`;
+- one or more trusted Manifold operator identifiers;
+- zero or more configured public credential enrollments; and
+- finite stale, offline, condition-history, source-epoch, and event limits.
+
+Enrollment entries contain public keys and authority input, not private signing
+seeds. Even so, active device identifiers, endpoints, and enrollment material
+belong in private local configuration and must not be committed.
+
+Loopback is the safe default. A LAN bind is an explicit M1 activation and
+exposes low-sensitivity signed status without transport confidentiality.
+Remote, sensitive, administrative, recording, or media traffic requires a
+separately accepted encrypted route.
+
+## HTTP surface
+
+| Method and route | Purpose | Bound |
+| --- | --- | --- |
+| `GET /fleet/v1/health` | process readiness and aggregate enrollment/device counts | no device payload |
+| `POST /fleet/v1/checkins` | signed Quest check-in admission | JSON, 256 KiB, five-second body deadline |
+| `POST /fleet/v1/query` | canonical fleet query | JSON, 64 KiB, contract window limit |
+| `GET /fleet/v1/summary` | canonical summary projection | current Hub state |
+| `GET /fleet/v1/saved-views` | canonical saved-view collection and optimistic revision | maximum 128 views |
+| `GET /fleet/v1/saved-views/{id}` | one canonical saved view | bounded identifier |
+| `PUT /fleet/v1/saved-views/{id}` | create or replace a view at an expected collection revision | JSON, 128 KiB |
+| `DELETE /fleet/v1/saved-views/{id}?expected_revision=N` | delete a view at an expected collection revision | bounded identifier and positive revision |
+| `GET /fleet/v1/devices/{id}` | canonical full detail | one enrolled device |
+| `GET /fleet/v1/devices/{id}/inspect` | canonical inspector projection | one enrolled device |
+| `GET /fleet/v1/watch?after_sequence=N&limit=N` | bounded accepted/rejected event window | maximum 10,000 events |
+
+The server caps concurrent requests, applies a finite global and
+per-credential check-in rate, does not decompress request bodies, follows no
+redirects, and accepts no protocol upgrade route. Malformed, oversized,
+expired, wrongly signed, unknown-key, replayed, stale-status, identity-mismatched,
+or authority-rejected requests do not advance accepted state. Saved-view
+mutations additionally require the exact current collection revision.
+Conflicts do not overwrite another accepted update.
+
+## Authority sequence
+
+1. Read the body within its size and time limits.
+2. Parse the exact signed Fleet envelope.
+3. Apply global and enrolled-credential rate limits.
+4. Validate contract, time, enrollment, active key, identity binding, and
+   Ed25519/JCS signature.
+5. Add host-owned receive time and local-ingress freshness evidence.
+6. Preview Fleet acceptance on a cloned Hub.
+7. Rebind the authority-owned Manifold optimistic lock to current
+   fleet-global state.
+8. Review the signed device status through the exact pinned Manifold owner.
+9. Write a bounded durable snapshot of both candidate states.
+10. Commit both in-memory states and acknowledge the check-in, or commit
+    neither.
+
+Independent devices therefore retain monotonic per-peer status and per-epoch
+source revisions without attempting to coordinate Manifold's fleet-global
+authority revision.
+
+## Durable restart boundary
+
+The local runtime writes two alternating JSON state slots below the configured
+private `state_directory`. Each accepted check-in advances a durable
+generation only after the complete Hub and Manifold candidate snapshot has
+been serialized within a 16 MiB ceiling, written to a temporary in the same
+directory, flushed, and moved into its slot. The network acknowledgement is
+sent only after this write succeeds.
+
+At startup, both slots are parsed and validated against the current Hub policy
+and active enrollment configuration. The newest valid generation is restored.
+If the newest slot is damaged, the prior valid slot is used and later
+check-ins can replay the missing suffix forward. If slots exist but neither is
+valid, startup fails closed instead of presenting an empty fleet. Temporary
+files are never treated as accepted state.
+
+The snapshot retains the accepted device directory, condition history, watch
+sequence, Manifold authority revision, recent unexpired check-in replay
+evidence, source-epoch tombstones, and at most 128 canonical saved views with
+their independent collection revision. Saved-view changes do not advance
+device-result or Manifold authority revisions. Every collection has a finite
+policy bound. When a device exhausts its source-epoch evidence allowance, a new
+epoch fails closed rather than evicting an old tombstone and permitting a
+previous producer epoch to reappear.
+
+`GET /fleet/v1/health` reports the current durable generation and whether the
+process is new or has restored/persisted state, but never exposes the private
+state path.
+
+The Quest producer separately persists its producer epoch and next revisions
+in app-private state. Ordinary service restarts retain the epoch. An app,
+device-identity, identity-revision, or key generation change rotates the
+source epoch and resets only its source revision; the per-peer Manifold status
+revision remains monotonic.
+
+## Native Fleet Console
+
+`apps/fleet-console-wpf` is the first human projection over the same canonical
+Hub query, summary, inspector, and full-detail projections used by `fleetctl`.
+It is inert at startup and accepts only an explicitly entered loopback HTTP
+Hub address.
+
+The M1 workspace uses the native WPF `DataGrid` and native UI Automation peer
+without a theme dependency. It provides:
+
+- a 12-column, recycling-virtualized fleet table and frozen device identity;
+- visible summary, applied canonical search/freshness scope, Hub-owned sort
+  field/direction, grouping, result-revision, snapshot-time, and
+  batch-selection scope;
+- revisioned saved-view list/create/update/delete controls over the Hub-owned
+  collection, with exact canonical-query replay and no WPF-only persistence;
+- capture and replay of grouping, visible column order, selected device,
+  scroll anchor, detail tab, and keyboard-focus region; unsupported future
+  density, grouping, or collapsed-group state is reported rather than silently
+  reinterpreted;
+- inspection selection that is separate from batch membership;
+- pointer, keyboard, and UI Automation batch-toggle paths that update the same
+  visible selection scope;
+- stable row view models that retain batch selection across refresh, filtering,
+  grouping, and virtualization, including a visible hidden-selection count;
+- an explicit `Check updates` path that validates a bounded, strictly
+  increasing Hub watch window, preserves its cursor, rebases after a detected
+  Hub sequence reset, and then rereads canonical query/summary state;
+- synchronized refresh that updates shared row values in place while queuing
+  membership, order, and group changes behind a visible, accessible `Apply
+  live ordering` action;
+- a persistent inspector for independent observations, capabilities,
+  condition provenance, work, and streams, retained as cached evidence when
+  the selected device falls outside the applied scope;
+- full-device detail over the bounded canonical detail response, with
+  overview, status, capabilities, work, streams, and retained condition
+  history; returning retains the applied query, visible order, selected
+  identity, batch selection, and scroll context;
+- keyboard search (`Ctrl+F`), region navigation (`F6`), inspection (`Enter`),
+  full detail (`Ctrl+Enter`), detail return (`Esc`), and batch-toggle (`Space`);
+- system color resources, visible text labels, stable accessible names, and
+  native grid and inspector automation peers.
+
+The local API client has a 10-second request deadline and a 16 MiB response
+budget. Watch reads are capped at 10,000 events and verify schema, strict
+sequence order, cursor position, decision kind, result revision, accepted
+device/source identity, and bounded rejection reasons/details. Watch events
+are change and rejection evidence; they never patch device rows directly.
+After every update check, the Console rereads the canonical query and summary.
+If the watch route is unavailable, explicit update checks degrade to the
+canonical query/summary refresh and report the missing watch evidence instead
+of removing monitoring. Before changing visible state, the Console verifies
+the exact query receipt, result window, row/identity invariants, summary
+counts, bounded condition/capability families, and selected inspector identity.
+Invalid evidence leaves the last accepted projection visible and reports the
+failure.
+Full detail additionally validates the exact selected identity, the 128-entry
+condition-history bound, the 1,000-entry operation-history bound, and minimum
+operation-ledger identity before opening.
+
+The package-free validation executable consumes the real 1,000-device
+`fleetctl` mixed-freshness operator projection: 500 fresh, 250 stale, and 250
+offline rows, with deterministic low-power and capability-downgrade examples.
+It verifies canonical search/freshness AND/OR shape, canonical sort
+serialization and ordering, applied-sort preservation across background
+refresh, empty-scope behavior, stable rows, grouped virtualization, hidden
+selection, out-of-scope inspector context, stable live order, explicit order
+application, safe in-place value refresh, native automation, bounded realized
+containers, 12 declared columns, and independent capability families. A
+bounded watch fixture additionally verifies cursor establishment, accepted
+versus rejected decisions, sequence-reset rebasing, canonical reread, and
+fail-closed out-of-order evidence. It also verifies that an unavailable watch
+route retains a query-only manual refresh. A presented-window input pass
+verifies that `Ctrl+F` focuses search, `F6`
+reaches the fleet grid, `Space` changes batch membership, and `Enter` exposes
+focus through the inspector automation peer. Off-screen UI Automation also
+verifies the full-detail region and return control, tab restoration, exact
+fleet-context preservation, and fail-closed wrong-device detail evidence. The
+suite records measured
+timings but does not convert one run into a supported-scale claim. It also
+rejects non-loopback Hub addresses, mismatched query receipts, and
+wrong-device inspector or detail evidence. Narrator, high-contrast, text-size, and
+multi-scaling checks remain manual M1 acceptance gates.
+
+`fleetctl saved-view-roundtrip [count]` exercises the same in-process
+contracts and Hub methods as a structured conformance projection. Separate
+CLI invocations intentionally do not pretend to share durable state; the
+explicit local HTTP routes are the persistent operator and automation
+surface.
+
+## Focused validation
+
+```powershell
+cargo test -p fleet-manifold-adapter -p fleet-hub-local
+cargo clippy -p fleet-manifold-adapter -p fleet-hub-local --all-targets --locked -- -D warnings
+cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
+cargo run --locked -p fleetctl -- saved-view-roundtrip 50
+cargo run --locked -p fleetctl -- m1-lifecycle
+dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
+dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
+  -c Release --no-build -- --repo-root .
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
+```
+
+The focused tests cover signed acceptance, replay rejection before and after
+restart, authority rebinding, all-or-neither state mutation, canonical query
+and saved-view parity, optimistic saved-view revision conflict, durable
+saved-view restoration, explicit LAN activation, content type, body size,
+finite credential rate, bounded source-epoch evidence, durable restoration,
+and damaged-newest slot fallback.
+
+`fleetctl m1-lifecycle` is a fixed, self-checking four-device integration
+profile. It retains three devices as fresh while one ages stale during a
+declared sleep window, then proves wake recovery, explicit route
+loss/recovery, duplicate-revision and stale-revision rejection, agent upgrade
+under a new source epoch, old-epoch replay rejection, and a final four-device
+fresh canonical query/summary/watch projection. The Fleet Manifold adapter
+test uses the exact pinned owner enrollment contract to rotate a synthetic
+Ed25519 credential, reject the old signer without changing Hub state, and
+accept the replacement only with a new source epoch.
+
+A private serial-scoped Quest checkpoint has also exercised the Wi-Fi route
+without an ADB tunnel: the enrolled device advanced eight signed check-ins,
+retained its source epoch across service restarts, transitioned
+fresh → stale → offline while remaining visible, recovered to fresh, produced
+no fatal error, and was removed with its app-private test inputs after
+validation.
+
+A follow-up restart checkpoint exercised the durable Hub boundary with the
+producer stopped. Durable generation 8 restored with the same device row,
+source epoch, accepted revision and time, condition-history count, Manifold
+authority revision, and monitoring-evidence revision. Restarting the Quest
+producer then advanced the restored state to durable generation 9 and
+authority revision 10 without rotating the producer epoch. The follow-up also
+finished with zero package fatals, an empty Hub error log, test-package
+removal, and release of the exact local listener.
+
+Raw serial, address, SSID, key seed, profile, receipt, and log evidence remains
+private.

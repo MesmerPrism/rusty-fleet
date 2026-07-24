@@ -1,0 +1,93 @@
+{
+  "schema": "rusty.fleet.checkin_claims.v1",
+  "checkin_id": "checkin.synthetic.1",
+  "issued_at_ms": 2000000000000,
+  "expires_at_ms": 2000000060000,
+  "manifold_peer_status_proposal": {
+    "$schema": "rusty.manifold.peer.status_proposal.v1",
+    "proposal_id": "proposal.synthetic.1",
+    "expected_authority_revision": 1,
+    "proposer_id": "adapter.quest.fleet-agent",
+    "identity": {
+      "$schema": "rusty.manifold.peer.identity.v1",
+      "peer_id": "sim-00001",
+      "key_fingerprint": "fingerprint.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "trust_domain": "trust.local",
+      "roles": [
+        "observer"
+      ]
+    },
+    "status": {
+      "$schema": "rusty.manifold.peer.status.v1",
+      "peer_id": "sim-00001",
+      "status_revision": 1,
+      "observed_at_ms": 2000000000000,
+      "expires_at_ms": 2000000060000,
+      "availability": "ready",
+      "capability_ids": [
+        "capability.monitoring"
+      ]
+    },
+    "payload_class": "low_rate_descriptor"
+  },
+  "observation": {
+    "schema": "rusty.fleet.device_observation.v1",
+    "identity": {
+      "device_id": "sim-00001",
+      "identity_revision": 1,
+      "display_name": "Quest 0001",
+      "model": "Quest 3",
+      "hardware_class": "standalone_xr",
+      "tags": {
+        "fixture": "synthetic"
+      }
+    },
+    "source_epoch": "agent-epoch-1",
+    "source_revision": 1,
+    "source_time_ms": 2000000000000,
+    "received_time_ms": 0,
+    "battery_percent": 82,
+    "charging": true,
+    "foreground_app": null,
+    "agent": {
+      "package_name": "io.github.mesmerprism.rustyquest.fleetagent",
+      "lifecycle": "background",
+      "foreground_state": "background",
+      "foreground_authority": "self_report",
+      "provenance": {
+        "owner": "rusty-quest",
+        "adapter_id": "quest-fleet-agent",
+        "observed_at_ms": 2000000000000,
+        "fresh_until_ms": 2000000060000
+      }
+    },
+    "power": {
+      "battery_percent": 82,
+      "charging": true,
+      "provenance": {
+        "owner": "rusty-quest",
+        "adapter_id": "quest-fleet-agent",
+        "observed_at_ms": 2000000000000,
+        "fresh_until_ms": 2000000060000
+      }
+    },
+    "application": {
+      "package_name": null,
+      "lifecycle": "unknown",
+      "foreground_state": "unknown",
+      "foreground_authority": "platform_limited",
+      "provenance": {
+        "owner": "rusty-quest",
+        "adapter_id": "quest-fleet-agent",
+        "observed_at_ms": 2000000000000,
+        "fresh_until_ms": 2000000060000
+      }
+    },
+    "kiosk_state": "unknown",
+    "conditions": [],
+    "capabilities": {
+      "capabilities": {}
+    },
+    "streams": []
+  }
+}

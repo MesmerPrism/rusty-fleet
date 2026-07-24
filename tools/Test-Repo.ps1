@@ -50,6 +50,9 @@ function Get-PublicFiles {
     Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Force |
         Where-Object {
             $candidate = [IO.Path]::GetFullPath($_.FullName)
+            $relativeSegments = [IO.Path]::GetRelativePath($repoRoot, $candidate).
+                Split([IO.Path]::DirectorySeparatorChar, [StringSplitOptions]::RemoveEmptyEntries)
+            -not ($relativeSegments | Where-Object { $_ -in @("bin", "obj", "target") }) -and
             -not ($ignoredRoots | Where-Object {
                 $candidate.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
                 $candidate -eq $_
@@ -75,7 +78,9 @@ function Get-TransitionBinding {
         [object] $ExpectedCurrentUnit,
 
         [AllowNull()]
-        [object] $ExpectedNextReadyUnit
+        [object] $ExpectedNextReadyUnit,
+
+        [switch] $Historical
     )
 
     $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
@@ -86,14 +91,19 @@ function Get-TransitionBinding {
     )
     $matchingEvents = @($events | Where-Object { $_.event_id -eq $EventId })
     Assert-True -Condition ($matchingEvents.Count -eq 1) `
-        -Message "$ExpectedStatus Milestone 0 must have exactly one owned transition event."
+        -Message "$ExpectedStatus workflow unit must have exactly one owned transition event."
     Assert-True -Condition (
         $matchingEvents[0].event_type -eq "state-transition" -and
         $matchingEvents[0].unit_id -eq $Unit.unit_id -and
-        $State.last_event_id -eq $EventId -and
-        $State.current_unit -eq $ExpectedCurrentUnit -and
-        $State.next_ready_unit -eq $ExpectedNextReadyUnit
-    ) -Message "$ExpectedStatus Milestone 0 is not bound to workspace state."
+        (
+            $Historical -or
+            (
+                $State.last_event_id -eq $EventId -and
+                $State.current_unit -eq $ExpectedCurrentUnit -and
+                $State.next_ready_unit -eq $ExpectedNextReadyUnit
+            )
+        )
+    ) -Message "$ExpectedStatus workflow unit is not bound to workspace state."
 
     $transactionId = "$EventId-transition"
     $intentPath = Join-Path $repoRoot "morphospace/receipts/transactions/$transactionId.intent.json"
@@ -101,14 +111,21 @@ function Get-TransitionBinding {
     Assert-True -Condition (
         (Test-Path -LiteralPath $intentPath -PathType Leaf) -and
         (Test-Path -LiteralPath $completionPath -PathType Leaf)
-    ) -Message "$ExpectedStatus Milestone 0 is missing its transition-ledger receipts."
+    ) -Message "$ExpectedStatus workflow unit is missing its transition-ledger receipts."
     $intent = Get-Content -LiteralPath $intentPath -Raw | ConvertFrom-Json -Depth 100
     $completion = Get-Content -LiteralPath $completionPath -Raw | ConvertFrom-Json -Depth 100
     $intentSha256 = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $unitProjection = $Unit | ConvertTo-Json -Depth 100 -Compress
     $targetUnitProjection = $intent.target.unit.document | ConvertTo-Json -Depth 100 -Compress
-    $stateProjection = $State | ConvertTo-Json -Depth 100 -Compress
     $targetStateProjection = $intent.target.state.document | ConvertTo-Json -Depth 100 -Compress
+    $stateMatches = if ($Historical) {
+        $intent.target.state.document.last_event_id -eq $EventId -and
+        $intent.target.state.document.current_unit -eq $ExpectedCurrentUnit -and
+        $intent.target.state.document.next_ready_unit -eq $ExpectedNextReadyUnit
+    } else {
+        $stateProjection = $State | ConvertTo-Json -Depth 100 -Compress
+        $stateProjection -ceq $targetStateProjection
+    }
     Assert-True -Condition (
         $intent.transaction_id -eq $transactionId -and
         $intent.event.event_id -eq $EventId -and
@@ -119,9 +136,9 @@ function Get-TransitionBinding {
         $completion.unit_sha256 -eq $intent.target.unit.sha256 -and
         $completion.state_sha256 -eq $intent.target.state.sha256 -and
         $unitProjection -ceq $targetUnitProjection -and
-        $stateProjection -ceq $targetStateProjection -and
+        $stateMatches -and
         $completion.intent.sha256 -eq $intentSha256
-    ) -Message "$ExpectedStatus Milestone 0 transition receipts are stale or damaged."
+    ) -Message "$ExpectedStatus workflow transition receipts are stale or damaged."
 
     return [pscustomobject]@{
         event = $matchingEvents[0]
@@ -160,7 +177,7 @@ function Test-JsonDocuments {
 function Test-PublicBoundary {
     $textExtensions = @(
         ".md", ".txt", ".json", ".jsonl", ".yml", ".yaml", ".ps1",
-        ".rs", ".cs", ".toml", ".xml"
+        ".rs", ".cs", ".toml", ".xml", ".xaml", ".csproj", ".props"
     )
     $patterns = [ordered]@{
         "local Windows user/work path" = "(?i)\b[A-Z]:\\(?:Users|Work)\\"
@@ -189,36 +206,68 @@ function Test-RequiredFiles {
         "SECURITY.md",
         "Cargo.lock",
         "Cargo.toml",
+        "global.json",
+        "Directory.Build.props",
+        "apps/fleet-hub-local/Cargo.toml",
+        "apps/fleet-hub-local/src/lib.rs",
+        "apps/fleet-hub-local/src/main.rs",
         "apps/fleetctl/Cargo.toml",
         "apps/fleetctl/src/lib.rs",
         "apps/fleetctl/src/main.rs",
+        "apps/fleet-console-wpf/RustyFleet.FleetConsole.csproj",
+        "apps/fleet-console-wpf/App.xaml",
+        "apps/fleet-console-wpf/App.xaml.cs",
+        "apps/fleet-console-wpf/MainWindow.xaml",
+        "apps/fleet-console-wpf/MainWindow.xaml.cs",
+        "apps/fleet-console-wpf/Contracts/FleetProjectionModels.cs",
+        "apps/fleet-console-wpf/Contracts/FleetProjectionValidation.cs",
+        "apps/fleet-console-wpf/Services/FleetApiClient.cs",
+        "apps/fleet-console-wpf/ViewModels/Commands.cs",
+        "apps/fleet-console-wpf/ViewModels/DeviceViewModels.cs",
+        "apps/fleet-console-wpf/ViewModels/FleetWorkspaceViewModel.cs",
+        "apps/fleet-console-wpf.tests/RustyFleet.FleetConsole.Tests.csproj",
+        "apps/fleet-console-wpf.tests/Program.cs",
         "crates/fleet-contracts/Cargo.toml",
+        "crates/fleet-contracts/src/checkin.rs",
         "crates/fleet-contracts/src/lib.rs",
         "crates/fleet-hub/Cargo.toml",
         "crates/fleet-hub/src/lib.rs",
+        "crates/fleet-manifold-adapter/Cargo.toml",
+        "crates/fleet-manifold-adapter/src/lib.rs",
         "crates/fleet-simulator/Cargo.toml",
         "crates/fleet-simulator/src/lib.rs",
+        "fixtures/contracts/checkin-claims.valid.json",
+        "fixtures/contracts/checkin-claims.damaged.json",
+        "fixtures/contracts/checkin-signing-vector.valid.json",
         "fixtures/contracts/device-observation.valid.json",
         "fixtures/contracts/device-observation.damaged.json",
         "fixtures/contracts/query.valid.json",
+        "fixtures/contracts/saved-view.valid.json",
+        "fixtures/contracts/saved-view.damaged.json",
         "fixtures/contracts/stream-descriptor.valid.json",
         "fixtures/scenarios/scale-and-damage.v1.json",
+        "schemas/rusty.fleet.checkin_claims.v1.schema.json",
+        "schemas/rusty.fleet.checkin_signing_vector.v1.schema.json",
         "schemas/rusty.fleet.device_observation.v1.schema.json",
         "schemas/rusty.fleet.operation_ledger.v1.schema.json",
         "schemas/rusty.fleet.operator_projection.v1.schema.json",
         "schemas/rusty.fleet.query.v1.schema.json",
+        "schemas/rusty.fleet.signed_checkin.v1.schema.json",
         "schemas/rusty.fleet.stream_descriptor.v1.schema.json",
         "docs/ARCHITECTURE.md",
         "docs/DATASTREAMS.md",
         "docs/IMPLEMENTATION_PLAN.md",
         "docs/M0_SOURCE_FOUNDATION.md",
         "docs/M0_GRAPH_AND_INSTRUCTION_REVIEW.md",
+        "docs/M1_LOCAL_MONITORING.md",
         "docs/OPERATOR_UI.md",
         "docs/WORKFLOW.md",
         "docs/VALIDATION.md",
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
         "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
+        "docs/decisions/0005-m1-checkin-authority.md",
+        "docs/decisions/0006-m1-local-ingress-threat-model.md",
         "docs/research/DATASTREAM_REFERENCE_LEDGER.md",
         "docs/research/FLEET_RESEARCH_INTEGRATION_REVIEW.md",
         "docs/research/MORPHOSPACE_DATASTREAM_MATRIX.md",
@@ -247,29 +296,120 @@ function Invoke-Cargo {
     }
 }
 
+function Invoke-DotNet {
+    param([Parameter(Mandatory)][string[]] $Arguments)
+
+    & dotnet @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet failed: dotnet $($Arguments -join ' ')"
+    }
+}
+
+function Test-WpfConsole {
+    $globalJson = Get-Content -LiteralPath (Join-Path $repoRoot "global.json") -Raw |
+        ConvertFrom-Json -Depth 20
+    Assert-True -Condition (
+        $globalJson.sdk.version -eq "10.0.201" -and
+        $globalJson.sdk.rollForward -eq "disable" -and
+        $globalJson.sdk.allowPrerelease -eq $false
+    ) -Message "The WPF toolchain must remain pinned to the stable installed .NET SDK."
+
+    $consoleProject = Get-Content -LiteralPath (
+        Join-Path $repoRoot "apps/fleet-console-wpf/RustyFleet.FleetConsole.csproj"
+    ) -Raw
+    Assert-True -Condition (
+        $consoleProject.Contains("<UseWPF>true</UseWPF>") -and
+        -not $consoleProject.Contains("<PackageReference")
+    ) -Message "The M1 Console must retain native WPF semantics without a theme package."
+
+    $testProject = Join-Path (
+        $repoRoot
+    ) "apps/fleet-console-wpf.tests/RustyFleet.FleetConsole.Tests.csproj"
+    Invoke-DotNet -Arguments @(
+        "build",
+        $testProject,
+        "-c",
+        "Release",
+        "--nologo"
+    )
+
+    $receiptLines = @(
+        & dotnet run `
+            --project $testProject `
+            -c Release `
+            --no-build `
+            -- `
+            --repo-root $repoRoot
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native WPF validation executable failed."
+    }
+    $receipt = ($receiptLines -join [Environment]::NewLine) | ConvertFrom-Json -Depth 20
+    Assert-True -Condition (
+        $receipt.schema -eq "rusty.fleet.wpf_validation.v1" -and
+        $receipt.result -eq "pass" -and
+        $receipt.projection_rows -eq 1000 -and
+        $receipt.grid_columns -eq 12 -and
+        $receipt.realized_rows -lt 250 -and
+        $receipt.native_datagrid -eq $true -and
+        $receipt.recycling_virtualization -eq $true -and
+        $receipt.native_automation_peer -eq $true -and
+        $receipt.inspector_automation_peer -eq $true -and
+        $receipt.pointer_batch_toggle -eq $true -and
+        $receipt.accessible_batch_toggle -eq $true -and
+        $receipt.loopback_hub_only -eq $true -and
+        $receipt.bounded_hub_response -eq $true -and
+        $receipt.canonical_watch_projection -eq $true -and
+        $receipt.watch_cursor_bounded -eq $true -and
+        $receipt.watch_sequence_reset_rebased -eq $true -and
+        $receipt.rejected_watch_event_distinguished -eq $true -and
+        $receipt.damaged_watch_fail_closed -eq $true -and
+        $receipt.watch_unavailable_query_fallback -eq $true -and
+        $receipt.watch_sync_accessible -eq $true -and
+        $receipt.projection_identity_fail_closed -eq $true -and
+        $receipt.mixed_freshness_fixture -eq $true -and
+        $receipt.fresh_rows -eq 500 -and
+        $receipt.stale_rows -eq 250 -and
+        $receipt.offline_rows -eq 250 -and
+        $receipt.capability_downgrade_rows -eq 125 -and
+        $receipt.mixed_state_grammar -eq $true -and
+        $receipt.canonical_scope -eq $true -and
+        $receipt.saved_view_crud -eq $true -and
+        $receipt.saved_view_exact_query_restored -eq $true -and
+        $receipt.saved_view_navigation_restored -eq $true -and
+        $receipt.empty_scope_preserved -eq $true -and
+        $receipt.grouped_virtualization -eq $true -and
+        $receipt.hidden_selection_preserved -eq $true -and
+        $receipt.inspector_outside_scope_preserved -eq $true -and
+        $receipt.theme_dependency -eq "none" -and
+        $receipt.batch_selection_preserved -eq $true -and
+        $receipt.inspector_capability_families -ge 3 -and
+        $receipt.view_model_ms -lt 2000
+    ) -Message "Native WPF scale, accessibility, or stable-context evidence is incomplete."
+}
+
 function Test-SourceImplementation {
     $workspace = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.toml") -Raw
     foreach ($member in @(
+        "apps/fleet-hub-local",
         "apps/fleetctl",
         "crates/fleet-contracts",
         "crates/fleet-hub",
+        "crates/fleet-manifold-adapter",
         "crates/fleet-simulator"
     )) {
         Assert-True -Condition ($workspace.Contains("`"$member`"")) `
-            -Message "Cargo workspace is missing source-only member: $member"
+            -Message "Cargo workspace is missing required member: $member"
     }
 
     $lock = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.lock") -Raw
     foreach ($forbiddenPackage in @(
-        'name = "tokio"',
-        'name = "reqwest"',
-        'name = "hyper"',
         'name = "windows"',
         'name = "ffmpeg"',
         'name = "liblsl"'
     )) {
         Assert-True -Condition (-not $lock.Contains($forbiddenPackage)) `
-            -Message "Milestone 0 must remain source-only and inert: $forbiddenPackage"
+            -Message "Current M0/M1 owner boundary does not permit this package: $forbiddenPackage"
     }
 
     foreach ($schemaFile in Get-ChildItem -LiteralPath (Join-Path $repoRoot "schemas") -Filter "*.schema.json") {
@@ -371,12 +511,13 @@ function Test-PlanningInvariants {
     }
     if ($unit.status -eq "accepted") {
         $acceptedEventId = "$($unit.unit_id)-accepted-0005"
-        Get-TransitionBinding -Unit $unit -State $state -EventId $acceptedEventId `
+        $acceptedBinding = Get-TransitionBinding -Unit $unit -State $state -EventId $acceptedEventId `
             -ExpectedStatus "accepted" -ExpectedCurrentUnit $null `
-            -ExpectedNextReadyUnit $null | Out-Null
+            -ExpectedNextReadyUnit $null -Historical
+        $acceptedReceipt = "receipts/fleet-m0-foundation-and-simulator-standard-validation.json"
         Assert-True -Condition (
-            $state.validation_checkpoint.result -eq "pass" -and
-            $state.last_accepted_receipt -eq $state.validation_checkpoint.receipt -and
+            @($acceptedBinding.event.receipts) -contains $acceptedReceipt -and
+            (Test-Path -LiteralPath (Join-Path $repoRoot "morphospace/$acceptedReceipt") -PathType Leaf) -and
             @($unit.instruction_surfaces | Where-Object { $_.status -ne "complete" }).Count -eq 0
         ) -Message "Accepted Milestone 0 is missing passing validation or instruction completion."
     }
@@ -396,6 +537,107 @@ function Test-PlanningInvariants {
     )) {
         Assert-True -Condition ($threatModel.Contains($phrase, [StringComparison]::OrdinalIgnoreCase)) `
             -Message "Milestone 0 threat-model guardrail is missing: $phrase"
+    }
+
+    $m1UnitPath = Join-Path $repoRoot "morphospace/iteration-units/fleet-m1-local-no-adb-monitoring.json"
+    Assert-True -Condition (Test-Path -LiteralPath $m1UnitPath -PathType Leaf) `
+        -Message "The Milestone 1 local-monitoring stack is missing."
+    $m1Unit = Get-Content -LiteralPath $m1UnitPath -Raw | ConvertFrom-Json -Depth 100
+    Assert-True -Condition (
+        $m1Unit.unit_id -eq "fleet-m1-local-no-adb-monitoring" -and
+        $m1Unit.status -in @("active", "validating", "accepted") -and
+        @($m1Unit.allowed_repositories.repo_id) -contains "rusty-fleet" -and
+        @($m1Unit.allowed_repositories.repo_id) -contains "rusty-quest" -and
+        @($m1Unit.acceptance.acceptance_id) -contains "authenticated-no-adb-checkin" -and
+        @($m1Unit.acceptance.acceptance_id) -contains "cli-api-ui-parity" -and
+        @($m1Unit.acceptance.acceptance_id) -contains "stacked-validation-and-cleanup"
+    ) -Message "Milestone 1 is not one complete local-monitoring stack."
+    if ($m1Unit.status -eq "active") {
+        $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
+        $events = @(
+            Get-Content -LiteralPath $eventsPath |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                ForEach-Object { $_ | ConvertFrom-Json -Depth 100 }
+        )
+        $supersessionPrefix = "$($m1Unit.unit_id)-superseded-by-"
+        $supersessionEvents = @($events | Where-Object {
+            $_.event_type -eq "state-transition" -and
+            $_.unit_id -eq $m1Unit.unit_id -and
+            $_.event_id.StartsWith($supersessionPrefix, [StringComparison]::Ordinal)
+        })
+
+        if ($supersessionEvents.Count -eq 0) {
+            Get-TransitionBinding -Unit $m1Unit -State $state `
+                -EventId "$($m1Unit.unit_id)-claimed-0007" `
+                -ExpectedStatus "active" -ExpectedCurrentUnit $m1Unit.unit_id `
+                -ExpectedNextReadyUnit $null | Out-Null
+        } else {
+            Assert-True -Condition ($supersessionEvents.Count -eq 1) `
+                -Message "Milestone 1 must have exactly one additive supersession."
+            $supersession = $supersessionEvents[0]
+            $replacementId = $supersession.event_id.Substring($supersessionPrefix.Length)
+            $replacementPath = Join-Path $repoRoot "morphospace/iteration-units/$replacementId.json"
+            Assert-True -Condition (Test-Path -LiteralPath $replacementPath -PathType Leaf) `
+                -Message "Milestone 1 supersession replacement is missing."
+            $replacement = Get-Content -LiteralPath $replacementPath -Raw |
+                ConvertFrom-Json -Depth 100
+            $replacementPaths = @(
+                $replacement.allowed_repositories |
+                    Where-Object { $_.repo_id -eq "rusty-fleet" } |
+                    ForEach-Object { @($_.allowed_paths) }
+            )
+            Assert-True -Condition (
+                $replacement.unit_id -eq $replacementId -and
+                $replacement.status -in @("active", "validating", "accepted") -and
+                @($replacement.allowed_repositories.repo_id) -contains "rusty-fleet" -and
+                $replacementPaths -contains "AGENTS.md" -and
+                $replacementPaths -contains "tools/Test-Repo.ps1" -and
+                @($replacement.acceptance.acceptance_id) -contains "corrective-workflow-integrity" -and
+                @($replacement.instruction_surfaces | Where-Object {
+                    $_.surface_kind -eq "agents" -and $_.path -eq "AGENTS.md"
+                }).Count -eq 1
+            ) -Message "Milestone 1 additive supersession is incomplete or out of scope."
+            if ($replacement.status -in @("active", "validating")) {
+                Assert-True -Condition (
+                    $state.current_unit -eq $replacementId -and
+                    $state.next_ready_unit -eq $null
+                ) -Message "Milestone 1 replacement is not the current workflow authority."
+            } else {
+                Assert-True -Condition ($state.current_unit -ne $replacementId) `
+                    -Message "Accepted Milestone 1 replacement remained the current unit."
+            }
+        }
+    }
+
+    $m1Text = $m1Unit | ConvertTo-Json -Depth 100 -Compress
+    foreach ($requiredBoundary in @(
+        "5c3679b5b7faaacfe65daecfaf48d442af279870",
+        "d0782ea5a79bf88ef16b5d0adb8792803d5705ea",
+        "without ADB",
+        "unpublished Rusty LSL P68 candidate",
+        "platform-limited foreground"
+    )) {
+        Assert-True -Condition (
+            $m1Text.Contains($requiredBoundary, [StringComparison]::OrdinalIgnoreCase)
+        ) -Message "Milestone 1 owner or support boundary is missing: $requiredBoundary"
+    }
+
+    foreach ($decision in @(
+        "docs/decisions/0005-m1-checkin-authority.md",
+        "docs/decisions/0006-m1-local-ingress-threat-model.md"
+    )) {
+        $decisionText = Get-Content -LiteralPath (Join-Path $repoRoot $decision) -Raw
+        foreach ($requiredDecisionPhrase in @(
+            "Manifold",
+            "no ADB",
+            "bounded",
+            "replay",
+            "received time"
+        )) {
+            Assert-True -Condition (
+                $decisionText.Contains($requiredDecisionPhrase, [StringComparison]::OrdinalIgnoreCase)
+            ) -Message "$decision is missing M1 guardrail: $requiredDecisionPhrase"
+        }
     }
 }
 
@@ -506,6 +748,7 @@ try {
     Test-PublicBoundary
     Test-PlanningInvariants
     Test-SourceImplementation
+    Test-WpfConsole
     Test-DatastreamPlanning
     Invoke-Git diff --check
 

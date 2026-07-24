@@ -1,0 +1,643 @@
+<Window x:Class="RustyFleet.FleetConsole.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Rusty Fleet"
+        Width="1500"
+        Height="900"
+        MinWidth="1000"
+        MinHeight="640"
+        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+        Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"
+        PreviewKeyDown="OnPreviewKeyDown">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="12,4" />
+            <Setter Property="Margin" Value="2" />
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="6,3" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="6,3" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="InspectorHeading" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,14,0,5" />
+        </Style>
+        <Style x:Key="InspectorLabel" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,6,0,0" />
+        </Style>
+        <DataTemplate x:Key="EvidenceFactTemplate">
+            <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="{Binding Label}"
+                           Style="{StaticResource InspectorLabel}" />
+                <TextBlock Text="{Binding Value}" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Detail}"
+                           TextWrapping="Wrap"
+                           Opacity="0.72" />
+            </StackPanel>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="176" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="390" MinWidth="340" MaxWidth="620" />
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0"
+                Padding="14"
+                BorderThickness="0,0,1,0"
+                BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                AutomationProperties.Name="Primary navigation">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Top">
+                    <TextBlock Text="Rusty Fleet"
+                               FontSize="22"
+                               FontWeight="SemiBold"
+                               Margin="4,4,4,18" />
+                    <Button Content="Fleet"
+                            IsDefault="True"
+                            HorizontalContentAlignment="Left"
+                            AutomationProperties.Name="Fleet, current page" />
+                    <Button Content="Attention · planned"
+                            IsEnabled="False"
+                            HorizontalContentAlignment="Left" />
+                    <Button Content="Operations · planned"
+                            IsEnabled="False"
+                            HorizontalContentAlignment="Left" />
+                    <Button Content="Media · planned"
+                            IsEnabled="False"
+                            HorizontalContentAlignment="Left" />
+                    <Button Content="Audit · planned"
+                            IsEnabled="False"
+                            HorizontalContentAlignment="Left" />
+                    <Button Content="Enrollment · planned"
+                            IsEnabled="False"
+                            HorizontalContentAlignment="Left" />
+                    <Button Content="Settings · planned"
+                            IsEnabled="False"
+                            HorizontalContentAlignment="Left" />
+                </StackPanel>
+                <TextBlock DockPanel.Dock="Bottom"
+                           Text="M1 local monitoring&#x0a;No ADB required"
+                           Opacity="0.75"
+                           Margin="4" />
+            </DockPanel>
+        </Border>
+
+        <Grid Grid.Column="1" Margin="16,12,12,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Margin="0,0,0,10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <StackPanel Grid.Row="0">
+                    <TextBlock Text="{Binding SummaryText}"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               AutomationProperties.Name="{Binding SummaryText}" />
+                    <TextBlock Text="{Binding AsOfText}" Opacity="0.75" />
+                </StackPanel>
+                <StackPanel Grid.Row="1"
+                            Margin="0,8,0,0"
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal">
+                    <TextBlock Text="Local Hub"
+                               Margin="0,0,8,0"
+                               VerticalAlignment="Center" />
+                    <TextBox x:Name="EndpointBox"
+                             Width="260"
+                             Text="{Binding HubAddress, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Local Fleet Hub address"
+                             AutomationProperties.HelpText="Only an absolute loopback HTTP address is accepted." />
+                    <Button Content="Connect"
+                            Command="{Binding ConnectCommand}"
+                            AutomationProperties.Name="Connect to local Fleet Hub" />
+                    <Button x:Name="SyncUpdatesButton"
+                            Content="Check updates"
+                            Command="{Binding SynchronizeUpdatesCommand}"
+                            AutomationProperties.Name="Check for Fleet Hub updates"
+                            AutomationProperties.HelpText="Reads bounded monotonic Hub events, then verifies the canonical fleet scope without live reordering." />
+                </StackPanel>
+            </Grid>
+
+            <StackPanel Grid.Row="1" Margin="0,0,0,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Search"
+                               Margin="0,0,8,0"
+                               VerticalAlignment="Center" />
+                    <TextBox x:Name="SearchBox"
+                             Grid.Column="1"
+                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Search devices"
+                             AutomationProperties.HelpText="Matches device display name or stable device identifier." />
+                </Grid>
+                <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Saved view"
+                               Margin="0,0,8,0"
+                               VerticalAlignment="Center" />
+                    <ComboBox x:Name="SavedViewBox"
+                              Grid.Column="1"
+                              ItemsSource="{Binding SavedViews}"
+                              SelectedItem="{Binding SelectedSavedView}"
+                              DisplayMemberPath="Name"
+                              AutomationProperties.Name="Saved fleet view" />
+                    <TextBox x:Name="SavedViewNameBox"
+                             Grid.Column="2"
+                             Margin="8,0,8,0"
+                             Text="{Binding SavedViewName, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Saved-view name"
+                             AutomationProperties.HelpText="Enter a name to create or update a canonical Fleet Hub saved view." />
+                    <Button Grid.Column="3"
+                            Content="Save current"
+                            Click="OnSaveCurrentView"
+                            AutomationProperties.Name="Save current fleet view" />
+                    <Button Grid.Column="4"
+                            Content="Apply"
+                            Command="{Binding ApplySavedViewCommand}"
+                            AutomationProperties.Name="Apply selected saved view" />
+                    <Button Grid.Column="5"
+                            Content="Delete"
+                            Command="{Binding DeleteSavedViewCommand}"
+                            AutomationProperties.Name="Delete selected saved view" />
+                </Grid>
+                <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="110" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Freshness"
+                               Margin="0,0,8,0"
+                               VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="1"
+                              ItemsSource="{Binding FreshnessOptions}"
+                              SelectedItem="{Binding SelectedFreshness}"
+                              AutomationProperties.Name="Freshness filter" />
+                    <TextBlock Grid.Column="2"
+                               Text="Group by"
+                               Margin="16,0,8,0"
+                               VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="3"
+                              ItemsSource="{Binding GroupingOptions}"
+                              SelectedItem="{Binding SelectedGrouping}"
+                              AutomationProperties.Name="Group devices by" />
+                    <TextBlock Grid.Column="4"
+                               Text="Sort by"
+                               Margin="16,0,8,0"
+                               VerticalAlignment="Center" />
+                    <ComboBox x:Name="SortFieldBox"
+                              Grid.Column="5"
+                              ItemsSource="{Binding SortOptions}"
+                              SelectedItem="{Binding SelectedSort}"
+                              AutomationProperties.Name="Sort devices by" />
+                    <ComboBox x:Name="SortDirectionBox"
+                              Grid.Column="6"
+                              Margin="8,0,0,0"
+                              ItemsSource="{Binding SortDirectionOptions}"
+                              SelectedItem="{Binding SelectedSortDirection}"
+                              AutomationProperties.Name="Sort direction" />
+                    <Button Grid.Column="8"
+                            Content="Apply scope"
+                            Command="{Binding ApplySearchCommand}" />
+                    <Button Grid.Column="9"
+                            Content="Clear scope"
+                            Command="{Binding ClearSearchCommand}" />
+                </Grid>
+            </StackPanel>
+
+            <Border Grid.Row="2"
+                    Padding="8,5"
+                    Margin="0,0,0,8"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}">
+                <StackPanel>
+                    <TextBlock Text="{Binding ActiveScopeText}"
+                               Margin="0,0,0,3"
+                               AutomationProperties.Name="{Binding ActiveScopeText}" />
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="Select all shown"
+                                    Command="{Binding SelectAllVisibleCommand}" />
+                            <Button Content="Clear selection"
+                                    Command="{Binding ClearBatchSelectionCommand}" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding BatchSelectionText}"
+                                   VerticalAlignment="Center"
+                                   AutomationProperties.LiveSetting="Polite"
+                                   AutomationProperties.Name="{Binding BatchSelectionText}" />
+                    </DockPanel>
+                    <DockPanel Margin="0,5,0,0">
+                        <Button x:Name="ApplyLiveOrderingButton"
+                                DockPanel.Dock="Right"
+                                Content="Apply live ordering"
+                                Command="{Binding ApplyQueuedOrderingChangesCommand}"
+                                AutomationProperties.Name="{Binding OrderingChangesText}"
+                                AutomationProperties.HelpText="Applies queued live membership, ordering, and grouping changes while preserving identity-based selection." />
+                        <TextBlock Text="{Binding OrderingChangesText}"
+                                   VerticalAlignment="Center"
+                                   AutomationProperties.LiveSetting="Polite"
+                                   AutomationProperties.Name="{Binding OrderingChangesText}" />
+                    </DockPanel>
+                </StackPanel>
+            </Border>
+
+            <DataGrid x:Name="FleetGrid"
+                      Grid.Row="3"
+                      ItemsSource="{Binding RowsView}"
+                      SelectedItem="{Binding SelectedDevice, Mode=OneWay}"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      CanUserDeleteRows="False"
+                      CanUserReorderColumns="True"
+                      CanUserResizeColumns="True"
+                      CanUserSortColumns="False"
+                      HeadersVisibility="Column"
+                      GridLinesVisibility="Horizontal"
+                      RowHeight="40"
+                      SelectionMode="Single"
+                      SelectionUnit="FullRow"
+                      IsReadOnly="True"
+                      FrozenColumnCount="3"
+                      EnableRowVirtualization="True"
+                      EnableColumnVirtualization="True"
+                      ScrollViewer.CanContentScroll="True"
+                      VirtualizingPanel.IsVirtualizing="True"
+                      VirtualizingPanel.IsVirtualizingWhenGrouping="True"
+                      VirtualizingPanel.VirtualizationMode="Recycling"
+                      AutomationProperties.Name="Fleet devices"
+                      AutomationProperties.HelpText="Use arrow keys to move, Enter to inspect, Ctrl+Enter for full detail, and Space to toggle batch selection."
+                      SelectionChanged="OnFleetSelectionChanged">
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="Select"
+                                            SortMemberPath="selection"
+                                            Width="72">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding IsBatchSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Focusable="False"
+                                          AutomationProperties.Name="{Binding BatchSelectionName}" />
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Attention"
+                                        SortMemberPath="attention"
+                                        Width="100"
+                                        Binding="{Binding AttentionSummary}" />
+                    <DataGridTextColumn Header="Device"
+                                        SortMemberPath="device"
+                                        Width="220"
+                                        Binding="{Binding DeviceSummary}" />
+                    <DataGridTextColumn Header="Age"
+                                        SortMemberPath="age"
+                                        Width="88"
+                                        Binding="{Binding FreshnessText}" />
+                    <DataGridTextColumn Header="Route"
+                                        SortMemberPath="route"
+                                        Width="112"
+                                        Binding="{Binding RouteText}" />
+                    <DataGridTextColumn Header="Power"
+                                        SortMemberPath="power"
+                                        Width="112"
+                                        Binding="{Binding PowerText}" />
+                    <DataGridTextColumn Header="App / Kiosk"
+                                        SortMemberPath="application"
+                                        Width="220"
+                                        Binding="{Binding AppKioskText}" />
+                    <DataGridTextColumn Header="Control"
+                                        SortMemberPath="control"
+                                        Width="190"
+                                        Binding="{Binding ControlText}" />
+                    <DataGridTextColumn Header="Privileged"
+                                        SortMemberPath="privileged"
+                                        Width="150"
+                                        Binding="{Binding PrivilegedText}" />
+                    <DataGridTextColumn Header="Streams"
+                                        SortMemberPath="streams"
+                                        Width="110"
+                                        Binding="{Binding StreamsText}" />
+                    <DataGridTextColumn Header="Work"
+                                        SortMemberPath="work"
+                                        Width="100"
+                                        Binding="{Binding WorkText}" />
+                    <DataGridTextColumn Header="Tags / cohort"
+                                        SortMemberPath="tags"
+                                        Width="160"
+                                        Binding="{Binding TagsText}" />
+                </DataGrid.Columns>
+                <DataGrid.GroupStyle>
+                    <GroupStyle>
+                        <GroupStyle.ContainerStyle>
+                            <Style TargetType="GroupItem">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="GroupItem">
+                                            <StackPanel>
+                                                <Border Padding="8,5"
+                                                        Background="{DynamicResource {x:Static SystemColors.ControlBrushKey}}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding Name}"
+                                                                   FontWeight="SemiBold" />
+                                                        <TextBlock Text="{Binding ItemCount, StringFormat={}{0:N0} devices}"
+                                                                   Margin="12,0,0,0"
+                                                                   Opacity="0.72" />
+                                                    </StackPanel>
+                                                </Border>
+                                                <ItemsPresenter />
+                                            </StackPanel>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </GroupStyle.ContainerStyle>
+                    </GroupStyle>
+                </DataGrid.GroupStyle>
+                <DataGrid.RowStyle>
+                    <Style TargetType="DataGridRow">
+                        <Setter Property="AutomationProperties.Name"
+                                Value="{Binding AccessibleName}" />
+                    </Style>
+                </DataGrid.RowStyle>
+            </DataGrid>
+
+            <DockPanel Grid.Row="4" Margin="0,8,0,0">
+                <TextBlock DockPanel.Dock="Right"
+                           Text="{Binding ScopeText}"
+                           Opacity="0.75" />
+                <TextBlock Text="{Binding StatusMessage}"
+                           AutomationProperties.Name="{Binding StatusMessage}"
+                           AutomationProperties.LiveSetting="Polite" />
+            </DockPanel>
+        </Grid>
+
+        <Border Grid.Column="2"
+                Padding="18,12"
+                BorderThickness="1,0,0,0"
+                BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}">
+            <ScrollViewer x:Name="InspectorPane"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Focusable="True"
+                          AutomationProperties.Name="Selected device inspector"
+                          AutomationProperties.HelpText="Current selected-device observations, capabilities, conditions, work, and streams.">
+                <StackPanel>
+                    <TextBlock Text="{Binding Inspector.Title, FallbackValue=No device selected}"
+                               FontSize="22"
+                               FontWeight="SemiBold"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding Inspector.Identity}"
+                               Margin="0,3,0,0"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding Inspector.Freshness}"
+                               Margin="0,3,0,0"
+                               TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding InspectorContextText}"
+                               Margin="0,3,0,0"
+                               TextWrapping="Wrap"
+                               Opacity="0.72"
+                               AutomationProperties.Name="{Binding InspectorContextText}" />
+                    <Button x:Name="OpenFullDetailButton"
+                            Content="Open full detail"
+                            HorizontalAlignment="Left"
+                            Margin="0,10,0,0"
+                            Click="OnOpenFullDetail"
+                            AutomationProperties.Name="Open full detail for selected device">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SelectedDevice}" Value="{x:Null}">
+                                        <Setter Property="IsEnabled" Value="False" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+
+                    <TextBlock Text="Attention"
+                               Style="{StaticResource InspectorHeading}" />
+                    <TextBlock Text="{Binding Inspector.Attention, FallbackValue=Select a device to inspect its independent status families.}"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Text="Observed"
+                               Style="{StaticResource InspectorHeading}" />
+                    <ItemsControl ItemsSource="{Binding Inspector.Facts}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Label}"
+                                               Style="{StaticResource InspectorLabel}" />
+                                    <TextBlock Text="{Binding Value}" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding Detail}"
+                                               TextWrapping="Wrap"
+                                               Opacity="0.72" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Capabilities"
+                               Style="{StaticResource InspectorHeading}" />
+                    <ItemsControl ItemsSource="{Binding Inspector.Capabilities}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Label}"
+                                               Style="{StaticResource InspectorLabel}" />
+                                    <TextBlock Text="{Binding Value}" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding Detail}"
+                                               TextWrapping="Wrap"
+                                               Opacity="0.72" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Status conditions"
+                               Style="{StaticResource InspectorHeading}" />
+                    <ItemsControl ItemsSource="{Binding Inspector.Conditions}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Label}"
+                                               Style="{StaticResource InspectorLabel}" />
+                                    <TextBlock Text="{Binding Value}" />
+                                    <TextBlock Text="{Binding Detail}"
+                                               TextWrapping="Wrap"
+                                               Opacity="0.72" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Current work"
+                               Style="{StaticResource InspectorHeading}" />
+                    <TextBlock Text="{Binding Inspector.Work, FallbackValue=No device selected}" />
+
+                    <TextBlock Text="Streams"
+                               Style="{StaticResource InspectorHeading}" />
+                    <TextBlock Text="{Binding Inspector.Streams, FallbackValue=No device selected}" />
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <Grid x:Name="FullDetailRegion"
+              Grid.Column="1"
+              Grid.ColumnSpan="2"
+              Panel.ZIndex="10"
+              Margin="0"
+              Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+              AutomationProperties.Name="Full device detail"
+              AutomationProperties.HelpText="Detailed accepted evidence for the selected device. Return restores the exact fleet view.">
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsDetailOpen}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <DockPanel Grid.Row="0"
+                       Margin="20,14,20,8"
+                       LastChildFill="False">
+                <Button x:Name="ReturnToFleetButton"
+                        DockPanel.Dock="Left"
+                        Content="← Return to fleet view"
+                        Click="OnReturnToFleet"
+                        AutomationProperties.Name="Return to fleet view" />
+            </DockPanel>
+            <StackPanel Grid.Row="1" Margin="22,0,22,12">
+                <TextBlock Text="{Binding Detail.Title}"
+                           FontSize="26"
+                           FontWeight="SemiBold"
+                           TextWrapping="Wrap"
+                           AutomationProperties.Name="{Binding Detail.Title}" />
+                <TextBlock Text="{Binding Detail.Identity}"
+                           Margin="0,4,0,0"
+                           TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Detail.Freshness}"
+                           Margin="0,3,0,0"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+            <TabControl x:Name="FullDetailTabs"
+                        Grid.Row="2"
+                        Margin="20,0,20,16"
+                        SelectedValuePath="Tag"
+                        SelectedValue="{Binding SelectedDetailTab, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        AutomationProperties.Name="Device detail sections">
+                <TabItem Header="Overview" Tag="overview">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device detail overview">
+                        <StackPanel Margin="12">
+                            <TextBlock Text="Attention"
+                                       Style="{StaticResource InspectorHeading}" />
+                            <TextBlock Text="{Binding Detail.Attention}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8" />
+                            <ItemsControl ItemsSource="{Binding Detail.Overview}"
+                                          ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Status" Tag="status">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device status conditions">
+                        <ItemsControl Margin="12"
+                                      ItemsSource="{Binding Detail.Status}"
+                                      ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Capabilities" Tag="capabilities">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device capabilities">
+                        <ItemsControl Margin="12"
+                                      ItemsSource="{Binding Detail.Capabilities}"
+                                      ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Work" Tag="work">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device operation history">
+                        <StackPanel Margin="12">
+                            <TextBlock Text="{Binding Detail.WorkSummary}"
+                                       Margin="0,0,0,8" />
+                            <ItemsControl ItemsSource="{Binding Detail.Work}"
+                                          ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Streams" Tag="streams">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device stream evidence">
+                        <StackPanel Margin="12">
+                            <TextBlock Text="{Binding Detail.Streams}"
+                                       TextWrapping="Wrap" />
+                            <TextBlock Text="Only accepted stream summaries are shown. No stream is started by opening this page."
+                                       Margin="0,8,0,0"
+                                       TextWrapping="Wrap"
+                                       Opacity="0.72" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="History" Tag="history">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device condition history">
+                        <StackPanel Margin="12">
+                            <TextBlock Text="{Binding Detail.HistorySummary}"
+                                       Margin="0,0,0,8" />
+                            <ItemsControl ItemsSource="{Binding Detail.History}"
+                                          ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+            </TabControl>
+        </Grid>
+    </Grid>
+</Window>
