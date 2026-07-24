@@ -22,6 +22,9 @@ Quick is safe during normal editing and checks:
 - deterministic 4/50/250/1,000/5,000 simulator generation and canonical
   mixed-freshness operator projection;
 - Hub revision, replay, staleness, identity, and projection behavior;
+- self-checking four-device M1 sleep/wake, route-loss/recovery, duplicate,
+  stale-revision, agent-upgrade, old-epoch-replay, and exact-owner key-rotation
+  behavior;
 - exact `fleetctl`/local-API projection parity;
 - saved-view valid/damaged contracts, canonical ordering, optimistic
   revision conflict, durable restart restoration, HTTP CRUD, and structured
@@ -126,6 +129,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run --locked -p fleetctl -- list 4
 cargo run --locked -p fleetctl -- detail sim-00001 4
+cargo run --locked -p fleetctl -- m1-lifecycle
 cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
 cargo run --locked -p fleetctl -- saved-view-roundtrip 50
 dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release

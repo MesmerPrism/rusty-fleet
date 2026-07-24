@@ -395,7 +395,7 @@ mod tests {
         CHECKIN_SIGNATURE_ALGORITHM, CHECKIN_SIGNATURE_DOMAIN, FleetCheckInClaims,
         SignedFleetCheckIn,
     };
-    use fleet_hub::{FleetHub, HubPolicy};
+    use fleet_hub::{FleetApi, FleetHub, HubPolicy};
     use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
     use rusty_manifold_model::{DottedId, Revision, SchemaId};
     use rusty_manifold_peer::{
@@ -565,6 +565,117 @@ mod tests {
     }
 
     #[test]
+    fn key_rotation_rejects_the_old_signer_and_accepts_a_fresh_source_epoch() {
+        let original_key = SigningKey::from_bytes(&[17_u8; 32]);
+        let replacement_key = SigningKey::from_bytes(&[23_u8; 32]);
+        let peer_id = dotted("device.quest.rotation");
+        let original_key_id = dotted("key.device.quest.rotation.1");
+        let replacement_key_id = dotted("key.device.quest.rotation.2");
+        let operator = dotted("operator.local");
+        let mut adapter = FleetManifoldAdapter::new(vec![operator.clone()]);
+        let mut hub = FleetHub::new(HubPolicy::default());
+
+        let enrolled = adapter.apply_enrollment(
+            &ManifoldPeerEnrollmentRequest {
+                schema_id: schema("rusty.manifold.peer.enrollment_request.v1"),
+                request_id: dotted("request.enroll.quest.rotation"),
+                expected_authority_revision: Revision::INITIAL,
+                operator_id: operator.clone(),
+                issued_at_ms: u64::try_from(BASE_TIME_MS).expect("positive time"),
+                action: ManifoldPeerEnrollmentAction::Enroll {
+                    credential: credential(&peer_id, &original_key_id, 1, &original_key),
+                },
+            },
+            u64::try_from(BASE_TIME_MS).expect("positive time"),
+        );
+        assert!(enrolled.applied);
+
+        let first = synthetic_checkin(
+            &original_key,
+            &original_key_id,
+            &peer_id,
+            "checkin.quest.rotation.1",
+            "proposal.status.quest.rotation.1",
+            1,
+            "agent-epoch-1",
+            1,
+        );
+        assert!(adapter.accept(&mut hub, first, BASE_TIME_MS + 1).accepted);
+        let revision_before_rotation = hub.result_revision();
+
+        let rotated = adapter.apply_enrollment(
+            &ManifoldPeerEnrollmentRequest {
+                schema_id: schema("rusty.manifold.peer.enrollment_request.v1"),
+                request_id: dotted("request.rotate.quest.rotation"),
+                expected_authority_revision: adapter.enrollment().authority_revision,
+                operator_id: operator,
+                issued_at_ms: u64::try_from(BASE_TIME_MS + 2).expect("positive time"),
+                action: ManifoldPeerEnrollmentAction::Rotate {
+                    prior_key_id: original_key_id.clone(),
+                    credential: credential(&peer_id, &replacement_key_id, 2, &replacement_key),
+                },
+            },
+            u64::try_from(BASE_TIME_MS + 2).expect("positive time"),
+        );
+        assert!(rotated.applied);
+        assert_eq!(
+            adapter
+                .enrollment()
+                .credentials
+                .iter()
+                .find(|credential| credential.key_id == original_key_id)
+                .map(|credential| credential.status.clone()),
+            Some(ManifoldPeerCredentialStatus::Rotated)
+        );
+
+        let old_signer = synthetic_checkin(
+            &original_key,
+            &original_key_id,
+            &peer_id,
+            "checkin.quest.rotation.old",
+            "proposal.status.quest.rotation.old",
+            2,
+            "agent-epoch-1",
+            2,
+        );
+        let old_rejection = adapter.accept(&mut hub, old_signer, BASE_TIME_MS + 3);
+        assert!(!old_rejection.accepted);
+        assert_eq!(
+            old_rejection.rejection_reason,
+            Some(CheckInRejectionReason::UnknownOrInactiveKey)
+        );
+        assert_eq!(hub.result_revision(), revision_before_rotation);
+
+        let replacement = synthetic_checkin(
+            &replacement_key,
+            &replacement_key_id,
+            &peer_id,
+            "checkin.quest.rotation.2",
+            "proposal.status.quest.rotation.2",
+            2,
+            "agent-epoch-2",
+            1,
+        );
+        let replacement_receipt = adapter.accept(&mut hub, replacement, BASE_TIME_MS + 4);
+        assert!(replacement_receipt.accepted);
+        assert_eq!(hub.device_count(), 1);
+        assert_eq!(
+            hub.inspect(peer_id.as_str(), BASE_TIME_MS + 4)
+                .expect("rotated device")
+                .row
+                .source_epoch,
+            "agent-epoch-2"
+        );
+        assert_eq!(
+            adapter.accepted_peers().peers[0]
+                .status
+                .status_revision
+                .get(),
+            2
+        );
+    }
+
+    #[test]
     fn malformed_checkin_rejects_before_authority_mutation() {
         let mut adapter = FleetManifoldAdapter::new(vec![dotted("operator.local")]);
         let mut observation = ScenarioBuilder::new(4).build().initial.remove(0);
@@ -660,6 +771,87 @@ mod tests {
 
     fn schema(value: &str) -> SchemaId {
         SchemaId::new(value.to_owned()).expect("schema id")
+    }
+
+    fn credential(
+        peer_id: &DottedId,
+        key_id: &DottedId,
+        key_generation: u64,
+        signing_key: &SigningKey,
+    ) -> ManifoldPeerCredentialRecord {
+        let public_key = signing_key.verifying_key().to_bytes();
+        let digest = hex::encode(Sha256::digest(public_key));
+        ManifoldPeerCredentialRecord {
+            schema_id: schema("rusty.manifold.peer.credential_record.v1"),
+            credential_id: dotted(format!("credential.{}", key_id.as_str()).as_str()),
+            peer_id: peer_id.clone(),
+            trust_domain: dotted("trust.local"),
+            key_id: key_id.clone(),
+            key_generation,
+            algorithm: ManifoldPeerCredentialAlgorithm::Ed25519,
+            public_key_hex: hex::encode(public_key),
+            public_key_sha256: format!("sha256:{digest}"),
+            valid_from_ms: u64::try_from(BASE_TIME_MS - 1_000).expect("positive time"),
+            expires_at_ms: u64::try_from(BASE_TIME_MS + 600_000).expect("positive time"),
+            status: ManifoldPeerCredentialStatus::Active,
+            replaced_by_key_id: None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn synthetic_checkin(
+        signing_key: &SigningKey,
+        key_id: &DottedId,
+        peer_id: &DottedId,
+        checkin_id: &str,
+        proposal_id: &str,
+        status_revision: u64,
+        source_epoch: &str,
+        source_revision: u64,
+    ) -> SignedFleetCheckIn {
+        let digest = hex::encode(Sha256::digest(signing_key.verifying_key().to_bytes()));
+        let mut observation = ScenarioBuilder::new(1).build().initial.remove(0);
+        observation.identity.device_id = peer_id.to_string();
+        observation.source_epoch = source_epoch.to_owned();
+        observation.source_revision = source_revision;
+        observation.received_time_ms = 0;
+        let proposal = ManifoldPeerStatusProposal {
+            schema_id: schema("rusty.manifold.peer.status_proposal.v1"),
+            proposal_id: dotted(proposal_id),
+            expected_authority_revision: Revision::INITIAL,
+            proposer_id: dotted("adapter.quest.fleet-agent"),
+            identity: ManifoldPeerIdentity {
+                schema_id: schema("rusty.manifold.peer.identity.v1"),
+                peer_id: peer_id.clone(),
+                key_fingerprint: dotted(format!("fingerprint.{digest}").as_str()),
+                trust_domain: dotted("trust.local"),
+                roles: vec![ManifoldPeerRole::Observer],
+            },
+            status: ManifoldPeerStatus {
+                schema_id: schema("rusty.manifold.peer.status.v1"),
+                peer_id: peer_id.clone(),
+                status_revision: Revision::new(status_revision).expect("status revision"),
+                observed_at_ms: u64::try_from(BASE_TIME_MS).expect("positive time"),
+                expires_at_ms: u64::try_from(BASE_TIME_MS + 60_000).expect("positive time"),
+                availability: ManifoldPeerAvailability::Ready,
+                capability_ids: vec![dotted("capability.monitoring")],
+            },
+            payload_class: ManifoldPeerPayloadClass::LowRateDescriptor,
+        };
+        sign_checkin(
+            signing_key,
+            key_id.as_str(),
+            FleetCheckInClaims {
+                schema: "rusty.fleet.checkin_claims.v1".to_owned(),
+                checkin_id: checkin_id.to_owned(),
+                issued_at_ms: BASE_TIME_MS,
+                expires_at_ms: BASE_TIME_MS + 60_000,
+                manifold_peer_status_proposal: serde_json::to_value(proposal)
+                    .expect("proposal serialization"),
+                observation,
+                extensions: Default::default(),
+            },
+        )
     }
 
     fn sign_checkin(

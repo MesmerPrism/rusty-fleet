@@ -48,6 +48,38 @@ pub struct FleetScenario {
     pub mutations: Vec<ScenarioMutation>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum M1LifecycleStepKind {
+    SleepCheckIn,
+    KeepAlive,
+    StaleWhileSleeping,
+    WakeCheckIn,
+    RouteLoss,
+    DuplicateCheckIn,
+    StaleRevision,
+    AgentUpgrade,
+    OldEpochReplay,
+    RouteRecovery,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct M1LifecycleStep {
+    pub at_ms: i64,
+    pub kind: M1LifecycleStepKind,
+    pub device_id: String,
+    pub observation: Option<DeviceObservation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct M1LifecycleScenario {
+    pub schema: String,
+    pub seed: u64,
+    pub initial: Vec<DeviceObservation>,
+    pub steps: Vec<M1LifecycleStep>,
+    pub final_time_ms: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MixedFreshnessFixture {
     pub schema: String,
@@ -585,6 +617,167 @@ pub fn mixed_freshness_fixture(device_count: usize) -> MixedFreshnessFixture {
     }
 }
 
+#[must_use]
+pub fn m1_lifecycle_scenario() -> M1LifecycleScenario {
+    let seed = 0x4d31_4c49_4645_4359;
+    let initial = ScenarioBuilder::new(4).with_seed(seed).build().initial;
+    let mut steps = Vec::new();
+
+    let mut sleeping = advance_observation(&initial[0], "agent-epoch-1", 2, BASE_TIME_MS + 60_000);
+    if let Some(agent) = sleeping.agent.as_mut() {
+        agent.lifecycle = ApplicationLifecycle::Stopped;
+        agent.foreground_state = ForegroundState::Unknown;
+    }
+    set_freshness(
+        &mut sleeping,
+        ConditionState::Disconnected,
+        "device_sleeping",
+    );
+    steps.push(lifecycle_step(
+        M1LifecycleStepKind::SleepCheckIn,
+        BASE_TIME_MS + 60_000,
+        Some(sleeping.clone()),
+    ));
+
+    let mut keepalives = Vec::new();
+    for observation in initial.iter().skip(1) {
+        let keepalive =
+            advance_observation(observation, "agent-epoch-1", 2, BASE_TIME_MS + 170_000);
+        steps.push(lifecycle_step(
+            M1LifecycleStepKind::KeepAlive,
+            BASE_TIME_MS + 170_000,
+            Some(keepalive.clone()),
+        ));
+        keepalives.push(keepalive);
+    }
+
+    steps.push(M1LifecycleStep {
+        at_ms: BASE_TIME_MS + 180_000,
+        kind: M1LifecycleStepKind::StaleWhileSleeping,
+        device_id: initial[0].identity.device_id.clone(),
+        observation: None,
+    });
+
+    let mut wake = advance_observation(&sleeping, "agent-epoch-1", 3, BASE_TIME_MS + 180_001);
+    if let Some(agent) = wake.agent.as_mut() {
+        agent.lifecycle = ApplicationLifecycle::Background;
+        agent.foreground_state = ForegroundState::Background;
+    }
+    set_freshness(&mut wake, ConditionState::Current, "local");
+    steps.push(lifecycle_step(
+        M1LifecycleStepKind::WakeCheckIn,
+        BASE_TIME_MS + 180_001,
+        Some(wake.clone()),
+    ));
+
+    let mut route_loss =
+        advance_observation(&keepalives[0], "agent-epoch-1", 3, BASE_TIME_MS + 190_000);
+    set_freshness(&mut route_loss, ConditionState::Disconnected, "route_lost");
+    steps.push(lifecycle_step(
+        M1LifecycleStepKind::RouteLoss,
+        BASE_TIME_MS + 190_000,
+        Some(route_loss.clone()),
+    ));
+
+    steps.push(lifecycle_step(
+        M1LifecycleStepKind::DuplicateCheckIn,
+        BASE_TIME_MS + 190_001,
+        Some(keepalives[1].clone()),
+    ));
+
+    let stale_revision =
+        advance_observation(&keepalives[2], "agent-epoch-1", 1, BASE_TIME_MS + 190_002);
+    steps.push(lifecycle_step(
+        M1LifecycleStepKind::StaleRevision,
+        BASE_TIME_MS + 190_002,
+        Some(stale_revision),
+    ));
+
+    let mut upgrade = advance_observation(&wake, "agent-epoch-2", 1, BASE_TIME_MS + 200_000);
+    upgrade
+        .identity
+        .tags
+        .insert("agent_build".to_owned(), "synthetic-2".to_owned());
+    steps.push(lifecycle_step(
+        M1LifecycleStepKind::AgentUpgrade,
+        BASE_TIME_MS + 200_000,
+        Some(upgrade),
+    ));
+
+    let old_epoch_replay = advance_observation(&wake, "agent-epoch-1", 4, BASE_TIME_MS + 200_001);
+    steps.push(lifecycle_step(
+        M1LifecycleStepKind::OldEpochReplay,
+        BASE_TIME_MS + 200_001,
+        Some(old_epoch_replay),
+    ));
+
+    let mut route_recovery =
+        advance_observation(&route_loss, "agent-epoch-1", 4, BASE_TIME_MS + 210_000);
+    set_freshness(&mut route_recovery, ConditionState::Current, "local");
+    steps.push(lifecycle_step(
+        M1LifecycleStepKind::RouteRecovery,
+        BASE_TIME_MS + 210_000,
+        Some(route_recovery),
+    ));
+
+    M1LifecycleScenario {
+        schema: "rusty.fleet.m1_lifecycle_scenario.v1".to_owned(),
+        seed,
+        initial,
+        steps,
+        final_time_ms: BASE_TIME_MS + 210_001,
+    }
+}
+
+fn lifecycle_step(
+    kind: M1LifecycleStepKind,
+    at_ms: i64,
+    observation: Option<DeviceObservation>,
+) -> M1LifecycleStep {
+    let device_id = observation
+        .as_ref()
+        .map_or_else(String::new, |value| value.identity.device_id.clone());
+    M1LifecycleStep {
+        at_ms,
+        kind,
+        device_id,
+        observation,
+    }
+}
+
+fn advance_observation(
+    observation: &DeviceObservation,
+    source_epoch: &str,
+    source_revision: u64,
+    at_ms: i64,
+) -> DeviceObservation {
+    let mut next = observation.clone();
+    let offset_ms = at_ms - next.received_time_ms;
+    shift_observation_time(&mut next, offset_ms);
+    next.source_epoch = source_epoch.to_owned();
+    next.source_revision = source_revision;
+    for condition in &mut next.conditions {
+        condition.accepted_revision = source_revision;
+        condition.source.authority_revision = source_revision;
+    }
+    for capability in next.capabilities.capabilities.values_mut() {
+        capability.evidence_revision = source_revision;
+    }
+    next
+}
+
+fn set_freshness(observation: &mut DeviceObservation, state: ConditionState, reason: &str) {
+    if let Some(condition) = observation
+        .conditions
+        .iter_mut()
+        .find(|condition| condition.family == ConditionFamily::Freshness)
+    {
+        condition.state = state;
+        condition.reason = reason.to_owned();
+        condition.message = reason.replace('_', " ");
+    }
+}
+
 fn shift_observation_time(observation: &mut DeviceObservation, offset_ms: i64) {
     observation.source_time_ms += offset_ms;
     observation.received_time_ms += offset_ms;
@@ -840,8 +1033,9 @@ mod tests {
     use fleet_contracts::{AuthorizationState, ValidateContract};
 
     use super::{
-        MIXED_FRESHNESS_TIME_MS, ScenarioBuilder, ScenarioMutationKind, datastream_scenarios,
-        mixed_freshness_fixture, supported_scale_fixtures,
+        M1LifecycleStepKind, MIXED_FRESHNESS_TIME_MS, ScenarioBuilder, ScenarioMutationKind,
+        datastream_scenarios, m1_lifecycle_scenario, mixed_freshness_fixture,
+        supported_scale_fixtures,
     };
 
     #[test]
@@ -914,6 +1108,47 @@ mod tests {
                 .iter()
                 .any(|mutation| mutation.kind == ScenarioMutationKind::CapabilityDowngrade)
         );
+    }
+
+    #[test]
+    fn m1_lifecycle_fixture_is_deterministic_valid_and_complete() {
+        let first = m1_lifecycle_scenario();
+        let second = m1_lifecycle_scenario();
+        assert_eq!(first, second);
+        assert_eq!(first.initial.len(), 4);
+        assert!(
+            first
+                .initial
+                .iter()
+                .all(|observation| observation.validate().is_ok())
+        );
+
+        let kinds = first
+            .steps
+            .iter()
+            .map(|step| step.kind)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(kinds.len(), 10);
+        assert_eq!(
+            first
+                .steps
+                .iter()
+                .filter(|step| step.kind == M1LifecycleStepKind::KeepAlive)
+                .count(),
+            3
+        );
+        for step in first.steps {
+            if step.kind == M1LifecycleStepKind::StaleWhileSleeping {
+                assert!(step.observation.is_none());
+            } else {
+                assert!(
+                    step.observation
+                        .is_some_and(|observation| observation.validate().is_ok()),
+                    "{:?} observation must validate",
+                    step.kind
+                );
+            }
+        }
     }
 
     #[test]

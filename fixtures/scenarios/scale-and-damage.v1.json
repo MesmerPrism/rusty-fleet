@@ -20,6 +20,19 @@
     "partial_families",
     "damaged_message"
   ],
+  "m1_lifecycle": [
+    "sleep_check_in",
+    "keep_alive",
+    "stale_while_sleeping",
+    "wake_check_in",
+    "route_loss",
+    "duplicate_check_in",
+    "stale_revision",
+    "agent_upgrade",
+    "old_epoch_replay",
+    "route_recovery",
+    "key_rotation_old_signer_rejected"
+  ],
   "datastream_conditions": [
     "ambiguous_selection",
     "native_descriptor_drift",

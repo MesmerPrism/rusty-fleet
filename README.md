@@ -86,6 +86,12 @@ The current implementation is split into:
   watch-cursor/reset/damage, grouped virtualization, stable-context/order,
   capability-family, presented keyboard, and 1,000-device checks.
 
+The deterministic M1 negative-path harness runs four independent devices
+through sleep/wake aging, route loss/recovery, duplicate and stale check-ins,
+agent upgrade, old-epoch replay, and final canonical recovery. The exact
+pinned Manifold adapter also proves key rotation rejects the old signer and
+accepts the replacement only under a fresh producer epoch.
+
 See the [Milestone 0 source foundation](docs/M0_SOURCE_FOUNDATION.md) for the
 accepted source boundary, the
 [M1 local monitoring runtime](docs/M1_LOCAL_MONITORING.md) for the active
@@ -136,6 +142,7 @@ cargo run --locked -p fleetctl -- list 4
 cargo run --locked -p fleetctl -- inspect sim-00001 4
 cargo run --locked -p fleetctl -- detail sim-00001 4
 cargo run --locked -p fleetctl -- watch 4
+cargo run --locked -p fleetctl -- m1-lifecycle
 cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
 cargo run --locked -p fleetctl -- saved-view-roundtrip 50
 ```
@@ -204,8 +211,10 @@ Hub-owned saved-view persistence/restoration, stable-context behavior,
 explicit queued live ordering, and automated
 1,000-device virtualization/UI Automation baseline over a mixed
 500-fresh/250-stale/250-offline canonical projection. A real presented-window
-pass verifies search, grid, batch, and inspector keyboard focus. Acceptance
-remains pending until the manual
+pass verifies search, grid, batch, and inspector keyboard focus. Its
+self-checking lifecycle projection and exact-owner key-rotation gate cover the
+remaining Fleet-owned deterministic lifecycle cases. Acceptance remains
+pending until the manual
 Narrator, high-contrast, scaling, full Standard, Deep, workflow, and
 publication gates pass.
 

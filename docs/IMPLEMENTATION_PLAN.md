@@ -608,9 +608,12 @@ stack. The accepted source foundation remains documented in
 ingress and authority behavior are documented in
 [Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Durable restart
 recovery and the first bounded Quest checkpoint are now present. Finish the
-remaining WPF/CLI/API scope parity and manual accessibility gates, remaining
-negative-path integration, Standard and Deep gates, instruction-impact review,
-and publication. The native 1,000-device table/inspector, canonical
+manual accessibility gates, final Standard and Deep gates,
+instruction-impact review, and publication. The deterministic M1 lifecycle
+projection now covers sleep/wake aging, route loss/recovery, duplicate and
+stale check-ins, agent upgrade, old-epoch replay, and final independent-device
+recovery; the exact pinned Manifold adapter covers key rotation and old-signer
+rejection. The native 1,000-device table/inspector, canonical
 search/freshness scope, grouping, stable hidden selection, out-of-scope
 inspector context, mixed fresh/stale/offline and empty-scope fixture, and
 presented keyboard/UI Automation path are now present. Do not create

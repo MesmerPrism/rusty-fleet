@@ -213,6 +213,7 @@ cargo test -p fleet-manifold-adapter -p fleet-hub-local
 cargo clippy -p fleet-manifold-adapter -p fleet-hub-local --all-targets --locked -- -D warnings
 cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
 cargo run --locked -p fleetctl -- saved-view-roundtrip 50
+cargo run --locked -p fleetctl -- m1-lifecycle
 dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
 dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
   -c Release --no-build -- --repo-root .
@@ -225,6 +226,16 @@ and saved-view parity, optimistic saved-view revision conflict, durable
 saved-view restoration, explicit LAN activation, content type, body size,
 finite credential rate, bounded source-epoch evidence, durable restoration,
 and damaged-newest slot fallback.
+
+`fleetctl m1-lifecycle` is a fixed, self-checking four-device integration
+profile. It retains three devices as fresh while one ages stale during a
+declared sleep window, then proves wake recovery, explicit route
+loss/recovery, duplicate-revision and stale-revision rejection, agent upgrade
+under a new source epoch, old-epoch replay rejection, and a final four-device
+fresh canonical query/summary/watch projection. The Fleet Manifold adapter
+test uses the exact pinned owner enrollment contract to rotate a synthetic
+Ed25519 credential, reject the old signer without changing Hub state, and
+accept the replacement only with a new source epoch.
 
 A private serial-scoped Quest checkpoint has also exercised the Wi-Fi route
 without an ADB tunnel: the enrolled device advanced eight signed check-ins,

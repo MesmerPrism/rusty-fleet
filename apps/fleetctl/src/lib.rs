@@ -5,14 +5,14 @@
 //! future UI consumers.
 
 use fleet_contracts::{
-    Comparison, FleetQuery, FleetQueryResult, FleetSummaryProjection, QueryExpression, QueryField,
-    QueryValue, SavedView, SavedViewCollection, SavedViewMutationReceipt, SavedViewMutationRequest,
-    SortDirection, SortKey,
+    Comparison, FleetQuery, FleetQueryResult, FleetSummaryProjection, ProjectionFreshness,
+    QueryExpression, QueryField, QueryValue, SavedView, SavedViewCollection,
+    SavedViewMutationReceipt, SavedViewMutationRequest, SortDirection, SortKey,
 };
-use fleet_hub::{FleetApi, FleetHub, HubPolicy};
+use fleet_hub::{FleetApi, FleetHub, HubPolicy, ObservationDecision, WatchEvent};
 use fleet_simulator::{
-    BASE_TIME_MS, MixedFreshnessFixture, ScenarioBuilder, mixed_freshness_fixture,
-    supported_scale_fixtures,
+    BASE_TIME_MS, M1LifecycleStepKind, MixedFreshnessFixture, ScenarioBuilder,
+    m1_lifecycle_scenario, mixed_freshness_fixture, supported_scale_fixtures,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +38,28 @@ pub struct SavedViewRoundTripProjection {
     pub restored_query_result: FleetQueryResult,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct M1LifecycleStepReceipt {
+    pub kind: M1LifecycleStepKind,
+    pub device_id: String,
+    pub at_ms: i64,
+    pub outcome: String,
+    pub result_revision: u64,
+    pub freshness: ProjectionFreshness,
+    pub route: String,
+    pub source_epoch: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct M1LifecycleProjection {
+    pub schema: String,
+    pub passed: bool,
+    pub steps: Vec<M1LifecycleStepReceipt>,
+    pub query_result: FleetQueryResult,
+    pub summary: FleetSummaryProjection,
+    pub watch: Vec<WatchEvent>,
+}
+
 impl CliFailure {
     fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
@@ -59,11 +81,22 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 "filter <text> [count]",
                 "watch [count]",
                 "scenario [count]",
+                "m1-lifecycle",
                 "operator-fixture mixed-freshness [count]",
                 "saved-view-roundtrip [count]"
             ],
             "scale_fixtures": supported_scale_fixtures()
         }));
+    }
+    if command == "m1-lifecycle" {
+        if arguments.len() != 1 {
+            return Err(CliFailure::new(
+                "unexpected_arguments",
+                "m1-lifecycle uses its fixed deterministic four-device profile",
+            ));
+        }
+        return serde_json::to_value(m1_lifecycle_projection()?)
+            .map_err(|error| CliFailure::new("serialization_failed", error.to_string()));
     }
     let count = arguments
         .last()
@@ -124,6 +157,120 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
             format!("unknown command {command}"),
         )),
     }
+}
+
+pub fn m1_lifecycle_projection() -> Result<M1LifecycleProjection, CliFailure> {
+    let scenario = m1_lifecycle_scenario();
+    let mut hub = FleetHub::new(HubPolicy::default());
+    for observation in scenario.initial {
+        let decision = hub.accept_observation(observation, BASE_TIME_MS);
+        if !matches!(decision, ObservationDecision::Accepted { .. }) {
+            return Err(CliFailure::new(
+                "scenario_initialization_failed",
+                "the M1 lifecycle fixture could not admit its initial fleet",
+            ));
+        }
+    }
+
+    let mut receipts = Vec::new();
+    for step in scenario.steps {
+        let decision = step
+            .observation
+            .map(|observation| hub.accept_observation(observation, step.at_ms));
+        let row = hub
+            .inspect(&step.device_id, step.at_ms)
+            .map_err(|error| CliFailure::new("scenario_projection_failed", error.to_string()))?
+            .row;
+        let outcome = match decision {
+            Some(ObservationDecision::Accepted { .. }) => "accepted".to_owned(),
+            Some(ObservationDecision::Rejected { reason, .. }) => {
+                let reason = serde_json::to_value(reason)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .ok_or_else(|| {
+                        CliFailure::new(
+                            "scenario_serialization_failed",
+                            "a rejection reason was not a string enum",
+                        )
+                    })?;
+                format!("rejected:{reason}")
+            }
+            None => format!(
+                "projected:{}",
+                enum_name(row.freshness).ok_or_else(|| {
+                    CliFailure::new(
+                        "scenario_serialization_failed",
+                        "a freshness value was not a string enum",
+                    )
+                })?
+            ),
+        };
+        let expected = expected_lifecycle_outcome(step.kind);
+        if outcome != expected {
+            return Err(CliFailure::new(
+                "scenario_outcome_mismatch",
+                format!("{:?} expected {expected} but observed {outcome}", step.kind),
+            ));
+        }
+        receipts.push(M1LifecycleStepReceipt {
+            kind: step.kind,
+            device_id: step.device_id,
+            at_ms: step.at_ms,
+            outcome,
+            result_revision: hub.result_revision(),
+            freshness: row.freshness,
+            route: row.route,
+            source_epoch: row.source_epoch,
+        });
+    }
+
+    let query_result = hub
+        .list(&default_query(4), scenario.final_time_ms)
+        .map_err(|error| CliFailure::new("scenario_projection_failed", error.to_string()))?;
+    let summary = hub.summary(scenario.final_time_ms);
+    if query_result.total_count != 4
+        || summary.total != 4
+        || summary.fresh != 4
+        || query_result
+            .rows
+            .iter()
+            .any(|row| row.freshness != ProjectionFreshness::Fresh)
+    {
+        return Err(CliFailure::new(
+            "scenario_final_state_mismatch",
+            "the M1 lifecycle fixture did not finish with four independent fresh devices",
+        ));
+    }
+
+    Ok(M1LifecycleProjection {
+        schema: "rusty.fleet.m1_lifecycle_projection.v1".to_owned(),
+        passed: true,
+        steps: receipts,
+        query_result,
+        summary,
+        watch: hub.watch(0, 64),
+    })
+}
+
+fn expected_lifecycle_outcome(kind: M1LifecycleStepKind) -> &'static str {
+    match kind {
+        M1LifecycleStepKind::SleepCheckIn
+        | M1LifecycleStepKind::KeepAlive
+        | M1LifecycleStepKind::WakeCheckIn
+        | M1LifecycleStepKind::RouteLoss
+        | M1LifecycleStepKind::AgentUpgrade
+        | M1LifecycleStepKind::RouteRecovery => "accepted",
+        M1LifecycleStepKind::StaleWhileSleeping => "projected:stale",
+        M1LifecycleStepKind::DuplicateCheckIn => "rejected:duplicate_revision",
+        M1LifecycleStepKind::StaleRevision => "rejected:stale_revision",
+        M1LifecycleStepKind::OldEpochReplay => "rejected:source_epoch_replay",
+    }
+}
+
+fn enum_name<T: Serialize>(value: T) -> Option<String> {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
 }
 
 pub fn saved_view_roundtrip(
@@ -271,8 +418,8 @@ mod tests {
     use fleet_simulator::BASE_TIME_MS;
 
     use super::{
-        default_query, execute, load_hub, load_mixed_freshness_hub, saved_view_roundtrip,
-        text_query,
+        default_query, execute, load_hub, load_mixed_freshness_hub, m1_lifecycle_projection,
+        saved_view_roundtrip, text_query,
     };
 
     #[test]
@@ -284,6 +431,7 @@ mod tests {
             vec!["filter".to_owned(), "Quest 0001".to_owned(), "4".to_owned()],
             vec!["watch".to_owned(), "4".to_owned()],
             vec!["scenario".to_owned(), "4".to_owned()],
+            vec!["m1-lifecycle".to_owned()],
             vec![
                 "operator-fixture".to_owned(),
                 "mixed-freshness".to_owned(),
@@ -293,6 +441,46 @@ mod tests {
         ] {
             assert!(execute(args).is_ok());
         }
+    }
+
+    #[test]
+    fn m1_lifecycle_command_returns_self_checked_canonical_evidence() {
+        let projection = m1_lifecycle_projection().expect("M1 lifecycle projection");
+        assert!(projection.passed);
+        assert_eq!(projection.summary.total, 4);
+        assert_eq!(projection.summary.fresh, 4);
+        assert_eq!(projection.query_result.total_count, 4);
+        assert_eq!(
+            projection
+                .steps
+                .iter()
+                .filter(|step| step.outcome.starts_with("rejected:"))
+                .count(),
+            3
+        );
+        assert!(
+            projection
+                .steps
+                .iter()
+                .any(|step| step.outcome == "projected:stale")
+        );
+        assert!(
+            projection
+                .steps
+                .iter()
+                .any(|step| step.route == "route_lost")
+        );
+        assert!(
+            projection
+                .query_result
+                .rows
+                .iter()
+                .any(|row| row.source_epoch == "agent-epoch-2")
+        );
+        assert_eq!(
+            execute(vec!["m1-lifecycle".to_owned()]).expect("CLI M1 lifecycle"),
+            serde_json::to_value(projection).expect("serialize lifecycle projection")
+        );
     }
 
     #[test]

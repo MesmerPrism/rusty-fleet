@@ -43,10 +43,11 @@ Live device work is never implied by a source or documentation task.
   admission plus transactional signed-check-in projection;
 - `apps/fleet-hub-local`: explicit bounded local ingress, durable two-slot
   runtime and saved-view state, and canonical HTTP projection adapter;
-- `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator, and
-  damage scenarios;
-- `apps/fleetctl`: structured JSON CLI and saved-view parity projection over
-  the same in-process list/inspect/detail/watch API;
+- `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator,
+  deterministic M1 lifecycle, and damage scenarios;
+- `apps/fleetctl`: structured JSON CLI, saved-view parity, and the self-checking
+  M1 lifecycle projection over the same in-process list/inspect/detail/watch
+  API;
 - `apps/fleet-console-wpf`: native WPF fleet table, canonical
   scope/sort/grouping/saved-view controls, bounded watch synchronization,
   queued live ordering, persistent inspector, full-device detail, and

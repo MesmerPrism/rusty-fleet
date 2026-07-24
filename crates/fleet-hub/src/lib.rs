@@ -1043,10 +1043,13 @@ fn freshness_rank(freshness: ProjectionFreshness) -> u8 {
 mod tests {
     use super::{FleetApi, FleetHub, HubPolicy, ObservationDecision, RejectionReason};
     use fleet_contracts::{
-        Comparison, FleetQuery, NavigationRestoration, QueryExpression, QueryField, QueryValue,
-        SavedView, SavedViewMutationRequest, ValidateContract,
+        Comparison, ConditionFamily, ConditionState, FleetQuery, NavigationRestoration,
+        ProjectionFreshness, QueryExpression, QueryField, QueryValue, SavedView,
+        SavedViewMutationRequest, ValidateContract,
     };
-    use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
+    use fleet_simulator::{
+        BASE_TIME_MS, M1LifecycleStepKind, ScenarioBuilder, m1_lifecycle_scenario,
+    };
 
     fn all_query(limit: usize) -> FleetQuery {
         FleetQuery {
@@ -1129,6 +1132,109 @@ mod tests {
                 .source_epoch,
             "agent-epoch-3"
         );
+    }
+
+    #[test]
+    fn m1_lifecycle_scenario_preserves_independent_devices_and_truthful_degradation() {
+        let scenario = m1_lifecycle_scenario();
+        let mut hub = FleetHub::new(HubPolicy::default());
+        for observation in scenario.initial {
+            assert!(matches!(
+                hub.accept_observation(observation, BASE_TIME_MS),
+                ObservationDecision::Accepted { .. }
+            ));
+        }
+
+        for step in scenario.steps {
+            let decision = step
+                .observation
+                .map(|observation| hub.accept_observation(observation, step.at_ms));
+            match step.kind {
+                M1LifecycleStepKind::SleepCheckIn
+                | M1LifecycleStepKind::KeepAlive
+                | M1LifecycleStepKind::WakeCheckIn
+                | M1LifecycleStepKind::RouteLoss
+                | M1LifecycleStepKind::AgentUpgrade
+                | M1LifecycleStepKind::RouteRecovery => {
+                    assert!(
+                        matches!(decision, Some(ObservationDecision::Accepted { .. })),
+                        "{:?} must be accepted",
+                        step.kind
+                    );
+                }
+                M1LifecycleStepKind::DuplicateCheckIn => assert!(matches!(
+                    decision,
+                    Some(ObservationDecision::Rejected {
+                        reason: RejectionReason::DuplicateRevision,
+                        ..
+                    })
+                )),
+                M1LifecycleStepKind::StaleRevision => assert!(matches!(
+                    decision,
+                    Some(ObservationDecision::Rejected {
+                        reason: RejectionReason::StaleRevision,
+                        ..
+                    })
+                )),
+                M1LifecycleStepKind::OldEpochReplay => assert!(matches!(
+                    decision,
+                    Some(ObservationDecision::Rejected {
+                        reason: RejectionReason::SourceEpochReplay,
+                        ..
+                    })
+                )),
+                M1LifecycleStepKind::StaleWhileSleeping => {
+                    assert!(decision.is_none());
+                    let sleeping = hub.inspect(&step.device_id, step.at_ms).expect("device");
+                    assert_eq!(sleeping.row.freshness, ProjectionFreshness::Stale);
+                    assert_eq!(sleeping.row.route, "device_sleeping");
+                    assert!(
+                        hub.list(&all_query(4), step.at_ms)
+                            .expect("fleet")
+                            .rows
+                            .iter()
+                            .filter(|row| row.identity.device_id != step.device_id)
+                            .all(|row| row.freshness == ProjectionFreshness::Fresh)
+                    );
+                }
+            }
+
+            if step.kind == M1LifecycleStepKind::RouteLoss {
+                let row = hub
+                    .inspect(&step.device_id, step.at_ms)
+                    .expect("device")
+                    .row;
+                assert_eq!(row.route, "route_lost");
+                assert_eq!(
+                    row.conditions
+                        .get(&ConditionFamily::Freshness)
+                        .map(|condition| condition.state),
+                    Some(ConditionState::Disconnected)
+                );
+            }
+            if step.kind == M1LifecycleStepKind::AgentUpgrade {
+                assert_eq!(
+                    hub.inspect(&step.device_id, step.at_ms)
+                        .expect("device")
+                        .row
+                        .source_epoch,
+                    "agent-epoch-2"
+                );
+            }
+        }
+
+        let final_projection = hub
+            .list(&all_query(4), scenario.final_time_ms)
+            .expect("final fleet");
+        assert_eq!(final_projection.total_count, 4);
+        assert!(
+            final_projection
+                .rows
+                .iter()
+                .all(|row| row.freshness == ProjectionFreshness::Fresh)
+        );
+        assert_eq!(hub.summary(scenario.final_time_ms).fresh, 4);
+        assert_eq!(hub.device_count(), 4);
     }
 
     #[test]

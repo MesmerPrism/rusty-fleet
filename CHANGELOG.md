@@ -72,3 +72,8 @@ The project follows Semantic Versioning once runtime releases begin.
   cursor, Hub sequence-reset rebasing, fail-closed damaged-event handling,
   query-only degraded refresh, and a canonical query/summary reread before any
   visible device state changes.
+- Self-checking four-device M1 lifecycle evidence for sleep/wake aging, route
+  loss/recovery, duplicate and stale check-ins, agent upgrade, old-epoch
+  replay, and final canonical recovery, plus exact pinned-Manifold key
+  rotation that rejects the old signer before accepting a fresh producer
+  epoch.
