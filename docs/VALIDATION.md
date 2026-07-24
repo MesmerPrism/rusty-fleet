@@ -19,9 +19,31 @@ Quick is safe during normal editing and checks:
 - key planning/workflow invariants.
 - pinned Rust formatting and the complete source-only workspace test suite;
 - committed valid/damaged contract fixtures;
-- deterministic 4/50/250/1,000/5,000 simulator generation;
+- deterministic 4/50/250/1,000/5,000 simulator generation and canonical
+  mixed-freshness operator projection;
 - Hub revision, replay, staleness, identity, and projection behavior;
-- exact `fleetctl`/local-API projection parity.
+- self-checking four-device M1 sleep/wake, route-loss/recovery, duplicate,
+  stale-revision, agent-upgrade, old-epoch-replay, and exact-owner key-rotation
+  behavior;
+- exact `fleetctl`/local-API projection parity;
+- saved-view valid/damaged contracts, canonical ordering, optimistic
+  revision conflict, durable restart restoration, HTTP CRUD, and structured
+  `fleetctl` round-trip parity;
+- stable .NET 10 WPF build plus the package-free native DataGrid validation
+  against the real 1,000-device Rust projection;
+- native grid/inspector UI Automation peers and names, grouped recycling
+  virtualization, bounded realized rows, readable default column widths,
+  stable view models, canonical search/freshness expressions and Hub-owned
+  sort field/direction,
+  pointer/keyboard/UI Automation batch selection, hidden-selection
+  preservation, empty-scope behavior, retained out-of-scope inspector
+  context, applied-sort preservation, stable live ordering with explicit
+  accessible application, saved-view query/grouping/selection/focus
+  and detail-tab restoration, accessible saved-view controls, canonical
+  full-detail projection and return-context preservation, safe shared-row value refresh, and mixed
+  fresh/stale/offline state;
+- fail-closed non-loopback Hub, bounded response, mismatched-query, and
+  wrong-device inspector/detail fixtures.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
@@ -106,11 +128,40 @@ cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run --locked -p fleetctl -- list 4
+cargo run --locked -p fleetctl -- detail sim-00001 4
+cargo run --locked -p fleetctl -- m1-lifecycle
+cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
+cargo run --locked -p fleetctl -- saved-view-roundtrip 50
+dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
+dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
+  -c Release --no-build -- --repo-root .
 ```
+
+For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
+surface separately:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File <rusty-quest-root>\tools\Test-FleetAgentAndroid.ps1 `
+  -Tier Host
+```
+
+The owner script exposes `Host` as a fail-closed declared tier and rejects
+unknown tier names. It performs source/static validation only unless `-Build`
+is added explicitly. It never implies device execution. The completed
+automated boundary and the remaining manual gates are recorded in
+[M1 Consolidation Readiness](M1_CONSOLIDATION_READINESS.md).
 
 The deterministic scale suite generates its datasets in memory. It does not
 commit large data files and does not claim that every fixture size is a
 supported production fleet.
+
+The WPF scenario suite consumes the canonical watch-event shape as well as
+query, summary, inspect, and detail. It verifies the 10,000-event request
+ceiling, strict sequence/cursor ordering, accepted-versus-rejected semantics,
+Hub sequence-reset rebasing, canonical query/summary reread, stable ordering,
+fail-closed damaged watch evidence with cached rows retained, and query-only
+manual refresh when the watch route is unavailable.
 
 ## Datastream validation
 
@@ -150,7 +201,7 @@ WPF surface exists:
 | deterministic 4/50/250/1k/5k datasets | required | affected profile | Standard | Deep |
 | Console/CLI/API membership and reason parity | contract only | focused | Standard | Deep |
 | keyboard and UI Automation regression | not applicable | focused | Standard | Standard |
-| Narrator, high contrast, large text, scaling | not applicable | targeted | manual milestone gate | full release gate |
+| Narrator, Accessibility Insights, high contrast, large text, scaling, multi-monitor | not applicable | defect-targeted spot check | informative current-settings check | cumulative full release gate |
 | stable ordering, hidden selection, navigation restoration | contract fixture | focused | scenario gate | regression |
 | target snapshot and per-target ledger | M2 contract | focused | M2 Standard | regression |
 | measured latency, memory, and update churn | candidate fixtures | nearest profile | declared milestone | Deep |
@@ -162,6 +213,20 @@ claim.
 
 Screenshot matrices detect layout drift but do not replace keyboard, UI
 Automation, screen-reader, or interaction tests.
+
+The optional `--present` argument opens the same package-free validation
+surface as a real WPF window for bounded focus, keyboard, screen-reader, and
+visual review. It does not start a Hub or contact a device. Presented-window
+evidence complements the default off-screen regression run and does not make
+Narrator, high-contrast, large-text, or scaling gates automatic.
+
+The complete operator-attended accessibility matrix is cumulative and runs at
+Milestone 7 after the selected functionality suite is present. Earlier
+milestones still block on automated keyboard and UI Automation regressions and
+must repair any defect found by an attended spot check. A preliminary
+screen-reader confirmation or current-settings keyboard pass is informative;
+it must not be relabeled as high-contrast, large-text, scaling, multi-monitor,
+Accessibility Insights, or release conformance.
 
 ## Evidence vocabulary
 

@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>RustyFleet.FleetConsole</AssemblyName>
+    <RootNamespace>RustyFleet.FleetConsole</RootNamespace>
+  </PropertyGroup>
+</Project>

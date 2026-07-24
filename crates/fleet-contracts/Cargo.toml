@@ -9,6 +9,7 @@ description = "Versioned source-only contracts for Rusty Fleet."
 
 [dependencies]
 serde.workspace = true
+serde_jcs.workspace = true
 serde_json.workspace = true
 
 [lints]

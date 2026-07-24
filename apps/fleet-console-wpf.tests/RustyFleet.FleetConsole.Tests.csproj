@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>RustyFleet.FleetConsole.Tests</AssemblyName>
+    <RootNamespace>RustyFleet.FleetConsole.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\fleet-console-wpf\RustyFleet.FleetConsole.csproj" />
+  </ItemGroup>
+</Project>

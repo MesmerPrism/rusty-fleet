@@ -5,6 +5,7 @@
 //! future operator projections.
 
 mod capability;
+mod checkin;
 mod command;
 mod condition;
 mod identity;
@@ -16,14 +17,22 @@ pub use capability::{
     AuthorizationState, CapabilitySnapshot, CapabilityState, EnablementState, FreshnessState,
     ReachabilityState, SupportState,
 };
+pub use checkin::{
+    CHECKIN_SIGNATURE_ALGORITHM, CHECKIN_SIGNATURE_DOMAIN, FleetCheckInClaims, SignedFleetCheckIn,
+};
 pub use command::{
     CommandLifecycle, OperationLedger, OperationTargetResult, TargetEligibility, TargetSnapshot,
 };
 pub use condition::{ConditionFamily, ConditionState, Sensitivity, StatusCondition, StatusSource};
-pub use identity::{DeviceIdentity, DeviceObservation, KioskState};
+pub use identity::{
+    ApplicationLifecycle, ApplicationObservation, DeviceIdentity, DeviceObservation,
+    FactProvenance, ForegroundAuthority, ForegroundState, KioskState, PowerObservation,
+};
 pub use projection::{
     DeviceDetailProjection, DeviceInspectorProjection, DeviceRowProjection, FleetQueryResult,
     FleetSummaryProjection, NavigationRestoration, ProjectionFreshness, SavedView,
+    SavedViewCollection, SavedViewMutationReceipt, SavedViewMutationRequest,
+    is_valid_saved_view_id,
 };
 pub use query::{
     Comparison, FleetQuery, QueryExpression, QueryField, QueryValue, SortDirection, SortKey,

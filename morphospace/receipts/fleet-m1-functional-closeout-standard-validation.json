@@ -1,0 +1,99 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/6b75d944614a8f863dd612c9b114d7c68f0862b0/schemas/validation-receipt.schema.json",
+  "schema": "rusty.morphospace.workflow.validation_receipt.v1",
+  "receipt_id": "fleet-m1-functional-closeout-standard-validation",
+  "project_id": "rusty-fleet",
+  "unit_id": "fleet-m1-functional-closeout",
+  "created_at": "2026-07-24T17:24:20.9258369Z",
+  "tier": "standard",
+  "result": "pass",
+  "repository_revisions": [
+    {
+      "repo_id": "rusty-fleet",
+      "base_revision": "c96dcf990db2566b226d4c27b6310b5652e4b3a8",
+      "head_revision": "c96dcf990db2566b226d4c27b6310b5652e4b3a8",
+      "branch": "codex/fleet-m1-local-monitoring"
+    }
+  ],
+  "changed_paths": [
+    { "repo_id": "rusty-fleet", "path": "AGENTS.md" },
+    { "repo_id": "rusty-fleet", "path": "README.md" },
+    { "repo_id": "rusty-fleet", "path": "docs/IMPLEMENTATION_PLAN.md" },
+    { "repo_id": "rusty-fleet", "path": "docs/M1_CONSOLIDATION_READINESS.md" },
+    { "repo_id": "rusty-fleet", "path": "docs/VALIDATION.md" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/iteration-events.jsonl" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/iteration-units/fleet-m1-functional-closeout.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-functional-closeout-begin-validation.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-functional-closeout-standard-evidence.md" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-functional-closeout-standard-validation.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/workspace.state.json" },
+    { "repo_id": "rusty-fleet", "path": "tools/Test-Repo.ps1" }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "standard-validation-evidence",
+      "kind": "validation-summary",
+      "path": "fleet-m1-functional-closeout-standard-evidence.md",
+      "sha256": "c853b0c09cc3d52511df419ad9f4fadb1cd0741355fa21acc1ef8b2e4c0f9aad"
+    }
+  ],
+  "criteria": [
+    {
+      "acceptance_id": "m1-functional-evidence-preserved",
+      "status": "pass",
+      "command": "Review the M1 consolidation record, exact source checkpoints, completed private device receipt summary, and current automated validation.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "accessibility-status-truthful",
+      "status": "pass",
+      "command": "Review the updated README, implementation plan, validation guide, and M1 consolidation record.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "cumulative-release-accessibility-gate",
+      "status": "pass",
+      "command": "Verify Milestone 7 retains the complete operator-attended accessibility suite and each intervening WPF milestone retains automated keyboard and UI Automation regression.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "inert-optional-capabilities",
+      "status": "pass",
+      "command": "Run the repository Standard gate and inspect the closed feature lock and M1 support statements.",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "acceptance_id": "corrective-workflow-integrity",
+      "status": "pass",
+      "command": "Run the portable workflow contract validator over the additive supersession event and current workspace projection.",
+      "evidence_refs": ["standard-validation-evidence"]
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "validation-quick",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Quick",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "gate_id": "validation-standard",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Standard",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "gate_id": "validation-workflow-contract",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File <work-environment-root>/scripts/Test-WorkflowContracts.ps1 -WorkspaceRoot <project-root>/morphospace",
+      "evidence_refs": ["standard-validation-evidence"]
+    },
+    {
+      "gate_id": "instruction-synchronization",
+      "status": "pass",
+      "command": "Verify every declared instruction surface is complete and validated.",
+      "evidence_refs": ["standard-validation-evidence"]
+    }
+  ],
+  "device_validation": null
+}

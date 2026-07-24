@@ -1,0 +1,65 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/6b75d944614a8f863dd612c9b114d7c68f0862b0/schemas/validation-receipt.schema.json",
+  "schema": "rusty.morphospace.workflow.validation_receipt.v1",
+  "receipt_id": "fleet-m1-readme-status-alignment-blocked-validation",
+  "project_id": "rusty-fleet",
+  "unit_id": "fleet-m1-readme-status-alignment",
+  "created_at": "2026-07-24T17:30:33.9933218Z",
+  "tier": "quick",
+  "result": "blocked",
+  "repository_revisions": [
+    {
+      "repo_id": "rusty-fleet",
+      "base_revision": "792980d53c4b209f281c5f80e8de1ce84a7fe020",
+      "head_revision": "792980d53c4b209f281c5f80e8de1ce84a7fe020",
+      "branch": "codex/fleet-m1-local-monitoring"
+    }
+  ],
+  "changed_paths": [
+    { "repo_id": "rusty-fleet", "path": "README.md" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/iteration-events.jsonl" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/iteration-units/fleet-m1-readme-status-alignment.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-readme-status-alignment-begin-validation.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-readme-status-alignment-blocked-validation.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-readme-status-alignment-blocker.md" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-readme-status-alignment-claim.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/workspace.state.json" }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "quick-validation-blocker",
+      "kind": "validation-summary",
+      "path": "fleet-m1-readme-status-alignment-blocker.md",
+      "sha256": "d25fa19bbef0ba6b9bbf91caaf30d91b6845deea11b2cb2b654efe67a991256c"
+    }
+  ],
+  "criteria": [
+    {
+      "acceptance_id": "first-hop-status-truthful",
+      "status": "blocked",
+      "command": "Review the README opening and M1 status section, then run the repository Quick and portable workflow-contract gates.",
+      "evidence_refs": ["quick-validation-blocker"]
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "validation-quick",
+      "status": "fail",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Quick",
+      "evidence_refs": ["quick-validation-blocker"]
+    },
+    {
+      "gate_id": "validation-workflow-contract",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File <work-environment-root>/scripts/Test-WorkflowContracts.ps1 -WorkspaceRoot <project-root>/morphospace",
+      "evidence_refs": ["quick-validation-blocker"]
+    },
+    {
+      "gate_id": "instruction-synchronization",
+      "status": "pass",
+      "command": "Verify every declared instruction surface is complete and validated.",
+      "evidence_refs": ["quick-validation-blocker"]
+    }
+  ],
+  "device_validation": null
+}

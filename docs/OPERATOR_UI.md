@@ -229,6 +229,18 @@ Deep links may add selected device, inspector tab, scroll anchor, and grouping
 state. Restoring a view resolves every retained identifier against current
 permissions, identity revisions, and retention.
 
+The current M1 implementation establishes the bounded ownership foundation:
+Fleet Hub stores at most 128 views behind an optimistic collection revision
+and the local runtime includes them in durable two-slot recovery. The WPF
+adapter currently captures the exact query, sort, grouping, visible column
+order, standard density, selected device, supported detail tab, scroll anchor,
+and focus region. It applies the exact query even when a future
+advanced expression cannot be edited by the current simple controls, and
+reports unsupported density, group-collapse, column, or focus details.
+Column widths, inspector pinning, time-display preference, sharing/ownership,
+and externally addressable full-detail deep links remain planned extensions;
+they are not stored in hidden UI state.
+
 ### Stable ordering
 
 The default sort is display name followed by stable ID. Values may refresh in
@@ -286,6 +298,15 @@ Inspector tabs are:
 Full device detail adds enrollment identity and rotation, complete adapter
 evidence, longer command/media history, audit lineage, exports, and the
 QuestIonAble File Manager deep link when authorized.
+
+The current M1 full-detail slice intentionally projects only evidence already
+owned by the canonical `rusty.fleet.device_detail.v1` response: overview,
+status, capabilities, work history, stream summary, and retained condition
+history. It does not activate commands, streams, ADB, or file access. The WPF
+overlay leaves the fleet collection loaded underneath it, so `Esc` or the
+visible return control restores the exact applied scope, stable selected
+identity, batch selection, ordering, and scroll context. `Ctrl+Enter` opens it
+from the focused row.
 
 Before a scientific recording begins, the Streams surface presents a
 recording preflight with required/optional stream readiness, ambiguity and
@@ -453,7 +474,7 @@ lease/concurrency release.
 | Condition | Required projection |
 | --- | --- |
 | Initial loading | stable headers and skeleton rows, never a false zero-device state |
-| Background refresh | retain current data and show bounded refresh status |
+| Background refresh | validate bounded watch evidence, reread canonical state, retain current data, and show refresh status |
 | Empty fleet | explain enrollment and expose UI plus CLI/API entrypoints |
 | No matches | preserve scope and show `0 of N`, with targeted filter removal |
 | Hub disconnected | cached read-only data with exact age; actions disabled with reason |
@@ -500,6 +521,31 @@ Native .NET WPF and native UI Automation behavior are the semantic baseline.
 The initial primary-grid candidate is the native WPF `DataGrid`, exercised
 with explicit columns, virtualization, recycling, selection, keyboard, and
 automation tests.
+
+The current M1 implementation checkpoint retains that dependency-free
+baseline. It exercises 1,000 real Rust-projected rows with canonical
+search/freshness filtering, explicit cohort/model/freshness/application
+grouping, grouped recycling virtualization, separate inspection and batch
+selection, hidden-selection accounting, and cached inspector context when the
+selected device falls outside the applied scope. Background refresh updates
+shared row facts without moving the collection; membership, order, and group
+changes are counted and retained behind an explicit accessible application
+control. Applying the latest queued snapshot preserves identity-based hidden
+selection and cached inspection. The same checkpoint stores a bounded,
+revisioned saved-view collection in Fleet Hub and its durable local snapshot.
+The WPF adapter captures and restores the exact query, grouping, visible
+column order, selected device, scroll anchor, supported detail tab, and focus
+region while reporting newer unsupported navigation details. It also
+validates and projects the canonical full-device detail response, rejects
+wrong-device evidence, and returns to the unchanged fleet context. The
+canonical operator fixture supplies 500
+fresh, 250 stale, and 250 offline rows plus deterministic low-power and
+capability-downgrade states; an unknown-freshness filter verifies the
+zero-match state without clearing hidden selection or cached inspection. A
+real presented-window pass also verifies the search → grid → batch → inspector
+keyboard path through native UI Automation. Narrator, high-contrast,
+large-text, and supported display-scaling review remain milestone gates and
+are not claimed by this checkpoint.
 
 WPF provides UI virtualization but not built-in data virtualization.
 Therefore:
@@ -575,6 +621,8 @@ not a support claim.
 | silent stale values | visible family age, source chain, freshness, and unknown transition |
 | optimistic success | accepted, dispatched, applied, and cleaned remain separate |
 | live row movement | stable ordering and explicit application of queued changes |
+| watch event mistaken for state | use watch as a change/rejection signal and reread the canonical query projection |
+| watch route unavailable | retain query-only manual refresh and expose degraded watch evidence |
 | hidden batch exclusions | frozen snapshot and per-target preflight |
 | global progress masking failure | aggregate counts plus per-target ledger |
 | ADB-centric shell | no-ADB inventory remains primary |

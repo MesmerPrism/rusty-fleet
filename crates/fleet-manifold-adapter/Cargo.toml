@@ -1,0 +1,25 @@
+[package]
+name = "fleet-manifold-adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authenticated Manifold peer-status admission adapter for Rusty Fleet."
+
+[dependencies]
+ed25519-dalek.workspace = true
+fleet-contracts = { path = "../fleet-contracts" }
+fleet-hub = { path = "../fleet-hub" }
+hex.workspace = true
+rusty-manifold-model.workspace = true
+rusty-manifold-peer.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+fleet-simulator = { path = "../fleet-simulator" }
+sha2.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,93 @@
+{
+  "schema": "rusty.morphospace.workflow.work_unit_automation_receipt.v1",
+  "project_id": "rusty-fleet",
+  "unit_id": "fleet-m1-readme-status-alignment",
+  "action": "Claim",
+  "timestamp": "2026-07-24T17:29:30.2062225Z",
+  "executed": true,
+  "transition": "ready-to-active",
+  "status_before": "ready",
+  "status_after": "active",
+  "current_unit_before": null,
+  "current_unit_after": "fleet-m1-readme-status-alignment",
+  "preservation": {
+    "git_mutation_performed": false,
+    "device_mutation_performed": false,
+    "force_push_allowed": false,
+    "repository_states": [
+      {
+        "repo_id": "rusty-fleet",
+        "available": true,
+        "is_git": true,
+        "head": "792980d53c4b209f281c5f80e8de1ce84a7fe020",
+        "branch": "codex/fleet-m1-local-monitoring",
+        "upstream": "origin/codex/fleet-m1-local-monitoring",
+        "dirty": false,
+        "tracked_changes": 0,
+        "untracked_changes": 0,
+        "ahead": 2,
+        "behind": 0,
+        "diverged": false,
+        "relation": "ahead"
+      }
+    ]
+  },
+  "validation_matrix": [
+    {
+      "order": 1,
+      "gate_id": "validation-quick",
+      "kind": "command",
+      "profile_id": "quick",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Quick",
+      "disposition": "required"
+    },
+    {
+      "order": 2,
+      "gate_id": "validation-workflow-contract",
+      "kind": "command",
+      "profile_id": "workflow-contract",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File <work-environment-root>/scripts/Test-WorkflowContracts.ps1 -WorkspaceRoot <project-root>/morphospace",
+      "disposition": "required"
+    },
+    {
+      "order": 3,
+      "gate_id": "instruction-synchronization",
+      "kind": "instruction",
+      "profile_id": "instruction-sync",
+      "command": "Verify every declared instruction surface is complete and validated.",
+      "disposition": "required"
+    },
+    {
+      "order": 4,
+      "gate_id": "device-validation",
+      "kind": "device",
+      "profile_id": "device",
+      "command": "Do not run live device operations for this unit.",
+      "disposition": "forbidden",
+      "serials": []
+    }
+  ],
+  "graph_scope": {
+    "change_categories": [
+      "documentation-only"
+    ],
+    "repositories": [
+      {
+        "repo_id": "rusty-fleet",
+        "allowed_paths": [
+          "morphospace/",
+          "README.md"
+        ]
+      }
+    ],
+    "read_only_dependencies": [],
+    "exclusion": "Do not scan repositories or paths outside this list."
+  },
+  "adoption_receipt": null,
+  "publication_closure": null,
+  "planned_publication": null,
+  "planning_suffix_rewrite_recovery": null,
+  "published_prerequisite_suffix_reconciliation": null,
+  "push_plan": null,
+  "event_id": "fleet-m1-readme-status-alignment-claimed-0013"
+}

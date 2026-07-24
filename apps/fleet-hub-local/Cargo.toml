@@ -1,0 +1,29 @@
+[package]
+name = "fleet-hub-local"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded local HTTP ingress and projection API for Rusty Fleet."
+
+[dependencies]
+axum.workspace = true
+fleet-contracts = { path = "../../crates/fleet-contracts" }
+fleet-hub = { path = "../../crates/fleet-hub" }
+fleet-manifold-adapter = { path = "../../crates/fleet-manifold-adapter" }
+rusty-manifold-model.workspace = true
+rusty-manifold-peer.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+fleet-simulator = { path = "../../crates/fleet-simulator" }
+hex.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

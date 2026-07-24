@@ -18,6 +18,40 @@
   "battery_percent": 82,
   "charging": true,
   "foreground_app": "org.example.synthetic.kiosk",
+  "agent": {
+    "package_name": "io.github.mesmerprism.rustyquest.fleetagent",
+    "lifecycle": "background",
+    "foreground_state": "background",
+    "foreground_authority": "self_report",
+    "provenance": {
+      "owner": "rusty-quest",
+      "adapter_id": "quest-fleet-agent",
+      "observed_at_ms": 2000000000000,
+      "fresh_until_ms": 2000000060000
+    }
+  },
+  "power": {
+    "battery_percent": 82,
+    "charging": true,
+    "provenance": {
+      "owner": "rusty-quest",
+      "adapter_id": "quest-fleet-agent",
+      "observed_at_ms": 2000000000000,
+      "fresh_until_ms": 2000000060000
+    }
+  },
+  "application": {
+    "package_name": "org.example.synthetic.kiosk",
+    "lifecycle": "foreground",
+    "foreground_state": "foreground",
+    "foreground_authority": "participating_app",
+    "provenance": {
+      "owner": "org.example.synthetic.kiosk",
+      "adapter_id": "synthetic-participating-app",
+      "observed_at_ms": 2000000000000,
+      "fresh_until_ms": 2000000060000
+    }
+  },
   "kiosk_state": "active",
   "conditions": [
     {

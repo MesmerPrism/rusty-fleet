@@ -94,6 +94,36 @@
         "null"
       ]
     },
+    "agent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/application"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "power": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/power"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "application": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/application"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "kiosk_state": {
       "enum": [
         "active",
@@ -125,6 +155,100 @@
     }
   },
   "$defs": {
+    "provenance": {
+      "type": "object",
+      "required": [
+        "owner",
+        "adapter_id",
+        "observed_at_ms",
+        "fresh_until_ms"
+      ],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adapter_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observed_at_ms": {
+          "type": "integer"
+        },
+        "fresh_until_ms": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "power": {
+      "type": "object",
+      "required": [
+        "battery_percent",
+        "charging",
+        "provenance"
+      ],
+      "properties": {
+        "battery_percent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "charging": {
+          "type": "boolean"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "additionalProperties": false
+    },
+    "application": {
+      "type": "object",
+      "required": [
+        "package_name",
+        "lifecycle",
+        "foreground_state",
+        "foreground_authority",
+        "provenance"
+      ],
+      "properties": {
+        "package_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lifecycle": {
+          "enum": [
+            "foreground",
+            "visible",
+            "background",
+            "stopped",
+            "unknown"
+          ]
+        },
+        "foreground_state": {
+          "enum": [
+            "foreground",
+            "background",
+            "unknown"
+          ]
+        },
+        "foreground_authority": {
+          "enum": [
+            "self_report",
+            "participating_app",
+            "platform_limited",
+            "unavailable"
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "additionalProperties": false
+    },
     "condition": {
       "type": "object",
       "required": [

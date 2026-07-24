@@ -32,19 +32,40 @@ Live device work is never implied by a source or documentation task.
 8. `docs/ARCHITECTURE.md`
 9. `docs/DATASTREAMS.md`
 10. `docs/VALIDATION.md`
+11. `docs/M1_CONSOLIDATION_READINESS.md` when completing or reviewing M1
 
 ## Source map
 
 - `crates/fleet-contracts`: public source-only contracts and cross-field
   validation;
-- `crates/fleet-hub`: deterministic in-memory state and the local API;
-- `crates/fleet-simulator`: synthetic fleet and damage scenarios;
-- `apps/fleetctl`: structured JSON CLI over the same local API;
+- `crates/fleet-hub`: deterministic in-memory state, saved-view ownership,
+  and the local API;
+- `crates/fleet-manifold-adapter`: exact pinned Manifold enrollment/status
+  admission plus transactional signed-check-in projection;
+- `apps/fleet-hub-local`: explicit bounded local ingress, durable two-slot
+  runtime and saved-view state, and canonical HTTP projection adapter;
+- `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator,
+  deterministic M1 lifecycle, and damage scenarios;
+- `apps/fleetctl`: structured JSON CLI, saved-view parity, and the self-checking
+  M1 lifecycle projection over the same in-process list/inspect/detail/watch
+  API;
+- `apps/fleet-console-wpf`: native WPF fleet table, canonical
+  scope/sort/grouping/saved-view controls, bounded watch synchronization,
+  queued live ordering, persistent inspector, full-device detail, and
+  loopback-only local API projection;
+- `apps/fleet-console-wpf.tests`: package-free native DataGrid, UI Automation,
+  watch-cursor/damage, stable-context/order, grouped virtualization, presented
+  keyboard, and 1,000-device scale validation;
 - `schemas`: versioned JSON Schema projection;
 - `fixtures`: small committed contracts and deterministic scenario manifests.
 
 The implementation boundary and closed adapter edges are documented in
 [docs/M0_SOURCE_FOUNDATION.md](docs/M0_SOURCE_FOUNDATION.md).
+The active M1 authority and ingress boundaries are recorded in
+[ADR 0005](docs/decisions/0005-m1-checkin-authority.md) and
+[ADR 0006](docs/decisions/0006-m1-local-ingress-threat-model.md).
+The runnable local surface is documented in
+[docs/M1_LOCAL_MONITORING.md](docs/M1_LOCAL_MONITORING.md).
 
 ## Ownership
 
@@ -119,6 +140,10 @@ coherent change. File count and test count are not split reasons.
 At most one milestone stack is active or validating. Do not manufacture a new
 iteration unit merely because a focused test found a defect.
 
+An accepted or blocked historical unit may coexist with one distinct later
+current unit. Repository validation must reject the terminal unit itself as
+current without treating all future current authority as stale.
+
 ## Validation and publication
 
 - `Quick` is the normal edit loop.
@@ -132,6 +157,12 @@ Commit coherent internal layers, not individual files. Push a green working
 branch at a meaningful recovery checkpoint and publish the milestone after its
 declared Standard gate. Run Deep before a release or when the invalidation
 matrix requires it. Never use a device suite to prove a docs-only edit.
+
+The M1 functional closeout is documentation and workflow correction only. It
+forbids a device rerun and does not claim accessibility conformance. Automated
+keyboard and UI Automation remain milestone regressions; the cumulative
+Narrator, Accessibility Insights, high-contrast, large-text, scaling, and
+multi-monitor suite remains the Milestone 7 release gate.
 
 Run:
 
@@ -159,6 +190,17 @@ through authenticated app-level networking. ADB, on-device loopback,
 accessibility, device-owner, file operations, media streaming, and relay access
 are separate opt-in capabilities with explicit grants and truthful degraded
 states.
+
+For M1 check-ins, preserve the signed Manifold peer identity, proposal id,
+status revision, timestamps, capabilities, and payload class; bind the
+enrolled peer and active key to the Fleet observation; and sign RFC 8785/JCS
+claims with the v1 domain separator. The trusted ingress—not independent
+devices—binds the fleet-global expected authority revision immediately before
+review. Preview both state transitions and commit neither when either
+authority rejects. Persist the matching Fleet and Manifold snapshots before
+acknowledging an accepted check-in; damaged state must recover from a valid
+prior slot or fail closed. Device source time is signed evidence; Hub received
+time is supplied by the ingress adapter.
 
 Keep `AGENTS.md` concise. Put detailed procedures in linked docs or runbooks and
 update the nearest README/router plus relevant skills when ownership,

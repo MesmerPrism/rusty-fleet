@@ -1,0 +1,27 @@
+{
+  "schema": "rusty.fleet.saved_view.v1",
+  "view_id": "",
+  "name": "",
+  "query": {
+    "schema": "rusty.fleet.query.v1",
+    "query_id": "query.damaged",
+    "expression": null,
+    "sort": [],
+    "offset": 0,
+    "limit": 0
+  },
+  "columns": [
+    "device",
+    "device"
+  ],
+  "density": "dense",
+  "grouping": null,
+  "restoration": {
+    "selected_device_id": null,
+    "inspector_tab": null,
+    "scroll_anchor_device_id": null,
+    "focused_region": null,
+    "collapsed_groups": []
+  },
+  "schema_version": 0
+}

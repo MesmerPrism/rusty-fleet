@@ -1,0 +1,45 @@
+{
+  "schema": "rusty.fleet.saved_view.v1",
+  "view_id": "view.lab_a_attention",
+  "name": "Lab A attention",
+  "query": {
+    "schema": "rusty.fleet.query.v1",
+    "query_id": "query.lab_a_attention",
+    "expression": {
+      "kind": "predicate",
+      "field": "freshness",
+      "comparison": "equals",
+      "value": "stale",
+      "qualifier": null
+    },
+    "sort": [
+      {
+        "field": "display_name",
+        "direction": "ascending",
+        "qualifier": null
+      }
+    ],
+    "offset": 0,
+    "limit": 250
+  },
+  "columns": [
+    "selection",
+    "attention",
+    "device",
+    "age",
+    "power",
+    "application"
+  ],
+  "density": "standard",
+  "grouping": "cohort",
+  "restoration": {
+    "selected_device_id": "device.quest.17",
+    "inspector_tab": "overview",
+    "scroll_anchor_device_id": "device.quest.17",
+    "focused_region": "grid",
+    "collapsed_groups": [
+      "lab-b"
+    ]
+  },
+  "schema_version": 1
+}

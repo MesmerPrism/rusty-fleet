@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/6b75d944614a8f863dd612c9b114d7c68f0862b0/schemas/project-spec-v2.schema.json",
   "schema": "rusty.morphospace.workflow.project_spec.v2",
   "project_id": "rusty-fleet",
-  "revision": 1,
+  "revision": 2,
   "owner": "rusty-fleet-maintainers",
   "purpose": "Plan and implement a multi-headset monitoring and control dashboard with explicit Manifold, Hostess, Quest, Kiosk, File Manager, and media authority boundaries.",
   "activation_model": {
@@ -96,6 +96,46 @@
         "Directory.Packages.props",
         "global.json"
       ]
+    },
+    {
+      "repo_id": "rusty-quest",
+      "role": "source-owner",
+      "path": "../rusty-quest",
+      "allowed_paths": [
+        "AGENTS.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "apps/fleet-agent-android/",
+        "crates/rusty-quest-fleet-agent/",
+        "docs/FLEET_AGENT.md",
+        "fixtures/fleet-agent/",
+        "tools/Build-FleetAgentAndroid.ps1",
+        "tools/Invoke-FleetAgentAndroidSmoke.ps1",
+        "tools/Test-FleetAgentAndroid.ps1",
+        "tools/checks/Test-FleetAgentAndroidStatic.ps1"
+      ]
+    },
+    {
+      "repo_id": "rusty-manifold",
+      "role": "read-only-owner-contract",
+      "path": "../rusty-manifold",
+      "allowed_paths": [
+        "crates/rusty-manifold-peer/",
+        "crates/rusty-manifold-peer-runtime-host/",
+        "docs/PEER_IDENTITY_AND_STATUS_AUTHORITY.md",
+        "docs/PEER_RUNTIME_HOST.md"
+      ]
+    },
+    {
+      "repo_id": "rusty-lsl",
+      "role": "read-only-optional-owner-contract",
+      "path": "../rusty-lsl",
+      "allowed_paths": [
+        "README.md",
+        "docs/RELEASE_CANDIDATE.md",
+        "docs/LSL-PRODUCTION-ROADMAP.md"
+      ]
     }
   ],
   "modules": [],
@@ -124,6 +164,18 @@
       "profile_id": "deep",
       "commands": [
         "pwsh -NoProfile -ExecutionPolicy Bypass -File <project-root>/tools/Test-Repo.ps1 -Tier Deep"
+      ]
+    },
+    {
+      "profile_id": "quest-host",
+      "commands": [
+        "pwsh -NoProfile -ExecutionPolicy Bypass -File <rusty-quest-root>/tools/Test-FleetAgentAndroid.ps1 -Tier Host"
+      ]
+    },
+    {
+      "profile_id": "device",
+      "commands": [
+        "pwsh -NoProfile -ExecutionPolicy Bypass -File <rusty-quest-root>/tools/Invoke-FleetAgentAndroidSmoke.ps1 -Serial <explicit-serial>"
       ]
     },
     {

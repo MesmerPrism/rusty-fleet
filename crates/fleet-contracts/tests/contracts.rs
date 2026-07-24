@@ -9,9 +9,9 @@ use fleet_contracts::{
     FleetQuery, NativeDescriptor, NavigationRestoration, OperationLedger, OperationTargetResult,
     OverflowPolicy, ProgressApplicability, ProgressProfile, ProgressStage, ProgressStageEvidence,
     QueryExpression, QueueLimits, RecordingArtifact, RecordingArtifactState, SavedView,
-    SelectionMethod, Sensitivity, SourceSelection, StreamDescriptor, StreamPlane, StreamSemantic,
-    TargetEligibility, TargetSnapshot, TimingCorrelation, TimingDomain, TimingTransform,
-    ValidateContract,
+    SavedViewCollection, SavedViewMutationReceipt, SavedViewMutationRequest, SelectionMethod,
+    Sensitivity, SourceSelection, StreamDescriptor, StreamPlane, StreamSemantic, TargetEligibility,
+    TargetSnapshot, TimingCorrelation, TimingDomain, TimingTransform, ValidateContract,
 };
 use serde_json::json;
 
@@ -306,11 +306,43 @@ fn saved_view_and_operation_ledger_preserve_scope_and_per_target_results() {
             selected_device_id: Some("sim-00001".to_owned()),
             inspector_tab: Some("overview".to_owned()),
             scroll_anchor_device_id: Some("sim-00001".to_owned()),
+            focused_region: Some("grid".to_owned()),
             collapsed_groups: Vec::new(),
         },
         schema_version: 1,
     };
     assert!(view.validate().is_ok());
+    let mut invalid_id = view.clone();
+    invalid_id.view_id = "View/unsafe".to_owned();
+    assert!(
+        invalid_id
+            .validate()
+            .expect_err("unsafe saved-view ID")
+            .iter()
+            .any(|failure| failure.code == "invalid_saved_view_id")
+    );
+    let collection = SavedViewCollection {
+        schema: "rusty.fleet.saved_view_collection.v1".to_owned(),
+        revision: 1,
+        views: vec![view.clone()],
+    };
+    assert!(collection.validate().is_ok());
+    let request = SavedViewMutationRequest {
+        schema: "rusty.fleet.saved_view_mutation_request.v1".to_owned(),
+        expected_revision: collection.revision,
+        view: view.clone(),
+    };
+    assert!(request.validate().is_ok());
+    let receipt = SavedViewMutationReceipt {
+        schema: "rusty.fleet.saved_view_mutation_receipt.v1".to_owned(),
+        view_id: view.view_id.clone(),
+        previous_revision: 1,
+        current_revision: 2,
+        changed: true,
+        deleted: false,
+        view: Some(view),
+    };
+    assert!(receipt.validate().is_ok());
 
     let snapshot = TargetSnapshot {
         snapshot_id: "snapshot-1".to_owned(),
