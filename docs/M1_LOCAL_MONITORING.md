@@ -118,8 +118,9 @@ The M1 workspace uses the native WPF `DataGrid` and native UI Automation peer
 without a theme dependency. It provides:
 
 - a 12-column, recycling-virtualized fleet table and frozen device identity;
-- visible summary, applied canonical search/freshness scope, grouping,
-  result-revision, snapshot-time, and batch-selection scope;
+- visible summary, applied canonical search/freshness scope, Hub-owned sort
+  field/direction, grouping, result-revision, snapshot-time, and
+  batch-selection scope;
 - inspection selection that is separate from batch membership;
 - pointer, keyboard, and UI Automation batch-toggle paths that update the same
   visible selection scope;
@@ -145,17 +146,19 @@ evidence leaves the last accepted projection visible and reports the failure.
 The package-free validation executable consumes the real 1,000-device
 `fleetctl` mixed-freshness operator projection: 500 fresh, 250 stale, and 250
 offline rows, with deterministic low-power and capability-downgrade examples.
-It verifies canonical search/freshness AND/OR shape, empty-scope behavior,
-stable rows, grouped virtualization, hidden selection, out-of-scope inspector
-context, stable live order, explicit order application, safe in-place value
-refresh, native automation, bounded realized containers, 12 declared columns,
-and independent capability families. A presented-window input pass verifies
-that `Ctrl+F` focuses search, `F6` reaches the fleet grid, `Space` changes
-batch membership, and `Enter` exposes focus through the inspector automation
-peer. The suite records measured timings but does not convert one run into a
-supported-scale claim. It also rejects non-loopback Hub addresses, mismatched
-query receipts, and wrong-device inspector evidence. Narrator, high-contrast,
-text-size, and multi-scaling checks remain manual M1 acceptance gates.
+It verifies canonical search/freshness AND/OR shape, canonical sort
+serialization and ordering, applied-sort preservation across background
+refresh, empty-scope behavior, stable rows, grouped virtualization, hidden
+selection, out-of-scope inspector context, stable live order, explicit order
+application, safe in-place value refresh, native automation, bounded realized
+containers, 12 declared columns, and independent capability families. A
+presented-window input pass verifies that `Ctrl+F` focuses search, `F6`
+reaches the fleet grid, `Space` changes batch membership, and `Enter` exposes
+focus through the inspector automation peer. The suite records measured
+timings but does not convert one run into a supported-scale claim. It also
+rejects non-loopback Hub addresses, mismatched query receipts, and
+wrong-device inspector evidence. Narrator, high-contrast, text-size, and
+multi-scaling checks remain manual M1 acceptance gates.
 
 ## Focused validation
 

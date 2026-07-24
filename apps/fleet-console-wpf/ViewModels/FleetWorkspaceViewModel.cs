@@ -22,14 +22,19 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private string _searchText = string.Empty;
     private string _selectedFreshness = "All";
     private string _selectedGrouping = "None";
+    private string _selectedSort = "Device name";
+    private string _selectedSortDirection = "Ascending";
     private string _appliedSearchText = string.Empty;
     private string _appliedFreshness = "All";
     private string _appliedGrouping = "None";
+    private string _appliedSort = "Device name";
+    private string _appliedSortDirection = "Ascending";
     private string _statusMessage = "Disconnected · enter a local Hub address and connect";
     private string _summaryText = "No fleet data loaded";
     private string _scopeText = "0 devices";
     private string _asOfText = "No accepted snapshot";
-    private string _activeScopeText = "Active scope · all devices · grouped by none";
+    private string _activeScopeText =
+        "Active scope · all devices · sorted by device name ascending · grouped by none";
     private string _inspectorContextText = "No selected device";
     private bool _isBusy;
     private DeviceRowViewModel? _selectedDevice;
@@ -84,6 +89,12 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public IReadOnlyList<string> GroupingOptions { get; } =
         ["None", "Cohort", "Model", "Freshness", "Application"];
 
+    public IReadOnlyList<string> SortOptions { get; } =
+        ["Device name", "Freshness", "Battery", "Model", "Application"];
+
+    public IReadOnlyList<string> SortDirectionOptions { get; } =
+        ["Ascending", "Descending"];
+
     public AsyncCommand ConnectCommand { get; }
 
     public AsyncCommand RefreshCommand { get; }
@@ -120,6 +131,18 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     {
         get => _selectedGrouping;
         set => SetProperty(ref _selectedGrouping, value);
+    }
+
+    public string SelectedSort
+    {
+        get => _selectedSort;
+        set => SetProperty(ref _selectedSort, value);
+    }
+
+    public string SelectedSortDirection
+    {
+        get => _selectedSortDirection;
+        set => SetProperty(ref _selectedSortDirection, value);
     }
 
     public string StatusMessage
@@ -263,18 +286,24 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         _appliedSearchText,
         _appliedFreshness,
         _appliedGrouping,
+        _appliedSort,
+        _appliedSortDirection,
         acceptEditorScope: false);
 
     public Task ApplyScopeAsync() => LoadScopeAsync(
         SearchText,
         SelectedFreshness,
         SelectedGrouping,
+        SelectedSort,
+        SelectedSortDirection,
         acceptEditorScope: true);
 
     private async Task LoadScopeAsync(
         string searchText,
         string freshness,
         string grouping,
+        string sort,
+        string sortDirection,
         bool acceptEditorScope)
     {
         if (_source is null)
@@ -290,7 +319,11 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         StatusMessage = "Refreshing canonical fleet scope";
         try
         {
-            var query = FleetQuery.Create(searchText, freshness);
+            var query = FleetQuery.Create(
+                searchText,
+                freshness,
+                sortField: CanonicalSortField(sort),
+                sortDirection: CanonicalSortDirection(sortDirection));
             var queryTask = _source.QueryAsync(query, _requestCancellation.Token);
             var summaryTask = _source.SummaryAsync(_requestCancellation.Token);
             await Task.WhenAll(queryTask, summaryTask);
@@ -305,6 +338,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 _appliedSearchText = searchText.Trim();
                 _appliedFreshness = NormalizeOption(freshness, "All");
                 _appliedGrouping = NormalizeOption(grouping, "None");
+                _appliedSort = NormalizeOption(sort, "Device name");
+                _appliedSortDirection = NormalizeOption(sortDirection, "Ascending");
                 ApplyGrouping(_appliedGrouping);
                 UpdateActiveScopeText();
             }
@@ -584,6 +619,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         SearchText = string.Empty;
         SelectedFreshness = "All";
         SelectedGrouping = "None";
+        SelectedSort = "Device name";
+        SelectedSortDirection = "Ascending";
         await ApplyScopeAsync();
     }
 
@@ -666,9 +703,30 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             parts.Add($"freshness = {_appliedFreshness.ToLowerInvariant()}");
         }
 
+        parts.Add(
+            $"sorted by {_appliedSort.ToLowerInvariant()} " +
+            _appliedSortDirection.ToLowerInvariant());
         parts.Add($"grouped by {_appliedGrouping.ToLowerInvariant()}");
         ActiveScopeText = string.Join(" · ", parts);
     }
+
+    private static string CanonicalSortField(string? value) =>
+        NormalizeOption(value, "Device name") switch
+        {
+            "Freshness" => "freshness",
+            "Battery" => "battery_percent",
+            "Model" => "model",
+            "Application" => "foreground_app",
+            _ => "display_name"
+        };
+
+    private static string CanonicalSortDirection(string? value) =>
+        string.Equals(
+            NormalizeOption(value, "Ascending"),
+            "Descending",
+            StringComparison.Ordinal)
+            ? "descending"
+            : "ascending";
 
     private static string NormalizeOption(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();

@@ -139,7 +139,11 @@ internal static class Program
             }
 
             var queryJson = JsonSerializer.Serialize(
-                FleetQuery.Create("Quest 0001", "Stale"),
+                FleetQuery.Create(
+                    "Quest 0001",
+                    "Stale",
+                    sortField: "battery_percent",
+                    sortDirection: "descending"),
                 FleetJson.Options);
             using (var document = JsonDocument.Parse(queryJson))
             {
@@ -156,6 +160,12 @@ internal static class Program
                     expressions[1].GetProperty("comparison").GetString() == "equals" &&
                     expressions[1].GetProperty("value").GetString() == "stale",
                     "freshness facet is not canonical");
+                var sort = document.RootElement.GetProperty("sort");
+                Require(
+                    sort.GetArrayLength() == 1 &&
+                    sort[0].GetProperty("field").GetString() == "battery_percent" &&
+                    sort[0].GetProperty("direction").GetString() == "descending",
+                    "sort scope is not canonical");
             }
 
             var source = new StaticFleetDataSource(
@@ -187,9 +197,45 @@ internal static class Program
                 inspector.Capabilities.Count >= 3,
                 "inspector did not preserve independent capabilities");
 
+            workspace.SelectedSort = "Device name";
+            workspace.SelectedSortDirection = "Descending";
+            workspace.ApplyScopeAsync().GetAwaiter().GetResult();
+            Require(
+                source.LastQuery?.Sort is
+                [
+                    {
+                        Field: "display_name",
+                        Direction: "descending"
+                    }
+                ],
+                "sort editor did not send the canonical Hub sort");
+            Require(
+                workspace.Rows[0].DisplayName == projection.Rows[^1].Identity.DisplayName,
+                "canonical descending device-name sort was not projected");
+            Require(
+                first.IsBatchSelected &&
+                workspace.SelectedDevice?.StableKey == first.StableKey,
+                "explicit sorting lost batch or inspector identity");
+            Require(
+                workspace.ActiveScopeText.Contains(
+                    "sorted by device name descending",
+                    StringComparison.Ordinal),
+                "applied sort is not visibly serialized");
+
+            workspace.SelectedSort = "Battery";
+            workspace.RefreshAsync().GetAwaiter().GetResult();
+            Require(
+                source.LastQuery?.Sort[0].Field == "display_name" &&
+                source.LastQuery.Sort[0].Direction == "descending" &&
+                workspace.SelectedSort == "Battery",
+                "background refresh did not preserve the applied sort independently " +
+                "from the editor");
+
             workspace.SearchText = "Quest 0001";
             workspace.SelectedFreshness = "Fresh";
             workspace.SelectedGrouping = "Cohort";
+            workspace.SelectedSort = "Device name";
+            workspace.SelectedSortDirection = "Ascending";
             workspace.ApplyScopeAsync().GetAwaiter().GetResult();
             Require(source.LastQuery?.Expression is not null, "search was not sent to the data source");
             Require(workspace.Rows.Count == 1, "combined scope did not narrow the projection");
@@ -324,6 +370,14 @@ internal static class Program
                     "affect the current order or grouping",
                     StringComparison.Ordinal),
                 "queued ordering action was not visibly and accessibly exposed");
+            Require(
+                AutomationProperties.GetName(queuedWindow.SortFieldControl) ==
+                "Sort devices by" &&
+                AutomationProperties.GetName(queuedWindow.SortDirectionControl) ==
+                "Sort direction" &&
+                queuedWindow.SortFieldControl.Items.Count == 5 &&
+                queuedWindow.SortDirectionControl.Items.Count == 2,
+                "sort controls were not visibly and accessibly exposed");
             queuedWindow.Close();
 
             liveSource.Projection = RewriteProjection(
@@ -348,12 +402,15 @@ internal static class Program
                 liveWorkspace.HasQueuedOrderingChanges,
                 "latest changed snapshot was not queued after supersession");
             liveWorkspace.ApplyQueuedOrderingChangesCommand.Execute(null);
+            var firstCanonicallySortedChangedRow = changedRows
+                .OrderBy(row => row.Identity.DisplayName, StringComparer.Ordinal)
+                .First();
             Require(
                 !liveWorkspace.HasQueuedOrderingChanges &&
                 liveWorkspace.Rows.Count == changedRows.Length &&
                 liveWorkspace.Rows[0].StableKey ==
-                $"{changedRows[0].Identity.DeviceId}@" +
-                $"{changedRows[0].Identity.IdentityRevision}",
+                $"{firstCanonicallySortedChangedRow.Identity.DeviceId}@" +
+                $"{firstCanonicallySortedChangedRow.Identity.IdentityRevision}",
                 "explicit live-order application did not adopt the queued snapshot");
             Require(
                 liveWorkspace.RowsView.Groups is { Count: 3 },
@@ -526,6 +583,8 @@ internal static class Program
                 capability_downgrade_rows = downgradedRows.Length,
                 mixed_state_grammar = true,
                 canonical_scope = true,
+                canonical_sort = true,
+                applied_sort_preserved = true,
                 empty_scope_preserved = true,
                 grouped_virtualization = true,
                 stable_live_ordering = true,
@@ -760,6 +819,7 @@ internal static class Program
             var matched = Projection.Rows
                 .Where(row => Matches(query.Expression, row))
                 .ToArray();
+            Array.Sort(matched, (left, right) => CompareRows(left, right, query));
             var window = matched
                 .Skip(query.Offset)
                 .Take(query.Limit)
@@ -776,6 +836,67 @@ internal static class Program
                 Rows = window
             });
         }
+
+        private static int CompareRows(
+            DeviceRowProjection left,
+            DeviceRowProjection right,
+            FleetQuery query)
+        {
+            foreach (var key in query.Sort)
+            {
+                var comparison = key.Field switch
+                {
+                    "device_id" => StringComparer.Ordinal.Compare(
+                        left.Identity.DeviceId,
+                        right.Identity.DeviceId),
+                    "display_name" => StringComparer.Ordinal.Compare(
+                        left.Identity.DisplayName,
+                        right.Identity.DisplayName),
+                    "model" => StringComparer.Ordinal.Compare(
+                        left.Identity.Model,
+                        right.Identity.Model),
+                    "freshness" => FreshnessRank(left.Freshness)
+                        .CompareTo(FreshnessRank(right.Freshness)),
+                    "battery_percent" => Nullable.Compare(
+                        left.BatteryPercent,
+                        right.BatteryPercent),
+                    "foreground_app" => StringComparer.Ordinal.Compare(
+                        left.ForegroundApp,
+                        right.ForegroundApp),
+                    "kiosk_state" => StringComparer.Ordinal.Compare(
+                        left.KioskState,
+                        right.KioskState),
+                    _ => 0
+                };
+                if (key.Direction == "descending")
+                {
+                    comparison = -comparison;
+                }
+
+                if (comparison != 0)
+                {
+                    return comparison;
+                }
+            }
+
+            var displayNameComparison = StringComparer.Ordinal.Compare(
+                left.Identity.DisplayName,
+                right.Identity.DisplayName);
+            return displayNameComparison != 0
+                ? displayNameComparison
+                : StringComparer.Ordinal.Compare(
+                    left.Identity.DeviceId,
+                    right.Identity.DeviceId);
+        }
+
+        private static int FreshnessRank(string freshness) =>
+            freshness switch
+            {
+                "fresh" => 0,
+                "stale" => 1,
+                "offline" => 2,
+                _ => 3
+            };
 
         public Task<FleetSummaryProjection> SummaryAsync(CancellationToken cancellationToken)
         {

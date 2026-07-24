@@ -27,11 +27,13 @@ Quick is safe during normal editing and checks:
   against the real 1,000-device Rust projection;
 - native grid/inspector UI Automation peers and names, grouped recycling
   virtualization, bounded realized rows, readable default column widths,
-  stable view models, canonical search/freshness expressions,
+  stable view models, canonical search/freshness expressions and Hub-owned
+  sort field/direction,
   pointer/keyboard/UI Automation batch selection, hidden-selection
   preservation, empty-scope behavior, retained out-of-scope inspector
-  context, stable live ordering with explicit accessible application,
-  safe shared-row value refresh, and mixed fresh/stale/offline state;
+  context, applied-sort preservation, stable live ordering with explicit
+  accessible application, safe shared-row value refresh, and mixed
+  fresh/stale/offline state;
 - fail-closed non-loopback Hub, bounded response, mismatched-query, and
   wrong-device inspector fixtures.
 

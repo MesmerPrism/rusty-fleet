@@ -147,9 +147,12 @@
                 <Grid Margin="0,6,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="140" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="160" />
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="110" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
@@ -169,10 +172,25 @@
                               ItemsSource="{Binding GroupingOptions}"
                               SelectedItem="{Binding SelectedGrouping}"
                               AutomationProperties.Name="Group devices by" />
-                    <Button Grid.Column="5"
+                    <TextBlock Grid.Column="4"
+                               Text="Sort by"
+                               Margin="16,0,8,0"
+                               VerticalAlignment="Center" />
+                    <ComboBox x:Name="SortFieldBox"
+                              Grid.Column="5"
+                              ItemsSource="{Binding SortOptions}"
+                              SelectedItem="{Binding SelectedSort}"
+                              AutomationProperties.Name="Sort devices by" />
+                    <ComboBox x:Name="SortDirectionBox"
+                              Grid.Column="6"
+                              Margin="8,0,0,0"
+                              ItemsSource="{Binding SortDirectionOptions}"
+                              SelectedItem="{Binding SelectedSortDirection}"
+                              AutomationProperties.Name="Sort direction" />
+                    <Button Grid.Column="8"
                             Content="Apply scope"
                             Command="{Binding ApplySearchCommand}" />
-                    <Button Grid.Column="6"
+                    <Button Grid.Column="9"
                             Content="Clear scope"
                             Command="{Binding ClearSearchCommand}" />
                 </Grid>

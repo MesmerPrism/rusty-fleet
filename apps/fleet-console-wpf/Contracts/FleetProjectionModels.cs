@@ -45,7 +45,9 @@ public sealed class FleetQuery
     public static FleetQuery Create(
         string? searchText,
         string? freshness = null,
-        int limit = 1_000)
+        int limit = 1_000,
+        string sortField = "display_name",
+        string sortDirection = "ascending")
     {
         var normalized = searchText?.Trim();
         var terms = new List<object>();
@@ -85,6 +87,14 @@ public sealed class FleetQuery
                     ["expressions"] = terms
                 }
             },
+            Sort =
+            [
+                new FleetSortKey
+                {
+                    Field = sortField,
+                    Direction = sortDirection
+                }
+            ],
             Limit = limit
         };
     }

@@ -13,13 +13,13 @@ two-slot restart recovery, and one cleaned private Quest Wi-Fi proof. Nothing
 listens by default: the operator must supply a valid enrollment config,
 absolute private state directory, and explicitly permit a non-loopback bind.
 The native WPF table/inspector slice now includes canonical search and
-freshness scope, explicit cohort/model/freshness/application grouping,
-hidden-selection preservation, retained inspector context across scope
-changes, and an explicit queue for live membership, ordering, or grouping
-changes while shared row values refresh in place. Its package-free
-1,000-device and presented-window keyboard/UI Automation checks pass. Manual
-Narrator, high-contrast, scaling, final M1 consolidation, media, and remote
-relay remain pending.
+freshness scope, Hub-owned sort choices, explicit
+cohort/model/freshness/application grouping, hidden-selection preservation,
+retained inspector context across scope changes, and an explicit queue for
+live membership, ordering, or grouping changes while shared row values
+refresh in place. Its package-free 1,000-device and presented-window
+keyboard/UI Automation checks pass. Manual Narrator, high-contrast, scaling,
+final M1 consolidation, media, and remote relay remain pending.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -67,10 +67,10 @@ The current implementation is split into:
   datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
   mutations;
 - `fleetctl`: a structured JSON projection over the same local API;
-- `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical scope and
-  grouping, stable live-order application, distinct inspection and batch
-  selection, and a persistent selected-device inspector over the canonical
-  local API;
+- `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical
+  scope/sort/grouping, stable live-order application, distinct inspection and
+  batch selection, and a persistent selected-device inspector over the
+  canonical local API;
 - `fleet-console-wpf.tests`: package-free native UI Automation,
   grouped virtualization, stable-context/order, capability-family, presented
   keyboard, and 1,000-device checks.
@@ -184,7 +184,7 @@ paired with the active M1 local-monitoring stack. The runtime source is
 present but activates no socket, service, device route, or platform permission
 by default. The bounded Quest checkpoint and a producer-stopped durable Hub
 restart have passed with private evidence and complete device cleanup. M1
-now also has its native WPF table/inspector, canonical scope/grouping,
+now also has its native WPF table/inspector, canonical scope/sort/grouping,
 stable-context behavior, explicit queued live ordering, and automated
 1,000-device virtualization/UI Automation baseline over a mixed
 500-fresh/250-stale/250-offline canonical projection. A real presented-window

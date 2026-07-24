@@ -30,6 +30,10 @@ public partial class MainWindow : Window
 
     public Button ApplyOrderingButton => ApplyLiveOrderingButton;
 
+    public ComboBox SortFieldControl => SortFieldBox;
+
+    public ComboBox SortDirectionControl => SortDirectionBox;
+
     public FrameworkElement InspectorRegion => InspectorPane;
 
     private async void OnFleetSelectionChanged(object sender, SelectionChangedEventArgs e)

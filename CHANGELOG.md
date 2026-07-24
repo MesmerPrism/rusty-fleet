@@ -52,3 +52,7 @@ The project follows Semantic Versioning once runtime releases begin.
 - Stable WPF live-update ordering: shared rows refresh in place while
   membership, order, and grouping changes wait behind an explicit accessible
   operator action that preserves identity-based batch and inspector context.
+- Canonical WPF sort scope for device name, freshness, battery, model, and
+  participating application, with visible direction, Hub-side query
+  authority, applied/editor separation, stable refresh behavior, accessible
+  controls, and deterministic 1,000-device projection coverage.
