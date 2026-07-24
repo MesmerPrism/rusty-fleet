@@ -67,3 +67,8 @@ The project follows Semantic Versioning once runtime releases begin.
   overview/status/capabilities/work/streams/history tabs, saved-view detail-tab
   restoration, wrong-identity rejection, and exact return-to-fleet context
   preservation.
+- Bounded WPF watch synchronization over the canonical local API, with
+  monotonic event validation, accepted/rejected distinction, a preserved
+  cursor, Hub sequence-reset rebasing, fail-closed damaged-event handling,
+  query-only degraded refresh, and a canonical query/summary reread before any
+  visible device state changes.

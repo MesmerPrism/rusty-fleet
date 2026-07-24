@@ -37,6 +37,8 @@ public partial class MainWindow : Window
 
     public Button ApplyOrderingButton => ApplyLiveOrderingButton;
 
+    public Button SynchronizeUpdatesButton => SyncUpdatesButton;
+
     public ComboBox SortFieldControl => SortFieldBox;
 
     public ComboBox SortDirectionControl => SortDirectionBox;

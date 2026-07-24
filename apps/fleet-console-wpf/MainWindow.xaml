@@ -133,9 +133,11 @@
                     <Button Content="Connect"
                             Command="{Binding ConnectCommand}"
                             AutomationProperties.Name="Connect to local Fleet Hub" />
-                    <Button Content="Refresh"
-                            Command="{Binding RefreshCommand}"
-                            AutomationProperties.Name="Refresh current fleet scope" />
+                    <Button x:Name="SyncUpdatesButton"
+                            Content="Check updates"
+                            Command="{Binding SynchronizeUpdatesCommand}"
+                            AutomationProperties.Name="Check for Fleet Hub updates"
+                            AutomationProperties.HelpText="Reads bounded monotonic Hub events, then verifies the canonical fleet scope without live reordering." />
                 </StackPanel>
             </Grid>
 

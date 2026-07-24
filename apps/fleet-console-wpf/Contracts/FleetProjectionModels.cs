@@ -151,6 +151,42 @@ public sealed class FleetQueryResult
     public IReadOnlyList<DeviceRowProjection> Rows { get; init; } = [];
 }
 
+public sealed class FleetWatchEvent
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("event_sequence")]
+    public ulong EventSequence { get; init; }
+
+    [JsonPropertyName("observed_at_ms")]
+    public long ObservedAtMs { get; init; }
+
+    [JsonPropertyName("decision")]
+    public ObservationDecision Decision { get; init; } = new();
+}
+
+public sealed class ObservationDecision
+{
+    [JsonPropertyName("decision")]
+    public string Kind { get; init; } = string.Empty;
+
+    [JsonPropertyName("result_revision")]
+    public ulong ResultRevision { get; init; }
+
+    [JsonPropertyName("device_id")]
+    public string? DeviceId { get; init; }
+
+    [JsonPropertyName("source_revision")]
+    public ulong? SourceRevision { get; init; }
+
+    [JsonPropertyName("reason")]
+    public string? Reason { get; init; }
+
+    [JsonPropertyName("details")]
+    public IReadOnlyList<string> Details { get; init; } = [];
+}
+
 public sealed class NavigationRestoration
 {
     [JsonPropertyName("selected_device_id")]

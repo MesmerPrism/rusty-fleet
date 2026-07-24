@@ -252,6 +252,9 @@ headsets.
   with an inspectable reason.
 - Detail navigation and refresh preserve query, filters, grouping, sort,
   selection, scroll anchor, focus, and inspector context.
+- WPF watch consumption is cursor-bound and bounded; accepted events trigger a
+  canonical query reread, rejected events remain distinct evidence, sequence
+  reset rebases visibly, and malformed ordering retains cached rows.
 - Keyboard, UI Automation, Narrator, high-contrast, large-text, and scaling
   gates pass for the fleet table and inspector.
 - Order-affecting live changes do not move interaction-bound rows without

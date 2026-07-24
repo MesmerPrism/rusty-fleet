@@ -359,6 +359,13 @@ function Test-WpfConsole {
         $receipt.accessible_batch_toggle -eq $true -and
         $receipt.loopback_hub_only -eq $true -and
         $receipt.bounded_hub_response -eq $true -and
+        $receipt.canonical_watch_projection -eq $true -and
+        $receipt.watch_cursor_bounded -eq $true -and
+        $receipt.watch_sequence_reset_rebased -eq $true -and
+        $receipt.rejected_watch_event_distinguished -eq $true -and
+        $receipt.damaged_watch_fail_closed -eq $true -and
+        $receipt.watch_unavailable_query_fallback -eq $true -and
+        $receipt.watch_sync_accessible -eq $true -and
         $receipt.projection_identity_fail_closed -eq $true -and
         $receipt.mixed_freshness_fixture -eq $true -and
         $receipt.fresh_rows -eq 500 -and

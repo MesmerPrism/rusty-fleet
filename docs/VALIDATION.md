@@ -137,6 +137,13 @@ The deterministic scale suite generates its datasets in memory. It does not
 commit large data files and does not claim that every fixture size is a
 supported production fleet.
 
+The WPF scenario suite consumes the canonical watch-event shape as well as
+query, summary, inspect, and detail. It verifies the 10,000-event request
+ceiling, strict sequence/cursor ordering, accepted-versus-rejected semantics,
+Hub sequence-reset rebasing, canonical query/summary reread, stable ordering,
+fail-closed damaged watch evidence with cached rows retained, and query-only
+manual refresh when the watch route is unavailable.
+
 ## Datastream validation
 
 The normative contract and fixture families are in

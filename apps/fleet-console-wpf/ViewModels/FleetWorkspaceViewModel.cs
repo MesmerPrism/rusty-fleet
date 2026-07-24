@@ -13,6 +13,8 @@ namespace RustyFleet.FleetConsole.ViewModels;
 
 public sealed class FleetWorkspaceViewModel : ObservableObject
 {
+    public const int WatchEventLimit = 10_000;
+
     private readonly Func<Uri, IFleetDataSource>? _sourceFactory;
     private readonly Dictionary<string, ulong> _batchSelection = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _displayedGroupValues =
@@ -54,13 +56,19 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private FleetSummaryProjection? _queuedSummary;
     private FleetQuery? _queuedQuery;
     private int _queuedOrderingChangeCount;
+    private ulong _watchSequence;
+    private bool _watchInitialized;
+    private string? _watchFailureReason;
+    private bool _lastRefreshSucceeded;
 
     public FleetWorkspaceViewModel(Func<Uri, IFleetDataSource> sourceFactory)
     {
         _sourceFactory = sourceFactory;
         RowsView = CollectionViewSource.GetDefaultView(Rows);
         ConnectCommand = new AsyncCommand(ConnectAsync, () => !IsBusy);
-        RefreshCommand = new AsyncCommand(RefreshAsync, () => !IsBusy && _source is not null);
+        SynchronizeUpdatesCommand = new AsyncCommand(
+            SynchronizeUpdatesAsync,
+            () => !IsBusy && _source is not null);
         ApplySearchCommand = new AsyncCommand(ApplyScopeAsync, () => !IsBusy && _source is not null);
         ClearSearchCommand = new AsyncCommand(ClearSearchAsync, () => !IsBusy);
         ClearBatchSelectionCommand = new RelayCommand(ClearBatchSelection);
@@ -114,7 +122,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
     public AsyncCommand ConnectCommand { get; }
 
-    public AsyncCommand RefreshCommand { get; }
+    public AsyncCommand SynchronizeUpdatesCommand { get; }
 
     public AsyncCommand ApplySearchCommand { get; }
 
@@ -236,7 +244,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             if (SetProperty(ref _isBusy, value))
             {
                 ConnectCommand.RaiseCanExecuteChanged();
-                RefreshCommand.RaiseCanExecuteChanged();
+                SynchronizeUpdatesCommand.RaiseCanExecuteChanged();
                 ApplySearchCommand.RaiseCanExecuteChanged();
                 ClearSearchCommand.RaiseCanExecuteChanged();
                 ApplyQueuedOrderingChangesCommand.RaiseCanExecuteChanged();
@@ -297,6 +305,10 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
     public bool HasQueuedOrderingChanges => _queuedResult is not null;
 
+    public ulong WatchSequence => _watchSequence;
+
+    public bool WatchInitialized => _watchInitialized;
+
     public string OrderingChangesText => HasQueuedOrderingChanges
         ? $"{_queuedOrderingChangeCount:N0} live row changes affect the current " +
           "order or grouping"
@@ -305,6 +317,10 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public async Task InitializeAsync()
     {
         await RefreshAsync();
+        if (_lastRefreshSucceeded)
+        {
+            await EstablishWatchCursorAsync();
+        }
         await TryLoadSavedViewsAsync();
     }
 
@@ -422,6 +438,98 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         exactQuery: _appliedQuery,
         preserveCurrentOrdering: true);
 
+    public async Task SynchronizeUpdatesAsync()
+    {
+        if (_source is null)
+        {
+            StatusMessage = "Not connected to a Fleet Hub";
+            return;
+        }
+
+        if (!_watchInitialized)
+        {
+            await EstablishWatchCursorAsync();
+            if (!_watchInitialized)
+            {
+                var watchFailure = StatusMessage;
+                await RefreshAsync();
+                if (_lastRefreshSucceeded)
+                {
+                    StatusMessage =
+                        $"Connected · canonical scope refreshed without watch · " +
+                        $"{_watchFailureReason ?? watchFailure}";
+                }
+                return;
+            }
+        }
+
+        var priorSequence = _watchSequence;
+        IReadOnlyList<FleetWatchEvent> events;
+        var sequenceReset = false;
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        IsBusy = true;
+        StatusMessage = $"Checking Hub updates after event {priorSequence:N0}";
+        try
+        {
+            events = await _source.WatchAsync(
+                priorSequence,
+                WatchEventLimit,
+                cancellation.Token);
+            FleetProjectionValidation.ValidateWatchEvents(
+                events,
+                priorSequence,
+                WatchEventLimit);
+
+            if (events.Count == 0 && priorSequence > 0)
+            {
+                var baseline = await _source.WatchAsync(
+                    0,
+                    WatchEventLimit,
+                    cancellation.Token);
+                FleetProjectionValidation.ValidateWatchEvents(
+                    baseline,
+                    0,
+                    WatchEventLimit);
+                var baselineTail = baseline.LastOrDefault()?.EventSequence ?? 0;
+                if (baselineTail < priorSequence)
+                {
+                    events = baseline;
+                    sequenceReset = true;
+                }
+            }
+        }
+        catch (Exception error) when (
+            error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException or ArgumentOutOfRangeException)
+        {
+            StatusMessage = $"Update check failed · cached rows retained · {error.Message}";
+            return;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+
+        await RefreshAsync();
+        if (!_lastRefreshSucceeded)
+        {
+            return;
+        }
+
+        SetWatchCursor(events.LastOrDefault()?.EventSequence ??
+                       (sequenceReset ? 0 : priorSequence));
+        var accepted = events.Count(item => item.Decision.Kind == "accepted");
+        var rejected = events.Count - accepted;
+        StatusMessage = sequenceReset
+            ? $"Connected · Hub watch sequence reset · canonical scope reloaded · " +
+              $"{accepted:N0} accepted / {rejected:N0} rejected baseline events"
+            : events.Count == 0
+                ? "Connected · no new Hub events · canonical scope verified"
+                : $"Connected · {accepted:N0} accepted / {rejected:N0} rejected Hub " +
+                  $"events consumed · event {_watchSequence:N0}" +
+                  (HasQueuedOrderingChanges ? " · ordering changes await application" : string.Empty);
+    }
+
     public Task ApplyScopeAsync() => LoadScopeAsync(
         SearchText,
         SelectedFreshness,
@@ -452,6 +560,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         _requestCancellation?.Dispose();
         _requestCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
         IsBusy = true;
+        _lastRefreshSucceeded = false;
         StatusMessage = "Refreshing canonical fleet scope";
         try
         {
@@ -494,6 +603,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                     ? "Connected · ordering stable · no background re-sort"
                     : $"Connected · {invalidatedSelections} batch selection invalidated by " +
                       "an identity revision";
+            _lastRefreshSucceeded = true;
         }
         catch (Exception error) when (
             error is HttpRequestException or JsonException or TaskCanceledException or
@@ -525,13 +635,64 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             }
 
             _source = replacement;
+            ResetWatchCursor();
             await RefreshAsync();
+            if (_lastRefreshSucceeded)
+            {
+                await EstablishWatchCursorAsync();
+            }
             await TryLoadSavedViewsAsync();
         }
         catch (ArgumentException error)
         {
             StatusMessage = error.Message;
         }
+    }
+
+    private async Task EstablishWatchCursorAsync()
+    {
+        if (_source is null)
+        {
+            return;
+        }
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        try
+        {
+            var events = await _source.WatchAsync(
+                0,
+                WatchEventLimit,
+                cancellation.Token);
+            FleetProjectionValidation.ValidateWatchEvents(events, 0, WatchEventLimit);
+            _watchFailureReason = null;
+            SetWatchCursor(events.LastOrDefault()?.EventSequence ?? 0);
+        }
+        catch (Exception error) when (
+            error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException or ArgumentOutOfRangeException)
+        {
+            ResetWatchCursor();
+            _watchFailureReason = error.Message;
+            StatusMessage = $"Connected · canonical scope available · Hub watch unavailable · " +
+                            error.Message;
+        }
+    }
+
+    private void SetWatchCursor(ulong sequence)
+    {
+        _watchSequence = sequence;
+        _watchInitialized = true;
+        OnPropertyChanged(nameof(WatchSequence));
+        OnPropertyChanged(nameof(WatchInitialized));
+    }
+
+    private void ResetWatchCursor()
+    {
+        _watchSequence = 0;
+        _watchInitialized = false;
+        _watchFailureReason = null;
+        OnPropertyChanged(nameof(WatchSequence));
+        OnPropertyChanged(nameof(WatchInitialized));
     }
 
     private int ApplyResult(

@@ -48,11 +48,12 @@ Live device work is never implied by a source or documentation task.
 - `apps/fleetctl`: structured JSON CLI and saved-view parity projection over
   the same in-process list/inspect/detail/watch API;
 - `apps/fleet-console-wpf`: native WPF fleet table, canonical
-  scope/sort/grouping/saved-view controls, queued live ordering, persistent
-  inspector, full-device detail, and loopback-only local API projection;
+  scope/sort/grouping/saved-view controls, bounded watch synchronization,
+  queued live ordering, persistent inspector, full-device detail, and
+  loopback-only local API projection;
 - `apps/fleet-console-wpf.tests`: package-free native DataGrid, UI Automation,
-  stable-context/order, grouped virtualization, presented keyboard, and
-  1,000-device scale validation;
+  watch-cursor/damage, stable-context/order, grouped virtualization, presented
+  keyboard, and 1,000-device scale validation;
 - `schemas`: versioned JSON Schema projection;
 - `fixtures`: small committed contracts and deterministic scenario manifests.
 

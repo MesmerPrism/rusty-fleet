@@ -3,6 +3,7 @@
 
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -118,10 +119,20 @@ internal static class Program
                 var liveSummary = liveClient.SummaryAsync(CancellationToken.None)
                     .GetAwaiter()
                     .GetResult();
+                var liveWatchEvents = liveClient.WatchAsync(
+                        0,
+                        100,
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
                 FleetProjectionValidation.ValidateQueryResult(
                     liveResult,
                     liveSummary,
                     liveQuery);
+                FleetProjectionValidation.ValidateWatchEvents(
+                    liveWatchEvents,
+                    0,
+                    100);
                 if (liveResult.Rows.Count > 0)
                 {
                     var liveRow = liveResult.Rows[0];
@@ -393,6 +404,12 @@ internal static class Program
                 canonicalSummary: fixtureSummary);
             var liveWorkspace = new FleetWorkspaceViewModel(liveSource);
             liveWorkspace.InitializeAsync().GetAwaiter().GetResult();
+            Require(
+                liveWorkspace.WatchInitialized &&
+                liveWorkspace.WatchSequence == 0 &&
+                liveSource.LastWatchAfterSequence == 0 &&
+                liveSource.LastWatchLimit == FleetWorkspaceViewModel.WatchEventLimit,
+                "WPF watch cursor was not established from the canonical Hub projection");
             liveWorkspace.SelectedGrouping = "Cohort";
             liveWorkspace.ApplyScopeAsync().GetAwaiter().GetResult();
             var liveFirst = liveWorkspace.Rows[0];
@@ -420,7 +437,16 @@ internal static class Program
                 changedRows,
                 liveSource.Projection.ResultRevision + 1);
             liveSource.Projection = changedProjection;
-            liveWorkspace.RefreshAsync().GetAwaiter().GetResult();
+            liveSource.WatchEvents =
+            [
+                CreateWatchEvent(
+                    1,
+                    "accepted",
+                    changedProjection.ResultRevision,
+                    changedSecond.Identity.DeviceId,
+                    sourceRevision: 2)
+            ];
+            liveWorkspace.SynchronizeUpdatesAsync().GetAwaiter().GetResult();
 
             Require(
                 liveWorkspace.HasQueuedOrderingChanges &&
@@ -428,6 +454,13 @@ internal static class Program
                     "affect the current order or grouping",
                     StringComparison.Ordinal),
                 "background order and grouping changes were not queued");
+            Require(
+                liveWorkspace.WatchSequence == 1 &&
+                liveSource.LastWatchAfterSequence == 0 &&
+                liveWorkspace.StatusMessage.Contains(
+                    "1 accepted / 0 rejected Hub events consumed",
+                    StringComparison.Ordinal),
+                "canonical watch event did not trigger a cursor-bound scope synchronization");
             Require(
                 liveWorkspace.Rows.Select(row => row.StableKey)
                     .SequenceEqual(liveStableKeys),
@@ -518,6 +551,92 @@ internal static class Program
                     "outside the active scope",
                     StringComparison.Ordinal),
                 "explicit membership application lost hidden selection or cached inspection");
+
+            liveSource.WatchEvents =
+            [
+                liveSource.WatchEvents[0],
+                CreateWatchEvent(
+                    2,
+                    "rejected",
+                    liveSource.Projection.ResultRevision,
+                    liveSecond.DeviceId,
+                    sourceRevision: 2,
+                    reason: "stale_revision")
+            ];
+            var queryCountBeforeRejectedEvent = liveSource.QueryCount;
+            liveWorkspace.SynchronizeUpdatesAsync().GetAwaiter().GetResult();
+            Require(
+                liveWorkspace.WatchSequence == 2 &&
+                liveSource.QueryCount == queryCountBeforeRejectedEvent + 1 &&
+                liveWorkspace.StatusMessage.Contains(
+                    "0 accepted / 1 rejected Hub events consumed",
+                    StringComparison.Ordinal),
+                "rejected watch evidence was not distinguished from accepted device state");
+
+            liveSource.WatchEvents =
+            [
+                CreateWatchEvent(
+                    1,
+                    "accepted",
+                    liveSource.Projection.ResultRevision,
+                    liveFirst.DeviceId,
+                    sourceRevision: 1)
+            ];
+            liveWorkspace.SynchronizeUpdatesAsync().GetAwaiter().GetResult();
+            Require(
+                liveWorkspace.WatchSequence == 1 &&
+                liveWorkspace.StatusMessage.Contains(
+                    "Hub watch sequence reset",
+                    StringComparison.Ordinal),
+                "Hub watch sequence reset did not rebase the cursor and canonical scope");
+
+            liveSource.WatchEvents =
+            [
+                CreateWatchEvent(
+                    3,
+                    "accepted",
+                    liveSource.Projection.ResultRevision,
+                    liveFirst.DeviceId,
+                    sourceRevision: 3),
+                CreateWatchEvent(
+                    2,
+                    "accepted",
+                    liveSource.Projection.ResultRevision,
+                    liveSecond.DeviceId,
+                    sourceRevision: 2)
+            ];
+            var queryCountBeforeDamagedWatch = liveSource.QueryCount;
+            liveWorkspace.SynchronizeUpdatesAsync().GetAwaiter().GetResult();
+            Require(
+                liveWorkspace.WatchSequence == 1 &&
+                liveSource.QueryCount == queryCountBeforeDamagedWatch &&
+                liveWorkspace.StatusMessage.StartsWith(
+                    "Update check failed",
+                    StringComparison.Ordinal),
+                "out-of-order watch evidence did not fail closed with cached rows retained");
+
+            var degradedWatchSource = new StaticFleetDataSource(
+                projection,
+                canonicalSummary: fixtureSummary,
+                watchUnavailable: true);
+            var degradedWatchWorkspace = new FleetWorkspaceViewModel(degradedWatchSource);
+            degradedWatchWorkspace.InitializeAsync().GetAwaiter().GetResult();
+            Require(
+                !degradedWatchWorkspace.WatchInitialized &&
+                degradedWatchWorkspace.Rows.Count == projection.Rows.Count &&
+                degradedWatchWorkspace.StatusMessage.Contains(
+                    "Hub watch unavailable",
+                    StringComparison.Ordinal),
+                "watch loss removed the canonical no-watch monitoring surface");
+            var queryCountBeforeWatchFallback = degradedWatchSource.QueryCount;
+            degradedWatchWorkspace.SynchronizeUpdatesAsync().GetAwaiter().GetResult();
+            Require(
+                degradedWatchSource.QueryCount == queryCountBeforeWatchFallback + 1 &&
+                degradedWatchWorkspace.Rows.Count == projection.Rows.Count &&
+                degradedWatchWorkspace.StatusMessage.Contains(
+                    "canonical scope refreshed without watch",
+                    StringComparison.Ordinal),
+                "watch loss did not degrade to a canonical manual refresh");
 
             var mismatchedQueryWorkspace = new FleetWorkspaceViewModel(
                 new StaticFleetDataSource(projection, echoQuery: false));
@@ -623,6 +742,14 @@ internal static class Program
                 AutomationProperties.GetName(window.SavedViewNameControl) ==
                 "Saved-view name",
                 "saved-view controls were not visibly and accessibly exposed");
+            Require(
+                window.SynchronizeUpdatesButton.Content?.ToString() == "Check updates" &&
+                AutomationProperties.GetName(window.SynchronizeUpdatesButton) ==
+                "Check for Fleet Hub updates" &&
+                AutomationProperties.GetHelpText(window.SynchronizeUpdatesButton).Contains(
+                    "bounded monotonic Hub events",
+                    StringComparison.Ordinal),
+                "watch synchronization was not visibly and accessibly exposed");
             var inspectorPeer = new ScrollViewerAutomationPeer(
                 (ScrollViewer)window.InspectorRegion);
             Require(
@@ -738,6 +865,13 @@ internal static class Program
                 loopback_hub_only = true,
                 bounded_hub_response = true,
                 live_hub_checked = liveHubChecked,
+                canonical_watch_projection = true,
+                watch_cursor_bounded = true,
+                watch_sequence_reset_rebased = true,
+                rejected_watch_event_distinguished = true,
+                damaged_watch_fail_closed = true,
+                watch_unavailable_query_fallback = true,
+                watch_sync_accessible = true,
                 projection_identity_fail_closed = true,
                 mixed_freshness_fixture = true,
                 fresh_rows = fixtureSummary.Fresh,
@@ -868,16 +1002,38 @@ internal static class Program
         FleetQueryResult projection,
         IReadOnlyList<DeviceRowProjection> rows,
         ulong resultRevision) => new()
-    {
-        Schema = projection.Schema,
-        Query = projection.Query,
-        ResultRevision = resultRevision,
-        AsOfMs = projection.AsOfMs + 1_000,
-        TotalCount = rows.Count,
-        WindowOffset = 0,
-        WindowCount = rows.Count,
-        Rows = rows
-    };
+        {
+            Schema = projection.Schema,
+            Query = projection.Query,
+            ResultRevision = resultRevision,
+            AsOfMs = projection.AsOfMs + 1_000,
+            TotalCount = rows.Count,
+            WindowOffset = 0,
+            WindowCount = rows.Count,
+            Rows = rows
+        };
+
+    private static FleetWatchEvent CreateWatchEvent(
+        ulong eventSequence,
+        string decision,
+        ulong resultRevision,
+        string? deviceId,
+        ulong? sourceRevision,
+        string? reason = null) => new()
+        {
+            Schema = "rusty.fleet.watch_event.v1",
+            EventSequence = eventSequence,
+            ObservedAtMs = 1_800_000_000_000 + (long)eventSequence,
+            Decision = new ObservationDecision
+            {
+                Kind = decision,
+                ResultRevision = resultRevision,
+                DeviceId = deviceId,
+                SourceRevision = sourceRevision,
+                Reason = reason,
+                Details = reason is null ? [] : ["synthetic watch rejection"]
+            }
+        };
 
     private static T? FindVisualDescendant<T>(DependencyObject? parent)
         where T : DependencyObject
@@ -974,7 +1130,9 @@ internal static class Program
         FleetSummaryProjection? canonicalSummary = null,
         bool echoQuery = true,
         bool wrongInspectorIdentity = false,
-        bool wrongDetailIdentity = false) : IFleetDataSource
+        bool wrongDetailIdentity = false,
+        IReadOnlyList<FleetWatchEvent>? watchEvents = null,
+        bool watchUnavailable = false) : IFleetDataSource
     {
         private readonly SortedDictionary<string, SavedView> _savedViews =
             new(StringComparer.Ordinal);
@@ -985,6 +1143,13 @@ internal static class Program
         public FleetQuery? LastQuery { get; private set; }
 
         public int QueryCount { get; private set; }
+
+        public IReadOnlyList<FleetWatchEvent> WatchEvents { get; set; } =
+            watchEvents ?? [];
+
+        public ulong? LastWatchAfterSequence { get; private set; }
+
+        public int? LastWatchLimit { get; private set; }
 
         public Task<FleetQueryResult> QueryAsync(
             FleetQuery query,
@@ -1143,6 +1308,25 @@ internal static class Program
                 ConditionHistory = row.Conditions.Values.ToArray(),
                 OperationHistory = []
             });
+        }
+
+        public Task<IReadOnlyList<FleetWatchEvent>> WatchAsync(
+            ulong afterSequence,
+            int limit,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (watchUnavailable)
+            {
+                throw new HttpRequestException("synthetic watch route unavailable");
+            }
+            LastWatchAfterSequence = afterSequence;
+            LastWatchLimit = limit;
+            return Task.FromResult<IReadOnlyList<FleetWatchEvent>>(
+                WatchEvents
+                    .Where(watchEvent => watchEvent.EventSequence > afterSequence)
+                    .Take(Math.Min(limit, FleetWorkspaceViewModel.WatchEventLimit))
+                    .ToArray());
         }
 
         public Task<SavedViewCollection> SavedViewsAsync(

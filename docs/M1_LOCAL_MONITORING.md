@@ -141,9 +141,12 @@ without a theme dependency. It provides:
   visible selection scope;
 - stable row view models that retain batch selection across refresh, filtering,
   grouping, and virtualization, including a visible hidden-selection count;
-- background refresh that updates shared row values in place while queuing
-  membership, order, and group changes behind a visible, accessible
-  `Apply live ordering` action;
+- an explicit `Check updates` path that validates a bounded, strictly
+  increasing Hub watch window, preserves its cursor, rebases after a detected
+  Hub sequence reset, and then rereads canonical query/summary state;
+- synchronized refresh that updates shared row values in place while queuing
+  membership, order, and group changes behind a visible, accessible `Apply
+  live ordering` action;
 - a persistent inspector for independent observations, capabilities,
   condition provenance, work, and streams, retained as cached evidence when
   the selected device falls outside the applied scope;
@@ -157,10 +160,18 @@ without a theme dependency. It provides:
   native grid and inspector automation peers.
 
 The local API client has a 10-second request deadline and a 16 MiB response
-budget. Before changing visible state, the Console verifies the exact query
-receipt, result window, row/identity invariants, summary counts, bounded
-condition/capability families, and selected inspector identity. Invalid
-evidence leaves the last accepted projection visible and reports the failure.
+budget. Watch reads are capped at 10,000 events and verify schema, strict
+sequence order, cursor position, decision kind, result revision, accepted
+device/source identity, and bounded rejection reasons/details. Watch events
+are change and rejection evidence; they never patch device rows directly.
+After every update check, the Console rereads the canonical query and summary.
+If the watch route is unavailable, explicit update checks degrade to the
+canonical query/summary refresh and report the missing watch evidence instead
+of removing monitoring. Before changing visible state, the Console verifies
+the exact query receipt, result window, row/identity invariants, summary
+counts, bounded condition/capability families, and selected inspector identity.
+Invalid evidence leaves the last accepted projection visible and reports the
+failure.
 Full detail additionally validates the exact selected identity, the 128-entry
 condition-history bound, the 1,000-entry operation-history bound, and minimum
 operation-ledger identity before opening.
@@ -174,7 +185,11 @@ refresh, empty-scope behavior, stable rows, grouped virtualization, hidden
 selection, out-of-scope inspector context, stable live order, explicit order
 application, safe in-place value refresh, native automation, bounded realized
 containers, 12 declared columns, and independent capability families. A
-presented-window input pass verifies that `Ctrl+F` focuses search, `F6`
+bounded watch fixture additionally verifies cursor establishment, accepted
+versus rejected decisions, sequence-reset rebasing, canonical reread, and
+fail-closed out-of-order evidence. It also verifies that an unavailable watch
+route retains a query-only manual refresh. A presented-window input pass
+verifies that `Ctrl+F` focuses search, `F6`
 reaches the fleet grid, `Space` changes batch membership, and `Enter` exposes
 focus through the inspector automation peer. Off-screen UI Automation also
 verifies the full-detail region and return control, tab restoration, exact

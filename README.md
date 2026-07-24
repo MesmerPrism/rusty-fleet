@@ -79,12 +79,12 @@ The current implementation is split into:
   saved-view parity fixtures over the same in-process API;
 - `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical
   scope/sort/grouping, revisioned saved-view controls, stable live-order
-  application, distinct inspection and batch selection, and a persistent
-  selected-device inspector plus full-device detail over the canonical local
-  API;
+  application, bounded monotonic watch synchronization, distinct inspection
+  and batch selection, and a persistent selected-device inspector plus
+  full-device detail over the canonical local API;
 - `fleet-console-wpf.tests`: package-free native UI Automation,
-  grouped virtualization, stable-context/order, capability-family, presented
-  keyboard, and 1,000-device checks.
+  watch-cursor/reset/damage, grouped virtualization, stable-context/order,
+  capability-family, presented keyboard, and 1,000-device checks.
 
 See the [Milestone 0 source foundation](docs/M0_SOURCE_FOUNDATION.md) for the
 accepted source boundary, the

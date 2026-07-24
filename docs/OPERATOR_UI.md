@@ -474,7 +474,7 @@ lease/concurrency release.
 | Condition | Required projection |
 | --- | --- |
 | Initial loading | stable headers and skeleton rows, never a false zero-device state |
-| Background refresh | retain current data and show bounded refresh status |
+| Background refresh | validate bounded watch evidence, reread canonical state, retain current data, and show refresh status |
 | Empty fleet | explain enrollment and expose UI plus CLI/API entrypoints |
 | No matches | preserve scope and show `0 of N`, with targeted filter removal |
 | Hub disconnected | cached read-only data with exact age; actions disabled with reason |
@@ -621,6 +621,8 @@ not a support claim.
 | silent stale values | visible family age, source chain, freshness, and unknown transition |
 | optimistic success | accepted, dispatched, applied, and cleaned remain separate |
 | live row movement | stable ordering and explicit application of queued changes |
+| watch event mistaken for state | use watch as a change/rejection signal and reread the canonical query projection |
+| watch route unavailable | retain query-only manual refresh and expose degraded watch evidence |
 | hidden batch exclusions | frozen snapshot and per-target preflight |
 | global progress masking failure | aggregate counts plus per-target ledger |
 | ADB-centric shell | no-ADB inventory remains primary |

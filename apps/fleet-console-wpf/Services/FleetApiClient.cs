@@ -22,6 +22,11 @@ public interface IFleetDataSource
         string deviceId,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<FleetWatchEvent>> WatchAsync(
+        ulong afterSequence,
+        int limit,
+        CancellationToken cancellationToken);
+
     Task<SavedViewCollection> SavedViewsAsync(CancellationToken cancellationToken);
 
     Task<SavedViewMutationReceipt> UpsertSavedViewAsync(
@@ -97,6 +102,26 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             $"/fleet/v1/devices/{encoded}",
             cancellationToken);
         return await ReadAsync<DeviceDetailProjection>(response, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<FleetWatchEvent>> WatchAsync(
+        ulong afterSequence,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (limit is < 1 or > 10_000)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(limit),
+                "Fleet watch limits must be between 1 and 10,000 events.");
+        }
+
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/watch?after_sequence={afterSequence}&limit={limit}",
+            cancellationToken);
+        return await ReadAsync<IReadOnlyList<FleetWatchEvent>>(
+            response,
+            cancellationToken);
     }
 
     public async Task<SavedViewCollection> SavedViewsAsync(

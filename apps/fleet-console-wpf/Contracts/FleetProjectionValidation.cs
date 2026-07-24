@@ -15,6 +15,20 @@ public static class FleetProjectionValidation
         "unknown"
     ];
 
+    private static readonly HashSet<string> WatchRejectionReasons =
+    [
+        "contract_invalid",
+        "duplicate_revision",
+        "stale_revision",
+        "identity_revision_rollback",
+        "identity_revision_changed_without_restart",
+        "identity_conflict",
+        "source_epoch_changed_without_restart",
+        "source_epoch_replay",
+        "source_epoch_evidence_limit_exceeded",
+        "receive_time_regression"
+    ];
+
     public static void ValidateQueryResult(
         FleetQueryResult result,
         FleetSummaryProjection summary,
@@ -90,6 +104,61 @@ public static class FleetProjectionValidation
                 operation.TryGetProperty("action_id", out var actionId) &&
                 !string.IsNullOrWhiteSpace(actionId.GetString()),
                 "operation-history entry");
+        }
+    }
+
+    public static void ValidateWatchEvents(
+        IReadOnlyList<FleetWatchEvent> events,
+        ulong afterSequence,
+        int requestedLimit)
+    {
+        Require(requestedLimit is >= 1 and <= 10_000, "watch requested limit");
+        Require(events.Count <= requestedLimit, "watch response limit");
+
+        var priorSequence = afterSequence;
+        foreach (var watchEvent in events)
+        {
+            Require(
+                watchEvent.Schema == "rusty.fleet.watch_event.v1",
+                "watch-event schema");
+            Require(
+                watchEvent.EventSequence > priorSequence,
+                "watch-event sequence");
+            Require(watchEvent.ObservedAtMs >= 0, "watch-event observation time");
+            Require(
+                watchEvent.Decision.ResultRevision > 0,
+                "watch-event result revision");
+            Require(
+                watchEvent.Decision.Kind is "accepted" or "rejected",
+                "watch-event decision");
+
+            if (watchEvent.Decision.Kind == "accepted")
+            {
+                Require(
+                    !string.IsNullOrWhiteSpace(watchEvent.Decision.DeviceId),
+                    "accepted watch-event device");
+                Require(
+                    watchEvent.Decision.SourceRevision is > 0,
+                    "accepted watch-event source revision");
+                Require(
+                    watchEvent.Decision.Reason is null &&
+                    watchEvent.Decision.Details.Count == 0,
+                    "accepted watch-event rejection evidence");
+            }
+            else
+            {
+                Require(
+                    watchEvent.Decision.Reason is not null &&
+                    WatchRejectionReasons.Contains(watchEvent.Decision.Reason),
+                    "rejected watch-event reason");
+                Require(
+                    watchEvent.Decision.Details.Count <= 64 &&
+                    watchEvent.Decision.Details.All(detail =>
+                        !string.IsNullOrWhiteSpace(detail) && detail.Length <= 1_024),
+                    "rejected watch-event details");
+            }
+
+            priorSequence = watchEvent.EventSequence;
         }
     }
 
