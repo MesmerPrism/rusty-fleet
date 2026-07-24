@@ -199,6 +199,18 @@
                                    AutomationProperties.LiveSetting="Polite"
                                    AutomationProperties.Name="{Binding BatchSelectionText}" />
                     </DockPanel>
+                    <DockPanel Margin="0,5,0,0">
+                        <Button x:Name="ApplyLiveOrderingButton"
+                                DockPanel.Dock="Right"
+                                Content="Apply live ordering"
+                                Command="{Binding ApplyQueuedOrderingChangesCommand}"
+                                AutomationProperties.Name="{Binding OrderingChangesText}"
+                                AutomationProperties.HelpText="Applies queued live membership, ordering, and grouping changes while preserving identity-based selection." />
+                        <TextBlock Text="{Binding OrderingChangesText}"
+                                   VerticalAlignment="Center"
+                                   AutomationProperties.LiveSetting="Polite"
+                                   AutomationProperties.Name="{Binding OrderingChangesText}" />
+                    </DockPanel>
                 </StackPanel>
             </Border>
 

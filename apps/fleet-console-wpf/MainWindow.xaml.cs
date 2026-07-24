@@ -28,6 +28,8 @@ public partial class MainWindow : Window
 
     public DataGrid FleetDataGrid => FleetGrid;
 
+    public Button ApplyOrderingButton => ApplyLiveOrderingButton;
+
     public FrameworkElement InspectorRegion => InspectorPane;
 
     private async void OnFleetSelectionChanged(object sender, SelectionChangedEventArgs e)

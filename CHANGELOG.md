@@ -49,3 +49,6 @@ The project follows Semantic Versioning once runtime releases begin.
   simulator, Hub, query, summary, CLI, and WPF boundaries, covering fresh,
   stale, offline, low-power, capability-downgrade, and empty-scope behavior
   without opening a listener or contacting a device.
+- Stable WPF live-update ordering: shared rows refresh in place while
+  membership, order, and grouping changes wait behind an explicit accessible
+  operator action that preserves identity-based batch and inspector context.

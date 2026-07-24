@@ -125,6 +125,9 @@ without a theme dependency. It provides:
   visible selection scope;
 - stable row view models that retain batch selection across refresh, filtering,
   grouping, and virtualization, including a visible hidden-selection count;
+- background refresh that updates shared row values in place while queuing
+  membership, order, and group changes behind a visible, accessible
+  `Apply live ordering` action;
 - a persistent inspector for independent observations, capabilities,
   condition provenance, work, and streams, retained as cached evidence when
   the selected device falls outside the applied scope;
@@ -144,7 +147,8 @@ The package-free validation executable consumes the real 1,000-device
 offline rows, with deterministic low-power and capability-downgrade examples.
 It verifies canonical search/freshness AND/OR shape, empty-scope behavior,
 stable rows, grouped virtualization, hidden selection, out-of-scope inspector
-context, native automation, bounded realized containers, 12 declared columns,
+context, stable live order, explicit order application, safe in-place value
+refresh, native automation, bounded realized containers, 12 declared columns,
 and independent capability families. A presented-window input pass verifies
 that `Ctrl+F` focuses search, `F6` reaches the fleet grid, `Space` changes
 batch membership, and `Enter` exposes focus through the inspector automation

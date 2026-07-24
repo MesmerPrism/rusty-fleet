@@ -30,7 +30,8 @@ Quick is safe during normal editing and checks:
   stable view models, canonical search/freshness expressions,
   pointer/keyboard/UI Automation batch selection, hidden-selection
   preservation, empty-scope behavior, retained out-of-scope inspector
-  context, and mixed fresh/stale/offline state;
+  context, stable live ordering with explicit accessible application,
+  safe shared-row value refresh, and mixed fresh/stale/offline state;
 - fail-closed non-loopback Hub, bounded response, mismatched-query, and
   wrong-device inspector fixtures.
 

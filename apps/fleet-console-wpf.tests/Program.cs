@@ -4,6 +4,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
@@ -246,6 +247,126 @@ internal static class Program
                 workspace.RowsView.Groups is { Count: 2 },
                 "full cohort grouping did not retain both simulator cohorts");
 
+            var liveSource = new StaticFleetDataSource(
+                projection,
+                canonicalSummary: fixtureSummary);
+            var liveWorkspace = new FleetWorkspaceViewModel(liveSource);
+            liveWorkspace.InitializeAsync().GetAwaiter().GetResult();
+            liveWorkspace.SelectedGrouping = "Cohort";
+            liveWorkspace.ApplyScopeAsync().GetAwaiter().GetResult();
+            var liveFirst = liveWorkspace.Rows[0];
+            var liveSecond = liveWorkspace.Rows[1];
+            var liveSecondOriginalPower = liveSecond.PowerText;
+            var liveStableKeys = liveWorkspace.Rows
+                .Select(row => row.StableKey)
+                .ToArray();
+            liveFirst.IsBatchSelected = true;
+            liveWorkspace.SelectDeviceAsync(liveFirst).GetAwaiter().GetResult();
+
+            var changedSecond = RewriteOperatorRow(
+                liveSecond.Projection,
+                batteryPercent: 7,
+                cohort: "lab-z");
+            var changedRows = liveSource.Projection.Rows
+                .Skip(1)
+                .Reverse()
+                .Select(row => row.Identity.DeviceId == changedSecond.Identity.DeviceId
+                    ? changedSecond
+                    : row)
+                .ToArray();
+            var changedProjection = RewriteProjection(
+                liveSource.Projection,
+                changedRows,
+                liveSource.Projection.ResultRevision + 1);
+            liveSource.Projection = changedProjection;
+            liveWorkspace.RefreshAsync().GetAwaiter().GetResult();
+
+            Require(
+                liveWorkspace.HasQueuedOrderingChanges &&
+                liveWorkspace.OrderingChangesText.Contains(
+                    "affect the current order or grouping",
+                    StringComparison.Ordinal),
+                "background order and grouping changes were not queued");
+            Require(
+                liveWorkspace.Rows.Select(row => row.StableKey)
+                    .SequenceEqual(liveStableKeys),
+                "background refresh moved interaction-bound rows");
+            Require(
+                ReferenceEquals(liveFirst, liveWorkspace.Rows[0]) &&
+                liveFirst.IsBatchSelected &&
+                liveWorkspace.SelectedDevice?.StableKey == liveFirst.StableKey,
+                "queued ordering lost row identity, selection, or inspection context");
+            Require(
+                liveSecond.PowerText.StartsWith("7%", StringComparison.Ordinal),
+                "background refresh did not update safe shared-row values in place");
+            Require(
+                liveWorkspace.RowsView.Groups is { Count: 2 },
+                "queued group change moved a row before operator application");
+            Require(
+                liveWorkspace.ApplyQueuedOrderingChangesCommand.CanExecute(null),
+                "queued ordering action was not enabled");
+            var queuedWindow = new MainWindow(liveWorkspace)
+            {
+                ShowActivated = false,
+                ShowInTaskbar = false,
+                WindowStyle = WindowStyle.None,
+                Width = 1_500,
+                Height = 900
+            };
+            var queuedRoot = (FrameworkElement)queuedWindow.Content;
+            queuedRoot.Measure(new Size(1_500, 900));
+            queuedRoot.Arrange(new Rect(0, 0, 1_500, 900));
+            queuedRoot.UpdateLayout();
+            Require(
+                queuedWindow.ApplyOrderingButton.IsEnabled &&
+                AutomationProperties.GetName(
+                    queuedWindow.ApplyOrderingButton).Contains(
+                    "affect the current order or grouping",
+                    StringComparison.Ordinal),
+                "queued ordering action was not visibly and accessibly exposed");
+            queuedWindow.Close();
+
+            liveSource.Projection = RewriteProjection(
+                projection,
+                projection.Rows,
+                changedProjection.ResultRevision + 1);
+            liveWorkspace.RefreshAsync().GetAwaiter().GetResult();
+            Require(
+                !liveWorkspace.HasQueuedOrderingChanges &&
+                liveWorkspace.Rows.Select(row => row.StableKey)
+                    .SequenceEqual(liveStableKeys) &&
+                liveSecond.PowerText == liveSecondOriginalPower &&
+                liveWorkspace.RowsView.Groups is { Count: 2 },
+                "a superseding current snapshot did not clear obsolete queued changes");
+
+            liveSource.Projection = RewriteProjection(
+                changedProjection,
+                changedRows,
+                changedProjection.ResultRevision + 2);
+            liveWorkspace.RefreshAsync().GetAwaiter().GetResult();
+            Require(
+                liveWorkspace.HasQueuedOrderingChanges,
+                "latest changed snapshot was not queued after supersession");
+            liveWorkspace.ApplyQueuedOrderingChangesCommand.Execute(null);
+            Require(
+                !liveWorkspace.HasQueuedOrderingChanges &&
+                liveWorkspace.Rows.Count == changedRows.Length &&
+                liveWorkspace.Rows[0].StableKey ==
+                $"{changedRows[0].Identity.DeviceId}@" +
+                $"{changedRows[0].Identity.IdentityRevision}",
+                "explicit live-order application did not adopt the queued snapshot");
+            Require(
+                liveWorkspace.RowsView.Groups is { Count: 3 },
+                "explicit live-order application did not adopt the queued grouping change");
+            Require(
+                liveWorkspace.BatchSelectionText.Contains(
+                    "1 hidden by scope",
+                    StringComparison.Ordinal) &&
+                liveWorkspace.InspectorContextText.Contains(
+                    "outside the active scope",
+                    StringComparison.Ordinal),
+                "explicit membership application lost hidden selection or cached inspection");
+
             var mismatchedQueryWorkspace = new FleetWorkspaceViewModel(
                 new StaticFleetDataSource(projection, echoQuery: false));
             mismatchedQueryWorkspace.InitializeAsync().GetAwaiter().GetResult();
@@ -407,6 +528,9 @@ internal static class Program
                 canonical_scope = true,
                 empty_scope_preserved = true,
                 grouped_virtualization = true,
+                stable_live_ordering = true,
+                explicit_order_application = true,
+                safe_in_place_value_refresh = true,
                 hidden_selection_preserved = true,
                 inspector_outside_scope_preserved = true,
                 theme_dependency = "none",
@@ -488,6 +612,41 @@ internal static class Program
         using var stream = File.Create(path);
         encoder.Save(stream);
     }
+
+    private static DeviceRowProjection RewriteOperatorRow(
+        DeviceRowProjection row,
+        int batteryPercent,
+        string cohort)
+    {
+        var node = JsonNode.Parse(
+                JsonSerializer.Serialize(row, FleetJson.Options))
+            ?.AsObject() ?? throw new JsonException("Operator row clone was empty.");
+        node["battery_percent"] = batteryPercent;
+        var identity = node["identity"]?.AsObject() ??
+                       throw new JsonException("Operator row identity was empty.");
+        var tags = identity["tags"]?.AsObject() ??
+                   throw new JsonException("Operator row tags were empty.");
+        tags["cohort"] = cohort;
+        return JsonSerializer.Deserialize<DeviceRowProjection>(
+                   node.ToJsonString(),
+                   FleetJson.Options)
+               ?? throw new JsonException("Operator row clone could not be read.");
+    }
+
+    private static FleetQueryResult RewriteProjection(
+        FleetQueryResult projection,
+        IReadOnlyList<DeviceRowProjection> rows,
+        ulong resultRevision) => new()
+    {
+        Schema = projection.Schema,
+        Query = projection.Query,
+        ResultRevision = resultRevision,
+        AsOfMs = projection.AsOfMs + 1_000,
+        TotalCount = rows.Count,
+        WindowOffset = 0,
+        WindowCount = rows.Count,
+        Rows = rows
+    };
 
     private static T? FindVisualDescendant<T>(DependencyObject? parent)
         where T : DependencyObject
@@ -585,6 +744,8 @@ internal static class Program
         bool echoQuery = true,
         bool wrongInspectorIdentity = false) : IFleetDataSource
     {
+        public FleetQueryResult Projection { get; set; } = projection;
+
         public FleetQuery? LastQuery { get; private set; }
 
         public int QueryCount { get; private set; }
@@ -596,7 +757,7 @@ internal static class Program
             cancellationToken.ThrowIfCancellationRequested();
             LastQuery = query;
             QueryCount++;
-            var matched = projection.Rows
+            var matched = Projection.Rows
                 .Where(row => Matches(query.Expression, row))
                 .ToArray();
             var window = matched
@@ -605,10 +766,10 @@ internal static class Program
                 .ToArray();
             return Task.FromResult(new FleetQueryResult
             {
-                Schema = projection.Schema,
-                Query = echoQuery ? query : projection.Query,
-                ResultRevision = projection.ResultRevision,
-                AsOfMs = projection.AsOfMs,
+                Schema = Projection.Schema,
+                Query = echoQuery ? query : Projection.Query,
+                ResultRevision = Projection.ResultRevision,
+                AsOfMs = Projection.AsOfMs,
                 TotalCount = matched.Length,
                 WindowOffset = query.Offset,
                 WindowCount = window.Length,
@@ -627,15 +788,15 @@ internal static class Program
             return Task.FromResult(new FleetSummaryProjection
             {
                 Schema = "rusty.fleet.summary.v1",
-                AsOfMs = projection.AsOfMs,
-                Total = projection.TotalCount,
-                Fresh = projection.Rows.Count(row => row.Freshness == "fresh"),
-                Stale = projection.Rows.Count(row => row.Freshness == "stale"),
-                Offline = projection.Rows.Count(row => row.Freshness == "offline"),
-                Attention = projection.Rows.Count(row =>
+                AsOfMs = Projection.AsOfMs,
+                Total = Projection.TotalCount,
+                Fresh = Projection.Rows.Count(row => row.Freshness == "fresh"),
+                Stale = Projection.Rows.Count(row => row.Freshness == "stale"),
+                Offline = Projection.Rows.Count(row => row.Freshness == "offline"),
+                Attention = Projection.Rows.Count(row =>
                     row.Conditions.Values.Any(condition =>
                         condition.State is "degraded" or "failed" or "critical")),
-                ActiveWork = projection.Rows.Sum(row => row.ActiveWorkCount)
+                ActiveWork = Projection.Rows.Sum(row => row.ActiveWorkCount)
             });
         }
 
@@ -645,8 +806,8 @@ internal static class Program
         {
             cancellationToken.ThrowIfCancellationRequested();
             var row = wrongInspectorIdentity
-                ? projection.Rows.First(item => item.Identity.DeviceId != deviceId)
-                : projection.Rows.Single(item => item.Identity.DeviceId == deviceId);
+                ? Projection.Rows.First(item => item.Identity.DeviceId != deviceId)
+                : Projection.Rows.Single(item => item.Identity.DeviceId == deviceId);
             return Task.FromResult(new DeviceInspectorProjection
             {
                 Schema = "rusty.fleet.device_inspector.v1",
