@@ -140,6 +140,10 @@ coherent change. File count and test count are not split reasons.
 At most one milestone stack is active or validating. Do not manufacture a new
 iteration unit merely because a focused test found a defect.
 
+An accepted or blocked historical unit may coexist with one distinct later
+current unit. Repository validation must reject the terminal unit itself as
+current without treating all future current authority as stale.
+
 ## Validation and publication
 
 - `Quick` is the normal edit loop.

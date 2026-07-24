@@ -511,12 +511,13 @@ function Test-PlanningInvariants {
     }
     if ($unit.status -eq "accepted") {
         $acceptedEventId = "$($unit.unit_id)-accepted-0005"
-        Get-TransitionBinding -Unit $unit -State $state -EventId $acceptedEventId `
+        $acceptedBinding = Get-TransitionBinding -Unit $unit -State $state -EventId $acceptedEventId `
             -ExpectedStatus "accepted" -ExpectedCurrentUnit $null `
-            -ExpectedNextReadyUnit $null -Historical | Out-Null
+            -ExpectedNextReadyUnit $null -Historical
+        $acceptedReceipt = "receipts/fleet-m0-foundation-and-simulator-standard-validation.json"
         Assert-True -Condition (
-            $state.validation_checkpoint.result -eq "pass" -and
-            $state.last_accepted_receipt -eq $state.validation_checkpoint.receipt -and
+            @($acceptedBinding.event.receipts) -contains $acceptedReceipt -and
+            (Test-Path -LiteralPath (Join-Path $repoRoot "morphospace/$acceptedReceipt") -PathType Leaf) -and
             @($unit.instruction_surfaces | Where-Object { $_.status -ne "complete" }).Count -eq 0
         ) -Message "Accepted Milestone 0 is missing passing validation or instruction completion."
     }
@@ -602,8 +603,8 @@ function Test-PlanningInvariants {
                     $state.next_ready_unit -eq $null
                 ) -Message "Milestone 1 replacement is not the current workflow authority."
             } else {
-                Assert-True -Condition ($state.current_unit -eq $null) `
-                    -Message "Accepted Milestone 1 replacement left a current unit."
+                Assert-True -Condition ($state.current_unit -ne $replacementId) `
+                    -Message "Accepted Milestone 1 replacement remained the current unit."
             }
         }
     }

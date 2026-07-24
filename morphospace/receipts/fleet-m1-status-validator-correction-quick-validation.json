@@ -1,0 +1,72 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MesmerPrism/rusty-morphospace-work-environment/6b75d944614a8f863dd612c9b114d7c68f0862b0/schemas/validation-receipt.schema.json",
+  "schema": "rusty.morphospace.workflow.validation_receipt.v1",
+  "receipt_id": "fleet-m1-status-validator-correction-quick-validation",
+  "project_id": "rusty-fleet",
+  "unit_id": "fleet-m1-status-validator-correction",
+  "created_at": "2026-07-24T17:34:36.5697578Z",
+  "tier": "quick",
+  "result": "pass",
+  "repository_revisions": [
+    {
+      "repo_id": "rusty-fleet",
+      "base_revision": "36c1025ed9cbbdb36f8d61406ee95283e6db7722",
+      "head_revision": "36c1025ed9cbbdb36f8d61406ee95283e6db7722",
+      "branch": "codex/fleet-m1-local-monitoring"
+    }
+  ],
+  "changed_paths": [
+    { "repo_id": "rusty-fleet", "path": "AGENTS.md" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/iteration-events.jsonl" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/iteration-units/fleet-m1-status-validator-correction.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-status-validator-correction-begin-validation.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-status-validator-correction-claim.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-status-validator-correction-quick-evidence.md" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/receipts/fleet-m1-status-validator-correction-quick-validation.json" },
+    { "repo_id": "rusty-fleet", "path": "morphospace/workspace.state.json" },
+    { "repo_id": "rusty-fleet", "path": "tools/Test-Repo.ps1" }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "quick-validation-evidence",
+      "kind": "validation-summary",
+      "path": "fleet-m1-status-validator-correction-quick-evidence.md",
+      "sha256": "39d659f4e0b3e2e868acbababbc54aa70b27cf3dc04f1cde19b8ebb642d0982f"
+    }
+  ],
+  "criteria": [
+    {
+      "acceptance_id": "later-current-unit-supported",
+      "status": "pass",
+      "command": "Run the repository Quick gate while this corrective unit is current.",
+      "evidence_refs": ["quick-validation-evidence"]
+    },
+    {
+      "acceptance_id": "first-hop-status-alignment-validated",
+      "status": "pass",
+      "command": "Review the README opening and run the repository Quick and portable workflow-contract gates.",
+      "evidence_refs": ["quick-validation-evidence"]
+    }
+  ],
+  "gates": [
+    {
+      "gate_id": "validation-quick",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/Test-Repo.ps1 -Tier Quick",
+      "evidence_refs": ["quick-validation-evidence"]
+    },
+    {
+      "gate_id": "validation-workflow-contract",
+      "status": "pass",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File <work-environment-root>/scripts/Test-WorkflowContracts.ps1 -WorkspaceRoot <project-root>/morphospace",
+      "evidence_refs": ["quick-validation-evidence"]
+    },
+    {
+      "gate_id": "instruction-synchronization",
+      "status": "pass",
+      "command": "Verify every declared instruction surface is complete and validated.",
+      "evidence_refs": ["quick-validation-evidence"]
+    }
+  ],
+  "device_validation": null
+}
