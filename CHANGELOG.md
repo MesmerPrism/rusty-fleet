@@ -62,3 +62,8 @@ The project follows Semantic Versioning once runtime releases begin.
   WPF capture/replay of the exact query, grouping, visible column order,
   selected device, scroll anchor, and focus region. Unsupported future
   navigation details degrade visibly instead of becoming hidden WPF state.
+- Full-device detail parity across `fleetctl`, the local HTTP API, and WPF,
+  with bounded condition/operation history validation, accessible
+  overview/status/capabilities/work/streams/history tabs, saved-view detail-tab
+  restoration, wrong-identity rejection, and exact return-to-fleet context
+  preservation.

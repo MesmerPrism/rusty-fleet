@@ -511,3 +511,18 @@ public sealed class DeviceInspectorProjection
     [JsonPropertyName("active_operations")]
     public IReadOnlyList<JsonElement> ActiveOperations { get; init; } = [];
 }
+
+public sealed class DeviceDetailProjection
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("inspector")]
+    public DeviceInspectorProjection Inspector { get; init; } = new();
+
+    [JsonPropertyName("condition_history")]
+    public IReadOnlyList<StatusCondition> ConditionHistory { get; init; } = [];
+
+    [JsonPropertyName("operation_history")]
+    public IReadOnlyList<JsonElement> OperationHistory { get; init; } = [];
+}

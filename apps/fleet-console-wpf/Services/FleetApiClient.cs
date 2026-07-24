@@ -18,6 +18,10 @@ public interface IFleetDataSource
         string deviceId,
         CancellationToken cancellationToken);
 
+    Task<DeviceDetailProjection> DetailAsync(
+        string deviceId,
+        CancellationToken cancellationToken);
+
     Task<SavedViewCollection> SavedViewsAsync(CancellationToken cancellationToken);
 
     Task<SavedViewMutationReceipt> UpsertSavedViewAsync(
@@ -82,6 +86,17 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             $"/fleet/v1/devices/{encoded}/inspect",
             cancellationToken);
         return await ReadAsync<DeviceInspectorProjection>(response, cancellationToken);
+    }
+
+    public async Task<DeviceDetailProjection> DetailAsync(
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(deviceId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/devices/{encoded}",
+            cancellationToken);
+        return await ReadAsync<DeviceDetailProjection>(response, cancellationToken);
     }
 
     public async Task<SavedViewCollection> SavedViewsAsync(

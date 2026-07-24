@@ -55,6 +55,7 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
             "commands": [
                 "list [count]",
                 "inspect <device-id> [count]",
+                "detail <device-id> [count]",
                 "filter <text> [count]",
                 "watch [count]",
                 "scenario [count]",
@@ -101,6 +102,12 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 CliFailure::new("missing_device_id", "inspect requires a device ID")
             })?;
             value(hub.inspect(device_id, BASE_TIME_MS))
+        }
+        "detail" => {
+            let device_id = arguments.get(1).ok_or_else(|| {
+                CliFailure::new("missing_device_id", "detail requires a device ID")
+            })?;
+            value(hub.detail(device_id, BASE_TIME_MS))
         }
         "filter" => {
             let text = arguments
@@ -273,6 +280,7 @@ mod tests {
         for args in [
             vec!["list".to_owned(), "4".to_owned()],
             vec!["inspect".to_owned(), "sim-00001".to_owned(), "4".to_owned()],
+            vec!["detail".to_owned(), "sim-00001".to_owned(), "4".to_owned()],
             vec!["filter".to_owned(), "Quest 0001".to_owned(), "4".to_owned()],
             vec!["watch".to_owned(), "4".to_owned()],
             vec!["scenario".to_owned(), "4".to_owned()],
@@ -323,6 +331,21 @@ mod tests {
             ])
             .expect("CLI inspect"),
             api_inspect
+        );
+
+        let api_detail = serde_json::to_value(
+            hub.detail("sim-00001", BASE_TIME_MS)
+                .expect("local API detail"),
+        )
+        .expect("serialize detail");
+        assert_eq!(
+            execute(vec![
+                "detail".to_owned(),
+                "sim-00001".to_owned(),
+                "4".to_owned()
+            ])
+            .expect("CLI detail"),
+            api_detail
         );
 
         let api_filter = serde_json::to_value(

@@ -65,6 +65,34 @@ public static class FleetProjectionValidation
         Require(projection.ActiveOperations.Count <= 128, "inspector operation limit");
     }
 
+    public static void ValidateDetail(
+        DeviceDetailProjection projection,
+        DeviceRowProjection expectedRow)
+    {
+        Require(
+            projection.Schema == "rusty.fleet.device_detail.v1",
+            "device-detail schema");
+        ValidateInspector(projection.Inspector, expectedRow);
+        Require(projection.ConditionHistory.Count <= 128, "condition-history limit");
+        Require(projection.OperationHistory.Count <= 1_000, "operation-history limit");
+        foreach (var condition in projection.ConditionHistory)
+        {
+            ValidateCondition(condition);
+        }
+        foreach (var operation in projection.OperationHistory)
+        {
+            Require(
+                operation.ValueKind == JsonValueKind.Object &&
+                operation.TryGetProperty("schema", out var schema) &&
+                schema.GetString() == "rusty.fleet.operation_ledger.v1" &&
+                operation.TryGetProperty("operation_id", out var operationId) &&
+                !string.IsNullOrWhiteSpace(operationId.GetString()) &&
+                operation.TryGetProperty("action_id", out var actionId) &&
+                !string.IsNullOrWhiteSpace(actionId.GetString()),
+                "operation-history entry");
+        }
+    }
+
     public static void ValidateSavedViews(SavedViewCollection collection)
     {
         Require(
@@ -208,15 +236,7 @@ public static class FleetProjectionValidation
         foreach (var (key, condition) in row.Conditions)
         {
             Require(key == condition.Family, "condition key");
-            Require(!string.IsNullOrWhiteSpace(condition.Reason), "condition reason");
-            Require(!string.IsNullOrWhiteSpace(condition.Message), "condition message");
-            Require(!string.IsNullOrWhiteSpace(condition.Source.AdapterId), "condition adapter");
-            Require(!string.IsNullOrWhiteSpace(condition.Source.Owner), "condition owner");
-            Require(condition.AcceptedRevision > 0, "condition accepted revision");
-            Require(condition.Source.AuthorityRevision > 0, "condition authority revision");
-            Require(
-                condition.FreshUntilMs >= condition.ReceivedTimeMs,
-                "condition freshness");
+            ValidateCondition(condition);
         }
 
         foreach (var (key, capability) in row.Capabilities.Capabilities)
@@ -229,6 +249,21 @@ public static class FleetProjectionValidation
                 capability.FreshUntilMs >= capability.ObservedAtMs,
                 "capability freshness");
         }
+    }
+
+    private static void ValidateCondition(StatusCondition condition)
+    {
+        Require(!string.IsNullOrWhiteSpace(condition.Family), "condition family");
+        Require(!string.IsNullOrWhiteSpace(condition.State), "condition state");
+        Require(!string.IsNullOrWhiteSpace(condition.Reason), "condition reason");
+        Require(!string.IsNullOrWhiteSpace(condition.Message), "condition message");
+        Require(!string.IsNullOrWhiteSpace(condition.Source.AdapterId), "condition adapter");
+        Require(!string.IsNullOrWhiteSpace(condition.Source.Owner), "condition owner");
+        Require(condition.AcceptedRevision > 0, "condition accepted revision");
+        Require(condition.Source.AuthorityRevision > 0, "condition authority revision");
+        Require(
+            condition.FreshUntilMs >= condition.ReceivedTimeMs,
+            "condition freshness");
     }
 
     private static void Require(bool condition, string field)

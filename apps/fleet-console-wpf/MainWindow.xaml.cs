@@ -47,6 +47,12 @@ public partial class MainWindow : Window
 
     public FrameworkElement InspectorRegion => InspectorPane;
 
+    public FrameworkElement FullDeviceDetailRegion => FullDetailRegion;
+
+    public TabControl FullDeviceDetailTabs => FullDetailTabs;
+
+    public Button ReturnToFleetControl => ReturnToFleetButton;
+
     protected override void OnClosed(EventArgs e)
     {
         _viewModel.SavedViewRestorationRequested -= RestoreSavedView;
@@ -70,6 +76,27 @@ public partial class MainWindow : Window
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .ToArray();
         await _viewModel.SaveCurrentViewAsync(columns, FocusedRegion());
+    }
+
+    private async void OnOpenFullDetail(object sender, RoutedEventArgs e)
+    {
+        if (await _viewModel.OpenFullDetailAsync())
+        {
+            ReturnToFleetButton.Focus();
+        }
+    }
+
+    private void OnReturnToFleet(object sender, RoutedEventArgs e) => ReturnToFleetView();
+
+    private void ReturnToFleetView()
+    {
+        _viewModel.CloseFullDetail();
+        if (_viewModel.SelectedDevice is { } selected)
+        {
+            FleetGrid.ScrollIntoView(selected);
+        }
+
+        FleetGrid.Focus();
     }
 
     private void RestoreSavedView(SavedView view)
@@ -117,6 +144,9 @@ public partial class MainWindow : Window
             case "inspector":
                 InspectorPane.Focus();
                 break;
+            case "detail" when _viewModel.IsDetailOpen:
+                FullDetailTabs.Focus();
+                break;
             case "grid":
                 FleetGrid.Focus();
                 break;
@@ -141,11 +171,40 @@ public partial class MainWindow : Window
             return "grid";
         }
 
+        if (FullDetailRegion.IsKeyboardFocusWithin)
+        {
+            return "detail";
+        }
+
         return InspectorPane.IsKeyboardFocusWithin ? "inspector" : "shell";
     }
 
     private async void OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (_viewModel.IsDetailOpen)
+        {
+            if (e.Key == Key.Escape)
+            {
+                ReturnToFleetView();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.F6)
+            {
+                if (ReturnToFleetButton.IsKeyboardFocusWithin)
+                {
+                    FullDetailTabs.Focus();
+                }
+                else
+                {
+                    ReturnToFleetButton.Focus();
+                }
+
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         if (e.Key == Key.F && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
         {
             SearchBox.Focus();
@@ -170,6 +229,16 @@ public partial class MainWindow : Window
         if (e.Key == Key.Space)
         {
             _viewModel.ToggleBatchSelection(selected);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter &&
+                 Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            await _viewModel.SelectDeviceAsync(selected);
+            if (await _viewModel.OpenFullDetailAsync())
+            {
+                ReturnToFleetButton.Focus();
+            }
             e.Handled = true;
         }
         else if (e.Key == Key.Enter)

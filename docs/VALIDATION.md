@@ -36,10 +36,11 @@ Quick is safe during normal editing and checks:
   preservation, empty-scope behavior, retained out-of-scope inspector
   context, applied-sort preservation, stable live ordering with explicit
   accessible application, saved-view query/grouping/selection/focus
-  restoration, accessible saved-view controls, safe shared-row value refresh, and mixed
+  and detail-tab restoration, accessible saved-view controls, canonical
+  full-detail projection and return-context preservation, safe shared-row value refresh, and mixed
   fresh/stale/offline state;
 - fail-closed non-loopback Hub, bounded response, mismatched-query, and
-  wrong-device inspector fixtures.
+  wrong-device inspector/detail fixtures.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
@@ -124,6 +125,7 @@ cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run --locked -p fleetctl -- list 4
+cargo run --locked -p fleetctl -- detail sim-00001 4
 cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
 cargo run --locked -p fleetctl -- saved-view-roundtrip 50
 dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release

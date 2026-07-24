@@ -133,6 +133,14 @@ internal static class Program
                     FleetProjectionValidation.ValidateInspector(
                         liveInspector,
                         liveRow);
+                    var liveDetail = liveClient.DetailAsync(
+                            liveRow.Identity.DeviceId,
+                            CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    FleetProjectionValidation.ValidateDetail(
+                        liveDetail,
+                        liveRow);
                 }
 
                 liveHubChecked = true;
@@ -196,6 +204,20 @@ internal static class Program
             Require(
                 inspector.Capabilities.Count >= 3,
                 "inspector did not preserve independent capabilities");
+            var selectedStableKey = first.StableKey;
+            var selectedBatchText = workspace.BatchSelectionText;
+            Require(
+                workspace.OpenFullDetailAsync("status").GetAwaiter().GetResult() &&
+                workspace.IsDetailOpen &&
+                workspace.SelectedDetailTab == "status" &&
+                workspace.Detail?.Title == first.DisplayName,
+                "full detail did not project the selected device");
+            workspace.CloseFullDetail();
+            Require(
+                !workspace.IsDetailOpen &&
+                workspace.SelectedDevice?.StableKey == selectedStableKey &&
+                workspace.BatchSelectionText == selectedBatchText,
+                "returning from full detail lost fleet context");
 
             workspace.SelectedSort = "Device name";
             workspace.SelectedSortDirection = "Descending";
@@ -304,13 +326,14 @@ internal static class Program
             savedWorkspace.ApplyScopeAsync().GetAwaiter().GetResult();
             var savedSelection = savedWorkspace.Rows.Single();
             savedWorkspace.SelectDeviceAsync(savedSelection).GetAwaiter().GetResult();
+            savedWorkspace.OpenFullDetailAsync("status").GetAwaiter().GetResult();
             savedWorkspace.SavedViewName = "Lab focus";
             savedWorkspace.SaveCurrentViewAsync(
                     [
                         "selection", "attention", "device", "age", "power",
                         "application"
                     ],
-                    "grid")
+                    "detail")
                 .GetAwaiter()
                 .GetResult();
             Require(
@@ -345,7 +368,13 @@ internal static class Program
                 "saved view did not restore the exact canonical query and grouping");
             Require(
                 savedWorkspace.SelectedDevice?.DeviceId == savedSelection.DeviceId &&
-                restoredEvent?.Restoration.FocusedRegion == "grid" &&
+                restoredEvent?.Restoration is
+                {
+                    FocusedRegion: "detail",
+                    InspectorTab: "status"
+                } &&
+                savedWorkspace.IsDetailOpen &&
+                savedWorkspace.SelectedDetailTab == "status" &&
                 savedWorkspace.ActiveScopeText.StartsWith(
                     "Saved view “Lab focus”",
                     StringComparison.Ordinal),
@@ -516,6 +545,27 @@ internal static class Program
                     StringComparison.Ordinal),
                 "wrong-device inspector evidence replaced the cached identity");
 
+            var mismatchedDetailWorkspace = new FleetWorkspaceViewModel(
+                new StaticFleetDataSource(projection, wrongDetailIdentity: true));
+            mismatchedDetailWorkspace.InitializeAsync().GetAwaiter().GetResult();
+            var mismatchedDetailRow = mismatchedDetailWorkspace.Rows[0];
+            mismatchedDetailWorkspace
+                .SelectDeviceAsync(mismatchedDetailRow)
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                !mismatchedDetailWorkspace
+                    .OpenFullDetailAsync()
+                    .GetAwaiter()
+                    .GetResult() &&
+                !mismatchedDetailWorkspace.IsDetailOpen &&
+                mismatchedDetailWorkspace.SelectedDevice?.StableKey ==
+                mismatchedDetailRow.StableKey &&
+                mismatchedDetailWorkspace.StatusMessage.Contains(
+                    "fleet context retained",
+                    StringComparison.Ordinal),
+                "wrong-device detail evidence did not fail closed");
+
             var presentWindow = arguments.Contains("--present", StringComparer.Ordinal);
             var windowWatch = Stopwatch.StartNew();
             var window = new MainWindow(workspace)
@@ -543,6 +593,7 @@ internal static class Program
             window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
             windowWatch.Stop();
             var renderPath = ReadOptionalValue(arguments, "--render");
+            var detailRenderPath = ReadOptionalValue(arguments, "--render-detail");
             if (renderPath is not null)
             {
                 RenderVisual(rootVisual, renderPath);
@@ -617,6 +668,41 @@ internal static class Program
                 "native DataGrid automation peer was not preserved");
             Require(peer.GetName() == "Fleet devices", "automation peer lost grid name");
 
+            var detailContextKey = workspace.SelectedDevice?.StableKey;
+            var detailBatchContext = workspace.BatchSelectionText;
+            Require(
+                workspace.OpenFullDetailAsync("history").GetAwaiter().GetResult(),
+                "full-detail window projection failed");
+            window.Dispatcher.Invoke(() => { }, DispatcherPriority.DataBind);
+            rootVisual.UpdateLayout();
+            if (detailRenderPath is not null)
+            {
+                RenderVisual(rootVisual, detailRenderPath);
+            }
+            Require(
+                window.FullDeviceDetailRegion.Visibility == Visibility.Visible &&
+                AutomationProperties.GetName(window.FullDeviceDetailRegion) ==
+                "Full device detail" &&
+                window.FullDeviceDetailTabs.SelectedValue?.ToString() == "history",
+                "full-detail region or saved tab lacked accessible state");
+            Require(
+                AutomationProperties.GetName(window.ReturnToFleetControl) ==
+                "Return to fleet view" &&
+                window.ReturnToFleetControl.IsEnabled,
+                "full-detail return control is inaccessible");
+            var returnPeer = new ButtonAutomationPeer(window.ReturnToFleetControl);
+            var returnProvider =
+                returnPeer.GetPattern(PatternInterface.Invoke) as IInvokeProvider ??
+                throw new InvalidOperationException(
+                    "full-detail return control has no UI Automation invoke pattern");
+            returnProvider.Invoke();
+            window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+            Require(
+                window.FullDeviceDetailRegion.Visibility == Visibility.Collapsed &&
+                workspace.SelectedDevice?.StableKey == detailContextKey &&
+                workspace.BatchSelectionText == detailBatchContext,
+                "full-detail return did not preserve fleet scope and selection");
+
             if (presentWindow && window.IsVisible)
             {
                 var presentationFrame = new DispatcherFrame();
@@ -665,6 +751,7 @@ internal static class Program
                 saved_view_crud = true,
                 saved_view_exact_query_restored = true,
                 saved_view_navigation_restored = true,
+                saved_view_detail_tab_restored = true,
                 empty_scope_preserved = true,
                 grouped_virtualization = true,
                 stable_live_ordering = true,
@@ -672,10 +759,15 @@ internal static class Program
                 safe_in_place_value_refresh = true,
                 hidden_selection_preserved = true,
                 inspector_outside_scope_preserved = true,
+                full_detail_parity = true,
+                full_detail_identity_fail_closed = true,
+                full_detail_context_restored = true,
+                full_detail_accessible = true,
                 theme_dependency = "none",
                 batch_selection_preserved = true,
                 inspector_capability_families = inspector.Capabilities.Count,
-                rendered_image = renderPath
+                rendered_image = renderPath,
+                rendered_detail_image = detailRenderPath
             };
             Console.WriteLine(JsonSerializer.Serialize(receipt, new JsonSerializerOptions
             {
@@ -881,7 +973,8 @@ internal static class Program
         FleetQueryResult projection,
         FleetSummaryProjection? canonicalSummary = null,
         bool echoQuery = true,
-        bool wrongInspectorIdentity = false) : IFleetDataSource
+        bool wrongInspectorIdentity = false,
+        bool wrongDetailIdentity = false) : IFleetDataSource
     {
         private readonly SortedDictionary<string, SavedView> _savedViews =
             new(StringComparer.Ordinal);
@@ -1022,6 +1115,33 @@ internal static class Program
                         "stale" or "unauthorized" or "restricted" or "degraded" or
                         "failed" or "critical")
                     .ToArray()
+            });
+        }
+
+        public Task<DeviceDetailProjection> DetailAsync(
+            string deviceId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var row = wrongDetailIdentity
+                ? Projection.Rows.First(item => item.Identity.DeviceId != deviceId)
+                : Projection.Rows.Single(item => item.Identity.DeviceId == deviceId);
+            var inspector = new DeviceInspectorProjection
+            {
+                Schema = "rusty.fleet.device_inspector.v1",
+                Row = row,
+                Attention = row.Conditions.Values
+                    .Where(condition => condition.State is
+                        "stale" or "unauthorized" or "restricted" or "degraded" or
+                        "failed" or "critical")
+                    .ToArray()
+            };
+            return Task.FromResult(new DeviceDetailProjection
+            {
+                Schema = "rusty.fleet.device_detail.v1",
+                Inspector = inspector,
+                ConditionHistory = row.Conditions.Values.ToArray(),
+                OperationHistory = []
             });
         }
 

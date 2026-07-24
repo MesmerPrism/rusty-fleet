@@ -45,6 +45,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private bool _isBusy;
     private DeviceRowViewModel? _selectedDevice;
     private DeviceInspectorViewModel? _inspector;
+    private DeviceDetailViewModel? _detail;
+    private bool _isDetailOpen;
+    private string _selectedDetailTab = "overview";
     private string? _inspectedStableKey;
     private CancellationTokenSource? _requestCancellation;
     private FleetQueryResult? _queuedResult;
@@ -255,6 +258,30 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         private set => SetProperty(ref _inspector, value);
     }
 
+    public DeviceDetailViewModel? Detail
+    {
+        get => _detail;
+        private set => SetProperty(ref _detail, value);
+    }
+
+    public bool IsDetailOpen
+    {
+        get => _isDetailOpen;
+        private set => SetProperty(ref _isDetailOpen, value);
+    }
+
+    public string SelectedDetailTab
+    {
+        get => _selectedDetailTab;
+        set
+        {
+            if (IsSupportedDetailTab(value))
+            {
+                SetProperty(ref _selectedDetailTab, value);
+            }
+        }
+    }
+
     public string BatchSelectionText
     {
         get
@@ -283,6 +310,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
     public async Task SelectDeviceAsync(DeviceRowViewModel? device)
     {
+        CloseFullDetail();
         SelectedDevice = device;
         if (device is null)
         {
@@ -320,6 +348,58 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         {
             StatusMessage = $"Inspector retained cached row · {error.Message}";
         }
+    }
+
+    public async Task<bool> OpenFullDetailAsync(string tab = "overview")
+    {
+        var device = SelectedDevice;
+        if (device is null || _source is null)
+        {
+            StatusMessage = "Select a device before opening full detail";
+            return false;
+        }
+
+        try
+        {
+            var projection = await _source.DetailAsync(
+                device.DeviceId,
+                CancellationToken.None);
+            FleetProjectionValidation.ValidateDetail(projection, device.Projection);
+            if (SelectedDevice?.StableKey != device.StableKey)
+            {
+                StatusMessage = "Full detail was discarded because selection changed";
+                return false;
+            }
+
+            Detail = new DeviceDetailViewModel(projection);
+            SelectedDetailTab = IsSupportedDetailTab(tab) ? tab : "overview";
+            IsDetailOpen = true;
+            StatusMessage =
+                $"Full detail · {device.DisplayName} · accepted revision " +
+                device.Projection.AcceptedRevision;
+            return true;
+        }
+        catch (Exception error) when (
+            error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException)
+        {
+            Detail = null;
+            IsDetailOpen = false;
+            StatusMessage = $"Full detail unavailable · fleet context retained · {error.Message}";
+            return false;
+        }
+    }
+
+    public void CloseFullDetail()
+    {
+        if (!IsDetailOpen && Detail is null)
+        {
+            return;
+        }
+
+        IsDetailOpen = false;
+        Detail = null;
+        SelectedDetailTab = "overview";
     }
 
     public void ToggleBatchSelection(DeviceRowViewModel? device)
@@ -709,7 +789,11 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             Restoration = new NavigationRestoration
             {
                 SelectedDeviceId = SelectedDevice?.DeviceId,
-                InspectorTab = SelectedDevice is null ? null : "overview",
+                InspectorTab = SelectedDevice is null
+                    ? null
+                    : IsDetailOpen
+                        ? SelectedDetailTab
+                        : "overview",
                 ScrollAnchorDeviceId = SelectedDevice?.DeviceId,
                 FocusedRegion = focusedRegion,
                 CollapsedGroups = []
@@ -787,6 +871,13 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             : Rows.FirstOrDefault(row =>
                 row.DeviceId == view.Restoration.SelectedDeviceId);
         await SelectDeviceAsync(restoredDevice);
+        if (restoredDevice is not null &&
+            view.Restoration.InspectorTab is { } tab &&
+            tab != "overview" &&
+            IsSupportedDetailTab(tab))
+        {
+            await OpenFullDetailAsync(tab);
+        }
         SavedViewRestorationRequested?.Invoke(view);
 
         var skipped = new List<string>();
@@ -794,9 +885,10 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         {
             skipped.Add("advanced filter is exact but read-only in the simple scope editor");
         }
-        if (view.Restoration.InspectorTab is not null and not "overview")
+        if (view.Restoration.InspectorTab is { } unavailableTab &&
+            !IsSupportedDetailTab(unavailableTab))
         {
-            skipped.Add($"inspector tab “{view.Restoration.InspectorTab}” is not available in M1");
+            skipped.Add($"inspector tab “{unavailableTab}” is not available in M1");
         }
         if (view.Restoration.CollapsedGroups.Count > 0)
         {
@@ -809,7 +901,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         }
         if (view.Restoration.FocusedRegion is not null &&
             view.Restoration.FocusedRegion is not
-                ("shell" or "search" or "saved_views" or "grid" or "inspector"))
+                ("shell" or "search" or "saved_views" or "grid" or "inspector" or "detail"))
         {
             skipped.Add($"focus region “{view.Restoration.FocusedRegion}” is unavailable");
         }
@@ -1054,6 +1146,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             "application" => "Application",
             _ => "None"
         };
+
+    private static bool IsSupportedDetailTab(string value) =>
+        value is "overview" or "status" or "capabilities" or "work" or "streams" or "history";
 
     private static bool TryProjectSimpleScope(
         FleetQuery query,

@@ -233,13 +233,13 @@ The current M1 implementation establishes the bounded ownership foundation:
 Fleet Hub stores at most 128 views behind an optimistic collection revision
 and the local runtime includes them in durable two-slot recovery. The WPF
 adapter currently captures the exact query, sort, grouping, visible column
-order, standard density, selected device, overview inspector tab, scroll
-anchor, and focus region. It applies the exact query even when a future
+order, standard density, selected device, supported detail tab, scroll anchor,
+and focus region. It applies the exact query even when a future
 advanced expression cannot be edited by the current simple controls, and
-reports unsupported density, tab, group-collapse, column, or focus details.
+reports unsupported density, group-collapse, column, or focus details.
 Column widths, inspector pinning, time-display preference, sharing/ownership,
-and full-detail deep links remain planned extensions; they are not stored in
-hidden UI state.
+and externally addressable full-detail deep links remain planned extensions;
+they are not stored in hidden UI state.
 
 ### Stable ordering
 
@@ -298,6 +298,15 @@ Inspector tabs are:
 Full device detail adds enrollment identity and rotation, complete adapter
 evidence, longer command/media history, audit lineage, exports, and the
 QuestIonAble File Manager deep link when authorized.
+
+The current M1 full-detail slice intentionally projects only evidence already
+owned by the canonical `rusty.fleet.device_detail.v1` response: overview,
+status, capabilities, work history, stream summary, and retained condition
+history. It does not activate commands, streams, ADB, or file access. The WPF
+overlay leaves the fleet collection loaded underneath it, so `Esc` or the
+visible return control restores the exact applied scope, stable selected
+identity, batch selection, ordering, and scroll context. `Ctrl+Enter` opens it
+from the focused row.
 
 Before a scientific recording begins, the Streams surface presents a
 recording preflight with required/optional stream readiness, ambiguity and
@@ -525,8 +534,11 @@ control. Applying the latest queued snapshot preserves identity-based hidden
 selection and cached inspection. The same checkpoint stores a bounded,
 revisioned saved-view collection in Fleet Hub and its durable local snapshot.
 The WPF adapter captures and restores the exact query, grouping, visible
-column order, selected device, scroll anchor, and focus region while reporting
-newer unsupported navigation details. The canonical operator fixture supplies 500
+column order, selected device, scroll anchor, supported detail tab, and focus
+region while reporting newer unsupported navigation details. It also
+validates and projects the canonical full-device detail response, rejects
+wrong-device evidence, and returns to the unchanged fleet context. The
+canonical operator fixture supplies 500
 fresh, 250 stale, and 250 offline rows plus deterministic low-power and
 capability-downgrade states; an unknown-freshness filter verifies the
 zero-match state without clearing hidden selection or cached inspection. A

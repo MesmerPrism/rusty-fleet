@@ -119,8 +119,9 @@ revision remains monotonic.
 ## Native Fleet Console
 
 `apps/fleet-console-wpf` is the first human projection over the same canonical
-Hub query, summary, and inspector routes used by `fleetctl`. It is inert at
-startup and accepts only an explicitly entered loopback HTTP Hub address.
+Hub query, summary, inspector, and full-detail projections used by `fleetctl`.
+It is inert at startup and accepts only an explicitly entered loopback HTTP
+Hub address.
 
 The M1 workspace uses the native WPF `DataGrid` and native UI Automation peer
 without a theme dependency. It provides:
@@ -132,9 +133,9 @@ without a theme dependency. It provides:
 - revisioned saved-view list/create/update/delete controls over the Hub-owned
   collection, with exact canonical-query replay and no WPF-only persistence;
 - capture and replay of grouping, visible column order, selected device,
-  scroll anchor, and keyboard-focus region; unsupported future density,
-  inspector-tab, grouping, or collapsed-group state is reported rather than
-  silently reinterpreted;
+  scroll anchor, detail tab, and keyboard-focus region; unsupported future
+  density, grouping, or collapsed-group state is reported rather than silently
+  reinterpreted;
 - inspection selection that is separate from batch membership;
 - pointer, keyboard, and UI Automation batch-toggle paths that update the same
   visible selection scope;
@@ -146,8 +147,12 @@ without a theme dependency. It provides:
 - a persistent inspector for independent observations, capabilities,
   condition provenance, work, and streams, retained as cached evidence when
   the selected device falls outside the applied scope;
+- full-device detail over the bounded canonical detail response, with
+  overview, status, capabilities, work, streams, and retained condition
+  history; returning retains the applied query, visible order, selected
+  identity, batch selection, and scroll context;
 - keyboard search (`Ctrl+F`), region navigation (`F6`), inspection (`Enter`),
-  and batch-toggle (`Space`);
+  full detail (`Ctrl+Enter`), detail return (`Esc`), and batch-toggle (`Space`);
 - system color resources, visible text labels, stable accessible names, and
   native grid and inspector automation peers.
 
@@ -156,6 +161,9 @@ budget. Before changing visible state, the Console verifies the exact query
 receipt, result window, row/identity invariants, summary counts, bounded
 condition/capability families, and selected inspector identity. Invalid
 evidence leaves the last accepted projection visible and reports the failure.
+Full detail additionally validates the exact selected identity, the 128-entry
+condition-history bound, the 1,000-entry operation-history bound, and minimum
+operation-ledger identity before opening.
 
 The package-free validation executable consumes the real 1,000-device
 `fleetctl` mixed-freshness operator projection: 500 fresh, 250 stale, and 250
@@ -168,10 +176,13 @@ application, safe in-place value refresh, native automation, bounded realized
 containers, 12 declared columns, and independent capability families. A
 presented-window input pass verifies that `Ctrl+F` focuses search, `F6`
 reaches the fleet grid, `Space` changes batch membership, and `Enter` exposes
-focus through the inspector automation peer. The suite records measured
+focus through the inspector automation peer. Off-screen UI Automation also
+verifies the full-detail region and return control, tab restoration, exact
+fleet-context preservation, and fail-closed wrong-device detail evidence. The
+suite records measured
 timings but does not convert one run into a supported-scale claim. It also
 rejects non-loopback Hub addresses, mismatched query receipts, and
-wrong-device inspector evidence. Narrator, high-contrast, text-size, and
+wrong-device inspector or detail evidence. Narrator, high-contrast, text-size, and
 multi-scaling checks remain manual M1 acceptance gates.
 
 `fleetctl saved-view-roundtrip [count]` exercises the same in-process

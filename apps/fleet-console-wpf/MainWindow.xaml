@@ -37,6 +37,16 @@
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Margin" Value="0,6,0,0" />
         </Style>
+        <DataTemplate x:Key="EvidenceFactTemplate">
+            <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="{Binding Label}"
+                           Style="{StaticResource InspectorLabel}" />
+                <TextBlock Text="{Binding Value}" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Detail}"
+                           TextWrapping="Wrap"
+                           Opacity="0.72" />
+            </StackPanel>
+        </DataTemplate>
     </Window.Resources>
 
     <Grid Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
@@ -293,7 +303,7 @@
                       VirtualizingPanel.IsVirtualizingWhenGrouping="True"
                       VirtualizingPanel.VirtualizationMode="Recycling"
                       AutomationProperties.Name="Fleet devices"
-                      AutomationProperties.HelpText="Use arrow keys to move, Enter to inspect, and Space to toggle batch selection."
+                      AutomationProperties.HelpText="Use arrow keys to move, Enter to inspect, Ctrl+Enter for full detail, and Space to toggle batch selection."
                       SelectionChanged="OnFleetSelectionChanged">
                 <DataGrid.Columns>
                     <DataGridTemplateColumn Header="Select"
@@ -425,6 +435,22 @@
                                TextWrapping="Wrap"
                                Opacity="0.72"
                                AutomationProperties.Name="{Binding InspectorContextText}" />
+                    <Button x:Name="OpenFullDetailButton"
+                            Content="Open full detail"
+                            HorizontalAlignment="Left"
+                            Margin="0,10,0,0"
+                            Click="OnOpenFullDetail"
+                            AutomationProperties.Name="Open full detail for selected device">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SelectedDevice}" Value="{x:Null}">
+                                        <Setter Property="IsEnabled" Value="False" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
 
                     <TextBlock Text="Attention"
                                Style="{StaticResource InspectorHeading}" />
@@ -492,5 +518,124 @@
                 </StackPanel>
             </ScrollViewer>
         </Border>
+
+        <Grid x:Name="FullDetailRegion"
+              Grid.Column="1"
+              Grid.ColumnSpan="2"
+              Panel.ZIndex="10"
+              Margin="0"
+              Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+              AutomationProperties.Name="Full device detail"
+              AutomationProperties.HelpText="Detailed accepted evidence for the selected device. Return restores the exact fleet view.">
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsDetailOpen}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <DockPanel Grid.Row="0"
+                       Margin="20,14,20,8"
+                       LastChildFill="False">
+                <Button x:Name="ReturnToFleetButton"
+                        DockPanel.Dock="Left"
+                        Content="← Return to fleet view"
+                        Click="OnReturnToFleet"
+                        AutomationProperties.Name="Return to fleet view" />
+            </DockPanel>
+            <StackPanel Grid.Row="1" Margin="22,0,22,12">
+                <TextBlock Text="{Binding Detail.Title}"
+                           FontSize="26"
+                           FontWeight="SemiBold"
+                           TextWrapping="Wrap"
+                           AutomationProperties.Name="{Binding Detail.Title}" />
+                <TextBlock Text="{Binding Detail.Identity}"
+                           Margin="0,4,0,0"
+                           TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Detail.Freshness}"
+                           Margin="0,3,0,0"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+            <TabControl x:Name="FullDetailTabs"
+                        Grid.Row="2"
+                        Margin="20,0,20,16"
+                        SelectedValuePath="Tag"
+                        SelectedValue="{Binding SelectedDetailTab, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        AutomationProperties.Name="Device detail sections">
+                <TabItem Header="Overview" Tag="overview">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device detail overview">
+                        <StackPanel Margin="12">
+                            <TextBlock Text="Attention"
+                                       Style="{StaticResource InspectorHeading}" />
+                            <TextBlock Text="{Binding Detail.Attention}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8" />
+                            <ItemsControl ItemsSource="{Binding Detail.Overview}"
+                                          ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Status" Tag="status">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device status conditions">
+                        <ItemsControl Margin="12"
+                                      ItemsSource="{Binding Detail.Status}"
+                                      ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Capabilities" Tag="capabilities">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device capabilities">
+                        <ItemsControl Margin="12"
+                                      ItemsSource="{Binding Detail.Capabilities}"
+                                      ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Work" Tag="work">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device operation history">
+                        <StackPanel Margin="12">
+                            <TextBlock Text="{Binding Detail.WorkSummary}"
+                                       Margin="0,0,0,8" />
+                            <ItemsControl ItemsSource="{Binding Detail.Work}"
+                                          ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="Streams" Tag="streams">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device stream evidence">
+                        <StackPanel Margin="12">
+                            <TextBlock Text="{Binding Detail.Streams}"
+                                       TextWrapping="Wrap" />
+                            <TextBlock Text="Only accepted stream summaries are shown. No stream is started by opening this page."
+                                       Margin="0,8,0,0"
+                                       TextWrapping="Wrap"
+                                       Opacity="0.72" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+                <TabItem Header="History" Tag="history">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  AutomationProperties.Name="Device condition history">
+                        <StackPanel Margin="12">
+                            <TextBlock Text="{Binding Detail.HistorySummary}"
+                                       Margin="0,0,0,8" />
+                            <ItemsControl ItemsSource="{Binding Detail.History}"
+                                          ItemTemplate="{StaticResource EvidenceFactTemplate}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+            </TabControl>
+        </Grid>
     </Grid>
 </Window>

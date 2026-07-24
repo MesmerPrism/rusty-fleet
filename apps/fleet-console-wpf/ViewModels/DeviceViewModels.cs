@@ -3,6 +3,7 @@
 
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using RustyFleet.FleetConsole.Contracts;
 
 namespace RustyFleet.FleetConsole.ViewModels;
@@ -374,7 +375,7 @@ public sealed class DeviceInspectorViewModel
         $"{DeviceRowViewModel.Title(capability.Reachability)} · " +
         DeviceRowViewModel.Title(capability.Freshness);
 
-    private static string FormatInstant(long value)
+    internal static string FormatInstant(long value)
     {
         try
         {
@@ -386,5 +387,85 @@ public sealed class DeviceInspectorViewModel
         {
             return value.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
+    }
+}
+
+public sealed class DeviceDetailViewModel
+{
+    public DeviceDetailViewModel(DeviceDetailProjection projection)
+    {
+        Inspector = new DeviceInspectorViewModel(projection.Inspector);
+        Title = Inspector.Title;
+        Identity = Inspector.Identity;
+        Freshness = Inspector.Freshness;
+        Attention = Inspector.Attention;
+        Overview = Inspector.Facts;
+        Capabilities = Inspector.Capabilities;
+        Status = Inspector.Conditions;
+        Streams = Inspector.Streams;
+        WorkSummary = projection.OperationHistory.Count == 0
+            ? "No recorded operations"
+            : $"{projection.OperationHistory.Count} recorded operations";
+        Work = projection.OperationHistory
+            .Select(OperationFact)
+            .ToArray();
+        History = projection.ConditionHistory
+            .OrderByDescending(condition => condition.ReceivedTimeMs)
+            .Select(condition => new InspectorFact(
+                DeviceRowViewModel.Title(condition.Family),
+                $"{DeviceRowViewModel.Title(condition.State)} · " +
+                DeviceInspectorViewModel.FormatInstant(condition.ReceivedTimeMs),
+                $"{condition.Message}; reason {condition.Reason}; owner " +
+                $"{condition.Source.Owner}; accepted revision " +
+                condition.AcceptedRevision))
+            .ToArray();
+        HistorySummary = History.Count == 0
+            ? "No retained condition transitions"
+            : $"{History.Count} retained condition transitions";
+    }
+
+    public DeviceInspectorViewModel Inspector { get; }
+
+    public string Title { get; }
+
+    public string Identity { get; }
+
+    public string Freshness { get; }
+
+    public string Attention { get; }
+
+    public IReadOnlyList<InspectorFact> Overview { get; }
+
+    public IReadOnlyList<InspectorFact> Capabilities { get; }
+
+    public IReadOnlyList<InspectorFact> Status { get; }
+
+    public string Streams { get; }
+
+    public string WorkSummary { get; }
+
+    public IReadOnlyList<InspectorFact> Work { get; }
+
+    public string HistorySummary { get; }
+
+    public IReadOnlyList<InspectorFact> History { get; }
+
+    private static InspectorFact OperationFact(JsonElement operation)
+    {
+        var operationId = operation.GetProperty("operation_id").GetString() ??
+                          "Unknown operation";
+        var actionId = operation.GetProperty("action_id").GetString() ??
+                       "Unknown action";
+        var lifecycle = operation.TryGetProperty("lifecycle", out var lifecycleElement)
+            ? lifecycleElement.GetString() ?? "unknown"
+            : "unknown";
+        var createdAt = operation.TryGetProperty("created_at_ms", out var createdElement) &&
+                        createdElement.TryGetInt64(out var createdAtMs)
+            ? DeviceInspectorViewModel.FormatInstant(createdAtMs)
+            : "unknown time";
+        return new InspectorFact(
+            operationId,
+            DeviceRowViewModel.Title(lifecycle),
+            $"Action {actionId}; created {createdAt}");
     }
 }

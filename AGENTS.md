@@ -46,10 +46,10 @@ Live device work is never implied by a source or documentation task.
 - `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator, and
   damage scenarios;
 - `apps/fleetctl`: structured JSON CLI and saved-view parity projection over
-  the same in-process API;
+  the same in-process list/inspect/detail/watch API;
 - `apps/fleet-console-wpf`: native WPF fleet table, canonical
   scope/sort/grouping/saved-view controls, queued live ordering, persistent
-  inspector, and loopback-only local API projection;
+  inspector, full-device detail, and loopback-only local API projection;
 - `apps/fleet-console-wpf.tests`: package-free native DataGrid, UI Automation,
   stable-context/order, grouped virtualization, presented keyboard, and
   1,000-device scale validation;

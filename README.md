@@ -20,7 +20,11 @@ live membership, ordering, or grouping changes while shared row values
 refresh in place. Fleet Hub now also owns a bounded, revisioned, durably
 restored saved-view collection; the Console captures and reapplies the exact
 query, grouping, visible column order, selected device, scroll anchor, and
-focus region without creating WPF-only authority. Its package-free
+focus region without creating WPF-only authority. The same checkpoint adds
+structured `fleetctl detail` parity and a keyboard-accessible full-device
+detail surface with overview, status, capability, work, stream, and retained
+condition-history tabs; returning preserves the exact fleet scope, selection,
+scroll anchor, and stable identity. Its package-free
 1,000-device and presented-window
 keyboard/UI Automation checks pass. Manual Narrator, high-contrast, scaling,
 final M1 consolidation, media, and remote relay remain pending.
@@ -71,12 +75,13 @@ The current implementation is split into:
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
   mutations;
-- `fleetctl`: structured JSON projection and saved-view parity fixtures over
-  the same in-process API;
+- `fleetctl`: structured JSON list/inspect/detail/watch projections and
+  saved-view parity fixtures over the same in-process API;
 - `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical
   scope/sort/grouping, revisioned saved-view controls, stable live-order
   application, distinct inspection and batch selection, and a persistent
-  selected-device inspector over the canonical local API;
+  selected-device inspector plus full-device detail over the canonical local
+  API;
 - `fleet-console-wpf.tests`: package-free native UI Automation,
   grouped virtualization, stable-context/order, capability-family, presented
   keyboard, and 1,000-device checks.
@@ -129,6 +134,7 @@ Inspect the deterministic four-device projection:
 ```powershell
 cargo run --locked -p fleetctl -- list 4
 cargo run --locked -p fleetctl -- inspect sim-00001 4
+cargo run --locked -p fleetctl -- detail sim-00001 4
 cargo run --locked -p fleetctl -- watch 4
 cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
 cargo run --locked -p fleetctl -- saved-view-roundtrip 50
