@@ -147,6 +147,43 @@
                 <Grid Margin="0,6,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Saved view"
+                               Margin="0,0,8,0"
+                               VerticalAlignment="Center" />
+                    <ComboBox x:Name="SavedViewBox"
+                              Grid.Column="1"
+                              ItemsSource="{Binding SavedViews}"
+                              SelectedItem="{Binding SelectedSavedView}"
+                              DisplayMemberPath="Name"
+                              AutomationProperties.Name="Saved fleet view" />
+                    <TextBox x:Name="SavedViewNameBox"
+                             Grid.Column="2"
+                             Margin="8,0,8,0"
+                             Text="{Binding SavedViewName, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Saved-view name"
+                             AutomationProperties.HelpText="Enter a name to create or update a canonical Fleet Hub saved view." />
+                    <Button Grid.Column="3"
+                            Content="Save current"
+                            Click="OnSaveCurrentView"
+                            AutomationProperties.Name="Save current fleet view" />
+                    <Button Grid.Column="4"
+                            Content="Apply"
+                            Command="{Binding ApplySavedViewCommand}"
+                            AutomationProperties.Name="Apply selected saved view" />
+                    <Button Grid.Column="5"
+                            Content="Delete"
+                            Command="{Binding DeleteSavedViewCommand}"
+                            AutomationProperties.Name="Delete selected saved view" />
+                </Grid>
+                <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="120" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="140" />
@@ -259,7 +296,9 @@
                       AutomationProperties.HelpText="Use arrow keys to move, Enter to inspect, and Space to toggle batch selection."
                       SelectionChanged="OnFleetSelectionChanged">
                 <DataGrid.Columns>
-                    <DataGridTemplateColumn Header="Select" Width="72">
+                    <DataGridTemplateColumn Header="Select"
+                                            SortMemberPath="selection"
+                                            Width="72">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <CheckBox IsChecked="{Binding IsBatchSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -271,36 +310,47 @@
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
                     <DataGridTextColumn Header="Attention"
+                                        SortMemberPath="attention"
                                         Width="100"
                                         Binding="{Binding AttentionSummary}" />
                     <DataGridTextColumn Header="Device"
+                                        SortMemberPath="device"
                                         Width="220"
                                         Binding="{Binding DeviceSummary}" />
                     <DataGridTextColumn Header="Age"
+                                        SortMemberPath="age"
                                         Width="88"
                                         Binding="{Binding FreshnessText}" />
                     <DataGridTextColumn Header="Route"
+                                        SortMemberPath="route"
                                         Width="112"
                                         Binding="{Binding RouteText}" />
                     <DataGridTextColumn Header="Power"
+                                        SortMemberPath="power"
                                         Width="112"
                                         Binding="{Binding PowerText}" />
                     <DataGridTextColumn Header="App / Kiosk"
+                                        SortMemberPath="application"
                                         Width="220"
                                         Binding="{Binding AppKioskText}" />
                     <DataGridTextColumn Header="Control"
+                                        SortMemberPath="control"
                                         Width="190"
                                         Binding="{Binding ControlText}" />
                     <DataGridTextColumn Header="Privileged"
+                                        SortMemberPath="privileged"
                                         Width="150"
                                         Binding="{Binding PrivilegedText}" />
                     <DataGridTextColumn Header="Streams"
+                                        SortMemberPath="streams"
                                         Width="110"
                                         Binding="{Binding StreamsText}" />
                     <DataGridTextColumn Header="Work"
+                                        SortMemberPath="work"
                                         Width="100"
                                         Binding="{Binding WorkText}" />
                     <DataGridTextColumn Header="Tags / cohort"
+                                        SortMemberPath="tags"
                                         Width="160"
                                         Binding="{Binding TagsText}" />
                 </DataGrid.Columns>

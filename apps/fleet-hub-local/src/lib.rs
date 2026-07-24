@@ -20,7 +20,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use fleet_contracts::{FleetQuery, SignedFleetCheckIn};
+use fleet_contracts::{FleetQuery, SavedViewMutationRequest, SignedFleetCheckIn};
 use fleet_hub::{FleetApi, FleetHub, FleetHubSnapshot, HubPolicy};
 use fleet_manifold_adapter::{FleetManifoldAdapter, FleetManifoldAdapterSnapshot};
 use rusty_manifold_model::{DottedId, SchemaId};
@@ -41,6 +41,7 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHECKIN_BYTES: usize = 256 * 1024;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
+const MAX_SAVED_VIEW_BYTES: usize = 128 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 64;
 const RATE_WINDOW_MS: i64 = 10_000;
 const MAX_GLOBAL_CHECKINS_PER_WINDOW: usize = 4_096;
@@ -417,6 +418,11 @@ struct WatchQuery {
     limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct SavedViewRevisionQuery {
+    expected_revision: u64,
+}
+
 fn default_watch_limit() -> usize {
     100
 }
@@ -427,6 +433,13 @@ pub fn router(state: LocalHubState) -> Router {
         .route("/fleet/v1/checkins", post(checkin))
         .route("/fleet/v1/query", post(query_devices))
         .route("/fleet/v1/summary", get(summary))
+        .route("/fleet/v1/saved-views", get(saved_views))
+        .route(
+            "/fleet/v1/saved-views/{view_id}",
+            get(saved_view)
+                .put(upsert_saved_view)
+                .delete(delete_saved_view),
+        )
         .route("/fleet/v1/devices/{device_id}", get(device_detail))
         .route("/fleet/v1/devices/{device_id}/inspect", get(device_inspect))
         .route("/fleet/v1/watch", get(watch))
@@ -606,6 +619,130 @@ async fn summary(State(state): State<LocalHubState>) -> Response {
     Json(runtime.hub.summary(now_ms)).into_response()
 }
 
+async fn saved_views(State(state): State<LocalHubState>) -> Response {
+    let runtime = state.runtime.lock().await;
+    Json(runtime.hub.saved_views()).into_response()
+}
+
+async fn saved_view(
+    State(state): State<LocalHubState>,
+    AxumPath(view_id): AxumPath<String>,
+) -> Response {
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.saved_view(&view_id) {
+        Ok(view) => Json(view).into_response(),
+        Err(error) => api_error(
+            StatusCode::NOT_FOUND,
+            "saved_view_not_found",
+            error.to_string(),
+        ),
+    }
+}
+
+async fn upsert_saved_view(
+    State(state): State<LocalHubState>,
+    AxumPath(view_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    if !is_json(request.headers()) {
+        return api_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "content_type_required",
+            "saved-view mutations require Content-Type: application/json",
+        );
+    }
+    let bytes = match bounded_body(request, MAX_SAVED_VIEW_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let mutation = match serde_json::from_slice::<SavedViewMutationRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_saved_view_json",
+                format!("saved-view mutation is not valid JSON: {error}"),
+            );
+        }
+    };
+    if mutation.view.view_id != view_id {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "saved_view_identity_mismatch",
+            "saved-view path and payload identities must match",
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        ..
+    } = &mut *runtime;
+    let mut candidate_hub = hub.clone();
+    let receipt = match candidate_hub.upsert_saved_view(mutation) {
+        Ok(receipt) => receipt,
+        Err(error) => return saved_view_error(error),
+    };
+    if receipt.changed {
+        if let Err(error) = state_store.persist(&candidate_hub, adapter, now_ms) {
+            return api_error(
+                StatusCode::INSUFFICIENT_STORAGE,
+                "durable_state_failed",
+                error,
+            );
+        }
+        *hub = candidate_hub;
+    }
+    Json(receipt).into_response()
+}
+
+async fn delete_saved_view(
+    State(state): State<LocalHubState>,
+    AxumPath(view_id): AxumPath<String>,
+    Query(query): Query<SavedViewRevisionQuery>,
+) -> Response {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        ..
+    } = &mut *runtime;
+    let mut candidate_hub = hub.clone();
+    let receipt = match candidate_hub.delete_saved_view(&view_id, query.expected_revision) {
+        Ok(receipt) => receipt,
+        Err(error) => return saved_view_error(error),
+    };
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(receipt).into_response()
+}
+
+fn saved_view_error(error: fleet_hub::HubError) -> Response {
+    let (status, code) = match error.code.as_str() {
+        "saved_view_not_found" => (StatusCode::NOT_FOUND, "saved_view_not_found"),
+        "saved_view_revision_conflict" => (StatusCode::CONFLICT, "saved_view_revision_conflict"),
+        "saved_view_limit_exceeded" => (StatusCode::CONFLICT, "saved_view_limit_exceeded"),
+        _ => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_saved_view"),
+    };
+    api_error(status, code, error.to_string())
+}
+
 async fn device_inspect(
     State(state): State<LocalHubState>,
     AxumPath(device_id): AxumPath<String>,
@@ -735,7 +872,8 @@ mod tests {
     use axum::http::{Request, StatusCode, header};
     use ed25519_dalek::{Signer, SigningKey};
     use fleet_contracts::{
-        CHECKIN_SIGNATURE_ALGORITHM, FleetCheckInClaims, FleetQuery, SignedFleetCheckIn,
+        CHECKIN_SIGNATURE_ALGORITHM, FleetCheckInClaims, FleetQuery, NavigationRestoration,
+        SavedView, SavedViewMutationRequest, SignedFleetCheckIn,
     };
     use fleet_simulator::ScenarioBuilder;
     use rusty_manifold_model::{DottedId, Revision, SchemaId};
@@ -891,6 +1029,105 @@ mod tests {
             .expect("request");
         let response = app.oneshot(oversize).await.expect("oversize response");
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn saved_view_routes_preserve_revision_and_durable_restoration() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let (config, _) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let app = router(LocalHubState::from_config(&config, now_ms).expect("valid config"));
+        let mutation = SavedViewMutationRequest {
+            schema: "rusty.fleet.saved_view_mutation_request.v1".to_owned(),
+            expected_revision: 1,
+            view: saved_view(),
+        };
+
+        let saved = app
+            .clone()
+            .oneshot(json_method_request(
+                "PUT",
+                "/fleet/v1/saved-views/view.needs_attention",
+                serde_json::to_vec(&mutation).expect("mutation JSON"),
+            ))
+            .await
+            .expect("saved-view response");
+        assert_eq!(saved.status(), StatusCode::OK);
+        let saved_body = to_bytes(saved.into_body(), 128 * 1024)
+            .await
+            .expect("saved-view body");
+        let saved_json: Value = serde_json::from_slice(&saved_body).expect("saved-view JSON");
+        assert_eq!(saved_json["previous_revision"], 1);
+        assert_eq!(saved_json["current_revision"], 2);
+        assert_eq!(saved_json["changed"], true);
+
+        let stale = app
+            .clone()
+            .oneshot(json_method_request(
+                "PUT",
+                "/fleet/v1/saved-views/view.needs_attention",
+                serde_json::to_vec(&mutation).expect("mutation JSON"),
+            ))
+            .await
+            .expect("stale mutation response");
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+        drop(app);
+        let restored =
+            router(LocalHubState::from_config(&config, now_ms + 10).expect("restored config"));
+        let listed = restored
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/fleet/v1/saved-views")
+                    .body(Body::empty())
+                    .expect("list request"),
+            )
+            .await
+            .expect("list response");
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed_body = to_bytes(listed.into_body(), 128 * 1024)
+            .await
+            .expect("list body");
+        let listed_json: Value = serde_json::from_slice(&listed_body).expect("list JSON");
+        assert_eq!(listed_json["revision"], 2);
+        assert_eq!(listed_json["views"][0]["view_id"], "view.needs_attention");
+        assert_eq!(
+            listed_json["views"][0]["restoration"]["focused_region"],
+            "grid"
+        );
+
+        let deleted = restored
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/fleet/v1/saved-views/view.needs_attention?expected_revision=2")
+                    .body(Body::empty())
+                    .expect("delete request"),
+            )
+            .await
+            .expect("delete response");
+        assert_eq!(deleted.status(), StatusCode::OK);
+        let deleted_body = to_bytes(deleted.into_body(), 128 * 1024)
+            .await
+            .expect("delete body");
+        let deleted_json: Value = serde_json::from_slice(&deleted_body).expect("delete JSON");
+        assert_eq!(deleted_json["current_revision"], 3);
+        assert_eq!(deleted_json["deleted"], true);
+
+        let missing = restored
+            .oneshot(
+                Request::builder()
+                    .uri("/fleet/v1/saved-views/view.needs_attention")
+                    .body(Body::empty())
+                    .expect("get request"),
+            )
+            .await
+            .expect("get response");
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
@@ -1087,9 +1324,44 @@ mod tests {
         }
     }
 
+    fn saved_view() -> SavedView {
+        SavedView {
+            schema: "rusty.fleet.saved_view.v1".to_owned(),
+            view_id: "view.needs_attention".to_owned(),
+            name: "Needs attention".to_owned(),
+            query: FleetQuery {
+                schema: "rusty.fleet.query.v1".to_owned(),
+                query_id: "query.needs_attention".to_owned(),
+                expression: None,
+                sort: Vec::new(),
+                offset: 0,
+                limit: 250,
+            },
+            columns: vec![
+                "device".to_owned(),
+                "age".to_owned(),
+                "attention".to_owned(),
+            ],
+            density: "standard".to_owned(),
+            grouping: None,
+            restoration: NavigationRestoration {
+                selected_device_id: Some("device.quest.1".to_owned()),
+                inspector_tab: Some("overview".to_owned()),
+                scroll_anchor_device_id: Some("device.quest.1".to_owned()),
+                focused_region: Some("grid".to_owned()),
+                collapsed_groups: Vec::new(),
+            },
+            schema_version: 1,
+        }
+    }
+
     fn json_request(uri: &str, body: Vec<u8>) -> Request<Body> {
+        json_method_request("POST", uri, body)
+    }
+
+    fn json_method_request(method: &str, uri: &str, body: Vec<u8>) -> Request<Body> {
         Request::builder()
-            .method("POST")
+            .method(method)
             .uri(uri)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))

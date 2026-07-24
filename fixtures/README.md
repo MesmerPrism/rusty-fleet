@@ -7,7 +7,9 @@ during validation. Large generated datasets are not committed.
 
 The simulator covers replay, reordering, staleness, offline projection,
 capability downgrade, partial families, malformed messages, and multi-device
-check-in. Fixture size is not a supported-scale claim.
+check-in. The saved-view pair covers exact canonical-query/navigation
+restoration and fail-closed bounds, duplication, density, and schema-version
+damage. Fixture size is not a supported-scale claim.
 
 Real device exports, endpoints, serials, logs, captures, and private payloads
 do not belong in this directory.

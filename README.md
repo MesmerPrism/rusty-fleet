@@ -17,7 +17,11 @@ freshness scope, Hub-owned sort choices, explicit
 cohort/model/freshness/application grouping, hidden-selection preservation,
 retained inspector context across scope changes, and an explicit queue for
 live membership, ordering, or grouping changes while shared row values
-refresh in place. Its package-free 1,000-device and presented-window
+refresh in place. Fleet Hub now also owns a bounded, revisioned, durably
+restored saved-view collection; the Console captures and reapplies the exact
+query, grouping, visible column order, selected device, scroll anchor, and
+focus region without creating WPF-only authority. Its package-free
+1,000-device and presented-window
 keyboard/UI Automation checks pass. Manual Narrator, high-contrast, scaling,
 final M1 consolidation, media, and remote relay remain pending.
 
@@ -57,20 +61,22 @@ The current implementation is split into:
 - `fleet-contracts`: versioned identity, condition, capability, query,
   projection, command, and datastream contracts;
 - `fleet-hub`: deterministic in-memory acceptance, freshness, query, inspect,
-  summary, and watch behavior;
+  summary, watch, and revisioned saved-view behavior;
 - `fleet-manifold-adapter`: exact Manifold enrollment/status admission,
   Ed25519/JCS verification, replay-window enforcement, and all-or-neither
   Manifold/Fleet state application;
 - `fleet-hub-local`: explicit bounded HTTP check-in ingress plus health,
-  query, summary, inspect, detail, and watch projections over the same Hub;
+  query, summary, inspect, detail, watch, and durable saved-view projections
+  over the same Hub;
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
   mutations;
-- `fleetctl`: a structured JSON projection over the same local API;
+- `fleetctl`: structured JSON projection and saved-view parity fixtures over
+  the same in-process API;
 - `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical
-  scope/sort/grouping, stable live-order application, distinct inspection and
-  batch selection, and a persistent selected-device inspector over the
-  canonical local API;
+  scope/sort/grouping, revisioned saved-view controls, stable live-order
+  application, distinct inspection and batch selection, and a persistent
+  selected-device inspector over the canonical local API;
 - `fleet-console-wpf.tests`: package-free native UI Automation,
   grouped virtualization, stable-context/order, capability-family, presented
   keyboard, and 1,000-device checks.
@@ -125,11 +131,14 @@ cargo run --locked -p fleetctl -- list 4
 cargo run --locked -p fleetctl -- inspect sim-00001 4
 cargo run --locked -p fleetctl -- watch 4
 cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
+cargo run --locked -p fleetctl -- saved-view-roundtrip 50
 ```
 
 These commands create synthetic in-memory data only. The operator fixture
 projects fresh, stale, offline, low-power, and capability-downgrade examples
-through the same Hub query and summary APIs. The M1 local Hub remains inert
+through the same Hub query and summary APIs. `saved-view-roundtrip` is an
+in-process parity/conformance projection; persistent operator views use the
+explicit local Hub HTTP routes. The M1 local Hub remains inert
 unless it is launched with an explicit enrolled config:
 
 ```powershell
@@ -185,7 +194,8 @@ present but activates no socket, service, device route, or platform permission
 by default. The bounded Quest checkpoint and a producer-stopped durable Hub
 restart have passed with private evidence and complete device cleanup. M1
 now also has its native WPF table/inspector, canonical scope/sort/grouping,
-stable-context behavior, explicit queued live ordering, and automated
+Hub-owned saved-view persistence/restoration, stable-context behavior,
+explicit queued live ordering, and automated
 1,000-device virtualization/UI Automation baseline over a mixed
 500-fresh/250-stale/250-offline canonical projection. A real presented-window
 pass verifies search, grid, batch, and inspector keyboard focus. Acceptance

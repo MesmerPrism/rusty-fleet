@@ -29,6 +29,12 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private string _appliedGrouping = "None";
     private string _appliedSort = "Device name";
     private string _appliedSortDirection = "Ascending";
+    private FleetQuery _appliedQuery = FleetQuery.Create(null);
+    private string? _activeSavedViewName;
+    private bool _appliedEditorScopeKnown = true;
+    private ulong _savedViewRevision = 1;
+    private SavedView? _selectedSavedView;
+    private string _savedViewName = string.Empty;
     private string _statusMessage = "Disconnected · enter a local Hub address and connect";
     private string _summaryText = "No fleet data loaded";
     private string _scopeText = "0 devices";
@@ -59,6 +65,12 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         ApplyQueuedOrderingChangesCommand = new RelayCommand(
             ApplyQueuedOrderingChanges,
             () => HasQueuedOrderingChanges && !IsBusy);
+        ApplySavedViewCommand = new AsyncCommand(
+            ApplySavedViewAsync,
+            () => !IsBusy && _source is not null && SelectedSavedView is not null);
+        DeleteSavedViewCommand = new AsyncCommand(
+            DeleteSavedViewAsync,
+            () => !IsBusy && _source is not null && SelectedSavedView is not null);
         if (RowsView is ICollectionViewLiveShaping liveView &&
             liveView.CanChangeLiveGrouping)
         {
@@ -80,6 +92,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     }
 
     public ObservableCollection<DeviceRowViewModel> Rows { get; } = [];
+
+    public ObservableCollection<SavedView> SavedViews { get; } = [];
 
     public ICollectionView RowsView { get; }
 
@@ -108,6 +122,12 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public RelayCommand SelectAllVisibleCommand { get; }
 
     public RelayCommand ApplyQueuedOrderingChangesCommand { get; }
+
+    public AsyncCommand ApplySavedViewCommand { get; }
+
+    public AsyncCommand DeleteSavedViewCommand { get; }
+
+    public event Action<SavedView>? SavedViewRestorationRequested;
 
     public string HubAddress
     {
@@ -143,6 +163,30 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     {
         get => _selectedSortDirection;
         set => SetProperty(ref _selectedSortDirection, value);
+    }
+
+    public SavedView? SelectedSavedView
+    {
+        get => _selectedSavedView;
+        set
+        {
+            if (SetProperty(ref _selectedSavedView, value))
+            {
+                if (value is not null)
+                {
+                    SavedViewName = value.Name;
+                }
+
+                ApplySavedViewCommand.RaiseCanExecuteChanged();
+                DeleteSavedViewCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public string SavedViewName
+    {
+        get => _savedViewName;
+        set => SetProperty(ref _savedViewName, value);
     }
 
     public string StatusMessage
@@ -193,6 +237,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 ApplySearchCommand.RaiseCanExecuteChanged();
                 ClearSearchCommand.RaiseCanExecuteChanged();
                 ApplyQueuedOrderingChangesCommand.RaiseCanExecuteChanged();
+                ApplySavedViewCommand.RaiseCanExecuteChanged();
+                DeleteSavedViewCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -229,7 +275,11 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
           "order or grouping"
         : "Live ordering is current";
 
-    public async Task InitializeAsync() => await RefreshAsync();
+    public async Task InitializeAsync()
+    {
+        await RefreshAsync();
+        await TryLoadSavedViewsAsync();
+    }
 
     public async Task SelectDeviceAsync(DeviceRowViewModel? device)
     {
@@ -288,7 +338,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         _appliedGrouping,
         _appliedSort,
         _appliedSortDirection,
-        acceptEditorScope: false);
+        acceptEditorScope: false,
+        exactQuery: _appliedQuery,
+        preserveCurrentOrdering: true);
 
     public Task ApplyScopeAsync() => LoadScopeAsync(
         SearchText,
@@ -296,7 +348,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         SelectedGrouping,
         SelectedSort,
         SelectedSortDirection,
-        acceptEditorScope: true);
+        acceptEditorScope: true,
+        exactQuery: null,
+        preserveCurrentOrdering: false);
 
     private async Task LoadScopeAsync(
         string searchText,
@@ -304,7 +358,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         string grouping,
         string sort,
         string sortDirection,
-        bool acceptEditorScope)
+        bool acceptEditorScope,
+        FleetQuery? exactQuery,
+        bool preserveCurrentOrdering)
     {
         if (_source is null)
         {
@@ -319,7 +375,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         StatusMessage = "Refreshing canonical fleet scope";
         try
         {
-            var query = FleetQuery.Create(
+            var query = exactQuery ?? FleetQuery.Create(
                 searchText,
                 freshness,
                 sortField: CanonicalSortField(sort),
@@ -327,7 +383,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             var queryTask = _source.QueryAsync(query, _requestCancellation.Token);
             var summaryTask = _source.SummaryAsync(_requestCancellation.Token);
             await Task.WhenAll(queryTask, summaryTask);
-            var preserveOrdering = !acceptEditorScope && Rows.Count > 0;
+            var preserveOrdering = preserveCurrentOrdering && Rows.Count > 0;
             var invalidatedSelections = ApplyResult(
                 await queryTask,
                 await summaryTask,
@@ -340,6 +396,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 _appliedGrouping = NormalizeOption(grouping, "None");
                 _appliedSort = NormalizeOption(sort, "Device name");
                 _appliedSortDirection = NormalizeOption(sortDirection, "Ascending");
+                _appliedQuery = query;
+                _activeSavedViewName = null;
+                _appliedEditorScopeKnown = true;
                 ApplyGrouping(_appliedGrouping);
                 UpdateActiveScopeText();
             }
@@ -387,6 +446,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
             _source = replacement;
             await RefreshAsync();
+            await TryLoadSavedViewsAsync();
         }
         catch (ArgumentException error)
         {
@@ -614,6 +674,246 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
               "invalidated by an identity revision";
     }
 
+    public async Task SaveCurrentViewAsync(
+        IReadOnlyList<string> columns,
+        string focusedRegion)
+    {
+        if (_source is null)
+        {
+            StatusMessage = "Not connected to a Fleet Hub";
+            return;
+        }
+
+        var name = SavedViewName.Trim();
+        if (name.Length is 0 or > 256)
+        {
+            StatusMessage = "Saved-view name must contain 1–256 characters";
+            return;
+        }
+
+        var existingByName = SavedViews.FirstOrDefault(view =>
+            string.Equals(view.Name, name, StringComparison.OrdinalIgnoreCase));
+        var viewId = SelectedSavedView?.ViewId ??
+                     existingByName?.ViewId ??
+                     CreateSavedViewId(name);
+        var view = new SavedView
+        {
+            ViewId = viewId,
+            Name = name,
+            Query = _appliedQuery,
+            Columns = columns,
+            Density = "standard",
+            Grouping = _appliedGrouping == "None"
+                ? null
+                : _appliedGrouping.ToLowerInvariant(),
+            Restoration = new NavigationRestoration
+            {
+                SelectedDeviceId = SelectedDevice?.DeviceId,
+                InspectorTab = SelectedDevice is null ? null : "overview",
+                ScrollAnchorDeviceId = SelectedDevice?.DeviceId,
+                FocusedRegion = focusedRegion,
+                CollapsedGroups = []
+            }
+        };
+
+        try
+        {
+            var receipt = await _source.UpsertSavedViewAsync(
+                new SavedViewMutationRequest
+                {
+                    ExpectedRevision = _savedViewRevision,
+                    View = view
+                },
+                CancellationToken.None);
+            FleetProjectionValidation.ValidateSavedViewReceipt(receipt);
+            await LoadSavedViewsAsync(viewId);
+            StatusMessage = receipt.Changed
+                ? $"Saved view “{name}” at revision {receipt.CurrentRevision}"
+                : $"Saved view “{name}” was already current";
+        }
+        catch (Exception error) when (
+            error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException)
+        {
+            await TryLoadSavedViewsAsync();
+            StatusMessage = $"Save failed · canonical saved views reloaded · {error.Message}";
+        }
+    }
+
+    public async Task ApplySavedViewAsync()
+    {
+        var view = SelectedSavedView;
+        if (_source is null || view is null)
+        {
+            return;
+        }
+
+        var grouping = FromSavedGrouping(view.Grouping);
+        var groupingKnown = view.Grouping is null || grouping != "None";
+        var editorKnown = TryProjectSimpleScope(
+            view.Query,
+            out var searchText,
+            out var freshness,
+            out var sort,
+            out var sortDirection);
+        SearchText = searchText;
+        SelectedFreshness = freshness;
+        SelectedGrouping = grouping;
+        SelectedSort = sort;
+        SelectedSortDirection = sortDirection;
+        _appliedSearchText = searchText;
+        _appliedFreshness = freshness;
+        _appliedGrouping = grouping;
+        _appliedSort = sort;
+        _appliedSortDirection = sortDirection;
+        _appliedQuery = view.Query;
+        _activeSavedViewName = view.Name;
+        _appliedEditorScopeKnown = editorKnown;
+
+        await LoadScopeAsync(
+            searchText,
+            freshness,
+            grouping,
+            sort,
+            sortDirection,
+            acceptEditorScope: false,
+            exactQuery: view.Query,
+            preserveCurrentOrdering: false);
+        ApplyGrouping(grouping);
+        UpdateActiveScopeText();
+
+        var restoredDevice = view.Restoration.SelectedDeviceId is null
+            ? null
+            : Rows.FirstOrDefault(row =>
+                row.DeviceId == view.Restoration.SelectedDeviceId);
+        await SelectDeviceAsync(restoredDevice);
+        SavedViewRestorationRequested?.Invoke(view);
+
+        var skipped = new List<string>();
+        if (!editorKnown)
+        {
+            skipped.Add("advanced filter is exact but read-only in the simple scope editor");
+        }
+        if (view.Restoration.InspectorTab is not null and not "overview")
+        {
+            skipped.Add($"inspector tab “{view.Restoration.InspectorTab}” is not available in M1");
+        }
+        if (view.Restoration.CollapsedGroups.Count > 0)
+        {
+            skipped.Add("collapsed groups are not yet restorable");
+        }
+        if (view.Restoration.SelectedDeviceId is not null &&
+            restoredDevice is null)
+        {
+            skipped.Add("selected device is outside the restored result");
+        }
+        if (view.Restoration.FocusedRegion is not null &&
+            view.Restoration.FocusedRegion is not
+                ("shell" or "search" or "saved_views" or "grid" or "inspector"))
+        {
+            skipped.Add($"focus region “{view.Restoration.FocusedRegion}” is unavailable");
+        }
+        if (!groupingKnown)
+        {
+            skipped.Add($"grouping “{view.Grouping}” is not available in M1");
+        }
+        if (view.Density != "standard")
+        {
+            skipped.Add($"density “{view.Density}” is not available in M1");
+        }
+        if (view.SchemaVersion != 1)
+        {
+            skipped.Add($"saved-view schema version {view.SchemaVersion} is newer than M1");
+        }
+        var knownColumns = new HashSet<string>(
+            [
+                "selection", "attention", "device", "age", "route", "power",
+                "application", "control", "privileged", "streams", "work", "tags"
+            ],
+            StringComparer.Ordinal);
+        var unknownColumns = view.Columns.Count(column => !knownColumns.Contains(column));
+        if (unknownColumns > 0)
+        {
+            skipped.Add($"{unknownColumns} unknown column(s) were ignored");
+        }
+        StatusMessage = skipped.Count == 0
+            ? $"Applied saved view “{view.Name}”"
+            : $"Applied saved view “{view.Name}” · {string.Join("; ", skipped)}";
+    }
+
+    public async Task DeleteSavedViewAsync()
+    {
+        var view = SelectedSavedView;
+        if (_source is null || view is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var receipt = await _source.DeleteSavedViewAsync(
+                view.ViewId,
+                _savedViewRevision,
+                CancellationToken.None);
+            FleetProjectionValidation.ValidateSavedViewReceipt(receipt);
+            if (_activeSavedViewName == view.Name)
+            {
+                _activeSavedViewName = null;
+                UpdateActiveScopeText();
+            }
+
+            await LoadSavedViewsAsync();
+            StatusMessage =
+                $"Deleted saved view “{view.Name}” at revision {receipt.CurrentRevision}";
+        }
+        catch (Exception error) when (
+            error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException)
+        {
+            await TryLoadSavedViewsAsync();
+            StatusMessage = $"Delete failed · canonical saved views reloaded · {error.Message}";
+        }
+    }
+
+    private async Task<bool> TryLoadSavedViewsAsync(string? selectViewId = null)
+    {
+        try
+        {
+            await LoadSavedViewsAsync(selectViewId);
+            return true;
+        }
+        catch (Exception error) when (
+            error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException)
+        {
+            StatusMessage =
+                $"Fleet scope remains available · saved views unavailable · {error.Message}";
+            return false;
+        }
+    }
+
+    private async Task LoadSavedViewsAsync(string? selectViewId = null)
+    {
+        if (_source is null)
+        {
+            return;
+        }
+
+        var selectedId = selectViewId ?? SelectedSavedView?.ViewId;
+        var collection = await _source.SavedViewsAsync(CancellationToken.None);
+        FleetProjectionValidation.ValidateSavedViews(collection);
+        _savedViewRevision = collection.Revision;
+        SavedViews.Clear();
+        foreach (var view in collection.Views)
+        {
+            SavedViews.Add(view);
+        }
+
+        SelectedSavedView = selectedId is null
+            ? null
+            : SavedViews.FirstOrDefault(view => view.ViewId == selectedId);
+    }
+
     public async Task ClearSearchAsync()
     {
         SearchText = string.Empty;
@@ -694,13 +994,25 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
     private void UpdateActiveScopeText()
     {
-        var parts = new List<string> { "Active scope" };
-        parts.Add(string.IsNullOrWhiteSpace(_appliedSearchText)
-            ? "all identities"
-            : $"identity contains “{_appliedSearchText}”");
-        if (_appliedFreshness != "All")
+        var parts = new List<string>
         {
-            parts.Add($"freshness = {_appliedFreshness.ToLowerInvariant()}");
+            _activeSavedViewName is null
+                ? "Active scope"
+                : $"Saved view “{_activeSavedViewName}”"
+        };
+        if (_appliedEditorScopeKnown)
+        {
+            parts.Add(string.IsNullOrWhiteSpace(_appliedSearchText)
+                ? "all identities"
+                : $"identity contains “{_appliedSearchText}”");
+            if (_appliedFreshness != "All")
+            {
+                parts.Add($"freshness = {_appliedFreshness.ToLowerInvariant()}");
+            }
+        }
+        else
+        {
+            parts.Add("canonical advanced filter");
         }
 
         parts.Add(
@@ -708,6 +1020,191 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             _appliedSortDirection.ToLowerInvariant());
         parts.Add($"grouped by {_appliedGrouping.ToLowerInvariant()}");
         ActiveScopeText = string.Join(" · ", parts);
+    }
+
+    private string CreateSavedViewId(string name)
+    {
+        var slug = new string(name
+            .ToLowerInvariant()
+            .Select(character => char.IsAsciiLetterOrDigit(character) ? character : '_')
+            .ToArray())
+            .Trim('_');
+        if (slug.Length == 0)
+        {
+            slug = "operator";
+        }
+
+        if (slug.Length > 80)
+        {
+            slug = slug[..80];
+        }
+
+        var candidate = $"view.operator.{slug}";
+        return SavedViews.All(view => view.ViewId != candidate)
+            ? candidate
+            : $"{candidate}.{Guid.NewGuid():N}"[..Math.Min(128, candidate.Length + 33)];
+    }
+
+    private static string FromSavedGrouping(string? grouping) =>
+        grouping?.ToLowerInvariant() switch
+        {
+            "cohort" => "Cohort",
+            "model" => "Model",
+            "freshness" => "Freshness",
+            "application" => "Application",
+            _ => "None"
+        };
+
+    private static bool TryProjectSimpleScope(
+        FleetQuery query,
+        out string searchText,
+        out string freshness,
+        out string sort,
+        out string sortDirection)
+    {
+        searchText = string.Empty;
+        freshness = "All";
+        sort = "Device name";
+        sortDirection = "Ascending";
+        if (query.Sort.Count != 1 || query.Sort[0].Qualifier is not null)
+        {
+            return false;
+        }
+
+        sort = query.Sort[0].Field switch
+        {
+            "display_name" => "Device name",
+            "freshness" => "Freshness",
+            "battery_percent" => "Battery",
+            "model" => "Model",
+            "foreground_app" => "Application",
+            _ => string.Empty
+        };
+        sortDirection = query.Sort[0].Direction switch
+        {
+            "ascending" => "Ascending",
+            "descending" => "Descending",
+            _ => string.Empty
+        };
+        if (sort.Length == 0 || sortDirection.Length == 0)
+        {
+            return false;
+        }
+
+        if (query.Expression is null)
+        {
+            return true;
+        }
+
+        var expression = JsonSerializer.SerializeToElement(
+            query.Expression,
+            FleetJson.Options);
+        return TryReadSimpleExpression(
+            expression,
+            ref searchText,
+            ref freshness);
+    }
+
+    private static bool TryReadSimpleExpression(
+        JsonElement expression,
+        ref string searchText,
+        ref string freshness)
+    {
+        if (!expression.TryGetProperty("kind", out var kindElement))
+        {
+            return false;
+        }
+
+        var kind = kindElement.GetString();
+        if (kind == "and")
+        {
+            if (!expression.TryGetProperty("expressions", out var terms) ||
+                terms.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (var term in terms.EnumerateArray())
+            {
+                if (!TryReadSimpleExpression(term, ref searchText, ref freshness))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        if (kind == "predicate")
+        {
+            if (!TryReadPredicate(
+                    expression,
+                    out var field,
+                    out var comparison,
+                    out var value) ||
+                field != "freshness" ||
+                comparison != "equals" ||
+                freshness != "All" ||
+                value is not ("fresh" or "stale" or "offline" or "unknown"))
+            {
+                return false;
+            }
+
+            freshness = char.ToUpperInvariant(value[0]) + value[1..];
+            return true;
+        }
+
+        if (kind != "or" ||
+            searchText.Length != 0 ||
+            !expression.TryGetProperty("expressions", out var alternatives) ||
+            alternatives.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        var predicates = alternatives.EnumerateArray().ToArray();
+        if (predicates.Length != 2 ||
+            !TryReadPredicate(
+                predicates[0],
+                out var firstField,
+                out var firstComparison,
+                out var firstValue) ||
+            !TryReadPredicate(
+                predicates[1],
+                out var secondField,
+                out var secondComparison,
+                out var secondValue) ||
+            firstComparison != "contains" ||
+            secondComparison != "contains" ||
+            firstValue != secondValue ||
+            new HashSet<string>([firstField, secondField], StringComparer.Ordinal)
+                .SetEquals(["display_name", "device_id"]))
+        {
+            return false;
+        }
+
+        searchText = firstValue;
+        return true;
+    }
+
+    private static bool TryReadPredicate(
+        JsonElement predicate,
+        out string field,
+        out string comparison,
+        out string value)
+    {
+        field = string.Empty;
+        comparison = string.Empty;
+        value = string.Empty;
+        return predicate.TryGetProperty("kind", out var kind) &&
+               kind.GetString() == "predicate" &&
+               predicate.TryGetProperty("field", out var fieldElement) &&
+               (field = fieldElement.GetString() ?? string.Empty).Length > 0 &&
+               predicate.TryGetProperty("comparison", out var comparisonElement) &&
+               (comparison = comparisonElement.GetString() ?? string.Empty).Length > 0 &&
+               predicate.TryGetProperty("value", out var valueElement) &&
+               valueElement.ValueKind == JsonValueKind.String &&
+               (value = valueElement.GetString() ?? string.Empty).Length > 0;
     }
 
     private static string CanonicalSortField(string? value) =>

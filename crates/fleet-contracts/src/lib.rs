@@ -31,6 +31,8 @@ pub use identity::{
 pub use projection::{
     DeviceDetailProjection, DeviceInspectorProjection, DeviceRowProjection, FleetQueryResult,
     FleetSummaryProjection, NavigationRestoration, ProjectionFreshness, SavedView,
+    SavedViewCollection, SavedViewMutationReceipt, SavedViewMutationRequest,
+    is_valid_saved_view_id,
 };
 pub use query::{
     Comparison, FleetQuery, QueryExpression, QueryField, QueryValue, SortDirection, SortKey,

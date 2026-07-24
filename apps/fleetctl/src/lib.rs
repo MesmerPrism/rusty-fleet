@@ -6,7 +6,8 @@
 
 use fleet_contracts::{
     Comparison, FleetQuery, FleetQueryResult, FleetSummaryProjection, QueryExpression, QueryField,
-    QueryValue, SortDirection, SortKey,
+    QueryValue, SavedView, SavedViewCollection, SavedViewMutationReceipt, SavedViewMutationRequest,
+    SortDirection, SortKey,
 };
 use fleet_hub::{FleetApi, FleetHub, HubPolicy};
 use fleet_simulator::{
@@ -29,6 +30,14 @@ pub struct OperatorFixtureProjection {
     pub summary: FleetSummaryProjection,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedViewRoundTripProjection {
+    pub schema: String,
+    pub saved: SavedViewMutationReceipt,
+    pub collection: SavedViewCollection,
+    pub restored_query_result: FleetQueryResult,
+}
+
 impl CliFailure {
     fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
@@ -49,7 +58,8 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 "filter <text> [count]",
                 "watch [count]",
                 "scenario [count]",
-                "operator-fixture mixed-freshness [count]"
+                "operator-fixture mixed-freshness [count]",
+                "saved-view-roundtrip [count]"
             ],
             "scale_fixtures": supported_scale_fixtures()
         }));
@@ -100,11 +110,65 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
         }
         "watch" => serde_json::to_value(hub.watch(0, count))
             .map_err(|error| CliFailure::new("serialization_failed", error.to_string())),
+        "saved-view-roundtrip" => serde_json::to_value(saved_view_roundtrip(hub, count)?)
+            .map_err(|error| CliFailure::new("serialization_failed", error.to_string())),
         _ => Err(CliFailure::new(
             "unknown_command",
             format!("unknown command {command}"),
         )),
     }
+}
+
+pub fn saved_view_roundtrip(
+    mut hub: FleetHub,
+    count: usize,
+) -> Result<SavedViewRoundTripProjection, CliFailure> {
+    let mut query = default_query(count);
+    query.query_id = "fleetctl.saved_view.needs_attention".to_owned();
+    let view = SavedView {
+        schema: "rusty.fleet.saved_view.v1".to_owned(),
+        view_id: "view.needs_attention".to_owned(),
+        name: "Needs attention".to_owned(),
+        query,
+        columns: vec![
+            "device".to_owned(),
+            "age".to_owned(),
+            "route".to_owned(),
+            "power".to_owned(),
+            "application".to_owned(),
+            "attention".to_owned(),
+        ],
+        density: "standard".to_owned(),
+        grouping: None,
+        restoration: fleet_contracts::NavigationRestoration {
+            selected_device_id: Some("sim-00001".to_owned()),
+            inspector_tab: Some("overview".to_owned()),
+            scroll_anchor_device_id: Some("sim-00001".to_owned()),
+            focused_region: Some("grid".to_owned()),
+            collapsed_groups: Vec::new(),
+        },
+        schema_version: 1,
+    };
+    let saved = hub
+        .upsert_saved_view(SavedViewMutationRequest {
+            schema: "rusty.fleet.saved_view_mutation_request.v1".to_owned(),
+            expected_revision: hub.saved_views().revision,
+            view,
+        })
+        .map_err(|error| CliFailure::new("operation_failed", error.to_string()))?;
+    let collection = hub.saved_views();
+    let restored = hub
+        .saved_view("view.needs_attention")
+        .map_err(|error| CliFailure::new("operation_failed", error.to_string()))?;
+    let restored_query_result = hub
+        .list(&restored.query, BASE_TIME_MS)
+        .map_err(|error| CliFailure::new("operation_failed", error.to_string()))?;
+    Ok(SavedViewRoundTripProjection {
+        schema: "rusty.fleet.saved_view_roundtrip.v1".to_owned(),
+        saved,
+        collection,
+        restored_query_result,
+    })
 }
 
 #[must_use]
@@ -199,7 +263,10 @@ mod tests {
     use fleet_hub::FleetApi;
     use fleet_simulator::BASE_TIME_MS;
 
-    use super::{default_query, execute, load_hub, load_mixed_freshness_hub, text_query};
+    use super::{
+        default_query, execute, load_hub, load_mixed_freshness_hub, saved_view_roundtrip,
+        text_query,
+    };
 
     #[test]
     fn commands_return_structured_json() {
@@ -214,6 +281,7 @@ mod tests {
                 "mixed-freshness".to_owned(),
                 "4".to_owned(),
             ],
+            vec!["saved-view-roundtrip".to_owned(), "4".to_owned()],
         ] {
             assert!(execute(args).is_ok());
         }
@@ -297,5 +365,14 @@ mod tests {
         assert_eq!(mixed_cli["summary"], mixed_summary);
         assert_eq!(mixed_cli["schema"], "rusty.fleet.operator_fixture.v1");
         assert_eq!(mixed_cli["profile"], "mixed_freshness");
+
+        let saved_view_api =
+            serde_json::to_value(saved_view_roundtrip(load_hub(4), 4).expect("saved-view API"))
+                .expect("serialize saved-view API");
+        assert_eq!(
+            execute(vec!["saved-view-roundtrip".to_owned(), "4".to_owned()])
+                .expect("CLI saved-view roundtrip"),
+            saved_view_api
+        );
     }
 }

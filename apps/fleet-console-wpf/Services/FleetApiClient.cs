@@ -17,6 +17,17 @@ public interface IFleetDataSource
     Task<DeviceInspectorProjection> InspectAsync(
         string deviceId,
         CancellationToken cancellationToken);
+
+    Task<SavedViewCollection> SavedViewsAsync(CancellationToken cancellationToken);
+
+    Task<SavedViewMutationReceipt> UpsertSavedViewAsync(
+        SavedViewMutationRequest request,
+        CancellationToken cancellationToken);
+
+    Task<SavedViewMutationReceipt> DeleteSavedViewAsync(
+        string viewId,
+        ulong expectedRevision,
+        CancellationToken cancellationToken);
 }
 
 public sealed class FleetApiClient : IFleetDataSource, IDisposable
@@ -71,6 +82,40 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             $"/fleet/v1/devices/{encoded}/inspect",
             cancellationToken);
         return await ReadAsync<DeviceInspectorProjection>(response, cancellationToken);
+    }
+
+    public async Task<SavedViewCollection> SavedViewsAsync(
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.GetAsync(
+            "/fleet/v1/saved-views",
+            cancellationToken);
+        return await ReadAsync<SavedViewCollection>(response, cancellationToken);
+    }
+
+    public async Task<SavedViewMutationReceipt> UpsertSavedViewAsync(
+        SavedViewMutationRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.View.ViewId);
+        using var response = await _http.PutAsJsonAsync(
+            $"/fleet/v1/saved-views/{encoded}",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<SavedViewMutationReceipt>(response, cancellationToken);
+    }
+
+    public async Task<SavedViewMutationReceipt> DeleteSavedViewAsync(
+        string viewId,
+        ulong expectedRevision,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(viewId);
+        using var response = await _http.DeleteAsync(
+            $"/fleet/v1/saved-views/{encoded}?expected_revision={expectedRevision}",
+            cancellationToken);
+        return await ReadAsync<SavedViewMutationReceipt>(response, cancellationToken);
     }
 
     public void Dispose() => _http.Dispose();

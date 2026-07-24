@@ -151,6 +151,106 @@ public sealed class FleetQueryResult
     public IReadOnlyList<DeviceRowProjection> Rows { get; init; } = [];
 }
 
+public sealed class NavigationRestoration
+{
+    [JsonPropertyName("selected_device_id")]
+    public string? SelectedDeviceId { get; init; }
+
+    [JsonPropertyName("inspector_tab")]
+    public string? InspectorTab { get; init; }
+
+    [JsonPropertyName("scroll_anchor_device_id")]
+    public string? ScrollAnchorDeviceId { get; init; }
+
+    [JsonPropertyName("focused_region")]
+    public string? FocusedRegion { get; init; }
+
+    [JsonPropertyName("collapsed_groups")]
+    public IReadOnlyList<string> CollapsedGroups { get; init; } = [];
+}
+
+public sealed class SavedView
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = "rusty.fleet.saved_view.v1";
+
+    [JsonPropertyName("view_id")]
+    public string ViewId { get; init; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
+
+    [JsonPropertyName("query")]
+    public FleetQuery Query { get; init; } = new();
+
+    [JsonPropertyName("columns")]
+    public IReadOnlyList<string> Columns { get; init; } = [];
+
+    [JsonPropertyName("density")]
+    public string Density { get; init; } = "standard";
+
+    [JsonPropertyName("grouping")]
+    public string? Grouping { get; init; }
+
+    [JsonPropertyName("restoration")]
+    public NavigationRestoration Restoration { get; init; } = new();
+
+    [JsonPropertyName("schema_version")]
+    public uint SchemaVersion { get; init; } = 1;
+
+    [JsonIgnore]
+    public string DisplayName => Name;
+}
+
+public sealed class SavedViewCollection
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("revision")]
+    public ulong Revision { get; init; }
+
+    [JsonPropertyName("views")]
+    public IReadOnlyList<SavedView> Views { get; init; } = [];
+}
+
+public sealed class SavedViewMutationRequest
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } =
+        "rusty.fleet.saved_view_mutation_request.v1";
+
+    [JsonPropertyName("expected_revision")]
+    public ulong ExpectedRevision { get; init; }
+
+    [JsonPropertyName("view")]
+    public SavedView View { get; init; } = new();
+}
+
+public sealed class SavedViewMutationReceipt
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("view_id")]
+    public string ViewId { get; init; } = string.Empty;
+
+    [JsonPropertyName("previous_revision")]
+    public ulong PreviousRevision { get; init; }
+
+    [JsonPropertyName("current_revision")]
+    public ulong CurrentRevision { get; init; }
+
+    [JsonPropertyName("changed")]
+    public bool Changed { get; init; }
+
+    [JsonPropertyName("deleted")]
+    public bool Deleted { get; init; }
+
+    [JsonPropertyName("view")]
+    public SavedView? View { get; init; }
+}
+
 public sealed class FleetSummaryProjection
 {
     [JsonPropertyName("schema")]

@@ -13,8 +13,9 @@ use std::fmt::{Display, Formatter};
 use fleet_contracts::{
     Comparison, ConditionFamily, ConditionState, DeviceDetailProjection, DeviceInspectorProjection,
     DeviceObservation, DeviceRowProjection, FleetQuery, FleetQueryResult, FleetSummaryProjection,
-    KioskState, ProjectionFreshness, QueryExpression, QueryField, QueryValue, SortDirection,
-    StatusCondition, ValidateContract,
+    KioskState, ProjectionFreshness, QueryExpression, QueryField, QueryValue, SavedView,
+    SavedViewCollection, SavedViewMutationReceipt, SavedViewMutationRequest, SortDirection,
+    StatusCondition, ValidateContract, is_valid_saved_view_id,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,11 @@ const INSPECTOR_SCHEMA: &str = "rusty.fleet.device_inspector.v1";
 const DETAIL_SCHEMA: &str = "rusty.fleet.device_detail.v1";
 const SUMMARY_SCHEMA: &str = "rusty.fleet.summary.v1";
 const RESULT_SCHEMA: &str = "rusty.fleet.query_result.v1";
+const MAX_SAVED_VIEWS: usize = 128;
+
+const fn initial_saved_view_revision() -> u64 {
+    1
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubPolicy {
@@ -115,6 +121,17 @@ pub trait FleetApi {
     fn detail(&self, device_id: &str, now_ms: i64) -> Result<DeviceDetailProjection, HubError>;
     fn summary(&self, now_ms: i64) -> FleetSummaryProjection;
     fn watch(&self, after_sequence: u64, limit: usize) -> Vec<WatchEvent>;
+    fn saved_views(&self) -> SavedViewCollection;
+    fn saved_view(&self, view_id: &str) -> Result<SavedView, HubError>;
+    fn upsert_saved_view(
+        &mut self,
+        request: SavedViewMutationRequest,
+    ) -> Result<SavedViewMutationReceipt, HubError>;
+    fn delete_saved_view(
+        &mut self,
+        view_id: &str,
+        expected_revision: u64,
+    ) -> Result<SavedViewMutationReceipt, HubError>;
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -134,6 +151,10 @@ pub struct FleetHubSnapshot {
     result_revision: u64,
     event_sequence: u64,
     events: Vec<WatchEvent>,
+    #[serde(default = "initial_saved_view_revision")]
+    saved_view_revision: u64,
+    #[serde(default)]
+    saved_views: BTreeMap<String, SavedView>,
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +164,8 @@ pub struct FleetHub {
     result_revision: u64,
     event_sequence: u64,
     events: Vec<WatchEvent>,
+    saved_view_revision: u64,
+    saved_views: BTreeMap<String, SavedView>,
 }
 
 impl FleetHub {
@@ -162,6 +185,8 @@ impl FleetHub {
             result_revision: 1,
             event_sequence: 0,
             events: Vec::new(),
+            saved_view_revision: initial_saved_view_revision(),
+            saved_views: BTreeMap::new(),
         }
     }
 
@@ -194,6 +219,8 @@ impl FleetHub {
             result_revision: self.result_revision,
             event_sequence: self.event_sequence,
             events: self.events.clone(),
+            saved_view_revision: self.saved_view_revision,
+            saved_views: self.saved_views.clone(),
         }
     }
 
@@ -264,12 +291,31 @@ impl FleetHub {
                 ));
             }
         }
+        let saved_view_collection = SavedViewCollection {
+            schema: "rusty.fleet.saved_view_collection.v1".to_owned(),
+            revision: snapshot.saved_view_revision,
+            views: snapshot.saved_views.values().cloned().collect(),
+        };
+        if saved_view_collection.validate().is_err()
+            || snapshot.saved_views.len() > MAX_SAVED_VIEWS
+            || snapshot
+                .saved_views
+                .iter()
+                .any(|(view_id, view)| view.view_id != *view_id)
+        {
+            return Err(HubError::new(
+                "snapshot_saved_views_invalid",
+                "Fleet Hub snapshot saved views are invalid or exceed their limit",
+            ));
+        }
         Ok(Self {
             policy,
             devices: snapshot.devices,
             result_revision: snapshot.result_revision,
             event_sequence: snapshot.event_sequence,
             events: snapshot.events,
+            saved_view_revision: snapshot.saved_view_revision,
+            saved_views: snapshot.saved_views,
         })
     }
 
@@ -583,6 +629,130 @@ impl FleetApi for FleetHub {
             .cloned()
             .collect()
     }
+
+    fn saved_views(&self) -> SavedViewCollection {
+        SavedViewCollection {
+            schema: "rusty.fleet.saved_view_collection.v1".to_owned(),
+            revision: self.saved_view_revision,
+            views: self.saved_views.values().cloned().collect(),
+        }
+    }
+
+    fn saved_view(&self, view_id: &str) -> Result<SavedView, HubError> {
+        self.saved_views.get(view_id).cloned().ok_or_else(|| {
+            HubError::new(
+                "saved_view_not_found",
+                format!("unknown saved view {view_id}"),
+            )
+        })
+    }
+
+    fn upsert_saved_view(
+        &mut self,
+        request: SavedViewMutationRequest,
+    ) -> Result<SavedViewMutationReceipt, HubError> {
+        request.validate().map_err(|failures| {
+            HubError::new(
+                "invalid_saved_view",
+                failures
+                    .into_iter()
+                    .map(|failure| failure.code)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+        })?;
+        if request.expected_revision != self.saved_view_revision {
+            return Err(HubError::new(
+                "saved_view_revision_conflict",
+                format!(
+                    "expected saved-view revision {}, current revision is {}",
+                    request.expected_revision, self.saved_view_revision
+                ),
+            ));
+        }
+        let previous_revision = self.saved_view_revision;
+        let changed = self
+            .saved_views
+            .get(&request.view.view_id)
+            .is_none_or(|existing| existing != &request.view);
+        if changed {
+            if !self.saved_views.contains_key(&request.view.view_id)
+                && self.saved_views.len() >= MAX_SAVED_VIEWS
+            {
+                return Err(HubError::new(
+                    "saved_view_limit_exceeded",
+                    "Fleet Hub supports at most 128 saved views",
+                ));
+            }
+            self.saved_view_revision =
+                self.saved_view_revision.checked_add(1).ok_or_else(|| {
+                    HubError::new(
+                        "saved_view_revision_exhausted",
+                        "saved-view revision is exhausted",
+                    )
+                })?;
+            self.saved_views
+                .insert(request.view.view_id.clone(), request.view.clone());
+        }
+        let receipt = SavedViewMutationReceipt {
+            schema: "rusty.fleet.saved_view_mutation_receipt.v1".to_owned(),
+            view_id: request.view.view_id.clone(),
+            previous_revision,
+            current_revision: self.saved_view_revision,
+            changed,
+            deleted: false,
+            view: Some(request.view),
+        };
+        debug_assert!(receipt.validate().is_ok());
+        Ok(receipt)
+    }
+
+    fn delete_saved_view(
+        &mut self,
+        view_id: &str,
+        expected_revision: u64,
+    ) -> Result<SavedViewMutationReceipt, HubError> {
+        if !is_valid_saved_view_id(view_id) || expected_revision == 0 {
+            return Err(HubError::new(
+                "invalid_saved_view_delete",
+                "saved-view deletion requires a bounded ID and positive expected revision",
+            ));
+        }
+        if expected_revision != self.saved_view_revision {
+            return Err(HubError::new(
+                "saved_view_revision_conflict",
+                format!(
+                    "expected saved-view revision {expected_revision}, current revision is {}",
+                    self.saved_view_revision
+                ),
+            ));
+        }
+        let current_revision = self.saved_view_revision.checked_add(1).ok_or_else(|| {
+            HubError::new(
+                "saved_view_revision_exhausted",
+                "saved-view revision is exhausted",
+            )
+        })?;
+        if self.saved_views.remove(view_id).is_none() {
+            return Err(HubError::new(
+                "saved_view_not_found",
+                format!("unknown saved view {view_id}"),
+            ));
+        }
+        let previous_revision = self.saved_view_revision;
+        self.saved_view_revision = current_revision;
+        let receipt = SavedViewMutationReceipt {
+            schema: "rusty.fleet.saved_view_mutation_receipt.v1".to_owned(),
+            view_id: view_id.to_owned(),
+            previous_revision,
+            current_revision: self.saved_view_revision,
+            changed: true,
+            deleted: true,
+            view: None,
+        };
+        debug_assert!(receipt.validate().is_ok());
+        Ok(receipt)
+    }
 }
 
 fn nonempty(value: &str) -> Option<String> {
@@ -873,7 +1043,8 @@ fn freshness_rank(freshness: ProjectionFreshness) -> u8 {
 mod tests {
     use super::{FleetApi, FleetHub, HubPolicy, ObservationDecision, RejectionReason};
     use fleet_contracts::{
-        Comparison, FleetQuery, QueryExpression, QueryField, QueryValue, ValidateContract,
+        Comparison, FleetQuery, NavigationRestoration, QueryExpression, QueryField, QueryValue,
+        SavedView, SavedViewMutationRequest, ValidateContract,
     };
     use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
 
@@ -885,6 +1056,26 @@ mod tests {
             sort: Vec::new(),
             offset: 0,
             limit,
+        }
+    }
+
+    fn saved_view(view_id: &str) -> SavedView {
+        SavedView {
+            schema: "rusty.fleet.saved_view.v1".to_owned(),
+            view_id: view_id.to_owned(),
+            name: "Lab overview".to_owned(),
+            query: all_query(50),
+            columns: vec!["device".to_owned(), "freshness".to_owned()],
+            density: "standard".to_owned(),
+            grouping: Some("cohort".to_owned()),
+            restoration: NavigationRestoration {
+                selected_device_id: Some("sim-00001".to_owned()),
+                inspector_tab: Some("overview".to_owned()),
+                scroll_anchor_device_id: Some("sim-00001".to_owned()),
+                focused_region: Some("grid".to_owned()),
+                collapsed_groups: Vec::new(),
+            },
+            schema_version: 1,
         }
     }
 
@@ -938,6 +1129,54 @@ mod tests {
                 .source_epoch,
             "agent-epoch-3"
         );
+    }
+
+    #[test]
+    fn saved_views_are_revisioned_canonical_and_snapshot_safe() {
+        let mut hub = FleetHub::new(HubPolicy::default());
+        let view = saved_view("lab-overview");
+        let receipt = hub
+            .upsert_saved_view(SavedViewMutationRequest {
+                schema: "rusty.fleet.saved_view_mutation_request.v1".to_owned(),
+                expected_revision: 1,
+                view: view.clone(),
+            })
+            .expect("save view");
+        assert!(receipt.changed);
+        assert_eq!(receipt.current_revision, 2);
+        assert_eq!(hub.saved_view("lab-overview").expect("stored view"), view);
+        assert!(hub.saved_views().validate().is_ok());
+
+        let unchanged = hub
+            .upsert_saved_view(SavedViewMutationRequest {
+                schema: "rusty.fleet.saved_view_mutation_request.v1".to_owned(),
+                expected_revision: 2,
+                view: view.clone(),
+            })
+            .expect("idempotent save");
+        assert!(!unchanged.changed);
+        assert_eq!(unchanged.current_revision, 2);
+
+        let stale = hub.upsert_saved_view(SavedViewMutationRequest {
+            schema: "rusty.fleet.saved_view_mutation_request.v1".to_owned(),
+            expected_revision: 1,
+            view: saved_view("stale"),
+        });
+        assert_eq!(
+            stale.expect_err("stale view mutation must fail").code,
+            "saved_view_revision_conflict"
+        );
+
+        let restored =
+            FleetHub::restore(HubPolicy::default(), hub.snapshot()).expect("restore saved views");
+        assert_eq!(restored.saved_views(), hub.saved_views());
+        let mut restored = restored;
+        let deleted = restored
+            .delete_saved_view("lab-overview", 2)
+            .expect("delete saved view");
+        assert!(deleted.changed && deleted.deleted);
+        assert_eq!(deleted.current_revision, 3);
+        assert!(restored.saved_views().views.is_empty());
     }
 
     #[test]

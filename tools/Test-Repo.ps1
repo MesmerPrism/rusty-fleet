@@ -242,6 +242,8 @@ function Test-RequiredFiles {
         "fixtures/contracts/device-observation.valid.json",
         "fixtures/contracts/device-observation.damaged.json",
         "fixtures/contracts/query.valid.json",
+        "fixtures/contracts/saved-view.valid.json",
+        "fixtures/contracts/saved-view.damaged.json",
         "fixtures/contracts/stream-descriptor.valid.json",
         "fixtures/scenarios/scale-and-damage.v1.json",
         "schemas/rusty.fleet.checkin_claims.v1.schema.json",
@@ -365,6 +367,9 @@ function Test-WpfConsole {
         $receipt.capability_downgrade_rows -eq 125 -and
         $receipt.mixed_state_grammar -eq $true -and
         $receipt.canonical_scope -eq $true -and
+        $receipt.saved_view_crud -eq $true -and
+        $receipt.saved_view_exact_query_restored -eq $true -and
+        $receipt.saved_view_navigation_restored -eq $true -and
         $receipt.empty_scope_preserved -eq $true -and
         $receipt.grouped_virtualization -eq $true -and
         $receipt.hidden_selection_preserved -eq $true -and

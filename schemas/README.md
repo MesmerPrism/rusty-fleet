@@ -6,6 +6,7 @@ Milestone 0 defines versioned Rusty Fleet product contracts here:
 - canonical fleet queries;
 - stream descriptors;
 - operator projection envelopes;
+- revisioned saved-view collections, mutations, and navigation restoration;
 - operation ledgers.
 
 Rust validation remains normative for cross-field invariants that JSON Schema

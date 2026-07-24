@@ -229,6 +229,18 @@ Deep links may add selected device, inspector tab, scroll anchor, and grouping
 state. Restoring a view resolves every retained identifier against current
 permissions, identity revisions, and retention.
 
+The current M1 implementation establishes the bounded ownership foundation:
+Fleet Hub stores at most 128 views behind an optimistic collection revision
+and the local runtime includes them in durable two-slot recovery. The WPF
+adapter currently captures the exact query, sort, grouping, visible column
+order, standard density, selected device, overview inspector tab, scroll
+anchor, and focus region. It applies the exact query even when a future
+advanced expression cannot be edited by the current simple controls, and
+reports unsupported density, tab, group-collapse, column, or focus details.
+Column widths, inspector pinning, time-display preference, sharing/ownership,
+and full-detail deep links remain planned extensions; they are not stored in
+hidden UI state.
+
 ### Stable ordering
 
 The default sort is display name followed by stable ID. Values may refresh in
@@ -510,7 +522,11 @@ selected device falls outside the applied scope. Background refresh updates
 shared row facts without moving the collection; membership, order, and group
 changes are counted and retained behind an explicit accessible application
 control. Applying the latest queued snapshot preserves identity-based hidden
-selection and cached inspection. The canonical operator fixture supplies 500
+selection and cached inspection. The same checkpoint stores a bounded,
+revisioned saved-view collection in Fleet Hub and its durable local snapshot.
+The WPF adapter captures and restores the exact query, grouping, visible
+column order, selected device, scroll anchor, and focus region while reporting
+newer unsupported navigation details. The canonical operator fixture supplies 500
 fresh, 250 stale, and 250 offline rows plus deterministic low-power and
 capability-downgrade states; an unknown-freshness filter verifies the
 zero-match state without clearing hidden selection or cached inspection. A

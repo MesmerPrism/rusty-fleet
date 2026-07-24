@@ -293,6 +293,72 @@ internal static class Program
                 workspace.RowsView.Groups is { Count: 2 },
                 "full cohort grouping did not retain both simulator cohorts");
 
+            var savedSource = new StaticFleetDataSource(
+                projection,
+                canonicalSummary: fixtureSummary);
+            var savedWorkspace = new FleetWorkspaceViewModel(savedSource);
+            savedWorkspace.InitializeAsync().GetAwaiter().GetResult();
+            savedWorkspace.SearchText = "Quest 0001";
+            savedWorkspace.SelectedFreshness = "Fresh";
+            savedWorkspace.SelectedGrouping = "Cohort";
+            savedWorkspace.ApplyScopeAsync().GetAwaiter().GetResult();
+            var savedSelection = savedWorkspace.Rows.Single();
+            savedWorkspace.SelectDeviceAsync(savedSelection).GetAwaiter().GetResult();
+            savedWorkspace.SavedViewName = "Lab focus";
+            savedWorkspace.SaveCurrentViewAsync(
+                    [
+                        "selection", "attention", "device", "age", "power",
+                        "application"
+                    ],
+                    "grid")
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                savedWorkspace.SavedViews is
+                [
+                    {
+                        ViewId: "view.operator.lab_focus",
+                        Name: "Lab focus",
+                        Grouping: "cohort"
+                    }
+                ],
+                "saved-view mutation was not reloaded from canonical Hub state");
+            var savedView = savedWorkspace.SavedViews[0];
+            var savedViewJson = JsonSerializer.Serialize(savedView.Query, FleetJson.Options);
+            SavedView? restoredEvent = null;
+            savedWorkspace.SavedViewRestorationRequested += view => restoredEvent = view;
+
+            savedWorkspace.SearchText = string.Empty;
+            savedWorkspace.SelectedFreshness = "Offline";
+            savedWorkspace.SelectedGrouping = "None";
+            savedWorkspace.ApplyScopeAsync().GetAwaiter().GetResult();
+            Require(
+                savedWorkspace.Rows.Count == fixtureSummary.Offline,
+                "saved-view precondition did not leave the saved scope");
+            savedWorkspace.SelectedSavedView = savedView;
+            savedWorkspace.ApplySavedViewAsync().GetAwaiter().GetResult();
+            Require(
+                JsonSerializer.Serialize(savedSource.LastQuery, FleetJson.Options) ==
+                savedViewJson &&
+                savedWorkspace.Rows.Count == 1 &&
+                savedWorkspace.RowsView.Groups is { Count: 1 },
+                "saved view did not restore the exact canonical query and grouping");
+            Require(
+                savedWorkspace.SelectedDevice?.DeviceId == savedSelection.DeviceId &&
+                restoredEvent?.Restoration.FocusedRegion == "grid" &&
+                savedWorkspace.ActiveScopeText.StartsWith(
+                    "Saved view “Lab focus”",
+                    StringComparison.Ordinal),
+                "saved view did not restore selected-device and focus evidence");
+
+            savedWorkspace.DeleteSavedViewAsync().GetAwaiter().GetResult();
+            Require(
+                savedWorkspace.SavedViews.Count == 0 &&
+                savedSource.SavedViewsAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult().Revision == 3,
+                "saved-view deletion did not preserve canonical revision state");
+
             var liveSource = new StaticFleetDataSource(
                 projection,
                 canonicalSummary: fixtureSummary);
@@ -500,13 +566,24 @@ internal static class Program
                 AutomationProperties.GetName(window.InspectorRegion) == "Selected device inspector",
                 "inspector has no stable accessible name");
             Require(window.InspectorRegion.Focusable, "inspector cannot receive keyboard focus");
+            Require(
+                AutomationProperties.GetName(window.SavedViewControl) ==
+                "Saved fleet view" &&
+                AutomationProperties.GetName(window.SavedViewNameControl) ==
+                "Saved-view name",
+                "saved-view controls were not visibly and accessibly exposed");
             var inspectorPeer = new ScrollViewerAutomationPeer(
                 (ScrollViewer)window.InspectorRegion);
             Require(
                 inspectorPeer.GetName() == "Selected device inspector",
                 "inspector automation peer lost its accessible name");
             var batchCheckBox = FindVisualDescendant<CheckBox>(grid) ??
-                throw new InvalidOperationException("visible batch checkbox was not realized");
+                throw new InvalidOperationException(
+                    "visible batch checkbox was not realized; " +
+                    $"rows={workspace.Rows.Count}; items={grid.Items.Count}; " +
+                    $"grid={grid.ActualWidth:N0}x{grid.ActualHeight:N0}; " +
+                    $"columns={string.Join(",", grid.Columns.Select(column =>
+                        $"{column.SortMemberPath}:{column.Visibility}:{column.ActualWidth:N0}"))}");
             Require(
                 batchCheckBox is { IsEnabled: true, IsHitTestVisible: true },
                 "visible batch checkbox cannot be operated with a pointer");
@@ -585,6 +662,9 @@ internal static class Program
                 canonical_scope = true,
                 canonical_sort = true,
                 applied_sort_preserved = true,
+                saved_view_crud = true,
+                saved_view_exact_query_restored = true,
+                saved_view_navigation_restored = true,
                 empty_scope_preserved = true,
                 grouped_virtualization = true,
                 stable_live_ordering = true,
@@ -803,6 +883,10 @@ internal static class Program
         bool echoQuery = true,
         bool wrongInspectorIdentity = false) : IFleetDataSource
     {
+        private readonly SortedDictionary<string, SavedView> _savedViews =
+            new(StringComparer.Ordinal);
+        private ulong _savedViewRevision = 1;
+
         public FleetQueryResult Projection { get; set; } = projection;
 
         public FleetQuery? LastQuery { get; private set; }
@@ -938,6 +1022,80 @@ internal static class Program
                         "stale" or "unauthorized" or "restricted" or "degraded" or
                         "failed" or "critical")
                     .ToArray()
+            });
+        }
+
+        public Task<SavedViewCollection> SavedViewsAsync(
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new SavedViewCollection
+            {
+                Schema = "rusty.fleet.saved_view_collection.v1",
+                Revision = _savedViewRevision,
+                Views = _savedViews.Values.ToArray()
+            });
+        }
+
+        public Task<SavedViewMutationReceipt> UpsertSavedViewAsync(
+            SavedViewMutationRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.ExpectedRevision != _savedViewRevision)
+            {
+                throw new InvalidOperationException("saved-view revision conflict");
+            }
+
+            var changed = !_savedViews.TryGetValue(request.View.ViewId, out var existing) ||
+                          JsonSerializer.Serialize(existing, FleetJson.Options) !=
+                          JsonSerializer.Serialize(request.View, FleetJson.Options);
+            var previous = _savedViewRevision;
+            if (changed)
+            {
+                _savedViews[request.View.ViewId] = request.View;
+                _savedViewRevision++;
+            }
+
+            return Task.FromResult(new SavedViewMutationReceipt
+            {
+                Schema = "rusty.fleet.saved_view_mutation_receipt.v1",
+                ViewId = request.View.ViewId,
+                PreviousRevision = previous,
+                CurrentRevision = _savedViewRevision,
+                Changed = changed,
+                Deleted = false,
+                View = request.View
+            });
+        }
+
+        public Task<SavedViewMutationReceipt> DeleteSavedViewAsync(
+            string viewId,
+            ulong expectedRevision,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (expectedRevision != _savedViewRevision)
+            {
+                throw new InvalidOperationException("saved-view revision conflict");
+            }
+
+            if (!_savedViews.Remove(viewId))
+            {
+                throw new InvalidOperationException("saved view not found");
+            }
+
+            var previous = _savedViewRevision;
+            _savedViewRevision++;
+            return Task.FromResult(new SavedViewMutationReceipt
+            {
+                Schema = "rusty.fleet.saved_view_mutation_receipt.v1",
+                ViewId = viewId,
+                PreviousRevision = previous,
+                CurrentRevision = _savedViewRevision,
+                Changed = true,
+                Deleted = true,
+                View = null
             });
         }
 

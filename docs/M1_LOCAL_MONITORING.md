@@ -45,6 +45,10 @@ separately accepted encrypted route.
 | `POST /fleet/v1/checkins` | signed Quest check-in admission | JSON, 256 KiB, five-second body deadline |
 | `POST /fleet/v1/query` | canonical fleet query | JSON, 64 KiB, contract window limit |
 | `GET /fleet/v1/summary` | canonical summary projection | current Hub state |
+| `GET /fleet/v1/saved-views` | canonical saved-view collection and optimistic revision | maximum 128 views |
+| `GET /fleet/v1/saved-views/{id}` | one canonical saved view | bounded identifier |
+| `PUT /fleet/v1/saved-views/{id}` | create or replace a view at an expected collection revision | JSON, 128 KiB |
+| `DELETE /fleet/v1/saved-views/{id}?expected_revision=N` | delete a view at an expected collection revision | bounded identifier and positive revision |
 | `GET /fleet/v1/devices/{id}` | canonical full detail | one enrolled device |
 | `GET /fleet/v1/devices/{id}/inspect` | canonical inspector projection | one enrolled device |
 | `GET /fleet/v1/watch?after_sequence=N&limit=N` | bounded accepted/rejected event window | maximum 10,000 events |
@@ -53,7 +57,9 @@ The server caps concurrent requests, applies a finite global and
 per-credential check-in rate, does not decompress request bodies, follows no
 redirects, and accepts no protocol upgrade route. Malformed, oversized,
 expired, wrongly signed, unknown-key, replayed, stale-status, identity-mismatched,
-or authority-rejected requests do not advance accepted state.
+or authority-rejected requests do not advance accepted state. Saved-view
+mutations additionally require the exact current collection revision.
+Conflicts do not overwrite another accepted update.
 
 ## Authority sequence
 
@@ -93,8 +99,10 @@ files are never treated as accepted state.
 
 The snapshot retains the accepted device directory, condition history, watch
 sequence, Manifold authority revision, recent unexpired check-in replay
-evidence, and source-epoch tombstones. Every collection has a finite policy
-bound. When a device exhausts its source-epoch evidence allowance, a new
+evidence, source-epoch tombstones, and at most 128 canonical saved views with
+their independent collection revision. Saved-view changes do not advance
+device-result or Manifold authority revisions. Every collection has a finite
+policy bound. When a device exhausts its source-epoch evidence allowance, a new
 epoch fails closed rather than evicting an old tombstone and permitting a
 previous producer epoch to reappear.
 
@@ -121,6 +129,12 @@ without a theme dependency. It provides:
 - visible summary, applied canonical search/freshness scope, Hub-owned sort
   field/direction, grouping, result-revision, snapshot-time, and
   batch-selection scope;
+- revisioned saved-view list/create/update/delete controls over the Hub-owned
+  collection, with exact canonical-query replay and no WPF-only persistence;
+- capture and replay of grouping, visible column order, selected device,
+  scroll anchor, and keyboard-focus region; unsupported future density,
+  inspector-tab, grouping, or collapsed-group state is reported rather than
+  silently reinterpreted;
 - inspection selection that is separate from batch membership;
 - pointer, keyboard, and UI Automation batch-toggle paths that update the same
   visible selection scope;
@@ -160,12 +174,19 @@ rejects non-loopback Hub addresses, mismatched query receipts, and
 wrong-device inspector evidence. Narrator, high-contrast, text-size, and
 multi-scaling checks remain manual M1 acceptance gates.
 
+`fleetctl saved-view-roundtrip [count]` exercises the same in-process
+contracts and Hub methods as a structured conformance projection. Separate
+CLI invocations intentionally do not pretend to share durable state; the
+explicit local HTTP routes are the persistent operator and automation
+surface.
+
 ## Focused validation
 
 ```powershell
 cargo test -p fleet-manifold-adapter -p fleet-hub-local
 cargo clippy -p fleet-manifold-adapter -p fleet-hub-local --all-targets --locked -- -D warnings
 cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
+cargo run --locked -p fleetctl -- saved-view-roundtrip 50
 dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
 dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
   -c Release --no-build -- --repo-root .
@@ -174,9 +195,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
 
 The focused tests cover signed acceptance, replay rejection before and after
 restart, authority rebinding, all-or-neither state mutation, canonical query
-parity, explicit LAN activation, content type, body size, finite credential
-rate, bounded source-epoch evidence, durable restoration, and damaged-newest
-slot fallback.
+and saved-view parity, optimistic saved-view revision conflict, durable
+saved-view restoration, explicit LAN activation, content type, body size,
+finite credential rate, bounded source-epoch evidence, durable restoration,
+and damaged-newest slot fallback.
 
 A private serial-scoped Quest checkpoint has also exercised the Wi-Fi route
 without an ADB tunnel: the enrolled device advanced eight signed check-ins,

@@ -22,7 +22,10 @@ Quick is safe during normal editing and checks:
 - deterministic 4/50/250/1,000/5,000 simulator generation and canonical
   mixed-freshness operator projection;
 - Hub revision, replay, staleness, identity, and projection behavior;
-- exact `fleetctl`/local-API projection parity.
+- exact `fleetctl`/local-API projection parity;
+- saved-view valid/damaged contracts, canonical ordering, optimistic
+  revision conflict, durable restart restoration, HTTP CRUD, and structured
+  `fleetctl` round-trip parity;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
   against the real 1,000-device Rust projection;
 - native grid/inspector UI Automation peers and names, grouped recycling
@@ -32,7 +35,8 @@ Quick is safe during normal editing and checks:
   pointer/keyboard/UI Automation batch selection, hidden-selection
   preservation, empty-scope behavior, retained out-of-scope inspector
   context, applied-sort preservation, stable live ordering with explicit
-  accessible application, safe shared-row value refresh, and mixed
+  accessible application, saved-view query/grouping/selection/focus
+  restoration, accessible saved-view controls, safe shared-row value refresh, and mixed
   fresh/stale/offline state;
 - fail-closed non-loopback Hub, bounded response, mismatched-query, and
   wrong-device inspector fixtures.
@@ -121,6 +125,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run --locked -p fleetctl -- list 4
 cargo run --locked -p fleetctl -- operator-fixture mixed-freshness 50
+cargo run --locked -p fleetctl -- saved-view-roundtrip 50
 dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj -c Release
 dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
   -c Release --no-build -- --repo-root .

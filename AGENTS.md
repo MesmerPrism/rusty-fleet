@@ -37,17 +37,19 @@ Live device work is never implied by a source or documentation task.
 
 - `crates/fleet-contracts`: public source-only contracts and cross-field
   validation;
-- `crates/fleet-hub`: deterministic in-memory state and the local API;
+- `crates/fleet-hub`: deterministic in-memory state, saved-view ownership,
+  and the local API;
 - `crates/fleet-manifold-adapter`: exact pinned Manifold enrollment/status
   admission plus transactional signed-check-in projection;
 - `apps/fleet-hub-local`: explicit bounded local ingress, durable two-slot
-  runtime state, and canonical HTTP projection adapter;
+  runtime and saved-view state, and canonical HTTP projection adapter;
 - `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator, and
   damage scenarios;
-- `apps/fleetctl`: structured JSON CLI over the same local API;
+- `apps/fleetctl`: structured JSON CLI and saved-view parity projection over
+  the same in-process API;
 - `apps/fleet-console-wpf`: native WPF fleet table, canonical
-  scope/sort/grouping, queued live ordering, persistent inspector, and
-  loopback-only local API projection;
+  scope/sort/grouping/saved-view controls, queued live ordering, persistent
+  inspector, and loopback-only local API projection;
 - `apps/fleet-console-wpf.tests`: package-free native DataGrid, UI Automation,
   stable-context/order, grouped virtualization, presented keyboard, and
   1,000-device scale validation;

@@ -228,6 +228,9 @@ headsets.
 - Add the first WPF fleet table with filtering, grouping, detail inspection,
   a persistent selected-device inspector, independent status grammar, visible
   active scope, stable live ordering, staleness, and capability projections.
+- Establish Hub-owned saved-view persistence with an optimistic collection
+  revision and exact query/navigation restoration before adding full-detail
+  routes or richer view sharing; no saved scope may exist only in WPF state.
 - Run the native WPF `DataGrid` and shell/theme dependency spike with at least
   1,000 simulated devices. Test virtualization, UI Automation, keyboard,
   Narrator, high contrast, scaling, focus, selection, license, and removal

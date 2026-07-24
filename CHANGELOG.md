@@ -56,3 +56,9 @@ The project follows Semantic Versioning once runtime releases begin.
   participating application, with visible direction, Hub-side query
   authority, applied/editor separation, stable refresh behavior, accessible
   controls, and deterministic 1,000-device projection coverage.
+- Hub-owned saved views with bounded canonical contracts, optimistic
+  collection revisions, durable two-slot restart restoration, local HTTP
+  CRUD routes, structured `fleetctl` round-trip parity, damaged fixtures, and
+  WPF capture/replay of the exact query, grouping, visible column order,
+  selected device, scroll anchor, and focus region. Unsupported future
+  navigation details degrade visibly instead of becoming hidden WPF state.

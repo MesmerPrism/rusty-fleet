@@ -65,6 +65,103 @@ public static class FleetProjectionValidation
         Require(projection.ActiveOperations.Count <= 128, "inspector operation limit");
     }
 
+    public static void ValidateSavedViews(SavedViewCollection collection)
+    {
+        Require(
+            collection.Schema == "rusty.fleet.saved_view_collection.v1",
+            "saved-view collection schema");
+        Require(collection.Revision > 0, "saved-view collection revision");
+        Require(collection.Views.Count <= 128, "saved-view collection limit");
+        string? priorId = null;
+        foreach (var view in collection.Views)
+        {
+            ValidateSavedView(view);
+            Require(
+                priorId is null ||
+                StringComparer.Ordinal.Compare(priorId, view.ViewId) < 0,
+                "saved-view canonical ordering");
+            priorId = view.ViewId;
+        }
+    }
+
+    public static void ValidateSavedViewReceipt(SavedViewMutationReceipt receipt)
+    {
+        Require(
+            receipt.Schema == "rusty.fleet.saved_view_mutation_receipt.v1",
+            "saved-view receipt schema");
+        Require(!string.IsNullOrWhiteSpace(receipt.ViewId), "saved-view receipt ID");
+        Require(receipt.PreviousRevision > 0, "saved-view previous revision");
+        Require(
+            receipt.CurrentRevision >= receipt.PreviousRevision &&
+            receipt.CurrentRevision - receipt.PreviousRevision <= 1,
+            "saved-view receipt revision");
+        Require(
+            receipt.Changed ==
+            (receipt.CurrentRevision > receipt.PreviousRevision),
+            "saved-view changed revision");
+        Require(receipt.Deleted == (receipt.View is null), "saved-view deletion receipt");
+        Require(!receipt.Deleted || receipt.Changed, "saved-view deletion change");
+        if (receipt.View is not null)
+        {
+            ValidateSavedView(receipt.View);
+            Require(receipt.View.ViewId == receipt.ViewId, "saved-view receipt identity");
+        }
+    }
+
+    private static void ValidateSavedView(SavedView view)
+    {
+        Require(view.Schema == "rusty.fleet.saved_view.v1", "saved-view schema");
+        Require(
+            IsValidSavedViewId(view.ViewId),
+            "saved-view ID");
+        Require(
+            !string.IsNullOrWhiteSpace(view.Name) && view.Name.Length <= 256,
+            "saved-view name");
+        Require(view.Query.Schema == "rusty.fleet.query.v1", "saved-view query schema");
+        Require(
+            !string.IsNullOrWhiteSpace(view.Query.QueryId),
+            "saved-view query ID");
+        Require(
+            view.Query.Limit is >= 1 and <= 10_000 &&
+            view.Query.Sort.Count <= 8,
+            "saved-view query bounds");
+        Require(
+            view.Columns.Count <= 64 &&
+            view.Columns.All(column =>
+                !string.IsNullOrWhiteSpace(column) && column.Length <= 128) &&
+            view.Columns.Distinct(StringComparer.Ordinal).Count() == view.Columns.Count,
+            "saved-view columns");
+        Require(
+            view.Density is "compact" or "standard" or "comfortable",
+            "saved-view density");
+        Require(
+            view.Grouping is null ||
+            (!string.IsNullOrWhiteSpace(view.Grouping) && view.Grouping.Length <= 128),
+            "saved-view grouping");
+        foreach (var value in new[]
+                 {
+                     view.Restoration.SelectedDeviceId,
+                     view.Restoration.InspectorTab,
+                     view.Restoration.ScrollAnchorDeviceId,
+                     view.Restoration.FocusedRegion
+                 })
+        {
+            Require(
+                value is null ||
+                (!string.IsNullOrWhiteSpace(value) && value.Length <= 128),
+                "saved-view restoration text");
+        }
+        Require(view.SchemaVersion > 0, "saved-view schema version");
+        Require(
+            view.Restoration.CollapsedGroups.Count <= 512 &&
+            view.Restoration.CollapsedGroups.All(group =>
+                !string.IsNullOrWhiteSpace(group) && group.Length <= 128) &&
+            view.Restoration.CollapsedGroups
+                .Distinct(StringComparer.Ordinal).Count() ==
+            view.Restoration.CollapsedGroups.Count,
+            "saved-view collapsed groups");
+    }
+
     private static void ValidateSummary(FleetSummaryProjection summary)
     {
         Require(summary.Schema == "rusty.fleet.summary.v1", "summary schema");
@@ -142,4 +239,22 @@ public static class FleetProjectionValidation
                 $"Fleet Hub returned invalid projection evidence: {field}.");
         }
     }
+
+    private static bool IsValidSavedViewId(string value)
+    {
+        if (value.Length is 0 or > 128)
+        {
+            return false;
+        }
+
+        return value.Split('.').All(segment =>
+            segment.Length > 0 &&
+            IsSavedViewIdEdge(segment[0]) &&
+            IsSavedViewIdEdge(segment[^1]) &&
+            segment.All(character =>
+                IsSavedViewIdEdge(character) || character is '_' or '-'));
+    }
+
+    private static bool IsSavedViewIdEdge(char value) =>
+        char.IsAsciiLetterLower(value) || char.IsAsciiDigit(value);
 }
