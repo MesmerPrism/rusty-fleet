@@ -154,6 +154,12 @@ branch at a meaningful recovery checkpoint and publish the milestone after its
 declared Standard gate. Run Deep before a release or when the invalidation
 matrix requires it. Never use a device suite to prove a docs-only edit.
 
+The M1 functional closeout is documentation and workflow correction only. It
+forbids a device rerun and does not claim accessibility conformance. Automated
+keyboard and UI Automation remain milestone regressions; the cumulative
+Narrator, Accessibility Insights, high-contrast, large-text, scaling, and
+multi-monitor suite remains the Milestone 7 release gate.
+
 Run:
 
 ```powershell

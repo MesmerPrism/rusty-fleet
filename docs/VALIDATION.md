@@ -201,7 +201,7 @@ WPF surface exists:
 | deterministic 4/50/250/1k/5k datasets | required | affected profile | Standard | Deep |
 | Console/CLI/API membership and reason parity | contract only | focused | Standard | Deep |
 | keyboard and UI Automation regression | not applicable | focused | Standard | Standard |
-| Narrator, high contrast, large text, scaling | not applicable | targeted | manual milestone gate | full release gate |
+| Narrator, Accessibility Insights, high contrast, large text, scaling, multi-monitor | not applicable | defect-targeted spot check | informative current-settings check | cumulative full release gate |
 | stable ordering, hidden selection, navigation restoration | contract fixture | focused | scenario gate | regression |
 | target snapshot and per-target ledger | M2 contract | focused | M2 Standard | regression |
 | measured latency, memory, and update churn | candidate fixtures | nearest profile | declared milestone | Deep |
@@ -219,6 +219,14 @@ surface as a real WPF window for bounded focus, keyboard, screen-reader, and
 visual review. It does not start a Hub or contact a device. Presented-window
 evidence complements the default off-screen regression run and does not make
 Narrator, high-contrast, large-text, or scaling gates automatic.
+
+The complete operator-attended accessibility matrix is cumulative and runs at
+Milestone 7 after the selected functionality suite is present. Earlier
+milestones still block on automated keyboard and UI Automation regressions and
+must repair any defect found by an attended spot check. A preliminary
+screen-reader confirmation or current-settings keyboard pass is informative;
+it must not be relabeled as high-contrast, large-text, scaling, multi-monitor,
+Accessibility Insights, or release conformance.
 
 ## Evidence vocabulary
 

@@ -601,18 +601,22 @@ Every milestone answers:
 
 ## Next implementation action
 
-Complete the active
-`morphospace/iteration-units/fleet-m1-local-no-adb-monitoring.json` as one
-stack. The accepted source foundation remains documented in
+Complete the active corrective
+`morphospace/iteration-units/fleet-m1-functional-closeout.json` without
+rewriting the immutable original M1 unit. The accepted source foundation remains documented in
 [Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md); the active bounded
 ingress and authority behavior are documented in
 [Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Durable restart
 recovery and the first bounded Quest checkpoint are now present. The
 [M1 consolidation readiness record](M1_CONSOLIDATION_READINESS.md) confirms
 that the final automated host-side Quick, Standard, Deep, workflow-contract,
-instruction-impact, and exact Quest-owner `Host` gates pass. Finish the manual
-Narrator, high-contrast, large-text, and scaling gates, then perform the formal
-workflow transition and publication. The deterministic M1 lifecycle
+instruction-impact, and exact Quest-owner `Host` gates pass. The
+current-settings presented keyboard pass and preliminary Narrator confirmation
+are informative rather than comprehensive accessibility conformance. Keep
+automated keyboard/UI Automation regression at every WPF milestone and run the
+complete Narrator, Accessibility Insights, high-contrast, large-text, scaling,
+and multi-monitor matrix as the existing Milestone 7 cumulative release gate.
+The deterministic M1 lifecycle
 projection now covers sleep/wake aging, route loss/recovery, duplicate and
 stale check-ins, agent upgrade, old-epoch replay, and final independent-device
 recovery; the exact pinned Manifold adapter covers key rotation and old-signer

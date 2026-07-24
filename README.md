@@ -217,10 +217,14 @@ explicit queued live ordering, and automated
 500-fresh/250-stale/250-offline canonical projection. A real presented-window
 pass verifies search, grid, batch, and inspector keyboard focus. Its
 self-checking lifecycle projection and exact-owner key-rotation gate cover the
-remaining Fleet-owned deterministic lifecycle cases. Acceptance remains
-pending until the manual Narrator, high-contrast, large-text, scaling, formal
-workflow transition, and publication gates pass. The completed automated
-host-side consolidation gates and exact remaining boundary are recorded in
+remaining Fleet-owned deterministic lifecycle cases. M1 is functionally
+closed through an additive corrective unit. The current-settings presented
+keyboard pass and preliminary Narrator confirmation are informative, not
+comprehensive accessibility conformance. Automated keyboard and UI Automation
+remain milestone regressions; the cumulative Narrator, Accessibility Insights,
+high-contrast, large-text, scaling, and multi-monitor suite remains an explicit
+Milestone 7 release gate after the full operator workflow exists. The completed
+M1 evidence and exact boundary are recorded in
 [M1 Consolidation Readiness](docs/M1_CONSOLIDATION_READINESS.md).
 
 ## License

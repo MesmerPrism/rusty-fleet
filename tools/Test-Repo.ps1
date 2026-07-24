@@ -552,10 +552,60 @@ function Test-PlanningInvariants {
         @($m1Unit.acceptance.acceptance_id) -contains "stacked-validation-and-cleanup"
     ) -Message "Milestone 1 is not one complete local-monitoring stack."
     if ($m1Unit.status -eq "active") {
-        Get-TransitionBinding -Unit $m1Unit -State $state `
-            -EventId "$($m1Unit.unit_id)-claimed-0007" `
-            -ExpectedStatus "active" -ExpectedCurrentUnit $m1Unit.unit_id `
-            -ExpectedNextReadyUnit $null | Out-Null
+        $eventsPath = Join-Path $repoRoot "morphospace/iteration-events.jsonl"
+        $events = @(
+            Get-Content -LiteralPath $eventsPath |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                ForEach-Object { $_ | ConvertFrom-Json -Depth 100 }
+        )
+        $supersessionPrefix = "$($m1Unit.unit_id)-superseded-by-"
+        $supersessionEvents = @($events | Where-Object {
+            $_.event_type -eq "state-transition" -and
+            $_.unit_id -eq $m1Unit.unit_id -and
+            $_.event_id.StartsWith($supersessionPrefix, [StringComparison]::Ordinal)
+        })
+
+        if ($supersessionEvents.Count -eq 0) {
+            Get-TransitionBinding -Unit $m1Unit -State $state `
+                -EventId "$($m1Unit.unit_id)-claimed-0007" `
+                -ExpectedStatus "active" -ExpectedCurrentUnit $m1Unit.unit_id `
+                -ExpectedNextReadyUnit $null | Out-Null
+        } else {
+            Assert-True -Condition ($supersessionEvents.Count -eq 1) `
+                -Message "Milestone 1 must have exactly one additive supersession."
+            $supersession = $supersessionEvents[0]
+            $replacementId = $supersession.event_id.Substring($supersessionPrefix.Length)
+            $replacementPath = Join-Path $repoRoot "morphospace/iteration-units/$replacementId.json"
+            Assert-True -Condition (Test-Path -LiteralPath $replacementPath -PathType Leaf) `
+                -Message "Milestone 1 supersession replacement is missing."
+            $replacement = Get-Content -LiteralPath $replacementPath -Raw |
+                ConvertFrom-Json -Depth 100
+            $replacementPaths = @(
+                $replacement.allowed_repositories |
+                    Where-Object { $_.repo_id -eq "rusty-fleet" } |
+                    ForEach-Object { @($_.allowed_paths) }
+            )
+            Assert-True -Condition (
+                $replacement.unit_id -eq $replacementId -and
+                $replacement.status -in @("active", "validating", "accepted") -and
+                @($replacement.allowed_repositories.repo_id) -contains "rusty-fleet" -and
+                $replacementPaths -contains "AGENTS.md" -and
+                $replacementPaths -contains "tools/Test-Repo.ps1" -and
+                @($replacement.acceptance.acceptance_id) -contains "corrective-workflow-integrity" -and
+                @($replacement.instruction_surfaces | Where-Object {
+                    $_.surface_kind -eq "agents" -and $_.path -eq "AGENTS.md"
+                }).Count -eq 1
+            ) -Message "Milestone 1 additive supersession is incomplete or out of scope."
+            if ($replacement.status -in @("active", "validating")) {
+                Assert-True -Condition (
+                    $state.current_unit -eq $replacementId -and
+                    $state.next_ready_unit -eq $null
+                ) -Message "Milestone 1 replacement is not the current workflow authority."
+            } else {
+                Assert-True -Condition ($state.current_unit -eq $null) `
+                    -Message "Accepted Milestone 1 replacement left a current unit."
+            }
+        }
     }
 
     $m1Text = $m1Unit | ConvertTo-Json -Depth 100 -Compress

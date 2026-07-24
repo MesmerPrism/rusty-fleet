@@ -2,10 +2,18 @@
 
 ## Decision
 
-The automated host-side Milestone 1 stack is ready for consolidation review.
-This is not Milestone 1 acceptance. The remaining acceptance work is
-operator-attended accessibility validation followed by the declared workflow
-and publication transition.
+Milestone 1 is functionally complete through the additive
+`fleet-m1-functional-closeout` correction. The original active unit remains
+immutable because it required the comprehensive manual accessibility matrix
+before its device and acceptance transitions. The operator subsequently chose
+to defer that cumulative configuration matrix until the full functionality
+suite exists.
+
+The correction does not claim accessibility conformance. A current-settings
+presented keyboard pass completed, and the operator confirmed that Narrator
+generally announced the application. Those observations are informative only.
+Narrator workflow coverage, Accessibility Insights, high contrast, large text,
+supported scaling, and multi-monitor evidence remain open at Milestone 7.
 
 The checkpoint preserves the no-ADB product baseline. It does not promote
 optional LSL, media, relay, privileged, or device capabilities.
@@ -78,19 +86,23 @@ The repository routing and public/private rules remain sufficient:
 No installed skill or shared work-environment contract needs to change for
 this source checkpoint.
 
-## Remaining acceptance gates
+## Accessibility evidence boundary
 
-The following work is intentionally not automated or inferred:
+The following work is intentionally deferred, not inferred:
 
 1. Complete the declared Narrator workflow over search, fleet navigation,
    inspection, batch selection, detail navigation, and return-to-fleet.
-2. Verify Windows high-contrast modes, large text, supported display scaling,
-   focus visibility, clipping, and stable keyboard restoration.
-3. Preserve sanitized accessibility evidence without changing global settings
-   outside a dedicated reversible operator-attended plan.
-4. Run the formal workflow validation/acceptance transition against the exact
-   final Fleet and Quest revisions, then publish the accepted planning state
-   last.
+2. Run Accessibility Insights and verify Windows high-contrast modes, large
+   text, supported display scaling, multi-monitor behavior, focus visibility,
+   clipping, and stable keyboard restoration.
+3. Preserve sanitized evidence without changing global settings outside a
+   dedicated reversible operator-attended plan.
+
+Automated keyboard and UI Automation checks continue at every intervening WPF
+milestone. Any concrete defect found by an attended spot check remains a normal
+blocking defect for the affected workflow. The deferred cumulative matrix is
+the Milestone 7 release gate and cannot be replaced by the preliminary
+current-settings observations.
 
 Optional Rusty LSL runtime/discovery/clock/recovery/XDF support remains
 deferred until its owner repository supplies and promotes that exact contract.
@@ -99,7 +111,8 @@ simulated into a support claim.
 
 ## Next coherent slice
 
-The next slice is the operator-attended accessibility gate and formal
-workflow transition. Additional source microsteps are not justified unless
-that gate finds a specific defect. Device, LSL, media, and relay work remain
-separate owner-qualified milestones.
+Validate and accept the additive functional closeout without rerunning the
+completed device checkpoint or changing global accessibility settings. The
+next independently scoped product work may then use an owner-qualified
+milestone. ADB and File Manager work must remain optional and must not weaken
+the no-ADB monitoring baseline.
