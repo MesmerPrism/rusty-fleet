@@ -5,9 +5,10 @@ Meta Quest dashboard. It is designed to show every enrolled headset that is
 checking in, even when ADB is unavailable, and to expose stronger operations
 only when the device reports the required capability and authority.
 
-Milestone 0 is accepted and published. Milestone 1's functional baseline is
-accepted on its working branch; publication remains pending. The current
-checkpoint adds provenance-bearing Quest observation
+Milestone 0 and the consolidated Milestone 1 monitoring baseline are
+published. The current Milestone 2 source checkpoint adds the first bounded
+participating-app operation, `kiosk.show-controls`, while retaining the
+provenance-bearing Quest observation
 facts, a signed check-in envelope admitted transactionally through the exact
 pinned Manifold peer authority, an explicit bounded local Hub runtime, durable
 two-slot restart recovery, and one cleaned private Quest Wi-Fi proof. Nothing
@@ -33,7 +34,13 @@ also passed Quick, Standard, Deep, workflow-contract, and exact Quest-owner
 [M1 consolidation readiness record](docs/M1_CONSOLIDATION_READINESS.md).
 The cumulative Narrator, Accessibility Insights, high-contrast, large-text,
 scaling, and multi-monitor suite remains the Milestone 7 release gate. Media
-and remote relay remain pending.
+and remote relay remain pending. The operation uses an immutable exact-target
+preview, explicit confirmation, the pinned Manifold Runtime Host, Kiosk's
+signed direct-operator contract, receipt-gated application, bounded
+scheduling, durable same-request recovery, and Console/CLI/API parity. It does
+not require ADB and remains inert without private Kiosk endpoint/key
+configuration. See the
+[M2 Kiosk show-controls guide](docs/M2_KIOSK_SHOW_CONTROLS.md).
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -74,10 +81,13 @@ The current implementation is split into:
   summary, watch, and revisioned saved-view behavior;
 - `fleet-manifold-adapter`: exact Manifold enrollment/status admission,
   Ed25519/JCS verification, replay-window enforcement, and all-or-neither
-  Manifold/Fleet state application;
+  Manifold/Fleet state application, plus pinned Runtime Host command review,
+  application, replay, and audit state;
+- `fleet-kiosk-adapter`: bounded no-redirect signed Kiosk status, invoke, and
+  result transport with owner-vector parity and poll-only restart recovery;
 - `fleet-hub-local`: explicit bounded HTTP check-in ingress plus health,
-  query, summary, inspect, detail, watch, and durable saved-view projections
-  over the same Hub;
+  query, summary, inspect, detail, watch, saved-view, and operation projections
+  over the same Hub and fully validated two-slot durable envelope;
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
   mutations;
@@ -123,13 +133,14 @@ bounded dependency, authority, activation, and instruction audit.
    [reference ledger](docs/research/FLEET_UI_SOURCE_LEDGER.md).
 6. Use the [validation matrix](docs/VALIDATION.md) to select the smallest
    sufficient check.
-7. Resume project state from [the Morphospace workspace](morphospace/README.md).
+7. Review the
+   [M2 Kiosk show-controls authority and recovery boundary](docs/M2_KIOSK_SHOW_CONTROLS.md).
 
-The active implementation stack is `fleet-m1-local-no-adb-monitoring`. It
-delivers the authenticated local check-in, bounded Hub runtime, Quest Fleet
-Agent, shared CLI/API/WPF projections, negative paths, and final device proof
-as one coherent vertical slice. It is not split into separate lifecycle units
-for each schema, field, transport handler, control, or test.
+The current source stack is the first M2 participating-app operation:
+`kiosk.show-controls`. Dedicated private planning owns its iteration state;
+the public repository contains the coherent contract, Hub, Manifold, Kiosk,
+local API, CLI, WPF, and negative-path implementation without embedding
+private planning evidence.
 
 ## Source workflow
 
@@ -168,6 +179,8 @@ Non-loopback binding additionally requires `allow_non_loopback=true` in that
 private config. Durable state additionally requires an absolute private
 `state_directory`. See the
 [M1 runtime guide](docs/M1_LOCAL_MONITORING.md).
+The M2 operation commands use the explicit loopback Hub and are documented in
+the [M2 guide](docs/M2_KIOSK_SHOW_CONTROLS.md).
 
 Build and exercise the native WPF projection against the real deterministic
 Rust query result:
@@ -207,8 +220,8 @@ These commands do not contact or mutate a headset.
 
 ## Status
 
-The accepted M0 baseline and inert Morphospace protocol-v2 workspace are now
-paired with the active M1 local-monitoring stack. The runtime source is
+The accepted M0 and consolidated M1 baselines are now paired with the first
+M2 participating-app control slice. The runtime source is
 present but activates no socket, service, device route, or platform permission
 by default. The bounded Quest checkpoint and a producer-stopped durable Hub
 restart have passed with private evidence and complete device cleanup. M1
@@ -228,6 +241,8 @@ high-contrast, large-text, scaling, and multi-monitor suite remains an explicit
 Milestone 7 release gate after the full operator workflow exists. The completed
 M1 evidence and exact boundary are recorded in
 [M1 Consolidation Readiness](docs/M1_CONSOLIDATION_READINESS.md).
+The source-only M2 Kiosk slice is implemented and device-free validation is
+green; a live owner/device proof remains a separate explicit gate.
 
 ## License
 

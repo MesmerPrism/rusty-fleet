@@ -4,10 +4,22 @@
 use std::env;
 use std::process::ExitCode;
 
-use fleetctl::execute;
+use fleetctl::{
+    LocalFleetOperationClient, execute, execute_with_operation_client, is_operation_command,
+};
 
 fn main() -> ExitCode {
-    match execute(env::args().skip(1).collect()) {
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let result = if arguments
+        .first()
+        .is_some_and(|command| is_operation_command(command))
+    {
+        LocalFleetOperationClient::from_env()
+            .and_then(|mut client| execute_with_operation_client(arguments, &mut client))
+    } else {
+        execute(arguments)
+    };
+    match result {
         Ok(value) => match serde_json::to_string_pretty(&value) {
             Ok(json) => {
                 println!("{json}");

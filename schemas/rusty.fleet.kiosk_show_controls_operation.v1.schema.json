@@ -1,0 +1,519 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.kiosk_show_controls_operation.v1.schema.json",
+  "title": "Rusty Fleet Kiosk show-controls operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation_id",
+    "action_id",
+    "created_at_ms",
+    "preview",
+    "lifecycle",
+    "max_parallelism",
+    "max_attempts_per_target",
+    "cleanup_required",
+    "targets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.kiosk_show_controls_operation.v1"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/nonempty"
+    },
+    "action_id": {
+      "const": "kiosk.show-controls"
+    },
+    "created_at_ms": {
+      "type": "integer"
+    },
+    "preview": {
+      "$ref": "#/$defs/preview"
+    },
+    "lifecycle": {
+      "$ref": "#/$defs/lifecycle"
+    },
+    "max_parallelism": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "max_attempts_per_target": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "cleanup_required": {
+      "const": false
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "$ref": "#/$defs/targetLedger"
+      }
+    }
+  },
+  "$defs": {
+    "nonempty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "ownerRequestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{8,64}$"
+    },
+    "ownerContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_repo_id",
+        "owner_contract_schema",
+        "owner_contract_revision",
+        "capability_id",
+        "request_auth",
+        "response_auth",
+        "invoke_method",
+        "invoke_target",
+        "result_method",
+        "result_target",
+        "result_request_id_parameter",
+        "port",
+        "max_clock_skew_seconds",
+        "command",
+        "command_value",
+        "owner_result_schema"
+      ],
+      "properties": {
+        "owner_repo_id": {
+          "const": "rusty-kiosk"
+        },
+        "owner_contract_schema": {
+          "const": "rusty.kiosk.direct_operator.v1"
+        },
+        "owner_contract_revision": {
+          "const": "8954228f9ae67c5995a72569e3c9cdd3758f85c0"
+        },
+        "capability_id": {
+          "const": "rusty-kiosk.direct-operator"
+        },
+        "request_auth": {
+          "const": "hmac-sha256-v1"
+        },
+        "response_auth": {
+          "const": "hmac-sha256-response-v1"
+        },
+        "invoke_method": {
+          "const": "POST"
+        },
+        "invoke_target": {
+          "const": "/v1/kiosk/invoke"
+        },
+        "result_method": {
+          "const": "GET"
+        },
+        "result_target": {
+          "const": "/v1/kiosk/result"
+        },
+        "result_request_id_parameter": {
+          "const": "request_id"
+        },
+        "port": {
+          "const": 39873
+        },
+        "max_clock_skew_seconds": {
+          "const": 90
+        },
+        "command": {
+          "const": "show-controls"
+        },
+        "command_value": {
+          "type": "null"
+        },
+        "owner_result_schema": {
+          "const": "rusty.kiosk.cli_result.v1"
+        }
+      }
+    },
+    "support": {
+      "enum": [
+        "supported",
+        "unsupported",
+        "unknown"
+      ]
+    },
+    "enablement": {
+      "enum": [
+        "enabled",
+        "disabled",
+        "unknown"
+      ]
+    },
+    "authorization": {
+      "enum": [
+        "authorized",
+        "unauthorized",
+        "restricted",
+        "unknown"
+      ]
+    },
+    "reachability": {
+      "enum": [
+        "reachable",
+        "disconnected",
+        "unavailable",
+        "unknown"
+      ]
+    },
+    "freshness": {
+      "enum": [
+        "current",
+        "stale",
+        "unknown"
+      ]
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device_id",
+        "identity_revision",
+        "capability_id",
+        "capability_evidence_revision",
+        "capability_owner",
+        "support",
+        "enablement",
+        "authorization",
+        "reachability",
+        "freshness",
+        "observed_at_ms",
+        "fresh_until_ms",
+        "evaluated_at_ms",
+        "eligible",
+        "reason_code",
+        "message"
+      ],
+      "properties": {
+        "device_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capability_id": {
+          "const": "rusty-kiosk.direct-operator"
+        },
+        "capability_evidence_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capability_owner": {
+          "const": "rusty-kiosk"
+        },
+        "support": {
+          "$ref": "#/$defs/support"
+        },
+        "enablement": {
+          "$ref": "#/$defs/enablement"
+        },
+        "authorization": {
+          "$ref": "#/$defs/authorization"
+        },
+        "reachability": {
+          "$ref": "#/$defs/reachability"
+        },
+        "freshness": {
+          "$ref": "#/$defs/freshness"
+        },
+        "observed_at_ms": {
+          "type": "integer"
+        },
+        "fresh_until_ms": {
+          "type": "integer"
+        },
+        "evaluated_at_ms": {
+          "type": "integer"
+        },
+        "eligible": {
+          "type": "boolean"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "message": {
+          "$ref": "#/$defs/nonempty"
+        }
+      }
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "preview_id",
+        "operation_id",
+        "action_id",
+        "created_at_ms",
+        "expires_at_ms",
+        "fleet_revision",
+        "owner_contract",
+        "targets"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.kiosk_show_controls_preview.v1"
+        },
+        "preview_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "action_id": {
+          "const": "kiosk.show-controls"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "expires_at_ms": {
+          "type": "integer"
+        },
+        "fleet_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner_contract": {
+          "$ref": "#/$defs/ownerContract"
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/preflight"
+          }
+        }
+      }
+    },
+    "lifecycle": {
+      "enum": [
+        "proposed",
+        "accepted",
+        "rejected",
+        "dispatched",
+        "running",
+        "applied",
+        "failed",
+        "expired",
+        "cancellation_requested",
+        "cancelled"
+      ]
+    },
+    "effectiveReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "receipt_id",
+        "operation_id",
+        "device_id",
+        "identity_revision",
+        "owner_contract",
+        "owner_action_request_id",
+        "owner_result_transport_request_id",
+        "owner_command",
+        "response_status",
+        "response_content_sha256",
+        "response_signature",
+        "response_auth_verified",
+        "owner_result_schema",
+        "owner_accepted",
+        "owner_completed",
+        "owner_recorded_at_ms",
+        "controls_open",
+        "wrapped_at_ms"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.kiosk_effective_receipt.v1"
+        },
+        "receipt_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "device_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner_contract": {
+          "$ref": "#/$defs/ownerContract"
+        },
+        "owner_action_request_id": {
+          "$ref": "#/$defs/ownerRequestId"
+        },
+        "owner_result_transport_request_id": {
+          "$ref": "#/$defs/ownerRequestId"
+        },
+        "owner_command": {
+          "const": "show-controls"
+        },
+        "response_status": {
+          "const": 200
+        },
+        "response_content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "response_signature": {
+          "$ref": "#/$defs/sha256"
+        },
+        "response_auth_verified": {
+          "const": true
+        },
+        "owner_result_schema": {
+          "const": "rusty.kiosk.cli_result.v1"
+        },
+        "owner_accepted": {
+          "const": true
+        },
+        "owner_completed": {
+          "const": true
+        },
+        "owner_recorded_at_ms": {
+          "type": "integer"
+        },
+        "controls_open": {
+          "const": true
+        },
+        "wrapped_at_ms": {
+          "type": "integer"
+        }
+      }
+    },
+    "targetLedger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device_id",
+        "identity_revision",
+        "preflight",
+        "lifecycle",
+        "dispatched_at_ms",
+        "owner_deadline_at_ms",
+        "attempt_count",
+        "owner_request_ids",
+        "owner_request_id",
+        "effective_receipt",
+        "retry_disposition",
+        "cancel_disposition",
+        "reason_code",
+        "message",
+        "last_transition_ms"
+      ],
+      "properties": {
+        "device_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "preflight": {
+          "$ref": "#/$defs/preflight"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/lifecycle"
+        },
+        "dispatched_at_ms": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner_deadline_at_ms": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "owner_request_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ownerRequestId"
+          }
+        },
+        "owner_request_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ownerRequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_receipt": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/effectiveReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retry_disposition": {
+          "enum": [
+            "not_eligible",
+            "new_owner_request_required"
+          ]
+        },
+        "cancel_disposition": {
+          "enum": [
+            "cancelable_before_dispatch",
+            "cancellation_requested_before_dispatch",
+            "cancelled_before_dispatch",
+            "not_cancelable_after_dispatch",
+            "terminal"
+          ]
+        },
+        "reason_code": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "message": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "last_transition_ms": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

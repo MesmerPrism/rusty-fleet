@@ -41,9 +41,13 @@ Live device work is never implied by a source or documentation task.
 - `crates/fleet-hub`: deterministic in-memory state, saved-view ownership,
   and the local API;
 - `crates/fleet-manifold-adapter`: exact pinned Manifold enrollment/status
-  admission plus transactional signed-check-in projection;
+  admission plus transactional signed-check-in projection and Runtime Host
+  command authority;
+- `crates/fleet-kiosk-adapter`: signed bounded Kiosk direct-operator transport,
+  effective receipt projection, and poll-only recovery;
 - `apps/fleet-hub-local`: explicit bounded local ingress, durable two-slot
-  runtime and saved-view state, and canonical HTTP projection adapter;
+  runtime, saved-view/operation state, raw owner evidence, and canonical HTTP
+  projection adapter;
 - `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator,
   deterministic M1 lifecycle, and damage scenarios;
 - `apps/fleetctl`: structured JSON CLI, saved-view parity, and the self-checking
@@ -66,6 +70,8 @@ The active M1 authority and ingress boundaries are recorded in
 [ADR 0006](docs/decisions/0006-m1-local-ingress-threat-model.md).
 The runnable local surface is documented in
 [docs/M1_LOCAL_MONITORING.md](docs/M1_LOCAL_MONITORING.md).
+The first participating-app operation and its recovery boundary are documented
+in [docs/M2_KIOSK_SHOW_CONTROLS.md](docs/M2_KIOSK_SHOW_CONTROLS.md).
 
 ## Ownership
 

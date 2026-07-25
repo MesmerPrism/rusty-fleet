@@ -47,6 +47,16 @@ public partial class MainWindow : Window
 
     public TextBox SavedViewNameControl => SavedViewNameBox;
 
+    public FrameworkElement KioskOperationRegion => OperationPane;
+
+    public Button PreviewKioskShowControlsControl => PreviewKioskShowControlsButton;
+
+    public Button ConfirmKioskShowControlsControl => ConfirmKioskShowControlsButton;
+
+    public Button RefreshOperationControl => RefreshOperationButton;
+
+    public Button DismissOperationControl => DismissOperationButton;
+
     public FrameworkElement InspectorRegion => InspectorPane;
 
     public FrameworkElement FullDeviceDetailRegion => FullDetailRegion;

@@ -102,6 +102,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
@@ -281,8 +282,102 @@
                 </StackPanel>
             </Border>
 
+            <Border x:Name="OperationPane"
+                    Grid.Row="3"
+                    Padding="8"
+                    Margin="0,0,0,8"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                    AutomationProperties.Name="Kiosk show-controls operation"
+                    AutomationProperties.HelpText="Preview the exact selected device identity revisions, review server-owned eligibility, then explicitly confirm the immutable operation.">
+                <StackPanel>
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button x:Name="PreviewKioskShowControlsButton"
+                                    Content="Preview Show Kiosk controls"
+                                    Command="{Binding PreviewKioskShowControlsCommand}"
+                                    AutomationProperties.Name="Preview Show Kiosk controls for exact selected devices" />
+                            <Button x:Name="ConfirmKioskShowControlsButton"
+                                    Content="Confirm and run"
+                                    Command="{Binding ConfirmOperationCommand}"
+                                    AutomationProperties.Name="Confirm and run Show Kiosk controls for the previewed operation"
+                                    AutomationProperties.HelpText="Confirms the displayed operation identifier and immutable preview identifier; it does not recompute target policy." />
+                            <Button x:Name="RefreshOperationButton"
+                                    Content="Refresh results"
+                                    Command="{Binding RefreshOperationCommand}"
+                                    AutomationProperties.Name="Refresh operation results" />
+                            <Button x:Name="DismissOperationButton"
+                                    Content="Dismiss"
+                                    Command="{Binding DismissOperationCommand}"
+                                    AutomationProperties.Name="Dismiss operation projection" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding OperationSummaryText}"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.Name="{Binding OperationSummaryText}" />
+                    </DockPanel>
+                    <TextBlock Text="{Binding OperationStatusText}"
+                               Margin="0,4,0,0"
+                               TextWrapping="Wrap"
+                               AutomationProperties.Name="{Binding OperationStatusText}"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <ScrollViewer MaxHeight="150"
+                                  Margin="0,6,0,0"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Focusable="False">
+                        <ItemsControl ItemsSource="{Binding OperationTargets}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Padding="6,4"
+                                            Margin="0,0,0,3"
+                                            BorderThickness="1"
+                                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                                            AutomationProperties.Name="{Binding AccessibleName}">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="220" />
+                                                <ColumnDefinition Width="150" />
+                                                <ColumnDefinition Width="150" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DeviceId}" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding IdentityRevision, StringFormat={}Identity revision {0}}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="Eligibility" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding Eligibility}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Text="Lifecycle" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding Lifecycle}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="3">
+                                                <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+                                                <TextBlock Text="{Binding ReasonCode, StringFormat={}Reason {0}}"
+                                                           Opacity="0.75" />
+                                                <TextBlock Opacity="0.75">
+                                                    <Run Text="Retry " />
+                                                    <Run Text="{Binding RetryDisposition, Mode=OneWay}" />
+                                                    <Run Text=" · cancellation " />
+                                                    <Run Text="{Binding CancelDisposition, Mode=OneWay}" />
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding ReceiptId, StringFormat={}Receipt {0}, TargetNullValue=No receipt}"
+                                                           Opacity="0.75" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </StackPanel>
+            </Border>
+
             <DataGrid x:Name="FleetGrid"
-                      Grid.Row="3"
+                      Grid.Row="4"
                       ItemsSource="{Binding RowsView}"
                       SelectedItem="{Binding SelectedDevice, Mode=OneWay}"
                       AutoGenerateColumns="False"
@@ -401,7 +496,7 @@
                 </DataGrid.RowStyle>
             </DataGrid>
 
-            <DockPanel Grid.Row="4" Margin="0,8,0,0">
+            <DockPanel Grid.Row="5" Margin="0,8,0,0">
                 <TextBlock DockPanel.Dock="Right"
                            Text="{Binding ScopeText}"
                            Opacity="0.75" />

@@ -29,6 +29,38 @@ internal static class Program
         try
         {
             var repoRoot = ReadRepoRoot(arguments);
+            var kioskOperationFixture = JsonSerializer.Deserialize<OperationLedger>(
+                File.ReadAllText(
+                    Path.Combine(
+                        repoRoot,
+                        "fixtures",
+                        "contracts",
+                        "kiosk-show-controls-operation.valid.json")),
+                FleetJson.Options) ?? throw new JsonException(
+                    "Kiosk show-controls operation fixture was empty.");
+            FleetProjectionValidation.ValidateOperationLedger(kioskOperationFixture);
+            var damagedKioskOperationRejected = false;
+            try
+            {
+                var damagedOperation = JsonSerializer.Deserialize<OperationLedger>(
+                    File.ReadAllText(
+                        Path.Combine(
+                            repoRoot,
+                            "fixtures",
+                            "contracts",
+                            "kiosk-show-controls-operation.damaged.json")),
+                    FleetJson.Options) ?? throw new JsonException(
+                        "Damaged Kiosk show-controls operation fixture was empty.");
+                FleetProjectionValidation.ValidateOperationLedger(damagedOperation);
+            }
+            catch (InvalidOperationException)
+            {
+                damagedKioskOperationRejected = true;
+            }
+
+            Require(
+                damagedKioskOperationRejected,
+                "damaged Rust-owned Kiosk show-controls fixture was accepted");
             var json = RunFleetctl(
                 repoRoot,
                 "operator-fixture",
@@ -398,6 +430,121 @@ internal static class Program
                     .GetAwaiter()
                     .GetResult().Revision == 3,
                 "saved-view deletion did not preserve canonical revision state");
+
+            var operationSource = new StaticFleetDataSource(
+                projection,
+                canonicalSummary: fixtureSummary);
+            var operationWorkspace = new FleetWorkspaceViewModel(operationSource);
+            operationWorkspace.InitializeAsync().GetAwaiter().GetResult();
+            var operationFirst = operationWorkspace.Rows[0];
+            var operationSecond = operationWorkspace.Rows[1];
+            operationFirst.IsBatchSelected = true;
+            operationSecond.IsBatchSelected = true;
+            operationWorkspace.SelectDeviceAsync(operationFirst).GetAwaiter().GetResult();
+            var operationStableKeys = operationWorkspace.Rows
+                .Select(row => row.StableKey)
+                .ToArray();
+            var operationScope = operationWorkspace.ActiveScopeText;
+            var operationBatch = operationWorkspace.BatchSelectionText;
+            var operationSelected = operationWorkspace.SelectedDevice?.StableKey;
+
+            operationWorkspace.PreviewKioskShowControlsAsync()
+                .GetAwaiter()
+                .GetResult();
+            var preview = operationWorkspace.CurrentOperation ??
+                          throw new InvalidOperationException(
+                              "kiosk show-controls preview was not projected");
+            Require(
+                operationSource.LastPreviewRequest is
+                {
+                    ActionId: FleetOperationActions.KioskShowControls
+                } previewRequest &&
+                previewRequest.Targets.Count == 2 &&
+                previewRequest.Targets[operationFirst.DeviceId] ==
+                operationFirst.Projection.Identity.IdentityRevision &&
+                previewRequest.Targets[operationSecond.DeviceId] ==
+                operationSecond.Projection.Identity.IdentityRevision,
+                "operation preview did not bind the exact selected identity revisions");
+            Require(
+                preview.Targets.Any(target => target.Preflight.Eligible) &&
+                preview.Targets.Any(target => !target.Preflight.Eligible) &&
+                operationWorkspace.OperationTargets.All(target =>
+                    target.AccessibleName.Contains("eligibility", StringComparison.Ordinal) &&
+                    target.AccessibleName.Contains("lifecycle", StringComparison.Ordinal)),
+                "mixed operation eligibility was not projected with non-color names");
+            Require(
+                operationWorkspace.SelectedDevice?.StableKey == operationSelected &&
+                operationWorkspace.BatchSelectionText == operationBatch &&
+                operationWorkspace.ActiveScopeText == operationScope &&
+                operationWorkspace.Rows.Select(row => row.StableKey)
+                    .SequenceEqual(operationStableKeys),
+                "operation preview changed fleet scope, selection, inspector, or ordering");
+
+            operationWorkspace.ConfirmOperationAsync().GetAwaiter().GetResult();
+            var executed = operationWorkspace.CurrentOperation ??
+                           throw new InvalidOperationException(
+                               "confirmed operation was not projected");
+            Require(
+                operationSource.LastExecuteRequest is { } executeRequest &&
+                executeRequest.OperationId == preview.OperationId &&
+                executeRequest.PreviewId == preview.Preview.PreviewId,
+                "operation confirmation did not bind the previewed operation and immutable preview");
+            Require(
+                executed.Targets.Any(target =>
+                    target.Lifecycle == "applied" &&
+                    !string.IsNullOrWhiteSpace(
+                        target.EffectiveReceipt?.ReceiptId)) &&
+                executed.Targets.Any(target =>
+                    target.Lifecycle == "rejected" &&
+                    !target.Preflight.Eligible),
+                "per-target terminal and excluded results were not retained");
+            Require(
+                operationWorkspace.SelectedDevice?.StableKey == operationSelected &&
+                operationWorkspace.BatchSelectionText == operationBatch &&
+                operationWorkspace.ActiveScopeText == operationScope &&
+                operationWorkspace.Rows.Select(row => row.StableKey)
+                    .SequenceEqual(operationStableKeys),
+                "operation confirmation changed fleet context");
+
+            var retainedOperation = operationWorkspace.CurrentOperation;
+            operationSource.DamageNextOperationResponse = true;
+            operationWorkspace.RefreshOperationAsync().GetAwaiter().GetResult();
+            Require(
+                ReferenceEquals(retainedOperation, operationWorkspace.CurrentOperation) &&
+                operationWorkspace.OperationStatusText.StartsWith(
+                    "Refresh failed · prior operation projection retained",
+                    StringComparison.Ordinal),
+                "mismatched operation evidence did not fail closed");
+
+            var operationWindow = new MainWindow(operationWorkspace)
+            {
+                ShowActivated = false,
+                ShowInTaskbar = false,
+                WindowStyle = WindowStyle.None,
+                Width = 1_500,
+                Height = 900
+            };
+            var operationRoot = (FrameworkElement)operationWindow.Content;
+            operationRoot.Measure(new Size(1_500, 900));
+            operationRoot.Arrange(new Rect(0, 0, 1_500, 900));
+            operationRoot.UpdateLayout();
+            Require(
+                AutomationProperties.GetName(operationWindow.KioskOperationRegion) ==
+                "Kiosk show-controls operation" &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewKioskShowControlsControl).Contains(
+                    "exact selected devices",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.ConfirmKioskShowControlsControl).Contains(
+                    "previewed operation",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(operationWindow.RefreshOperationControl) ==
+                "Refresh operation results" &&
+                AutomationProperties.GetName(operationWindow.DismissOperationControl) ==
+                "Dismiss operation projection",
+                "kiosk operation controls were not visibly and accessibly exposed");
+            operationWindow.Close();
 
             var liveSource = new StaticFleetDataSource(
                 projection,
@@ -886,6 +1033,13 @@ internal static class Program
                 saved_view_exact_query_restored = true,
                 saved_view_navigation_restored = true,
                 saved_view_detail_tab_restored = true,
+                kiosk_show_controls_preview = true,
+                kiosk_show_controls_exact_targets = true,
+                kiosk_show_controls_explicit_confirmation = true,
+                kiosk_show_controls_per_target_results = true,
+                kiosk_show_controls_accessible = true,
+                kiosk_show_controls_fail_closed = true,
+                kiosk_show_controls_rust_fixture_aligned = true,
                 empty_scope_preserved = true,
                 grouped_virtualization = true,
                 stable_live_ordering = true,
@@ -1151,6 +1305,14 @@ internal static class Program
 
         public int? LastWatchLimit { get; private set; }
 
+        public OperationPreviewRequest? LastPreviewRequest { get; private set; }
+
+        public OperationExecuteRequest? LastExecuteRequest { get; private set; }
+
+        public OperationLedger? LastOperation { get; private set; }
+
+        public bool DamageNextOperationResponse { get; set; }
+
         public Task<FleetQueryResult> QueryAsync(
             FleetQuery query,
             CancellationToken cancellationToken)
@@ -1402,6 +1564,256 @@ internal static class Program
                 View = null
             });
         }
+
+        public Task<OperationLedger> PreviewOperationAsync(
+            OperationPreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastPreviewRequest = request;
+            LastOperation = CreateOperation(request.Targets, executed: false);
+            return Task.FromResult(ReturnOperation());
+        }
+
+        public Task<OperationLedger> ExecuteOperationAsync(
+            OperationExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastExecuteRequest = request;
+            if (LastOperation is null ||
+                LastOperation.OperationId != request.OperationId ||
+                LastOperation.Preview.PreviewId != request.PreviewId)
+            {
+                throw new InvalidOperationException(
+                    "execute request did not match the synthetic preview");
+            }
+
+            LastOperation = CreateOperation(
+                LastOperation.Preview.Targets.ToDictionary(
+                    target => target.DeviceId,
+                    target => target.IdentityRevision,
+                    StringComparer.Ordinal),
+                executed: true);
+            return Task.FromResult(ReturnOperation());
+        }
+
+        public Task<OperationLedger> OperationAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastOperation is null || LastOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException("synthetic operation not found");
+            }
+
+            return Task.FromResult(ReturnOperation());
+        }
+
+        private OperationLedger ReturnOperation()
+        {
+            var operation = LastOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic operation was not created");
+            if (!DamageNextOperationResponse)
+            {
+                return operation;
+            }
+
+            DamageNextOperationResponse = false;
+            var damagedTargets = operation.Targets.ToArray();
+            var first = damagedTargets[0];
+            damagedTargets[0] = new OperationTargetResult
+            {
+                DeviceId = first.DeviceId,
+                IdentityRevision = first.IdentityRevision + 1,
+                Preflight = first.Preflight,
+                Lifecycle = first.Lifecycle,
+                DispatchedAtMs = first.DispatchedAtMs,
+                OwnerDeadlineAtMs = first.OwnerDeadlineAtMs,
+                AttemptCount = first.AttemptCount,
+                OwnerRequestIds = first.OwnerRequestIds,
+                OwnerRequestId = first.OwnerRequestId,
+                EffectiveReceipt = first.EffectiveReceipt,
+                RetryDisposition = first.RetryDisposition,
+                CancelDisposition = first.CancelDisposition,
+                ReasonCode = first.ReasonCode,
+                Message = first.Message,
+                LastTransitionMs = first.LastTransitionMs
+            };
+            return new OperationLedger
+            {
+                Schema = operation.Schema,
+                OperationId = operation.OperationId,
+                ActionId = operation.ActionId,
+                CreatedAtMs = operation.CreatedAtMs,
+                Lifecycle = operation.Lifecycle,
+                MaxParallelism = operation.MaxParallelism,
+                MaxAttemptsPerTarget = operation.MaxAttemptsPerTarget,
+                CleanupRequired = operation.CleanupRequired,
+                Targets = damagedTargets,
+                Preview = operation.Preview
+            };
+        }
+
+        private OperationLedger CreateOperation(
+            IReadOnlyDictionary<string, ulong> identities,
+            bool executed)
+        {
+            var canonicalIdentities = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal);
+            foreach (var identity in identities)
+            {
+                canonicalIdentities.Add(identity.Key, identity.Value);
+            }
+
+            var createdAt = Projection.AsOfMs;
+            var ownerContract = CreateOwnerContract();
+            var preflights = canonicalIdentities
+                .Select((identity, index) =>
+                    new OperationTargetPreflight
+                    {
+                        DeviceId = identity.Key,
+                        IdentityRevision = identity.Value,
+                        CapabilityId = "rusty-kiosk.direct-operator",
+                        CapabilityEvidenceRevision = (ulong)(31 + index),
+                        CapabilityOwner = "rusty-kiosk",
+                        Support = "supported",
+                        Enablement = "enabled",
+                        Authorization = index == 0
+                            ? "authorized"
+                            : "unauthorized",
+                        Reachability = "reachable",
+                        Freshness = "current",
+                        ObservedAtMs = createdAt - 100,
+                        FreshUntilMs = createdAt + 30_000,
+                        EvaluatedAtMs = createdAt + 100,
+                        Eligible = index == 0,
+                        ReasonCode = index == 0 ? "ready" : "unauthorized",
+                        Message = index == 0
+                            ? "Kiosk direct operator is current and ready."
+                            : "Kiosk direct operator is not authorized for this target."
+                    })
+                .ToArray();
+            var operationId = "operation-kiosk-show-controls-0001";
+            var targets = preflights
+                .Select(preflight =>
+                {
+                    var eligible = preflight.Eligible;
+                    var ownerRequestId = eligible && executed
+                        ? "fleetreq-0001"
+                        : null;
+                    return new OperationTargetResult
+                    {
+                        DeviceId = preflight.DeviceId,
+                        IdentityRevision = preflight.IdentityRevision,
+                        Preflight = preflight,
+                        Lifecycle = eligible
+                            ? executed
+                                ? "applied"
+                                : "proposed"
+                            : "rejected",
+                        DispatchedAtMs = eligible && executed
+                            ? createdAt + 200
+                            : null,
+                        OwnerDeadlineAtMs = eligible && executed
+                            ? createdAt + 60_000
+                            : null,
+                        AttemptCount = (byte)(eligible && executed ? 1 : 0),
+                        OwnerRequestIds = ownerRequestId is null
+                            ? []
+                            : [ownerRequestId],
+                        OwnerRequestId = ownerRequestId,
+                        EffectiveReceipt = ownerRequestId is null
+                            ? null
+                            : new KioskEffectiveReceipt
+                            {
+                                Schema = "rusty.fleet.kiosk_effective_receipt.v1",
+                                ReceiptId = "receipt-kiosk-show-controls-0001",
+                                OperationId = operationId,
+                                DeviceId = preflight.DeviceId,
+                                IdentityRevision = preflight.IdentityRevision,
+                                OwnerContract = ownerContract,
+                                OwnerActionRequestId = ownerRequestId,
+                                OwnerResultTransportRequestId = "fleet-poll-0001",
+                                OwnerCommand = "show-controls",
+                                ResponseStatus = 200,
+                                ResponseContentSha256 = new string('a', 64),
+                                ResponseSignature = new string('b', 64),
+                                ResponseAuthVerified = true,
+                                OwnerResultSchema = "rusty.kiosk.cli_result.v1",
+                                OwnerAccepted = true,
+                                OwnerCompleted = true,
+                                OwnerRecordedAtMs = createdAt + 1_500,
+                                ControlsOpen = true,
+                                WrappedAtMs = createdAt + 1_600
+                            },
+                        RetryDisposition = "not_eligible",
+                        CancelDisposition = eligible && !executed
+                            ? "cancelable_before_dispatch"
+                            : "terminal",
+                        ReasonCode = eligible
+                            ? executed
+                                ? "owner_effective_receipt"
+                                : "ready"
+                            : "unauthorized",
+                        Message = eligible
+                            ? executed
+                                ? "Kiosk reported the controls surface open."
+                                : "Exact identity is eligible for Show Kiosk controls"
+                            : "Target was excluded before dispatch.",
+                        LastTransitionMs = createdAt + (executed ? 1_600 : 100)
+                    };
+                })
+                .ToArray();
+            return new OperationLedger
+            {
+                Schema = "rusty.fleet.kiosk_show_controls_operation.v1",
+                OperationId = operationId,
+                ActionId = FleetOperationActions.KioskShowControls,
+                CreatedAtMs = createdAt,
+                Preview = new OperationPreview
+                {
+                    Schema = "rusty.fleet.kiosk_show_controls_preview.v1",
+                    PreviewId = "preview-kiosk-show-controls-0001",
+                    OperationId = operationId,
+                    ActionId = FleetOperationActions.KioskShowControls,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    OwnerContract = ownerContract,
+                    Targets = preflights
+                },
+                Lifecycle = executed ? "applied" : "proposed",
+                MaxParallelism = 8,
+                MaxAttemptsPerTarget = 3,
+                CleanupRequired = false,
+                Targets = targets
+            };
+        }
+
+        private static KioskOwnerContractBinding CreateOwnerContract() =>
+            new()
+            {
+                OwnerRepoId = "rusty-kiosk",
+                OwnerContractSchema = "rusty.kiosk.direct_operator.v1",
+                OwnerContractRevision =
+                    "8954228f9ae67c5995a72569e3c9cdd3758f85c0",
+                CapabilityId = "rusty-kiosk.direct-operator",
+                RequestAuth = "hmac-sha256-v1",
+                ResponseAuth = "hmac-sha256-response-v1",
+                InvokeMethod = "POST",
+                InvokeTarget = "/v1/kiosk/invoke",
+                ResultMethod = "GET",
+                ResultTarget = "/v1/kiosk/result",
+                ResultRequestIdParameter = "request_id",
+                Port = 39_873,
+                MaxClockSkewSeconds = 90,
+                Command = "show-controls",
+                CommandValue = null,
+                OwnerResultSchema = "rusty.kiosk.cli_result.v1"
+            };
 
         private static bool Matches(object? expression, DeviceRowProjection row)
         {

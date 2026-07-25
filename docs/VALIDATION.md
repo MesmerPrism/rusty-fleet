@@ -29,6 +29,11 @@ Quick is safe during normal editing and checks:
 - saved-view valid/damaged contracts, canonical ordering, optimistic
   revision conflict, durable restart restoration, HTTP CRUD, and structured
   `fleetctl` round-trip parity;
+- Kiosk show-controls valid/damaged contracts, exact owner pin, immutable
+  preview and identity/capability drift, derived aggregate lifecycle, bounded
+  parallel attempts, Manifold typed-digest/replay state, signed owner vectors,
+  receipt-gated application, poll-only ambiguous-send recovery, raw-receipt
+  rehash, nested two-slot fallback, strict HTTP routes, and CLI/API/WPF parity;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
   against the real 1,000-device Rust projection;
 - native grid/inspector UI Automation peers and names, grouped recycling
@@ -136,6 +141,11 @@ dotnet build .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj
 dotnet run --project .\apps\fleet-console-wpf.tests\RustyFleet.FleetConsole.Tests.csproj `
   -c Release --no-build -- --repo-root .
 ```
+
+The live M2 commands require an explicitly launched loopback Hub and private
+Kiosk configuration; see
+[M2 Kiosk Show Controls](M2_KIOSK_SHOW_CONTROLS.md). Repository tiers never
+contact Kiosk or a headset.
 
 For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
 surface separately:

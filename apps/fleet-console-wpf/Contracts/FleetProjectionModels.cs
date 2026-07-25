@@ -287,6 +287,309 @@ public sealed class SavedViewMutationReceipt
     public SavedView? View { get; init; }
 }
 
+public static class FleetOperationActions
+{
+    public const string KioskShowControls = "kiosk.show-controls";
+}
+
+public sealed class OperationPreviewRequest
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = "rusty.fleet.operation_preview_request.v1";
+
+    [JsonPropertyName("action_id")]
+    public string ActionId { get; init; } = FleetOperationActions.KioskShowControls;
+
+    [JsonPropertyName("targets")]
+    public IReadOnlyDictionary<string, ulong> Targets { get; init; } =
+        new SortedDictionary<string, ulong>(StringComparer.Ordinal);
+}
+
+public sealed class OperationExecuteRequest
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = "rusty.fleet.operation_execute_request.v1";
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("preview_id")]
+    public string PreviewId { get; init; } = string.Empty;
+}
+
+public sealed class OperationLedger
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("action_id")]
+    public string ActionId { get; init; } = string.Empty;
+
+    [JsonPropertyName("created_at_ms")]
+    public long CreatedAtMs { get; init; }
+
+    [JsonPropertyName("preview")]
+    public OperationPreview Preview { get; init; } = new();
+
+    [JsonPropertyName("lifecycle")]
+    public string Lifecycle { get; init; } = string.Empty;
+
+    [JsonPropertyName("max_parallelism")]
+    public ushort MaxParallelism { get; init; }
+
+    [JsonPropertyName("max_attempts_per_target")]
+    public byte MaxAttemptsPerTarget { get; init; }
+
+    [JsonPropertyName("cleanup_required")]
+    public bool CleanupRequired { get; init; }
+
+    [JsonPropertyName("targets")]
+    public IReadOnlyList<OperationTargetResult> Targets { get; init; } = [];
+}
+
+public sealed class OperationPreview
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("preview_id")]
+    public string PreviewId { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("action_id")]
+    public string ActionId { get; init; } = string.Empty;
+
+    [JsonPropertyName("created_at_ms")]
+    public long CreatedAtMs { get; init; }
+
+    [JsonPropertyName("expires_at_ms")]
+    public long ExpiresAtMs { get; init; }
+
+    [JsonPropertyName("fleet_revision")]
+    public ulong FleetRevision { get; init; }
+
+    [JsonPropertyName("owner_contract")]
+    public KioskOwnerContractBinding OwnerContract { get; init; } = new();
+
+    [JsonPropertyName("targets")]
+    public IReadOnlyList<OperationTargetPreflight> Targets { get; init; } = [];
+}
+
+public sealed class KioskOwnerContractBinding
+{
+    [JsonPropertyName("owner_repo_id")]
+    public string OwnerRepoId { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_contract_schema")]
+    public string OwnerContractSchema { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_contract_revision")]
+    public string OwnerContractRevision { get; init; } = string.Empty;
+
+    [JsonPropertyName("capability_id")]
+    public string CapabilityId { get; init; } = string.Empty;
+
+    [JsonPropertyName("request_auth")]
+    public string RequestAuth { get; init; } = string.Empty;
+
+    [JsonPropertyName("response_auth")]
+    public string ResponseAuth { get; init; } = string.Empty;
+
+    [JsonPropertyName("invoke_method")]
+    public string InvokeMethod { get; init; } = string.Empty;
+
+    [JsonPropertyName("invoke_target")]
+    public string InvokeTarget { get; init; } = string.Empty;
+
+    [JsonPropertyName("result_method")]
+    public string ResultMethod { get; init; } = string.Empty;
+
+    [JsonPropertyName("result_target")]
+    public string ResultTarget { get; init; } = string.Empty;
+
+    [JsonPropertyName("result_request_id_parameter")]
+    public string ResultRequestIdParameter { get; init; } = string.Empty;
+
+    [JsonPropertyName("port")]
+    public ushort Port { get; init; }
+
+    [JsonPropertyName("max_clock_skew_seconds")]
+    public ushort MaxClockSkewSeconds { get; init; }
+
+    [JsonPropertyName("command")]
+    public string Command { get; init; } = string.Empty;
+
+    [JsonPropertyName("command_value")]
+    public string? CommandValue { get; init; }
+
+    [JsonPropertyName("owner_result_schema")]
+    public string OwnerResultSchema { get; init; } = string.Empty;
+}
+
+public sealed class OperationTargetPreflight
+{
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; init; } = string.Empty;
+
+    [JsonPropertyName("identity_revision")]
+    public ulong IdentityRevision { get; init; }
+
+    [JsonPropertyName("capability_id")]
+    public string CapabilityId { get; init; } = string.Empty;
+
+    [JsonPropertyName("capability_evidence_revision")]
+    public ulong CapabilityEvidenceRevision { get; init; }
+
+    [JsonPropertyName("capability_owner")]
+    public string CapabilityOwner { get; init; } = string.Empty;
+
+    [JsonPropertyName("support")]
+    public string Support { get; init; } = string.Empty;
+
+    [JsonPropertyName("enablement")]
+    public string Enablement { get; init; } = string.Empty;
+
+    [JsonPropertyName("authorization")]
+    public string Authorization { get; init; } = string.Empty;
+
+    [JsonPropertyName("reachability")]
+    public string Reachability { get; init; } = string.Empty;
+
+    [JsonPropertyName("freshness")]
+    public string Freshness { get; init; } = string.Empty;
+
+    [JsonPropertyName("observed_at_ms")]
+    public long ObservedAtMs { get; init; }
+
+    [JsonPropertyName("fresh_until_ms")]
+    public long FreshUntilMs { get; init; }
+
+    [JsonPropertyName("evaluated_at_ms")]
+    public long EvaluatedAtMs { get; init; }
+
+    [JsonPropertyName("eligible")]
+    public bool Eligible { get; init; }
+
+    [JsonPropertyName("reason_code")]
+    public string ReasonCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+}
+
+public sealed class OperationTargetResult
+{
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; init; } = string.Empty;
+
+    [JsonPropertyName("identity_revision")]
+    public ulong IdentityRevision { get; init; }
+
+    [JsonPropertyName("preflight")]
+    public OperationTargetPreflight Preflight { get; init; } = new();
+
+    [JsonPropertyName("lifecycle")]
+    public string Lifecycle { get; init; } = string.Empty;
+
+    [JsonPropertyName("dispatched_at_ms")]
+    public long? DispatchedAtMs { get; init; }
+
+    [JsonPropertyName("owner_deadline_at_ms")]
+    public long? OwnerDeadlineAtMs { get; init; }
+
+    [JsonPropertyName("attempt_count")]
+    public byte AttemptCount { get; init; }
+
+    [JsonPropertyName("owner_request_ids")]
+    public IReadOnlyList<string> OwnerRequestIds { get; init; } = [];
+
+    [JsonPropertyName("owner_request_id")]
+    public string? OwnerRequestId { get; init; }
+
+    [JsonPropertyName("effective_receipt")]
+    public KioskEffectiveReceipt? EffectiveReceipt { get; init; }
+
+    [JsonPropertyName("retry_disposition")]
+    public string RetryDisposition { get; init; } = string.Empty;
+
+    [JsonPropertyName("cancel_disposition")]
+    public string CancelDisposition { get; init; } = string.Empty;
+
+    [JsonPropertyName("reason_code")]
+    public string ReasonCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("last_transition_ms")]
+    public long LastTransitionMs { get; init; }
+}
+
+public sealed class KioskEffectiveReceipt
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("receipt_id")]
+    public string ReceiptId { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; init; } = string.Empty;
+
+    [JsonPropertyName("identity_revision")]
+    public ulong IdentityRevision { get; init; }
+
+    [JsonPropertyName("owner_contract")]
+    public KioskOwnerContractBinding OwnerContract { get; init; } = new();
+
+    [JsonPropertyName("owner_action_request_id")]
+    public string OwnerActionRequestId { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_result_transport_request_id")]
+    public string OwnerResultTransportRequestId { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_command")]
+    public string OwnerCommand { get; init; } = string.Empty;
+
+    [JsonPropertyName("response_status")]
+    public ushort ResponseStatus { get; init; }
+
+    [JsonPropertyName("response_content_sha256")]
+    public string ResponseContentSha256 { get; init; } = string.Empty;
+
+    [JsonPropertyName("response_signature")]
+    public string ResponseSignature { get; init; } = string.Empty;
+
+    [JsonPropertyName("response_auth_verified")]
+    public bool ResponseAuthVerified { get; init; }
+
+    [JsonPropertyName("owner_result_schema")]
+    public string OwnerResultSchema { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_accepted")]
+    public bool OwnerAccepted { get; init; }
+
+    [JsonPropertyName("owner_completed")]
+    public bool OwnerCompleted { get; init; }
+
+    [JsonPropertyName("owner_recorded_at_ms")]
+    public long OwnerRecordedAtMs { get; init; }
+
+    [JsonPropertyName("controls_open")]
+    public bool ControlsOpen { get; init; }
+
+    [JsonPropertyName("wrapped_at_ms")]
+    public long WrappedAtMs { get; init; }
+}
+
 public sealed class FleetSummaryProjection
 {
     [JsonPropertyName("schema")]

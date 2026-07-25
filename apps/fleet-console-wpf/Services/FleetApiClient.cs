@@ -37,6 +37,18 @@ public interface IFleetDataSource
         string viewId,
         ulong expectedRevision,
         CancellationToken cancellationToken);
+
+    Task<OperationLedger> PreviewOperationAsync(
+        OperationPreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<OperationLedger> ExecuteOperationAsync(
+        OperationExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<OperationLedger> OperationAsync(
+        string operationId,
+        CancellationToken cancellationToken);
 }
 
 public sealed class FleetApiClient : IFleetDataSource, IDisposable
@@ -156,6 +168,42 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             $"/fleet/v1/saved-views/{encoded}?expected_revision={expectedRevision}",
             cancellationToken);
         return await ReadAsync<SavedViewMutationReceipt>(response, cancellationToken);
+    }
+
+    public async Task<OperationLedger> PreviewOperationAsync(
+        OperationPreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/operations/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<OperationLedger>(response, cancellationToken);
+    }
+
+    public async Task<OperationLedger> ExecuteOperationAsync(
+        OperationExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _http.PostAsJsonAsync(
+            $"/fleet/v1/operations/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<OperationLedger>(response, cancellationToken);
+    }
+
+    public async Task<OperationLedger> OperationAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/operations/{encoded}",
+            cancellationToken);
+        return await ReadAsync<OperationLedger>(response, cancellationToken);
     }
 
     public void Dispose() => _http.Dispose();

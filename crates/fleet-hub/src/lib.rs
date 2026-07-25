@@ -11,13 +11,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 
 use fleet_contracts::{
-    Comparison, ConditionFamily, ConditionState, DeviceDetailProjection, DeviceInspectorProjection,
-    DeviceObservation, DeviceRowProjection, FleetQuery, FleetQueryResult, FleetSummaryProjection,
-    KioskState, ProjectionFreshness, QueryExpression, QueryField, QueryValue, SavedView,
-    SavedViewCollection, SavedViewMutationReceipt, SavedViewMutationRequest, SortDirection,
-    StatusCondition, ValidateContract, is_valid_saved_view_id,
+    CommandLifecycle, Comparison, ConditionFamily, ConditionState, DeviceDetailProjection,
+    DeviceInspectorProjection, DeviceObservation, DeviceRowProjection, FleetQuery,
+    FleetQueryResult, FleetSummaryProjection, KioskState, ProjectionFreshness, QueryExpression,
+    QueryField, QueryValue, SavedView, SavedViewCollection, SavedViewMutationReceipt,
+    SavedViewMutationRequest, SortDirection, StatusCondition, ValidateContract,
+    is_valid_saved_view_id,
 };
 use serde::{Deserialize, Serialize};
+
+mod kiosk;
+
+pub use kiosk::KioskShowControlsPreviewPlan;
 
 const ROW_SCHEMA: &str = "rusty.fleet.device_row.v1";
 const INSPECTOR_SCHEMA: &str = "rusty.fleet.device_inspector.v1";
@@ -25,6 +30,7 @@ const DETAIL_SCHEMA: &str = "rusty.fleet.device_detail.v1";
 const SUMMARY_SCHEMA: &str = "rusty.fleet.summary.v1";
 const RESULT_SCHEMA: &str = "rusty.fleet.query_result.v1";
 const MAX_SAVED_VIEWS: usize = 128;
+const MAX_KIOSK_OPERATIONS: usize = 1_000;
 
 const fn initial_saved_view_revision() -> u64 {
     1
@@ -155,6 +161,8 @@ pub struct FleetHubSnapshot {
     saved_view_revision: u64,
     #[serde(default)]
     saved_views: BTreeMap<String, SavedView>,
+    #[serde(default)]
+    kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
 }
 
 #[derive(Clone, Debug)]
@@ -166,6 +174,7 @@ pub struct FleetHub {
     events: Vec<WatchEvent>,
     saved_view_revision: u64,
     saved_views: BTreeMap<String, SavedView>,
+    kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
 }
 
 impl FleetHub {
@@ -187,6 +196,7 @@ impl FleetHub {
             events: Vec::new(),
             saved_view_revision: initial_saved_view_revision(),
             saved_views: BTreeMap::new(),
+            kiosk_operations: BTreeMap::new(),
         }
     }
 
@@ -221,6 +231,7 @@ impl FleetHub {
             events: self.events.clone(),
             saved_view_revision: self.saved_view_revision,
             saved_views: self.saved_views.clone(),
+            kiosk_operations: self.kiosk_operations.clone(),
         }
     }
 
@@ -308,6 +319,37 @@ impl FleetHub {
                 "Fleet Hub snapshot saved views are invalid or exceed their limit",
             ));
         }
+        if snapshot.kiosk_operations.len() > MAX_KIOSK_OPERATIONS
+            || snapshot
+                .kiosk_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                        || operation.targets.iter().any(|target| {
+                            !matches!(
+                                target.lifecycle,
+                                CommandLifecycle::Rejected
+                                    | CommandLifecycle::Applied
+                                    | CommandLifecycle::Failed
+                                    | CommandLifecycle::Expired
+                                    | CommandLifecycle::Cancelled
+                            ) && snapshot
+                                .devices
+                                .get(&target.device_id)
+                                .is_none_or(|record| {
+                                    record.observation.identity.identity_revision
+                                        != target.identity_revision
+                                })
+                        })
+                })
+        {
+            return Err(HubError::new(
+                "snapshot_kiosk_operations_invalid",
+                "Fleet Hub snapshot Kiosk operations are invalid or exceed their limit",
+            ));
+        }
         Ok(Self {
             policy,
             devices: snapshot.devices,
@@ -316,6 +358,7 @@ impl FleetHub {
             events: snapshot.events,
             saved_view_revision: snapshot.saved_view_revision,
             saved_views: snapshot.saved_views,
+            kiosk_operations: snapshot.kiosk_operations,
         })
     }
 
@@ -495,7 +538,8 @@ impl FleetHub {
             conditions,
             capabilities: record.observation.capabilities.clone(),
             stream_count: record.observation.streams.len(),
-            active_work_count: 0,
+            active_work_count: self
+                .active_kiosk_operation_count(&record.observation.identity.device_id),
             extensions: BTreeMap::new(),
         }
     }

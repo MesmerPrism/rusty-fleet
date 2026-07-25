@@ -8,10 +8,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::net::SocketAddr;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path as FilePath, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::to_bytes;
@@ -20,15 +21,27 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use fleet_contracts::{FleetQuery, SavedViewMutationRequest, SignedFleetCheckIn};
-use fleet_hub::{FleetApi, FleetHub, FleetHubSnapshot, HubPolicy};
-use fleet_manifold_adapter::{FleetManifoldAdapter, FleetManifoldAdapterSnapshot};
+use fleet_contracts::{
+    CommandLifecycle, FleetQuery, OperationExecuteRequest, OperationPreviewRequest,
+    SavedViewMutationRequest, SignedFleetCheckIn, ValidateContract,
+};
+use fleet_hub::{FleetApi, FleetHub, FleetHubSnapshot, HubPolicy, KioskShowControlsPreviewPlan};
+use fleet_kiosk_adapter::{
+    AdapterError, FleetKioskAdapter, HttpMethod, KioskAdapterLimits, KioskHttpRequest,
+    KioskHttpResponse, KioskShowControlsRequest, KioskTransport, RawOwnerReceiptEvidence,
+    TransportRequestIdSource, sha256_hex, validate_kiosk_endpoint,
+};
+use fleet_manifold_adapter::{
+    FleetManifoldAdapter, FleetManifoldAdapterSnapshot, KioskShowControlsCommandAuthorization,
+    kiosk_manifold_request_id,
+};
 use rusty_manifold_model::{DottedId, SchemaId};
 use rusty_manifold_peer::{
     ManifoldPeerCredentialRecord, ManifoldPeerCredentialStatus, ManifoldPeerEnrollmentAction,
     ManifoldPeerEnrollmentRequest,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tower::limit::GlobalConcurrencyLimitLayer;
@@ -42,11 +55,19 @@ const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHECKIN_BYTES: usize = 256 * 1024;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SAVED_VIEW_BYTES: usize = 128 * 1024;
+const MAX_OPERATION_BYTES: usize = 128 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 64;
 const RATE_WINDOW_MS: i64 = 10_000;
 const MAX_GLOBAL_CHECKINS_PER_WINDOW: usize = 4_096;
 const MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW: usize = 8;
 const BODY_DEADLINE: Duration = Duration::from_secs(5);
+const OPERATION_PREVIEW_LIFETIME_MS: i64 = 60_000;
+const DEFAULT_OPERATION_PARALLELISM: u16 = 8;
+const DEFAULT_OPERATION_ATTEMPTS: u8 = 3;
+
+static OPERATION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static TRANSPORT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static TRANSPORT_BOOT_NAMESPACE: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalHubPolicy {
@@ -89,6 +110,24 @@ pub struct ConfiguredEnrollment {
     pub credential: ManifoldPeerCredentialRecord,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredKioskDirectOperator {
+    pub device_id: String,
+    pub endpoint: String,
+    pub pairing_key: String,
+}
+
+impl std::fmt::Debug for ConfiguredKioskDirectOperator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredKioskDirectOperator")
+            .field("device_id", &self.device_id)
+            .field("endpoint", &self.endpoint)
+            .field("pairing_key", &"[redacted]")
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LocalHubConfig {
     pub schema: String,
@@ -99,6 +138,8 @@ pub struct LocalHubConfig {
     pub trusted_operator_ids: Vec<DottedId>,
     #[serde(default)]
     pub enrollments: Vec<ConfiguredEnrollment>,
+    #[serde(default)]
+    pub kiosk_direct_operators: Vec<ConfiguredKioskDirectOperator>,
     #[serde(default)]
     pub hub_policy: LocalHubPolicy,
 }
@@ -137,6 +178,21 @@ impl LocalHubConfig {
         {
             return Err("every enrollment operator must be trusted by this config".to_owned());
         }
+        let mut kiosk_devices = BTreeSet::new();
+        for direct_operator in &self.kiosk_direct_operators {
+            if direct_operator.device_id.is_empty()
+                || direct_operator.device_id.len() > 256
+                || direct_operator.pairing_key.is_empty()
+                || !kiosk_devices.insert(direct_operator.device_id.clone())
+            {
+                return Err(
+                    "Kiosk direct-operator entries require unique bounded device IDs and nonempty private keys"
+                        .to_owned(),
+                );
+            }
+            validate_kiosk_endpoint(&direct_operator.endpoint)
+                .map_err(|error| format!("invalid Kiosk endpoint: {error}"))?;
+        }
         if self.hub_policy.stale_after_ms <= 0
             || self.hub_policy.offline_after_ms <= self.hub_policy.stale_after_ms
             || self.hub_policy.history_limit_per_device == 0
@@ -154,6 +210,9 @@ struct RuntimeState {
     adapter: FleetManifoldAdapter,
     rate_limiter: IngressRateLimiter,
     state_store: DurableStateStore,
+    kiosk_direct_operators: BTreeMap<String, ConfiguredKioskDirectOperator>,
+    owner_receipts: BTreeMap<String, RawOwnerReceiptEvidence>,
+    inflight_kiosk_targets: BTreeSet<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,6 +222,8 @@ struct LocalHubDurableState {
     written_at_ms: i64,
     hub: FleetHubSnapshot,
     adapter: FleetManifoldAdapterSnapshot,
+    #[serde(default)]
+    owner_receipts: BTreeMap<String, RawOwnerReceiptEvidence>,
 }
 
 struct DurableStateStore {
@@ -210,41 +271,46 @@ impl DurableStateStore {
         directory: &FilePath,
         hub: &mut FleetHub,
         adapter: &mut FleetManifoldAdapter,
+        owner_receipts: &mut BTreeMap<String, RawOwnerReceiptEvidence>,
         now_ms: i64,
     ) -> Result<Self, String> {
         fs::create_dir_all(directory)
             .map_err(|error| format!("cannot create state directory: {error}"))?;
-        let Some(state) = load_latest_state(directory)? else {
+        let candidates = read_state_candidates(directory)?;
+        if !candidates.found_slot {
             return Ok(Self {
                 directory: directory.to_path_buf(),
                 generation: 0,
                 restored: false,
             });
-        };
-        let restored_hub = FleetHub::restore(hub.policy(), state.hub)
-            .map_err(|error| format!("cannot restore Fleet Hub state: {error}"))?;
-        adapter
-            .restore_session(state.adapter, now_ms)
-            .map_err(|error| format!("cannot restore Manifold adapter state: {error}"))?;
-        let hub_ids: BTreeSet<_> = restored_hub.device_ids().into_iter().collect();
-        let accepted_ids: BTreeSet<_> = adapter.accepted_peer_ids().into_iter().collect();
-        if hub_ids != accepted_ids {
-            return Err(
-                "durable Fleet Hub devices do not match accepted Manifold peers".to_owned(),
-            );
         }
-        *hub = restored_hub;
-        Ok(Self {
-            directory: directory.to_path_buf(),
-            generation: state.generation,
-            restored: true,
-        })
+        let mut failures = candidates.failures;
+        for (slot, state) in candidates.states {
+            match restore_state_candidate(hub.policy(), adapter, state, now_ms) {
+                Ok((restored_hub, restored_adapter, restored_receipts, generation)) => {
+                    *hub = restored_hub;
+                    *adapter = restored_adapter;
+                    *owner_receipts = restored_receipts;
+                    return Ok(Self {
+                        directory: directory.to_path_buf(),
+                        generation,
+                        restored: true,
+                    });
+                }
+                Err(error) => failures.push(format!("slot {slot}: {error}")),
+            }
+        }
+        Err(format!(
+            "no fully valid durable state slot remains: {}",
+            failures.join("; ")
+        ))
     }
 
     fn persist(
         &mut self,
         hub: &FleetHub,
         adapter: &FleetManifoldAdapter,
+        owner_receipts: &BTreeMap<String, RawOwnerReceiptEvidence>,
         now_ms: i64,
     ) -> Result<(), String> {
         let hub_ids: BTreeSet<_> = hub.device_ids().into_iter().collect();
@@ -264,6 +330,7 @@ impl DurableStateStore {
             written_at_ms: now_ms,
             hub: hub.snapshot(),
             adapter: adapter.snapshot(),
+            owner_receipts: owner_receipts.clone(),
         };
         let bytes = serde_json::to_vec(&state)
             .map_err(|error| format!("cannot serialize durable state: {error}"))?;
@@ -295,13 +362,43 @@ impl DurableStateStore {
         }
         fs::rename(&temporary, &target)
             .map_err(|error| format!("cannot publish durable state slot: {error}"))?;
+        sync_published_state(&self.directory, &target)?;
         self.generation = generation;
         self.restored = true;
         Ok(())
     }
 }
 
-fn load_latest_state(directory: &FilePath) -> Result<Option<LocalHubDurableState>, String> {
+#[cfg(unix)]
+fn sync_published_state(directory: &FilePath, _target: &FilePath) -> Result<(), String> {
+    fs::File::open(directory)
+        .and_then(|directory_file| directory_file.sync_all())
+        .map_err(|error| format!("cannot sync durable state directory metadata: {error}"))
+}
+
+#[cfg(windows)]
+fn sync_published_state(_directory: &FilePath, target: &FilePath) -> Result<(), String> {
+    OpenOptions::new()
+        .write(true)
+        .open(target)
+        .and_then(|published_file| published_file.sync_all())
+        .map_err(|error| format!("cannot flush published durable state metadata: {error}"))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn sync_published_state(_directory: &FilePath, target: &FilePath) -> Result<(), String> {
+    fs::File::open(target)
+        .and_then(|published_file| published_file.sync_all())
+        .map_err(|error| format!("cannot flush published durable state: {error}"))
+}
+
+struct StateCandidates {
+    found_slot: bool,
+    states: Vec<(u64, LocalHubDurableState)>,
+    failures: Vec<String>,
+}
+
+fn read_state_candidates(directory: &FilePath) -> Result<StateCandidates, String> {
     let mut states = Vec::new();
     let mut found_slot = false;
     let mut failures = Vec::new();
@@ -311,25 +408,99 @@ fn load_latest_state(directory: &FilePath) -> Result<Option<LocalHubDurableState
             continue;
         }
         found_slot = true;
-        match read_state_slot(&path) {
-            Ok(state) => states.push(state),
+        match read_state_slot(&path, slot) {
+            Ok(state) => states.push((slot, state)),
             Err(error) => failures.push(format!("{}: {error}", path.display())),
         }
     }
-    states.sort_by_key(|state| state.generation);
-    if let Some(state) = states.pop() {
-        return Ok(Some(state));
+    states.sort_by_key(|state| std::cmp::Reverse(state.1.generation));
+    if states
+        .windows(2)
+        .any(|pair| pair[0].1.generation == pair[1].1.generation)
+    {
+        return Err("durable state slots contain an ambiguous duplicate generation".to_owned());
     }
-    if found_slot {
-        return Err(format!(
-            "no valid durable state slot remains: {}",
-            failures.join("; ")
-        ));
-    }
-    Ok(None)
+    Ok(StateCandidates {
+        found_slot,
+        states,
+        failures,
+    })
 }
 
-fn read_state_slot(path: &FilePath) -> Result<LocalHubDurableState, String> {
+fn restore_state_candidate(
+    policy: HubPolicy,
+    configured_adapter: &FleetManifoldAdapter,
+    state: LocalHubDurableState,
+    now_ms: i64,
+) -> Result<
+    (
+        FleetHub,
+        FleetManifoldAdapter,
+        BTreeMap<String, RawOwnerReceiptEvidence>,
+        u64,
+    ),
+    String,
+> {
+    let restored_hub = FleetHub::restore(policy, state.hub)
+        .map_err(|error| format!("cannot restore Fleet Hub state: {error}"))?;
+    let mut restored_adapter = configured_adapter.clone();
+    restored_adapter
+        .restore_session(state.adapter, now_ms)
+        .map_err(|error| format!("cannot restore Manifold adapter state: {error}"))?;
+    let hub_ids: BTreeSet<_> = restored_hub.device_ids().into_iter().collect();
+    let accepted_ids: BTreeSet<_> = restored_adapter.accepted_peer_ids().into_iter().collect();
+    if hub_ids != accepted_ids {
+        return Err("Fleet Hub devices do not match accepted Manifold peers".to_owned());
+    }
+    for operation in restored_hub.kiosk_operations() {
+        for target in operation.targets {
+            for owner_request_id in target.owner_request_ids {
+                if !restored_adapter.has_applied_kiosk_authorization(
+                    &operation.operation_id,
+                    &target.device_id,
+                    &owner_request_id,
+                ) {
+                    return Err(format!(
+                        "Kiosk operation {} target {} lacks applied Manifold authority for owner request {}",
+                        operation.operation_id, target.device_id, owner_request_id
+                    ));
+                }
+            }
+        }
+    }
+    for operation in restored_hub.kiosk_operations() {
+        for target in operation.targets {
+            if let Some(receipt) = target.effective_receipt {
+                let Some(raw) = state.owner_receipts.get(&receipt.receipt_id) else {
+                    return Err(format!(
+                        "Kiosk effective receipt {} lacks durable raw owner evidence",
+                        receipt.receipt_id
+                    ));
+                };
+                if raw.raw_receipt.is_empty()
+                    || raw.raw_receipt.len() > 512 * 1024
+                    || sha256_hex(&raw.raw_receipt) != raw.raw_receipt_sha256
+                    || raw.raw_receipt_sha256 != receipt.response_content_sha256
+                    || raw.host_received_at_ms != receipt.wrapped_at_ms
+                    || raw.result_transport_request_id != receipt.owner_result_transport_request_id
+                {
+                    return Err(format!(
+                        "Kiosk effective receipt {} does not match raw owner evidence",
+                        receipt.receipt_id
+                    ));
+                }
+            }
+        }
+    }
+    Ok((
+        restored_hub,
+        restored_adapter,
+        state.owner_receipts,
+        state.generation,
+    ))
+}
+
+fn read_state_slot(path: &FilePath, expected_slot: u64) -> Result<LocalHubDurableState, String> {
     let metadata =
         fs::metadata(path).map_err(|error| format!("cannot inspect state slot: {error}"))?;
     if metadata.len() > MAX_STATE_BYTES {
@@ -340,6 +511,9 @@ fn read_state_slot(path: &FilePath) -> Result<LocalHubDurableState, String> {
         serde_json::from_slice(&bytes).map_err(|error| format!("invalid state JSON: {error}"))?;
     if state.schema != STATE_SCHEMA || state.generation == 0 || state.written_at_ms < 0 {
         return Err("state slot header is invalid".to_owned());
+    }
+    if state.generation % 2 != expected_slot {
+        return Err("state generation does not match its durable slot".to_owned());
     }
     Ok(state)
 }
@@ -379,14 +553,29 @@ impl LocalHubState {
             }
         }
         let mut hub = FleetHub::new(config.hub_policy.clone().into());
-        let state_store =
-            DurableStateStore::open(&config.state_directory, &mut hub, &mut adapter, now_ms)?;
+        let mut owner_receipts = BTreeMap::new();
+        let state_store = DurableStateStore::open(
+            &config.state_directory,
+            &mut hub,
+            &mut adapter,
+            &mut owner_receipts,
+            now_ms,
+        )?;
+        let kiosk_direct_operators = config
+            .kiosk_direct_operators
+            .iter()
+            .cloned()
+            .map(|direct_operator| (direct_operator.device_id.clone(), direct_operator))
+            .collect();
         Ok(Self {
             runtime: Arc::new(Mutex::new(RuntimeState {
                 hub,
                 adapter,
                 rate_limiter: IngressRateLimiter::default(),
                 state_store,
+                kiosk_direct_operators,
+                owner_receipts,
+                inflight_kiosk_targets: BTreeSet::new(),
             })),
         })
     }
@@ -423,6 +612,32 @@ struct SavedViewRevisionQuery {
     expected_revision: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct StrictOperationPreviewRequest {
+    schema: String,
+    action_id: String,
+    #[serde(deserialize_with = "deserialize_unique_targets")]
+    targets: BTreeMap<String, u64>,
+}
+
+impl From<StrictOperationPreviewRequest> for OperationPreviewRequest {
+    fn from(value: StrictOperationPreviewRequest) -> Self {
+        Self {
+            schema: value.schema,
+            action_id: value.action_id,
+            targets: value.targets,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct OwnerWork {
+    request: KioskShowControlsRequest,
+    pairing_key: String,
+    deadline_at_ms: i64,
+    recovery_only: bool,
+}
+
 fn default_watch_limit() -> usize {
     100
 }
@@ -433,6 +648,12 @@ pub fn router(state: LocalHubState) -> Router {
         .route("/fleet/v1/checkins", post(checkin))
         .route("/fleet/v1/query", post(query_devices))
         .route("/fleet/v1/summary", get(summary))
+        .route("/fleet/v1/operations/preview", post(preview_operation))
+        .route(
+            "/fleet/v1/operations/{operation_id}/execute",
+            post(execute_operation),
+        )
+        .route("/fleet/v1/operations/{operation_id}", get(operation_status))
         .route("/fleet/v1/saved-views", get(saved_views))
         .route(
             "/fleet/v1/saved-views/{view_id}",
@@ -450,6 +671,7 @@ pub fn router(state: LocalHubState) -> Router {
 pub async fn serve(config: LocalHubConfig) -> Result<(), String> {
     let bind = config.validate()?;
     let state = LocalHubState::from_config(&config, unix_time_ms()?)?;
+    schedule_recovered_owner_work(state.clone()).await?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|error| format!("failed to bind {bind}: {error}"))?;
@@ -549,13 +771,16 @@ async fn checkin(State(state): State<LocalHubState>, request: Request) -> Respon
         hub,
         adapter,
         state_store,
+        owner_receipts,
         ..
     } = &mut *runtime;
     let mut candidate_hub = hub.clone();
     let mut candidate_adapter = adapter.clone();
     let receipt = candidate_adapter.accept(&mut candidate_hub, signed, now_ms);
     if receipt.accepted {
-        if let Err(error) = state_store.persist(&candidate_hub, &candidate_adapter, now_ms) {
+        if let Err(error) =
+            state_store.persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+        {
             return api_error(
                 StatusCode::INSUFFICIENT_STORAGE,
                 "durable_state_failed",
@@ -607,6 +832,307 @@ async fn query_devices(State(state): State<LocalHubState>, request: Request) -> 
             "invalid_query",
             error.to_string(),
         ),
+    }
+}
+
+async fn preview_operation(State(state): State<LocalHubState>, request: Request) -> Response {
+    let bytes = match strict_json_body(request, MAX_OPERATION_BYTES, "operation previews").await {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let request = match serde_json::from_slice::<StrictOperationPreviewRequest>(&bytes) {
+        Ok(value) => OperationPreviewRequest::from(value),
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_operation_preview_json",
+                format!("operation preview is not valid strict JSON: {error}"),
+            );
+        }
+    };
+    if let Err(failures) = request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_operation_preview",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    if let Some(existing) = runtime
+        .hub
+        .kiosk_operations()
+        .into_iter()
+        .find(|operation| {
+            operation.action_id == request.action_id
+                && operation.preview.fleet_revision == runtime.hub.result_revision()
+                && operation.preview.expires_at_ms >= now_ms
+                && operation
+                    .preview
+                    .targets
+                    .iter()
+                    .map(|target| (target.device_id.clone(), target.identity_revision))
+                    .collect::<BTreeMap<_, _>>()
+                    == request.targets
+        })
+    {
+        return Json(existing).into_response();
+    }
+    let expires_at_ms = match now_ms.checked_add(OPERATION_PREVIEW_LIFETIME_MS) {
+        Some(value) => value,
+        None => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "operation preview expiry overflowed",
+            );
+        }
+    };
+    let (operation_id, preview_id) = operation_ids(&request, now_ms);
+    let mut candidate_hub = runtime.hub.clone();
+    let operation = match candidate_hub.preview_kiosk_show_controls(KioskShowControlsPreviewPlan {
+        operation_id,
+        preview_id,
+        request,
+        created_at_ms: now_ms,
+        expires_at_ms,
+        max_parallelism: DEFAULT_OPERATION_PARALLELISM,
+        max_attempts_per_target: DEFAULT_OPERATION_ATTEMPTS,
+    }) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(operation).into_response()
+}
+
+async fn execute_operation(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes = match strict_json_body(request, MAX_OPERATION_BYTES, "operation execution").await {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let execute = match serde_json::from_slice::<OperationExecuteRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_operation_execute_json",
+                format!("operation execution is not valid JSON: {error}"),
+            );
+        }
+    };
+    if operation_id != execute.operation_id {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "operation_identity_mismatch",
+            "operation path and payload identities must match",
+        );
+    }
+    if let Err(failures) = execute.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_operation_execute",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let now_unsigned = match u64::try_from(now_ms) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "current time must be nonnegative",
+            );
+        }
+    };
+    let mut runtime = state.runtime.lock().await;
+    let existing = match runtime.hub.kiosk_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    if existing.preview.preview_id != execute.preview_id {
+        return api_error(
+            StatusCode::CONFLICT,
+            "operation_preview_conflict",
+            "execute request does not bind the stored immutable preview",
+        );
+    }
+    let eligible_devices = existing
+        .targets
+        .iter()
+        .filter(|target| target.preflight.eligible)
+        .map(|target| target.device_id.clone())
+        .collect::<Vec<_>>();
+    if eligible_devices.is_empty() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "operation_has_no_eligible_targets",
+            "the immutable preview contains no eligible Kiosk targets",
+        );
+    }
+    if existing.lifecycle != CommandLifecycle::Proposed {
+        return Json(existing).into_response();
+    }
+    let mut direct_operators = BTreeMap::new();
+    for device_id in &eligible_devices {
+        let Some(direct_operator) = runtime.kiosk_direct_operators.get(device_id).cloned() else {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "kiosk_direct_operator_unconfigured",
+                format!("Kiosk direct operator is not privately configured for {device_id}"),
+            );
+        };
+        direct_operators.insert(device_id.clone(), direct_operator);
+    }
+
+    let mut candidate_hub = runtime.hub.clone();
+    let mut candidate_adapter = runtime.adapter.clone();
+    let mut operation = match candidate_hub.confirm_kiosk_show_controls_request(&execute, now_ms) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let expires_unsigned = match u64::try_from(operation.preview.expires_at_ms) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "operation_expiry_invalid",
+                "operation expiry is not representable",
+            );
+        }
+    };
+    let mut work = Vec::new();
+    let dispatch_devices = eligible_devices
+        .into_iter()
+        .take(usize::from(operation.max_parallelism))
+        .collect::<Vec<_>>();
+    for device_id in dispatch_devices {
+        let Some(target) = operation
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+        else {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "operation_target_missing",
+                "confirmed operation omitted a frozen target",
+            );
+        };
+        let identity_revision = target.identity_revision;
+        let owner_action_request_id =
+            owner_action_request_id(&operation.operation_id, &device_id, 1);
+        let manifold_request_id = kiosk_manifold_request_id(
+            &operation.operation_id,
+            &device_id,
+            &owner_action_request_id,
+        );
+        if let Err(error) = candidate_adapter.authorize_kiosk_show_controls(
+            &KioskShowControlsCommandAuthorization {
+                manifold_request_id,
+                owner_action_request_id: owner_action_request_id.clone(),
+                requester_id: "operator.fleet.local".to_owned(),
+                operation_id: operation.operation_id.clone(),
+                preview_id: operation.preview.preview_id.clone(),
+                device_id: device_id.clone(),
+                identity_revision,
+                issued_at_ms: now_unsigned,
+                expires_at_ms: expires_unsigned,
+            },
+            now_unsigned,
+        ) {
+            return api_error(StatusCode::CONFLICT, "manifold_command_rejected", error);
+        }
+        operation = match candidate_hub.dispatch_kiosk_show_controls(
+            &operation.operation_id,
+            &device_id,
+            owner_action_request_id.clone(),
+            now_ms,
+        ) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+        let direct_operator = direct_operators
+            .remove(&device_id)
+            .expect("validated Kiosk direct-operator configuration");
+        work.push(OwnerWork {
+            request: KioskShowControlsRequest {
+                receipt_id: receipt_id(&operation.operation_id, &device_id, 1),
+                operation_id: operation.operation_id.clone(),
+                device_id: device_id.clone(),
+                identity_revision,
+                endpoint: direct_operator.endpoint,
+                owner_action_request_id,
+            },
+            pairing_key: direct_operator.pairing_key,
+            deadline_at_ms: operation.preview.expires_at_ms,
+            recovery_only: false,
+        });
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        inflight_kiosk_targets,
+        ..
+    } = &mut *runtime;
+    if let Err(error) =
+        state_store.persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+    {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    *adapter = candidate_adapter;
+    for owner_work in &work {
+        inflight_kiosk_targets.insert((
+            owner_work.request.operation_id.clone(),
+            owner_work.request.device_id.clone(),
+        ));
+    }
+    drop(runtime);
+    for owner_work in work {
+        spawn_owner_work(state.clone(), owner_work);
+    }
+    Json(operation).into_response()
+}
+
+async fn operation_status(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.kiosk_operation(&operation_id) {
+        Ok(operation) => Json(operation).into_response(),
+        Err(error) => hub_operation_error(error),
     }
 }
 
@@ -681,6 +1207,7 @@ async fn upsert_saved_view(
         hub,
         adapter,
         state_store,
+        owner_receipts,
         ..
     } = &mut *runtime;
     let mut candidate_hub = hub.clone();
@@ -689,7 +1216,7 @@ async fn upsert_saved_view(
         Err(error) => return saved_view_error(error),
     };
     if receipt.changed {
-        if let Err(error) = state_store.persist(&candidate_hub, adapter, now_ms) {
+        if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
             return api_error(
                 StatusCode::INSUFFICIENT_STORAGE,
                 "durable_state_failed",
@@ -715,6 +1242,7 @@ async fn delete_saved_view(
         hub,
         adapter,
         state_store,
+        owner_receipts,
         ..
     } = &mut *runtime;
     let mut candidate_hub = hub.clone();
@@ -722,7 +1250,7 @@ async fn delete_saved_view(
         Ok(receipt) => receipt,
         Err(error) => return saved_view_error(error),
     };
-    if let Err(error) = state_store.persist(&candidate_hub, adapter, now_ms) {
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
         return api_error(
             StatusCode::INSUFFICIENT_STORAGE,
             "durable_state_failed",
@@ -783,6 +1311,822 @@ async fn watch(State(state): State<LocalHubState>, Query(query): Query<WatchQuer
     }
     let runtime = state.runtime.lock().await;
     Json(runtime.hub.watch(query.after_sequence, query.limit)).into_response()
+}
+
+async fn strict_json_body(
+    request: Request,
+    limit: usize,
+    purpose: &'static str,
+) -> Result<axum::body::Bytes, Response> {
+    if !is_json(request.headers()) {
+        return Err(api_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "content_type_required",
+            format!("{purpose} require Content-Type: application/json"),
+        ));
+    }
+    let declared_length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::LENGTH_REQUIRED,
+                "content_length_required",
+                format!("{purpose} require one valid Content-Length"),
+            )
+        })?;
+    if declared_length == 0 || declared_length > limit {
+        return Err(api_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body_limit_exceeded",
+            format!("{purpose} require 1 through {limit} bytes"),
+        ));
+    }
+    let bytes = bounded_body(request, limit).await?;
+    if bytes.len() != declared_length {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "content_length_mismatch",
+            format!("{purpose} body length differs from Content-Length"),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn deserialize_unique_targets<'de, D>(deserializer: D) -> Result<BTreeMap<String, u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct UniqueTargetsVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for UniqueTargetsVisitor {
+        type Value = BTreeMap<String, u64>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a JSON object with unique target device IDs")
+        }
+
+        fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut targets = BTreeMap::new();
+            while let Some((device_id, identity_revision)) = access.next_entry::<String, u64>()? {
+                if targets
+                    .insert(device_id.clone(), identity_revision)
+                    .is_some()
+                {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate target device ID {device_id}"
+                    )));
+                }
+            }
+            Ok(targets)
+        }
+    }
+
+    deserializer.deserialize_map(UniqueTargetsVisitor)
+}
+
+fn operation_ids(request: &OperationPreviewRequest, now_ms: i64) -> (String, String) {
+    let sequence = OPERATION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.kiosk.operation.v1\0");
+    digest.update(serde_json::to_vec(request).unwrap_or_default());
+    digest.update(now_ms.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    let suffix = hex::encode(digest.finalize());
+    (
+        format!("kiosk-operation-{}", &suffix[..32]),
+        format!("kiosk-preview-{}", &suffix[32..64]),
+    )
+}
+
+fn owner_action_request_id(operation_id: &str, device_id: &str, attempt: u8) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.kiosk.owner-action.v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(device_id.as_bytes());
+    digest.update([0, attempt]);
+    format!("fleetact-{}", &hex::encode(digest.finalize())[..32])
+}
+
+fn receipt_id(operation_id: &str, device_id: &str, attempt: u8) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.kiosk.receipt.v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(device_id.as_bytes());
+    digest.update([0, attempt]);
+    format!("kiosk-receipt-{}", &hex::encode(digest.finalize())[..32])
+}
+
+fn format_contract_failures(failures: &[fleet_contracts::ContractViolation]) -> String {
+    failures
+        .iter()
+        .map(|failure| format!("{}:{}:{}", failure.code, failure.path, failure.message))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn hub_operation_error(error: fleet_hub::HubError) -> Response {
+    let (status, code) = match error.code.as_str() {
+        "kiosk_operation_not_found" | "kiosk_target_not_found" => {
+            (StatusCode::NOT_FOUND, "operation_not_found")
+        }
+        "kiosk_preview_mismatch"
+        | "kiosk_operation_id_conflict"
+        | "kiosk_preview_expired"
+        | "kiosk_target_changed_since_preview"
+        | "kiosk_target_identity_changed" => (StatusCode::CONFLICT, "operation_conflict"),
+        _ => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation"),
+    };
+    api_error(status, code, error.to_string())
+}
+
+fn spawn_owner_work(state: LocalHubState, work: OwnerWork) {
+    tokio::spawn(async move {
+        let operation_id = work.request.operation_id.clone();
+        let device_id = work.request.device_id.clone();
+        let result = tokio::task::spawn_blocking(move || run_owner_work(work))
+            .await
+            .map_err(|error| format!("Kiosk worker could not join: {error}"))
+            .and_then(|result| result.map_err(|error| error.to_string()));
+        let mut persistence_retry = Duration::from_millis(100);
+        loop {
+            let now_ms = match unix_time_ms() {
+                Ok(value) => value,
+                Err(_) => {
+                    tokio::time::sleep(persistence_retry).await;
+                    persistence_retry = (persistence_retry * 2).min(Duration::from_secs(5));
+                    continue;
+                }
+            };
+            let mut runtime = state.runtime.lock().await;
+            let current = match runtime.hub.kiosk_operation(&operation_id) {
+                Ok(operation) => operation,
+                Err(_) => {
+                    runtime
+                        .inflight_kiosk_targets
+                        .remove(&(operation_id.clone(), device_id.clone()));
+                    return;
+                }
+            };
+            let Some(target) = current
+                .targets
+                .iter()
+                .find(|target| target.device_id == device_id)
+            else {
+                runtime
+                    .inflight_kiosk_targets
+                    .remove(&(operation_id.clone(), device_id.clone()));
+                return;
+            };
+            if matches!(
+                target.lifecycle,
+                CommandLifecycle::Applied
+                    | CommandLifecycle::Failed
+                    | CommandLifecycle::Expired
+                    | CommandLifecycle::Cancelled
+                    | CommandLifecycle::Rejected
+            ) {
+                runtime
+                    .inflight_kiosk_targets
+                    .remove(&(operation_id.clone(), device_id.clone()));
+                return;
+            }
+            let mut candidate_hub = runtime.hub.clone();
+            let mut candidate_receipts = runtime.owner_receipts.clone();
+            let transition = match &result {
+                Ok(outcome) => {
+                    let receipt_id = outcome.effective_receipt.receipt_id.clone();
+                    candidate_receipts.insert(receipt_id, outcome.owner_receipt.clone());
+                    candidate_hub.apply_kiosk_show_controls_receipt(
+                        outcome.effective_receipt.clone(),
+                        now_ms,
+                    )
+                }
+                Err(error) => candidate_hub.expire_kiosk_show_controls(
+                    &operation_id,
+                    &device_id,
+                    "owner_outcome_unknown",
+                    &format!(
+                        "Kiosk owner outcome remained unknown at the durable deadline: {error}"
+                    ),
+                    now_ms,
+                ),
+            };
+            if transition.is_err() {
+                drop(runtime);
+                tokio::time::sleep(persistence_retry).await;
+                persistence_retry = (persistence_retry * 2).min(Duration::from_secs(5));
+                continue;
+            }
+            let RuntimeState {
+                hub,
+                adapter,
+                state_store,
+                owner_receipts,
+                inflight_kiosk_targets,
+                ..
+            } = &mut *runtime;
+            if state_store
+                .persist(&candidate_hub, adapter, &candidate_receipts, now_ms)
+                .is_ok()
+            {
+                *hub = candidate_hub;
+                *owner_receipts = candidate_receipts;
+                inflight_kiosk_targets.remove(&(operation_id.clone(), device_id.clone()));
+                drop(runtime);
+                schedule_pending_owner_work(state.clone(), &operation_id).await;
+                return;
+            }
+            drop(runtime);
+            tokio::time::sleep(persistence_retry).await;
+            persistence_retry = (persistence_retry * 2).min(Duration::from_secs(5));
+        }
+    });
+}
+
+fn run_owner_work(
+    work: OwnerWork,
+) -> Result<fleet_kiosk_adapter::KioskShowControlsPollOutcome, AdapterError> {
+    let now_ms = unix_time_ms().map_err(AdapterError::Transport)?;
+    let remaining_ms = work
+        .deadline_at_ms
+        .checked_sub(now_ms)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0 && *value <= 90_000)
+        .ok_or(AdapterError::DeadlineExceeded)?;
+    let adapter = FleetKioskAdapter::new(KioskAdapterLimits {
+        maximum_polls: 64,
+        poll_interval_ms: 1_000,
+        operation_deadline_ms: remaining_ms,
+        request_timeout_ms: remaining_ms.min(5_000),
+        maximum_response_bytes: 512 * 1024,
+    })?;
+    let mut transport = StdKioskTransport;
+    let mut request_ids = AtomicTransportRequestIds;
+    if !work.recovery_only {
+        let _ambiguous_or_acknowledged = adapter.invoke_show_controls(
+            &work.request,
+            &work.pairing_key,
+            &mut transport,
+            &mut request_ids,
+        );
+    }
+    adapter.resume_show_controls_result(
+        &work.request,
+        &work.pairing_key,
+        work.deadline_at_ms,
+        &mut transport,
+        &mut request_ids,
+    )
+}
+
+async fn schedule_pending_owner_work(state: LocalHubState, operation_id: &str) {
+    let mut persistence_retry = Duration::from_millis(100);
+    loop {
+        let now_ms = match unix_time_ms() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let now_unsigned = match u64::try_from(now_ms) {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let mut runtime = state.runtime.lock().await;
+        let operation = match runtime.hub.kiosk_operation(operation_id) {
+            Ok(operation) => operation,
+            Err(_) => return,
+        };
+        let pending = operation
+            .targets
+            .iter()
+            .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+            .map(|target| (target.device_id.clone(), target.identity_revision))
+            .collect::<Vec<_>>();
+        if pending.is_empty() {
+            return;
+        }
+        let mut candidate_hub = runtime.hub.clone();
+        let mut candidate_adapter = runtime.adapter.clone();
+        if now_ms >= operation.preview.expires_at_ms {
+            for (device_id, _) in pending {
+                if candidate_hub
+                    .request_kiosk_show_controls_cancellation(operation_id, &device_id, now_ms)
+                    .and_then(|_| {
+                        candidate_hub.complete_kiosk_show_controls_cancellation(
+                            operation_id,
+                            &device_id,
+                            now_ms,
+                        )
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let RuntimeState {
+                hub,
+                adapter,
+                state_store,
+                owner_receipts,
+                ..
+            } = &mut *runtime;
+            if state_store
+                .persist(&candidate_hub, adapter, owner_receipts, now_ms)
+                .is_ok()
+            {
+                *hub = candidate_hub;
+                return;
+            }
+            drop(runtime);
+            tokio::time::sleep(persistence_retry).await;
+            persistence_retry = (persistence_retry * 2).min(Duration::from_secs(5));
+            continue;
+        }
+        let inflight = operation
+            .targets
+            .iter()
+            .filter(|target| {
+                matches!(
+                    target.lifecycle,
+                    CommandLifecycle::Dispatched | CommandLifecycle::Running
+                )
+            })
+            .count();
+        let slots = usize::from(operation.max_parallelism).saturating_sub(inflight);
+        if slots == 0 {
+            return;
+        }
+        let expires_unsigned = match u64::try_from(operation.preview.expires_at_ms) {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let mut work = Vec::new();
+        for (device_id, identity_revision) in pending.into_iter().take(slots) {
+            let Some(direct_operator) = runtime.kiosk_direct_operators.get(&device_id).cloned()
+            else {
+                return;
+            };
+            let owner_action_request_id = owner_action_request_id(operation_id, &device_id, 1);
+            let manifold_request_id =
+                kiosk_manifold_request_id(operation_id, &device_id, &owner_action_request_id);
+            if candidate_adapter
+                .authorize_kiosk_show_controls(
+                    &KioskShowControlsCommandAuthorization {
+                        manifold_request_id,
+                        owner_action_request_id: owner_action_request_id.clone(),
+                        requester_id: "operator.fleet.local".to_owned(),
+                        operation_id: operation_id.to_owned(),
+                        preview_id: operation.preview.preview_id.clone(),
+                        device_id: device_id.clone(),
+                        identity_revision,
+                        issued_at_ms: now_unsigned,
+                        expires_at_ms: expires_unsigned,
+                    },
+                    now_unsigned,
+                )
+                .is_err()
+            {
+                return;
+            }
+            let updated = match candidate_hub.dispatch_kiosk_show_controls(
+                operation_id,
+                &device_id,
+                owner_action_request_id.clone(),
+                now_ms,
+            ) {
+                Ok(updated) => updated,
+                Err(_) => return,
+            };
+            work.push(OwnerWork {
+                request: KioskShowControlsRequest {
+                    receipt_id: receipt_id(operation_id, &device_id, 1),
+                    operation_id: operation_id.to_owned(),
+                    device_id: device_id.clone(),
+                    identity_revision,
+                    endpoint: direct_operator.endpoint,
+                    owner_action_request_id,
+                },
+                pairing_key: direct_operator.pairing_key,
+                deadline_at_ms: updated.preview.expires_at_ms,
+                recovery_only: false,
+            });
+        }
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            inflight_kiosk_targets,
+            ..
+        } = &mut *runtime;
+        if state_store
+            .persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+            .is_err()
+        {
+            drop(runtime);
+            tokio::time::sleep(persistence_retry).await;
+            persistence_retry = (persistence_retry * 2).min(Duration::from_secs(5));
+            continue;
+        }
+        *hub = candidate_hub;
+        *adapter = candidate_adapter;
+        for owner_work in &work {
+            inflight_kiosk_targets.insert((
+                owner_work.request.operation_id.clone(),
+                owner_work.request.device_id.clone(),
+            ));
+        }
+        drop(runtime);
+        for owner_work in work {
+            spawn_owner_work(state.clone(), owner_work);
+        }
+        return;
+    }
+}
+
+async fn schedule_recovered_owner_work(state: LocalHubState) -> Result<(), String> {
+    let mut runtime = state.runtime.lock().await;
+    let mut work = Vec::new();
+    let operations = runtime.hub.kiosk_operations();
+    for operation in &operations {
+        for target in operation
+            .targets
+            .iter()
+            .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+        {
+            if !runtime
+                .kiosk_direct_operators
+                .contains_key(&target.device_id)
+            {
+                return Err(format!(
+                    "recovered accepted Kiosk target {} lacks private direct-operator configuration",
+                    target.device_id
+                ));
+            }
+        }
+    }
+    let pending_operation_ids = operations
+        .iter()
+        .filter(|operation| {
+            operation
+                .targets
+                .iter()
+                .any(|target| target.lifecycle == CommandLifecycle::Accepted)
+        })
+        .map(|operation| operation.operation_id.clone())
+        .collect::<BTreeSet<_>>();
+    for operation in operations {
+        for target in operation.targets.iter().filter(|target| {
+            matches!(
+                target.lifecycle,
+                CommandLifecycle::Dispatched | CommandLifecycle::Running
+            )
+        }) {
+            let direct_operator = runtime
+                .kiosk_direct_operators
+                .get(&target.device_id)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "recovered Kiosk target {} lacks private direct-operator configuration",
+                        target.device_id
+                    )
+                })?;
+            let owner_action_request_id = target.owner_request_id.clone().ok_or_else(|| {
+                format!(
+                    "recovered Kiosk target {} lacks its stable owner action request ID",
+                    target.device_id
+                )
+            })?;
+            let deadline_at_ms = target.owner_deadline_at_ms.ok_or_else(|| {
+                format!(
+                    "recovered Kiosk target {} lacks its durable owner deadline",
+                    target.device_id
+                )
+            })?;
+            let key = (operation.operation_id.clone(), target.device_id.clone());
+            if !runtime.inflight_kiosk_targets.insert(key) {
+                continue;
+            }
+            work.push(OwnerWork {
+                request: KioskShowControlsRequest {
+                    receipt_id: receipt_id(
+                        &operation.operation_id,
+                        &target.device_id,
+                        target.attempt_count,
+                    ),
+                    operation_id: operation.operation_id.clone(),
+                    device_id: target.device_id.clone(),
+                    identity_revision: target.identity_revision,
+                    endpoint: direct_operator.endpoint,
+                    owner_action_request_id,
+                },
+                pairing_key: direct_operator.pairing_key,
+                deadline_at_ms,
+                recovery_only: true,
+            });
+        }
+    }
+    drop(runtime);
+    for owner_work in work {
+        spawn_owner_work(state.clone(), owner_work);
+    }
+    for operation_id in pending_operation_ids {
+        schedule_pending_owner_work(state.clone(), &operation_id).await;
+    }
+    Ok(())
+}
+
+struct AtomicTransportRequestIds;
+
+impl TransportRequestIdSource for AtomicTransportRequestIds {
+    fn next_transport_request_id(&mut self) -> Result<String, String> {
+        let sequence = TRANSPORT_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        Ok(transport_request_id(transport_boot_namespace(), sequence))
+    }
+}
+
+fn transport_boot_namespace() -> &'static str {
+    TRANSPORT_BOOT_NAMESPACE
+        .get_or_init(|| {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let mut digest = Sha256::new();
+            digest.update(b"rusty.fleet.kiosk.transport-boot.v1\0");
+            digest.update(std::process::id().to_le_bytes());
+            digest.update(elapsed.as_nanos().to_le_bytes());
+            hex::encode(digest.finalize())[..16].to_owned()
+        })
+        .as_str()
+}
+
+fn transport_request_id(namespace: &str, sequence: u64) -> String {
+    format!("fleettrans-{namespace}-{sequence:016x}")
+}
+
+struct StdKioskTransport;
+
+impl KioskTransport for StdKioskTransport {
+    fn now_ms(&self) -> i64 {
+        unix_time_ms().unwrap_or(i64::MAX)
+    }
+
+    fn wait_until_ms(&mut self, not_before_ms: i64, deadline_at_ms: i64) -> Result<(), String> {
+        let now_ms = unix_time_ms()?;
+        if now_ms >= deadline_at_ms {
+            return Err("Kiosk owner deadline was reached".to_owned());
+        }
+        let wait_ms = not_before_ms
+            .saturating_sub(now_ms)
+            .min(deadline_at_ms.saturating_sub(now_ms));
+        if wait_ms > 0 {
+            std::thread::sleep(Duration::from_millis(
+                u64::try_from(wait_ms).map_err(|_| "invalid wait duration".to_owned())?,
+            ));
+        }
+        Ok(())
+    }
+
+    fn send(&mut self, request: KioskHttpRequest) -> Result<KioskHttpResponse, String> {
+        send_kiosk_http(request)
+    }
+}
+
+fn send_kiosk_http(request: KioskHttpRequest) -> Result<KioskHttpResponse, String> {
+    let endpoint = request
+        .url
+        .strip_suffix(&request.request_target)
+        .ok_or_else(|| "Kiosk request URL and target do not match".to_owned())?;
+    validate_kiosk_endpoint(endpoint).map_err(|error| error.to_string())?;
+    let authority = endpoint
+        .strip_prefix("http://")
+        .ok_or_else(|| "Kiosk endpoint scheme is invalid".to_owned())?;
+    let socket = authority
+        .parse::<SocketAddr>()
+        .map_err(|error| format!("Kiosk endpoint must use a literal IP address: {error}"))?;
+    let now_ms = unix_time_ms()?;
+    let remaining_ms = request.deadline_at_ms.saturating_sub(now_ms);
+    if remaining_ms <= 0 {
+        return Err("Kiosk request deadline was reached".to_owned());
+    }
+    let timeout_ms = request
+        .timeout_ms
+        .min(u64::try_from(remaining_ms).map_err(|_| "invalid deadline".to_owned())?);
+    let timeout_duration = Duration::from_millis(timeout_ms);
+    let mut stream = TcpStream::connect_timeout(&socket, timeout_duration)
+        .map_err(|error| format!("cannot connect to Kiosk owner: {error}"))?;
+    stream
+        .set_read_timeout(Some(timeout_duration))
+        .map_err(|error| format!("cannot bound Kiosk read: {error}"))?;
+    stream
+        .set_write_timeout(Some(timeout_duration))
+        .map_err(|error| format!("cannot bound Kiosk write: {error}"))?;
+    let mut wire = format!(
+        "{} {} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        request.method.as_str(),
+        request.request_target,
+        request.body.len()
+    )
+    .into_bytes();
+    if request.method == HttpMethod::Post {
+        wire.extend_from_slice(b"Content-Type: application/json\r\n");
+    }
+    for (name, value) in &request.headers {
+        if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
+            return Err("Kiosk request header is invalid".to_owned());
+        }
+        wire.extend_from_slice(name.as_bytes());
+        wire.extend_from_slice(b": ");
+        wire.extend_from_slice(value.as_bytes());
+        wire.extend_from_slice(b"\r\n");
+    }
+    wire.extend_from_slice(b"\r\n");
+    wire.extend_from_slice(&request.body);
+    let mut written = 0;
+    while written < wire.len() {
+        let remaining = remaining_transport_timeout(request.deadline_at_ms, request.timeout_ms)?;
+        stream
+            .set_write_timeout(Some(remaining))
+            .map_err(|error| format!("cannot refresh Kiosk write bound: {error}"))?;
+        let count = stream
+            .write(&wire[written..])
+            .map_err(|error| format!("cannot write Kiosk request: {error}"))?;
+        if count == 0 {
+            return Err("Kiosk connection closed while writing the request".to_owned());
+        }
+        written = written.saturating_add(count);
+    }
+    stream
+        .set_write_timeout(Some(remaining_transport_timeout(
+            request.deadline_at_ms,
+            request.timeout_ms,
+        )?))
+        .map_err(|error| format!("cannot refresh Kiosk flush bound: {error}"))?;
+    stream
+        .flush()
+        .map_err(|error| format!("cannot flush Kiosk request: {error}"))?;
+
+    let maximum_wire_bytes = request.maximum_response_bytes.saturating_add(32 * 1024);
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        stream
+            .set_read_timeout(Some(remaining_transport_timeout(
+                request.deadline_at_ms,
+                request.timeout_ms,
+            )?))
+            .map_err(|error| format!("cannot refresh Kiosk read bound: {error}"))?;
+        let count = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("cannot read Kiosk response: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        if response.len().saturating_add(count) > maximum_wire_bytes {
+            return Err("Kiosk response exceeded its bounded wire size".to_owned());
+        }
+        response.extend_from_slice(&chunk[..count]);
+        if let Some(expected_length) =
+            expected_http_response_length(&response, request.maximum_response_bytes)?
+        {
+            if response.len() > expected_length {
+                return Err("Kiosk response exceeded its declared Content-Length".to_owned());
+            }
+            if response.len() == expected_length {
+                break;
+            }
+        }
+    }
+    parse_kiosk_http_response(&response, request.maximum_response_bytes)
+}
+
+fn remaining_transport_timeout(
+    deadline_at_ms: i64,
+    per_io_timeout_ms: u64,
+) -> Result<Duration, String> {
+    let remaining_ms = deadline_at_ms.saturating_sub(unix_time_ms()?);
+    if remaining_ms <= 0 {
+        return Err("Kiosk absolute request deadline was reached".to_owned());
+    }
+    Ok(Duration::from_millis(
+        u64::try_from(remaining_ms)
+            .map_err(|_| "Kiosk deadline is not representable".to_owned())?
+            .min(per_io_timeout_ms),
+    ))
+}
+
+fn expected_http_response_length(
+    response: &[u8],
+    maximum_body_bytes: usize,
+) -> Result<Option<usize>, String> {
+    let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
+        if response.len() > 32 * 1024 {
+            return Err("Kiosk response header exceeded 32 KiB".to_owned());
+        }
+        return Ok(None);
+    };
+    let header_text = std::str::from_utf8(&response[..header_end])
+        .map_err(|_| "Kiosk response header is not UTF-8".to_owned())?;
+    let mut content_length = None;
+    for line in header_text.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err("Kiosk response header line is malformed".to_owned());
+        };
+        if name.trim().eq_ignore_ascii_case("transfer-encoding") {
+            return Err("Kiosk chunked responses are not accepted".to_owned());
+        }
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err("Kiosk response repeats Content-Length".to_owned());
+            }
+            let parsed = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| "Kiosk response Content-Length is invalid".to_owned())?;
+            if parsed > maximum_body_bytes {
+                return Err("Kiosk response body exceeds its limit".to_owned());
+            }
+            content_length = Some(parsed);
+        }
+    }
+    let content_length =
+        content_length.ok_or_else(|| "Kiosk response omitted Content-Length".to_owned())?;
+    Ok(Some(
+        header_end
+            .checked_add(4)
+            .and_then(|length| length.checked_add(content_length))
+            .ok_or_else(|| "Kiosk response length overflowed".to_owned())?,
+    ))
+}
+
+fn parse_kiosk_http_response(
+    response: &[u8],
+    maximum_body_bytes: usize,
+) -> Result<KioskHttpResponse, String> {
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "Kiosk response omitted a complete HTTP header".to_owned())?;
+    if header_end > 32 * 1024 {
+        return Err("Kiosk response header exceeded 32 KiB".to_owned());
+    }
+    let header_text = std::str::from_utf8(&response[..header_end])
+        .map_err(|_| "Kiosk response header is not UTF-8".to_owned())?;
+    let mut lines = header_text.split("\r\n");
+    let status_line = lines
+        .next()
+        .ok_or_else(|| "Kiosk response omitted its status line".to_owned())?;
+    let mut status_parts = status_line.split_whitespace();
+    let protocol = status_parts.next().unwrap_or_default();
+    let status = status_parts
+        .next()
+        .ok_or_else(|| "Kiosk response omitted its status code".to_owned())?
+        .parse::<u16>()
+        .map_err(|_| "Kiosk response status code is invalid".to_owned())?;
+    if protocol != "HTTP/1.1" && protocol != "HTTP/1.0" {
+        return Err("Kiosk response protocol is unsupported".to_owned());
+    }
+    let mut headers = BTreeMap::new();
+    for line in lines {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| "Kiosk response header line is malformed".to_owned())?;
+        let name = name.trim().to_ascii_lowercase();
+        let value = value.trim().to_owned();
+        if name.is_empty() || headers.insert(name, value).is_some() {
+            return Err("Kiosk response contains an empty or duplicate header".to_owned());
+        }
+    }
+    if headers.contains_key("transfer-encoding") {
+        return Err("Kiosk chunked responses are not accepted".to_owned());
+    }
+    let content_length = headers
+        .get("content-length")
+        .ok_or_else(|| "Kiosk response omitted Content-Length".to_owned())?
+        .parse::<usize>()
+        .map_err(|_| "Kiosk response Content-Length is invalid".to_owned())?;
+    if content_length > maximum_body_bytes {
+        return Err("Kiosk response body exceeds its limit".to_owned());
+    }
+    let body_start = header_end + 4;
+    if response.len() != body_start.saturating_add(content_length) {
+        return Err("Kiosk response body differs from Content-Length".to_owned());
+    }
+    Ok(KioskHttpResponse {
+        status,
+        headers,
+        body: response[body_start..].to_vec(),
+        redirected: false,
+        received_at_ms: unix_time_ms()?,
+    })
 }
 
 async fn bounded_body(request: Request, limit: usize) -> Result<axum::body::Bytes, Response> {
@@ -864,16 +2208,19 @@ fn schema_id(value: &str) -> Result<SchemaId, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header};
     use ed25519_dalek::{Signer, SigningKey};
     use fleet_contracts::{
-        CHECKIN_SIGNATURE_ALGORITHM, FleetCheckInClaims, FleetQuery, NavigationRestoration,
-        SavedView, SavedViewMutationRequest, SignedFleetCheckIn,
+        AuthorizationState, CHECKIN_SIGNATURE_ALGORITHM, CapabilityState, CommandLifecycle,
+        EnablementState, FleetCheckInClaims, FleetQuery, FreshnessState, NavigationRestoration,
+        ReachabilityState, SavedView, SavedViewMutationRequest, SignedFleetCheckIn, SupportState,
     };
     use fleet_simulator::ScenarioBuilder;
     use rusty_manifold_model::{DottedId, Revision, SchemaId};
@@ -887,8 +2234,9 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        ConfiguredEnrollment, IngressRateLimiter, LocalHubConfig, LocalHubState,
-        MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, router, state_slot_path, unix_time_ms,
+        ConfiguredEnrollment, ConfiguredKioskDirectOperator, IngressRateLimiter, LocalHubConfig,
+        LocalHubState, MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, RuntimeState, router,
+        schedule_recovered_owner_work, state_slot_path, transport_request_id, unix_time_ms,
     };
 
     static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -1174,6 +2522,318 @@ mod tests {
         fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
+    #[tokio::test]
+    async fn nested_invalid_newest_state_falls_back_to_fully_valid_slot() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[8_u8; 32]);
+        let (config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let app = router(LocalHubState::from_config(&config, now_ms).expect("valid config"));
+        for revision in 1..=2 {
+            let signed = signed_checkin(
+                &signing_key,
+                key_id.as_str(),
+                now_ms + i64::try_from(revision).expect("small revision"),
+                revision,
+            );
+            let response = app
+                .clone()
+                .oneshot(json_request(
+                    "/fleet/v1/checkins",
+                    serde_json::to_vec(&signed).expect("signed JSON"),
+                ))
+                .await
+                .expect("check-in response");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        drop(app);
+
+        let newest_path = state_slot_path(&state_directory, 0);
+        let mut newest: Value =
+            serde_json::from_slice(&fs::read(&newest_path).expect("newest state"))
+                .expect("newest state JSON");
+        newest["hub"]["result_revision"] = serde_json::json!(0);
+        fs::write(
+            &newest_path,
+            serde_json::to_vec(&newest).expect("damaged nested state JSON"),
+        )
+        .expect("write wrapper-valid nested-invalid state");
+
+        let restored =
+            LocalHubState::from_config(&config, now_ms + 20).expect("older full state restored");
+        let runtime = restored.runtime.lock().await;
+        assert_eq!(runtime.state_store.generation, 1);
+        assert_eq!(runtime.hub.device_count(), 1);
+        drop(runtime);
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn operation_routes_are_strict_idempotent_and_persist_before_dispatch() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[9_u8; 32]);
+        let (mut config, key_id) = config(&signing_key, now_ms);
+        config.kiosk_direct_operators = vec![ConfiguredKioskDirectOperator {
+            device_id: "device.quest.1".to_owned(),
+            endpoint: "http://127.0.0.1:39873".to_owned(),
+            pairing_key: "test-pairing-key".to_owned(),
+        }];
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
+        let app = router(state.clone());
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let identity_revision = signed.claims.observation.identity.identity_revision;
+        let accepted = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let preview_request = serde_json::json!({
+            "schema": "rusty.fleet.operation_preview_request.v1",
+            "action_id": "kiosk.show-controls",
+            "targets": {"device.quest.1": identity_revision}
+        });
+        let preview_bytes = serde_json::to_vec(&preview_request).expect("preview JSON");
+        let first = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/operations/preview",
+                preview_bytes.clone(),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_json: Value = serde_json::from_slice(
+            &to_bytes(first.into_body(), 256 * 1024)
+                .await
+                .expect("preview body"),
+        )
+        .expect("preview response JSON");
+        assert_eq!(first_json["lifecycle"], "proposed");
+        assert_eq!(first_json["targets"][0]["preflight"]["eligible"], true);
+
+        let repeated = app
+            .clone()
+            .oneshot(json_request("/fleet/v1/operations/preview", preview_bytes))
+            .await
+            .expect("repeated preview response");
+        let repeated_json: Value = serde_json::from_slice(
+            &to_bytes(repeated.into_body(), 256 * 1024)
+                .await
+                .expect("repeated preview body"),
+        )
+        .expect("repeated preview JSON");
+        assert_eq!(repeated_json, first_json);
+
+        let duplicate = br#"{"schema":"rusty.fleet.operation_preview_request.v1","action_id":"kiosk.show-controls","targets":{"device.quest.1":1,"device.quest.1":1}}"#.to_vec();
+        let duplicate_response = app
+            .clone()
+            .oneshot(json_request("/fleet/v1/operations/preview", duplicate))
+            .await
+            .expect("duplicate preview response");
+        assert_eq!(duplicate_response.status(), StatusCode::BAD_REQUEST);
+
+        let operation_id = first_json["operation_id"].as_str().expect("operation id");
+        let preview_id = first_json["preview"]["preview_id"]
+            .as_str()
+            .expect("preview id");
+        let execute_request = serde_json::json!({
+            "schema": "rusty.fleet.operation_execute_request.v1",
+            "operation_id": operation_id,
+            "preview_id": preview_id
+        });
+        let execute = app
+            .clone()
+            .oneshot(json_request(
+                &format!("/fleet/v1/operations/{operation_id}/execute"),
+                serde_json::to_vec(&execute_request).expect("execute JSON"),
+            ))
+            .await
+            .expect("execute response");
+        assert_eq!(execute.status(), StatusCode::OK);
+        let execute_json: Value = serde_json::from_slice(
+            &to_bytes(execute.into_body(), 256 * 1024)
+                .await
+                .expect("execute body"),
+        )
+        .expect("execute response JSON");
+        assert_eq!(execute_json["lifecycle"], "running");
+        assert_eq!(
+            execute_json["targets"][0]["owner_deadline_at_ms"],
+            execute_json["preview"]["expires_at_ms"]
+        );
+        {
+            let runtime = state.runtime.lock().await;
+            assert!(runtime.state_store.generation >= 3);
+            assert_eq!(
+                runtime
+                    .adapter
+                    .runtime_host_snapshot()
+                    .authority_revision
+                    .get(),
+                2
+            );
+        }
+        for _ in 0..700 {
+            if state.runtime.lock().await.inflight_kiosk_targets.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(state.runtime.lock().await.inflight_kiosk_targets.is_empty());
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn startup_resumes_durable_accepted_targets_without_reconfirmation() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[10_u8; 32]);
+        let (mut config, key_id) = config(&signing_key, now_ms);
+        config.kiosk_direct_operators = vec![ConfiguredKioskDirectOperator {
+            device_id: "device.quest.1".to_owned(),
+            endpoint: "http://127.0.0.1:39873".to_owned(),
+            pairing_key: "test-pairing-key".to_owned(),
+        }];
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
+        let app = router(state.clone());
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let identity_revision = signed.claims.observation.identity.identity_revision;
+        let accepted = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let preview_request = serde_json::json!({
+            "schema": "rusty.fleet.operation_preview_request.v1",
+            "action_id": "kiosk.show-controls",
+            "targets": {"device.quest.1": identity_revision}
+        });
+        let preview = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/operations/preview",
+                serde_json::to_vec(&preview_request).expect("preview JSON"),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(preview.status(), StatusCode::OK);
+        let preview_json: Value = serde_json::from_slice(
+            &to_bytes(preview.into_body(), 256 * 1024)
+                .await
+                .expect("preview body"),
+        )
+        .expect("preview response JSON");
+        let operation_id = preview_json["operation_id"]
+            .as_str()
+            .expect("operation ID")
+            .to_owned();
+        let preview_id = preview_json["preview"]["preview_id"]
+            .as_str()
+            .expect("preview ID")
+            .to_owned();
+
+        let accepted_at_ms = unix_time_ms().expect("confirmation time");
+        let accepted_generation = {
+            let mut runtime = state.runtime.lock().await;
+            let mut candidate_hub = runtime.hub.clone();
+            let confirmed = candidate_hub
+                .confirm_kiosk_show_controls(&operation_id, &preview_id, accepted_at_ms)
+                .expect("confirm exact preview");
+            assert_eq!(confirmed.targets[0].lifecycle, CommandLifecycle::Accepted);
+            let RuntimeState {
+                hub,
+                adapter,
+                state_store,
+                owner_receipts,
+                ..
+            } = &mut *runtime;
+            state_store
+                .persist(&candidate_hub, adapter, owner_receipts, accepted_at_ms)
+                .expect("persist accepted target");
+            *hub = candidate_hub;
+            state_store.generation
+        };
+        drop(app);
+        drop(state);
+
+        let mut missing_private_config = config.clone();
+        missing_private_config.kiosk_direct_operators.clear();
+        let unrestorable = LocalHubState::from_config(&missing_private_config, accepted_at_ms + 1)
+            .expect("restore durable accepted target before worker scheduling");
+        let error = schedule_recovered_owner_work(unrestorable)
+            .await
+            .expect_err("startup must fail closed without private owner configuration");
+        assert!(error.contains("lacks private direct-operator configuration"));
+
+        let restored = LocalHubState::from_config(&config, accepted_at_ms + 1)
+            .expect("restore accepted target");
+        {
+            let runtime = restored.runtime.lock().await;
+            assert_eq!(
+                runtime
+                    .hub
+                    .kiosk_operation(&operation_id)
+                    .expect("restored operation")
+                    .targets[0]
+                    .lifecycle,
+                CommandLifecycle::Accepted
+            );
+        }
+        schedule_recovered_owner_work(restored.clone())
+            .await
+            .expect("schedule recovered accepted target");
+        {
+            let runtime = restored.runtime.lock().await;
+            let target = &runtime
+                .hub
+                .kiosk_operation(&operation_id)
+                .expect("scheduled operation")
+                .targets[0];
+            assert_ne!(target.lifecycle, CommandLifecycle::Accepted);
+            assert!(runtime.state_store.generation > accepted_generation);
+            assert_eq!(
+                runtime
+                    .adapter
+                    .runtime_host_snapshot()
+                    .authority_revision
+                    .get(),
+                2
+            );
+        }
+        for _ in 0..700 {
+            if restored
+                .runtime
+                .lock()
+                .await
+                .inflight_kiosk_targets
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            restored
+                .runtime
+                .lock()
+                .await
+                .inflight_kiosk_targets
+                .is_empty()
+        );
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
     #[test]
     fn non_loopback_binding_requires_explicit_activation() {
         let now_ms = unix_time_ms().expect("current time");
@@ -1197,6 +2857,14 @@ mod tests {
             assert!(limiter.admit(None, 20_001 + index));
         }
         assert_eq!(limiter.by_credential.len(), 1);
+    }
+
+    #[test]
+    fn transport_request_ids_bind_boot_namespace_and_sequence() {
+        let first = transport_request_id("0123456789abcdef", 1);
+        assert_ne!(first, transport_request_id("fedcba9876543210", 1));
+        assert_ne!(first, transport_request_id("0123456789abcdef", 2));
+        assert!(first.len() <= 64);
     }
 
     fn config(signing_key: &SigningKey, now_ms: i64) -> (LocalHubConfig, DottedId) {
@@ -1231,6 +2899,7 @@ mod tests {
                         replaced_by_key_id: None,
                     },
                 }],
+                kiosk_direct_operators: Vec::new(),
                 hub_policy: Default::default(),
             },
             key_id,
@@ -1282,6 +2951,23 @@ mod tests {
             capability.observed_at_ms = now_ms;
             capability.fresh_until_ms = now_ms + 60_000;
         }
+        observation.capabilities.capabilities.insert(
+            "rusty-kiosk.direct-operator".to_owned(),
+            CapabilityState {
+                capability_id: "rusty-kiosk.direct-operator".to_owned(),
+                support: SupportState::Supported,
+                enablement: EnablementState::Enabled,
+                authorization: AuthorizationState::Authorized,
+                reachability: ReachabilityState::Reachable,
+                freshness: FreshnessState::Current,
+                evidence_revision: revision,
+                observed_at_ms: now_ms,
+                fresh_until_ms: now_ms + 60_000,
+                owner: "rusty-kiosk".to_owned(),
+                reason: "owner_ready".to_owned(),
+                extensions: BTreeMap::new(),
+            },
+        );
         let proposal = ManifoldPeerStatusProposal {
             schema_id: schema("rusty.manifold.peer.status_proposal.v1"),
             proposal_id: dotted(&format!("proposal.status.quest.{revision}")),
@@ -1360,10 +3046,12 @@ mod tests {
     }
 
     fn json_method_request(method: &str, uri: &str, body: Vec<u8>) -> Request<Body> {
+        let content_length = body.len();
         Request::builder()
             .method(method)
             .uri(uri)
             .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_LENGTH, content_length)
             .body(Body::from(body))
             .expect("request")
     }
