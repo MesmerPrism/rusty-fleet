@@ -294,6 +294,15 @@ devices without ADB, with per-device acceptance and application receipts.
 - Validate one real participating-app action end to end before broadening the
   action catalog.
 
+The current source-only checkpoint implements the bounded
+`kiosk.show-controls` vertical described in
+[M2_KIOSK_SHOW_CONTROLS.md](M2_KIOSK_SHOW_CONTROLS.md): exact immutable
+preview and confirmation, Manifold authorization, signed Kiosk-owner
+completion, durable per-target recovery, and local API/CLI/WPF parity. It
+remains inert without private direct-operator configuration. Live Quest
+validation is a separately authorized later unit and is not inferred from the
+source checkpoint.
+
 ### Acceptance
 
 - Transport acknowledgement never appears as applied completion.
