@@ -373,6 +373,135 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </ScrollViewer>
+                    <Separator Margin="0,8,0,8" />
+                    <Border x:Name="PackageOperationPane"
+                            Padding="6"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Package install and release operation"
+                            AutomationProperties.HelpText="Preview the exact signed release and selected identities, then confirm preparation only. Authenticated updater ingress is unavailable, so Fleet does not claim dispatch or installation.">
+                        <StackPanel>
+                            <TextBlock Text="Package install/release"
+                                       FontWeight="SemiBold" />
+                            <Grid Margin="0,5,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="220" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="100" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Signed manifest"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,6,0" />
+                                <TextBox x:Name="PackageManifestUrlBox"
+                                         Grid.Column="1"
+                                         Text="{Binding PackageManifestUrl, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsPackageInputLocked}"
+                                         AutomationProperties.Name="Signed package manifest HTTPS URL"
+                                         AutomationProperties.HelpText="Enter the credential-free HTTPS address of the signed package-update envelope. The field is locked while a preview is active; dismiss the preview to change it." />
+                                <TextBlock Grid.Column="2"
+                                           Text="Package"
+                                           VerticalAlignment="Center"
+                                           Margin="10,0,6,0" />
+                                <TextBox x:Name="PackageNameBox"
+                                         Grid.Column="3"
+                                         Text="{Binding PackageName, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsPackageInputLocked}"
+                                         AutomationProperties.Name="Expected Android package identity" />
+                                <TextBlock Grid.Column="4"
+                                           Text="Ring"
+                                           VerticalAlignment="Center"
+                                           Margin="10,0,6,0" />
+                                <TextBox x:Name="PackageRolloutRingBox"
+                                         Grid.Column="5"
+                                         Text="{Binding PackageRolloutRing, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsPackageInputLocked}"
+                                         AutomationProperties.Name="Expected package rollout ring" />
+                            </Grid>
+                            <DockPanel Margin="0,5,0,0">
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button x:Name="PreviewPackageInstallReleaseButton"
+                                            Content="Preview package"
+                                            Command="{Binding PreviewPackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Preview package install and release for exact selected devices" />
+                                    <Button x:Name="ConfirmPackageInstallReleaseButton"
+                                            Content="Confirm preparation"
+                                            Command="{Binding ConfirmPackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Confirm exact package preview for preparation"
+                                            AutomationProperties.HelpText="Prepares owner invocations only. It cannot approve Android PackageInstaller or claim package dispatch or installation." />
+                                    <Button x:Name="RefreshPackageInstallReleaseButton"
+                                            Content="Refresh package"
+                                            Command="{Binding RefreshPackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Refresh package operation results" />
+                                    <Button x:Name="DismissPackageInstallReleaseButton"
+                                            Content="Dismiss package"
+                                            Command="{Binding DismissPackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Dismiss package operation projection" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding PackageOperationSummaryText}"
+                                           VerticalAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="{Binding PackageOperationSummaryText}" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding PackageOperationStatusText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding PackageOperationStatusText}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <ScrollViewer MaxHeight="130"
+                                          Margin="0,6,0,0"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled"
+                                          Focusable="False">
+                                <ItemsControl ItemsSource="{Binding PackageOperationTargets}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Padding="6,4"
+                                                    Margin="0,0,0,3"
+                                                    BorderThickness="1"
+                                                    BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                                                    AutomationProperties.Name="{Binding AccessibleName}">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="220" />
+                                                        <ColumnDefinition Width="130" />
+                                                        <ColumnDefinition Width="140" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding DeviceId}" FontWeight="SemiBold" />
+                                                        <TextBlock Text="{Binding IdentityRevision, StringFormat={}Identity revision {0}}" />
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1">
+                                                        <TextBlock Text="Eligibility" FontWeight="SemiBold" />
+                                                        <TextBlock Text="{Binding Eligibility}" />
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="2">
+                                                        <TextBlock Text="Lifecycle / stage" FontWeight="SemiBold" />
+                                                        <TextBlock>
+                                                            <Run Text="{Binding Lifecycle, Mode=OneWay}" />
+                                                            <Run Text=" · " />
+                                                            <Run Text="{Binding Stage, Mode=OneWay}" />
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="3">
+                                                        <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+                                                        <TextBlock Text="{Binding OwnerDelivery}"
+                                                                   TextWrapping="Wrap"
+                                                                   Opacity="0.75" />
+                                                        <TextBlock Text="{Binding ReasonCode, StringFormat={}Reason {0}}"
+                                                                   Opacity="0.75" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </Border>
 

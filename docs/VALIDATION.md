@@ -34,6 +34,12 @@ Quick is safe during normal editing and checks:
   parallel attempts, Manifold typed-digest/replay state, signed owner vectors,
   receipt-gated application, poll-only ambiguous-send recovery, raw-receipt
   rehash, nested two-slot fallback, strict HTTP routes, and CLI/API/WPF parity;
+- package install/release valid/damaged contracts, pinned attended-updater
+  owner, immutable release/package/ring and exact targets, Manifold
+  authorization, all-target `dispatch_ready` preparation independent of future
+  delivery parallelism, strict HTTP routes, durable restart, unauthenticated
+  acknowledgement/receipt HTTP 501 rejection without mutation, and
+  CLI/API/WPF parity with explicit no-dispatch/no-install language;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
   against the real 1,000-device Rust projection;
 - native grid/inspector UI Automation peers and names, grouped recycling
@@ -146,6 +152,12 @@ The live M2 commands require an explicitly launched loopback Hub and private
 Kiosk configuration; see
 [M2 Kiosk Show Controls](M2_KIOSK_SHOW_CONTROLS.md). Repository tiers never
 contact Kiosk or a headset.
+
+The package source commands use the same explicit loopback Hub and are
+documented in [Package Install/Release](PACKAGE_INSTALL_RELEASE.md). Repository
+tiers exercise preview, confirmation, status, restart, and fail-closed owner
+evidence only. They do not contact the updater or a headset, and
+`dispatch_ready` is not device evidence.
 
 For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
 surface separately:

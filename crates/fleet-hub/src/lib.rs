@@ -21,8 +21,10 @@ use fleet_contracts::{
 use serde::{Deserialize, Serialize};
 
 mod kiosk;
+mod packages;
 
 pub use kiosk::KioskShowControlsPreviewPlan;
+pub use packages::PackageInstallReleasePreviewPlan;
 
 const ROW_SCHEMA: &str = "rusty.fleet.device_row.v1";
 const INSPECTOR_SCHEMA: &str = "rusty.fleet.device_inspector.v1";
@@ -31,6 +33,7 @@ const SUMMARY_SCHEMA: &str = "rusty.fleet.summary.v1";
 const RESULT_SCHEMA: &str = "rusty.fleet.query_result.v1";
 const MAX_SAVED_VIEWS: usize = 128;
 const MAX_KIOSK_OPERATIONS: usize = 1_000;
+const MAX_PACKAGE_OPERATIONS: usize = 1_000;
 
 const fn initial_saved_view_revision() -> u64 {
     1
@@ -163,6 +166,8 @@ pub struct FleetHubSnapshot {
     saved_views: BTreeMap<String, SavedView>,
     #[serde(default)]
     kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
+    #[serde(default)]
+    package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +180,7 @@ pub struct FleetHub {
     saved_view_revision: u64,
     saved_views: BTreeMap<String, SavedView>,
     kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
+    package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
 }
 
 impl FleetHub {
@@ -197,6 +203,7 @@ impl FleetHub {
             saved_view_revision: initial_saved_view_revision(),
             saved_views: BTreeMap::new(),
             kiosk_operations: BTreeMap::new(),
+            package_operations: BTreeMap::new(),
         }
     }
 
@@ -232,6 +239,7 @@ impl FleetHub {
             saved_view_revision: self.saved_view_revision,
             saved_views: self.saved_views.clone(),
             kiosk_operations: self.kiosk_operations.clone(),
+            package_operations: self.package_operations.clone(),
         }
     }
 
@@ -350,6 +358,21 @@ impl FleetHub {
                 "Fleet Hub snapshot Kiosk operations are invalid or exceed their limit",
             ));
         }
+        if snapshot.package_operations.len() > MAX_PACKAGE_OPERATIONS
+            || snapshot
+                .package_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                })
+        {
+            return Err(HubError::new(
+                "snapshot_package_operations_invalid",
+                "Fleet Hub snapshot package operations are invalid or exceed their limit",
+            ));
+        }
         Ok(Self {
             policy,
             devices: snapshot.devices,
@@ -359,6 +382,7 @@ impl FleetHub {
             saved_view_revision: snapshot.saved_view_revision,
             saved_views: snapshot.saved_views,
             kiosk_operations: snapshot.kiosk_operations,
+            package_operations: snapshot.package_operations,
         })
     }
 

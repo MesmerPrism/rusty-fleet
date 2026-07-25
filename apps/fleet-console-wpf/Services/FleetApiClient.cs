@@ -49,6 +49,18 @@ public interface IFleetDataSource
     Task<OperationLedger> OperationAsync(
         string operationId,
         CancellationToken cancellationToken);
+
+    Task<PackageInstallReleaseOperation> PreviewPackageInstallReleaseAsync(
+        PackageInstallReleasePreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<PackageInstallReleaseOperation> ExecutePackageInstallReleaseAsync(
+        PackageInstallReleaseExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<PackageInstallReleaseOperation> PackageInstallReleaseAsync(
+        string operationId,
+        CancellationToken cancellationToken);
 }
 
 public sealed class FleetApiClient : IFleetDataSource, IDisposable
@@ -204,6 +216,48 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             $"/fleet/v1/operations/{encoded}",
             cancellationToken);
         return await ReadAsync<OperationLedger>(response, cancellationToken);
+    }
+
+    public async Task<PackageInstallReleaseOperation> PreviewPackageInstallReleaseAsync(
+        PackageInstallReleasePreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/package-install-releases/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<PackageInstallReleaseOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<PackageInstallReleaseOperation> ExecutePackageInstallReleaseAsync(
+        PackageInstallReleaseExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _http.PostAsJsonAsync(
+            $"/fleet/v1/package-install-releases/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<PackageInstallReleaseOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<PackageInstallReleaseOperation> PackageInstallReleaseAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/package-install-releases/{encoded}",
+            cancellationToken);
+        return await ReadAsync<PackageInstallReleaseOperation>(
+            response,
+            cancellationToken);
     }
 
     public void Dispose() => _http.Dispose();

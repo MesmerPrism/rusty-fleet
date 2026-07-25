@@ -6,6 +6,7 @@
 
 mod local_client;
 mod operation;
+mod package_operation;
 
 use fleet_contracts::{
     Comparison, FleetQuery, FleetQueryResult, FleetSummaryProjection, ProjectionFreshness,
@@ -98,7 +99,11 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 "saved-view-roundtrip [count]",
                 "operation-preview kiosk.show-controls DEVICE@IDENTITY_REVISION...",
                 "operation-execute OPERATION_ID PREVIEW_ID",
-                "operation-get OPERATION_ID"
+                "operation-get OPERATION_ID",
+                "package-preview manifest-url URL PACKAGE RING DEVICE@IDENTITY_REVISION...",
+                "package-preview release-id RELEASE_ID PACKAGE RING DEVICE@IDENTITY_REVISION...",
+                "package-execute OPERATION_ID PREVIEW_ID",
+                "package-get OPERATION_ID"
             ],
             "scale_fixtures": supported_scale_fixtures()
         }));
@@ -181,7 +186,9 @@ pub fn execute_with_operation_client<C: FleetOperationClient + ?Sized>(
     client: &mut C,
 ) -> Result<serde_json::Value, CliFailure> {
     let command = arguments.first().map_or("help", String::as_str);
-    if operation::is_operation_command(command) {
+    if package_operation::is_package_operation_command(command) {
+        package_operation::execute_package_operation_command(&arguments, client)
+    } else if operation::is_operation_command(command) {
         operation::execute_operation_command(&arguments, client)
     } else {
         execute(arguments)

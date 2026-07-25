@@ -42,6 +42,15 @@ not require ADB and remains inert without private Kiosk endpoint/key
 configuration. See the
 [M2 Kiosk show-controls guide](docs/M2_KIOSK_SHOW_CONTROLS.md).
 
+An additive source-only package checkpoint now exposes
+`packages.install-release` through the same local API, `fleetctl`, and WPF
+Console. It freezes a signed release reference and exact device identities,
+then prepares every eligible updater invocation after explicit confirmation.
+It deliberately stops at `dispatch_ready`: authenticated package-owner ingress
+is not implemented, acknowledgement/receipt routes fail closed without
+mutation, and no Fleet surface can claim dispatch or installation. See the
+[package install/release checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
+
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
 conditions, visible query/selection scope, and per-device operation evidence.
@@ -85,14 +94,18 @@ The current implementation is split into:
   application, replay, and audit state;
 - `fleet-kiosk-adapter`: bounded no-redirect signed Kiosk status, invoke, and
   result transport with owner-vector parity and poll-only restart recovery;
+- `fleet-package-updater-adapter`: bounded invocation and untrusted
+  owner-evidence validation for the pinned attended Rusty Quest updater,
+  without Android or evidence-admission authority;
 - `fleet-hub-local`: explicit bounded HTTP check-in ingress plus health,
   query, summary, inspect, detail, watch, saved-view, and operation projections
   over the same Hub and fully validated two-slot durable envelope;
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
   mutations;
-- `fleetctl`: structured JSON list/inspect/detail/watch projections and
-  saved-view parity fixtures over the same in-process API;
+- `fleetctl`: structured JSON list/inspect/detail/watch projections,
+  saved-view parity fixtures, and package preview/execute/get commands over
+  the same loopback local API;
 - `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical
   scope/sort/grouping, revisioned saved-view controls, stable live-order
   application, bounded monotonic watch synchronization, distinct inspection
@@ -135,12 +148,14 @@ bounded dependency, authority, activation, and instruction audit.
    sufficient check.
 7. Review the
    [M2 Kiosk show-controls authority and recovery boundary](docs/M2_KIOSK_SHOW_CONTROLS.md).
+8. Review the
+   [package install/release source boundary](docs/PACKAGE_INSTALL_RELEASE.md).
 
-The current source stack is the first M2 participating-app operation:
-`kiosk.show-controls`. Dedicated private planning owns its iteration state;
-the public repository contains the coherent contract, Hub, Manifold, Kiosk,
-local API, CLI, WPF, and negative-path implementation without embedding
-private planning evidence.
+The current source stack contains the first M2 participating-app operation,
+`kiosk.show-controls`, plus the additive `packages.install-release`
+preparation checkpoint. Dedicated private planning owns iteration state; the
+public repository contains only coherent contracts, source, sanitized
+fixtures, and negative-path validation.
 
 ## Source workflow
 
@@ -181,6 +196,8 @@ private config. Durable state additionally requires an absolute private
 [M1 runtime guide](docs/M1_LOCAL_MONITORING.md).
 The M2 operation commands use the explicit loopback Hub and are documented in
 the [M2 guide](docs/M2_KIOSK_SHOW_CONTROLS.md).
+Package commands use that same loopback Hub and are documented in the
+[package checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
 
 Build and exercise the native WPF projection against the real deterministic
 Rust query result:
@@ -242,7 +259,10 @@ Milestone 7 release gate after the full operator workflow exists. The completed
 M1 evidence and exact boundary are recorded in
 [M1 Consolidation Readiness](docs/M1_CONSOLIDATION_READINESS.md).
 The source-only M2 Kiosk slice is implemented and device-free validation is
-green; a live owner/device proof remains a separate explicit gate.
+green; a live owner/device proof remains a separate explicit gate. The package
+checkpoint is source-complete only through durable `dispatch_ready`; adding
+authenticated updater ingress and live delivery remains a separate authority
+and device unit.
 
 ## License
 

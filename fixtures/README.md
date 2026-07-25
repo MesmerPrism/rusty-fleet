@@ -22,5 +22,13 @@ Kiosk-owned effective receipt; its damaged case covers owner-contract drift,
 preview mutation, false application, unsafe retry/cancellation, and forbidden
 cleanup.
 
+The package install/release pair binds one signed release reference, expected
+package/ring, and exact target identities to a durable per-target ledger. Its
+valid case deliberately prepares two `dispatch_ready` invocations while the
+future owner-delivery parallelism is one; neither target is `dispatched` or
+`applied`. Its damaged case combines an insecure release reference,
+owner-contract drift, and a false application claim without an authenticated
+effective receipt.
+
 Real device exports, endpoints, serials, logs, captures, and private payloads
 do not belong in this directory.

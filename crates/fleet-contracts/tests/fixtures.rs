@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use fleet_contracts::{
-    DeviceObservation, FleetCheckInClaims, FleetQuery, KioskShowControlsOperation, SavedView,
-    StreamDescriptor, ValidateContract,
+    DeviceObservation, FleetCheckInClaims, FleetQuery, KioskShowControlsOperation,
+    PackageInstallReleaseOperation, SavedView, StreamDescriptor, ValidateContract,
 };
 
 #[test]
@@ -42,6 +42,12 @@ fn committed_valid_contract_fixtures_round_trip() {
     ))
     .expect("valid Kiosk show-controls JSON");
     assert!(kiosk_operation.validate().is_ok());
+
+    let package_operation: PackageInstallReleaseOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/package-install-release-operation.valid.json"
+    ))
+    .expect("valid package install/release JSON");
+    assert!(package_operation.validate().is_ok());
 }
 
 #[test]
@@ -95,4 +101,21 @@ fn committed_damaged_observation_fails_closed() {
     assert!(codes.contains(&"invalid_revision".to_owned()));
     assert!(codes.contains(&"invalid_battery".to_owned()));
     assert!(codes.contains(&"required_text".to_owned()));
+}
+
+#[test]
+fn committed_damaged_package_operation_fails_closed() {
+    let operation: PackageInstallReleaseOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/package-install-release-operation.damaged.json"
+    ))
+    .expect("damaged package fixture remains syntactically valid JSON");
+    let codes = operation
+        .validate()
+        .expect_err("damaged package operation must fail")
+        .into_iter()
+        .map(|failure| failure.code)
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"invalid_manifest_url".to_owned()));
+    assert!(codes.contains(&"owner_contract_mismatch".to_owned()));
+    assert!(codes.contains(&"applied_without_effective_receipt".to_owned()));
 }

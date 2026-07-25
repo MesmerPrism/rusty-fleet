@@ -1,0 +1,444 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.package_install_release_operation.v1.schema.json",
+  "title": "Rusty Fleet package install/release operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation_id",
+    "action_id",
+    "created_at_ms",
+    "preview",
+    "lifecycle",
+    "max_parallelism",
+    "cleanup_required",
+    "targets"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.package_install_release_operation.v1"
+    },
+    "operation_id": {
+      "$ref": "#/$defs/portableId"
+    },
+    "action_id": {
+      "const": "packages.install-release"
+    },
+    "created_at_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "preview": {
+      "$ref": "#/$defs/preview"
+    },
+    "lifecycle": {
+      "$ref": "#/$defs/lifecycle"
+    },
+    "max_parallelism": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "cleanup_required": {
+      "const": false
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "$ref": "#/$defs/targetLedger"
+      }
+    }
+  },
+  "$defs": {
+    "portableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "nonempty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "release": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "manifest_url"
+          ],
+          "properties": {
+            "kind": {
+              "const": "manifest_url"
+            },
+            "manifest_url": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^https://"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "release_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "release_id"
+            },
+            "release_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9._/-]+$"
+            }
+          }
+        }
+      ]
+    },
+    "ownerContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_repo_id",
+        "capability_id",
+        "manifest_envelope_schema",
+        "receipt_schema",
+        "install_mode",
+        "application_proof"
+      ],
+      "properties": {
+        "owner_repo_id": {
+          "const": "rusty-quest"
+        },
+        "capability_id": {
+          "const": "rusty-quest.package-updater"
+        },
+        "manifest_envelope_schema": {
+          "const": "rusty.quest.package_update_manifest_envelope.v1"
+        },
+        "receipt_schema": {
+          "const": "rusty.quest.package_update_receipt.v1"
+        },
+        "install_mode": {
+          "const": "attended_package_installer"
+        },
+        "application_proof": {
+          "const": "effective_installed_version_receipt"
+        }
+      }
+    },
+    "support": {
+      "enum": [
+        "supported",
+        "unsupported",
+        "unknown"
+      ]
+    },
+    "enablement": {
+      "enum": [
+        "enabled",
+        "disabled",
+        "unknown"
+      ]
+    },
+    "authorization": {
+      "enum": [
+        "authorized",
+        "unauthorized",
+        "restricted",
+        "unknown"
+      ]
+    },
+    "reachability": {
+      "enum": [
+        "reachable",
+        "disconnected",
+        "unavailable",
+        "unknown"
+      ]
+    },
+    "freshness": {
+      "enum": [
+        "current",
+        "stale",
+        "unknown"
+      ]
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device_id",
+        "identity_revision",
+        "capability_id",
+        "capability_evidence_revision",
+        "capability_owner",
+        "support",
+        "enablement",
+        "authorization",
+        "reachability",
+        "freshness",
+        "observed_at_ms",
+        "fresh_until_ms",
+        "evaluated_at_ms",
+        "eligible",
+        "reason_code",
+        "message"
+      ],
+      "properties": {
+        "device_id": {
+          "$ref": "#/$defs/portableId"
+        },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capability_id": {
+          "const": "rusty-quest.package-updater"
+        },
+        "capability_evidence_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capability_owner": {
+          "const": "rusty-quest"
+        },
+        "support": {
+          "$ref": "#/$defs/support"
+        },
+        "enablement": {
+          "$ref": "#/$defs/enablement"
+        },
+        "authorization": {
+          "$ref": "#/$defs/authorization"
+        },
+        "reachability": {
+          "$ref": "#/$defs/reachability"
+        },
+        "freshness": {
+          "$ref": "#/$defs/freshness"
+        },
+        "observed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fresh_until_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evaluated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "eligible": {
+          "type": "boolean"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/portableId"
+        },
+        "message": {
+          "$ref": "#/$defs/nonempty"
+        }
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "operation_id",
+        "preview_id",
+        "device_id",
+        "identity_revision",
+        "owner_action_request_id",
+        "release",
+        "expected_package_name",
+        "expected_rollout_ring",
+        "expires_at_ms"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.package_updater_invocation.v1"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/portableId"
+        },
+        "preview_id": {
+          "$ref": "#/$defs/portableId"
+        },
+        "device_id": {
+          "$ref": "#/$defs/portableId"
+        },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner_action_request_id": {
+          "$ref": "#/$defs/portableId"
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "expected_package_name": {
+          "$ref": "#/$defs/portableId"
+        },
+        "expected_rollout_ring": {
+          "$ref": "#/$defs/portableId"
+        },
+        "expires_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "preview_id",
+        "operation_id",
+        "action_id",
+        "created_at_ms",
+        "expires_at_ms",
+        "fleet_revision",
+        "release",
+        "expected_package_name",
+        "expected_rollout_ring",
+        "owner_contract",
+        "targets"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.fleet.package_install_release_preview.v1"
+        },
+        "preview_id": {
+          "$ref": "#/$defs/portableId"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/portableId"
+        },
+        "action_id": {
+          "const": "packages.install-release"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expires_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fleet_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "expected_package_name": {
+          "$ref": "#/$defs/portableId"
+        },
+        "expected_rollout_ring": {
+          "$ref": "#/$defs/portableId"
+        },
+        "owner_contract": {
+          "$ref": "#/$defs/ownerContract"
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/preflight"
+          }
+        }
+      }
+    },
+    "lifecycle": {
+      "enum": [
+        "proposed",
+        "accepted",
+        "rejected"
+      ]
+    },
+    "stage": {
+      "enum": [
+        "preflight_rejected",
+        "preview_ready",
+        "approved",
+        "dispatch_ready"
+      ]
+    },
+    "targetLedger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device_id",
+        "identity_revision",
+        "preflight",
+        "lifecycle",
+        "stage",
+        "invocation",
+        "invocation_acknowledgement",
+        "effective_receipt",
+        "reason_code",
+        "message",
+        "last_transition_ms"
+      ],
+      "properties": {
+        "device_id": {
+          "$ref": "#/$defs/portableId"
+        },
+        "identity_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "preflight": {
+          "$ref": "#/$defs/preflight"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/lifecycle"
+        },
+        "stage": {
+          "$ref": "#/$defs/stage"
+        },
+        "invocation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/invocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "invocation_acknowledgement": {
+          "type": "null"
+        },
+        "effective_receipt": {
+          "type": "null"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/portableId"
+        },
+        "message": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "last_transition_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

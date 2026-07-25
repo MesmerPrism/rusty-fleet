@@ -228,6 +228,7 @@ dependencies = [
  "fleet-hub",
  "fleet-kiosk-adapter",
  "fleet-manifold-adapter",
+ "fleet-package-updater-adapter",
  "fleet-simulator",
  "hex",
  "rusty-manifold-model",
@@ -266,6 +267,13 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "fleet-package-updater-adapter"
+version = "0.1.0"
+dependencies = [
+ "fleet-contracts",
 ]
 
 [[package]]

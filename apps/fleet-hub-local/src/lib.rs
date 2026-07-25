@@ -23,9 +23,15 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use fleet_contracts::{
     CommandLifecycle, FleetQuery, OperationExecuteRequest, OperationPreviewRequest,
+    PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PackageInstallReleaseExecuteRequest,
+    PackageInstallReleasePreviewRequest, PackageReleaseReference,
+    PackageUpdaterInvocationAcknowledgement, PackageUpdaterReceiptSubmission,
     SavedViewMutationRequest, SignedFleetCheckIn, ValidateContract,
 };
-use fleet_hub::{FleetApi, FleetHub, FleetHubSnapshot, HubPolicy, KioskShowControlsPreviewPlan};
+use fleet_hub::{
+    FleetApi, FleetHub, FleetHubSnapshot, HubPolicy, KioskShowControlsPreviewPlan,
+    PackageInstallReleasePreviewPlan,
+};
 use fleet_kiosk_adapter::{
     AdapterError, FleetKioskAdapter, HttpMethod, KioskAdapterLimits, KioskHttpRequest,
     KioskHttpResponse, KioskShowControlsRequest, KioskTransport, RawOwnerReceiptEvidence,
@@ -33,8 +39,10 @@ use fleet_kiosk_adapter::{
 };
 use fleet_manifold_adapter::{
     FleetManifoldAdapter, FleetManifoldAdapterSnapshot, KioskShowControlsCommandAuthorization,
-    kiosk_manifold_request_id,
+    PackageInstallReleaseCommandAuthorization, kiosk_manifold_request_id,
+    package_manifold_request_id,
 };
+use fleet_package_updater_adapter::{PackageUpdaterAdapterLimits, PackageUpdaterOwnerAdapter};
 use rusty_manifold_model::{DottedId, SchemaId};
 use rusty_manifold_peer::{
     ManifoldPeerCredentialRecord, ManifoldPeerCredentialStatus, ManifoldPeerEnrollmentAction,
@@ -64,6 +72,8 @@ const BODY_DEADLINE: Duration = Duration::from_secs(5);
 const OPERATION_PREVIEW_LIFETIME_MS: i64 = 60_000;
 const DEFAULT_OPERATION_PARALLELISM: u16 = 8;
 const DEFAULT_OPERATION_ATTEMPTS: u8 = 3;
+const PACKAGE_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
+const DEFAULT_PACKAGE_OPERATION_PARALLELISM: u16 = 8;
 
 static OPERATION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TRANSPORT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -213,6 +223,7 @@ struct RuntimeState {
     kiosk_direct_operators: BTreeMap<String, ConfiguredKioskDirectOperator>,
     owner_receipts: BTreeMap<String, RawOwnerReceiptEvidence>,
     inflight_kiosk_targets: BTreeSet<(String, String)>,
+    package_updater_adapter: PackageUpdaterOwnerAdapter,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -468,6 +479,22 @@ fn restore_state_candidate(
             }
         }
     }
+    for operation in restored_hub.package_operations() {
+        for target in operation.targets {
+            if let Some(invocation) = target.invocation
+                && !restored_adapter.has_applied_package_authorization(
+                    &operation.operation_id,
+                    &target.device_id,
+                    &invocation.owner_action_request_id,
+                )
+            {
+                return Err(format!(
+                    "package operation {} target {} lacks applied Manifold authority",
+                    operation.operation_id, target.device_id
+                ));
+            }
+        }
+    }
     for operation in restored_hub.kiosk_operations() {
         for target in operation.targets {
             if let Some(receipt) = target.effective_receipt {
@@ -576,6 +603,10 @@ impl LocalHubState {
                 kiosk_direct_operators,
                 owner_receipts,
                 inflight_kiosk_targets: BTreeSet::new(),
+                package_updater_adapter: PackageUpdaterOwnerAdapter::new(
+                    PackageUpdaterAdapterLimits::default(),
+                )
+                .map_err(|error| format!("invalid package updater adapter limits: {error}"))?,
             })),
         })
     }
@@ -630,6 +661,31 @@ impl From<StrictOperationPreviewRequest> for OperationPreviewRequest {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictPackageInstallReleasePreviewRequest {
+    schema: String,
+    action_id: String,
+    release: PackageReleaseReference,
+    expected_package_name: String,
+    expected_rollout_ring: String,
+    #[serde(deserialize_with = "deserialize_unique_targets")]
+    targets: BTreeMap<String, u64>,
+}
+
+impl From<StrictPackageInstallReleasePreviewRequest> for PackageInstallReleasePreviewRequest {
+    fn from(value: StrictPackageInstallReleasePreviewRequest) -> Self {
+        Self {
+            schema: value.schema,
+            action_id: value.action_id,
+            release: value.release,
+            expected_package_name: value.expected_package_name,
+            expected_rollout_ring: value.expected_rollout_ring,
+            targets: value.targets,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct OwnerWork {
     request: KioskShowControlsRequest,
@@ -654,6 +710,26 @@ pub fn router(state: LocalHubState) -> Router {
             post(execute_operation),
         )
         .route("/fleet/v1/operations/{operation_id}", get(operation_status))
+        .route(
+            "/fleet/v1/package-install-releases/preview",
+            post(preview_package_install_release),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/execute",
+            post(execute_package_install_release),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/acknowledgements",
+            post(acknowledge_package_install_release),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/receipts",
+            post(apply_package_install_release_receipt),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}",
+            get(package_install_release_status),
+        )
         .route("/fleet/v1/saved-views", get(saved_views))
         .route(
             "/fleet/v1/saved-views/{view_id}",
@@ -1136,6 +1212,419 @@ async fn operation_status(
     }
 }
 
+async fn preview_package_install_release(
+    State(state): State<LocalHubState>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "package operation previews").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let request = match serde_json::from_slice::<StrictPackageInstallReleasePreviewRequest>(&bytes)
+    {
+        Ok(value) => PackageInstallReleasePreviewRequest::from(value),
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_operation_preview_json",
+                format!("package operation preview is not valid strict JSON: {error}"),
+            );
+        }
+    };
+    if let Err(failures) = request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_package_operation_preview",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    if let Some(existing) = runtime
+        .hub
+        .package_operations()
+        .into_iter()
+        .find(|operation| {
+            operation.preview.fleet_revision == runtime.hub.result_revision()
+                && operation.preview.expires_at_ms >= now_ms
+                && operation.preview.release == request.release
+                && operation.preview.expected_package_name == request.expected_package_name
+                && operation.preview.expected_rollout_ring == request.expected_rollout_ring
+                && operation
+                    .preview
+                    .targets
+                    .iter()
+                    .map(|target| (target.device_id.clone(), target.identity_revision))
+                    .collect::<BTreeMap<_, _>>()
+                    == request.targets
+        })
+    {
+        return Json(existing).into_response();
+    }
+    let expires_at_ms = match now_ms.checked_add(PACKAGE_OPERATION_PREVIEW_LIFETIME_MS) {
+        Some(value) => value,
+        None => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "package operation preview expiry overflowed",
+            );
+        }
+    };
+    let (operation_id, preview_id) = package_operation_ids(&request, now_ms);
+    let mut candidate_hub = runtime.hub.clone();
+    let operation =
+        match candidate_hub.preview_package_install_release(PackageInstallReleasePreviewPlan {
+            operation_id,
+            preview_id,
+            request,
+            created_at_ms: now_ms,
+            expires_at_ms,
+            max_parallelism: DEFAULT_PACKAGE_OPERATION_PARALLELISM,
+        }) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(operation).into_response()
+}
+
+async fn execute_package_install_release(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "package operation execution").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let execute = match serde_json::from_slice::<PackageInstallReleaseExecuteRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_operation_execute_json",
+                format!("package operation execution is not valid JSON: {error}"),
+            );
+        }
+    };
+    if execute.schema != PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA
+        || operation_id != execute.operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_identity_mismatch",
+            "package operation path, schema, and payload identity must match",
+        );
+    }
+    if let Err(failures) = execute.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_package_operation_execute",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let now_unsigned = match u64::try_from(now_ms) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "current time must be nonnegative",
+            );
+        }
+    };
+    let mut runtime = state.runtime.lock().await;
+    let existing = match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    if existing.preview.preview_id != execute.preview_id {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_operation_preview_conflict",
+            "execute request does not bind the stored immutable package preview",
+        );
+    }
+    if existing.lifecycle != CommandLifecycle::Proposed {
+        return Json(existing).into_response();
+    }
+    let eligible_devices = existing
+        .targets
+        .iter()
+        .filter(|target| target.preflight.eligible)
+        .map(|target| target.device_id.clone())
+        .collect::<Vec<_>>();
+    if eligible_devices.is_empty() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_has_no_eligible_targets",
+            "the immutable preview contains no eligible package-updater targets",
+        );
+    }
+    let mut candidate_hub = runtime.hub.clone();
+    let mut candidate_adapter = runtime.adapter.clone();
+    let mut operation = match candidate_hub.confirm_package_install_release(
+        &operation_id,
+        &execute.preview_id,
+        now_ms,
+    ) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let expires_unsigned = match u64::try_from(operation.preview.expires_at_ms) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_operation_expiry_invalid",
+                "package operation expiry is not representable",
+            );
+        }
+    };
+    for device_id in eligible_devices {
+        let Some(target) = operation
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+        else {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "package_operation_target_missing",
+                "confirmed package operation omitted a frozen target",
+            );
+        };
+        let owner_action_request_id =
+            package_owner_action_request_id(&operation.operation_id, &device_id);
+        let manifold_request_id = package_manifold_request_id(
+            &operation.operation_id,
+            &device_id,
+            &owner_action_request_id,
+        );
+        if let Err(error) = candidate_adapter.authorize_package_install_release(
+            &PackageInstallReleaseCommandAuthorization {
+                manifold_request_id,
+                owner_action_request_id: owner_action_request_id.clone(),
+                requester_id: "operator.fleet.local".to_owned(),
+                operation_id: operation.operation_id.clone(),
+                preview_id: operation.preview.preview_id.clone(),
+                device_id: device_id.clone(),
+                identity_revision: target.identity_revision,
+                release: operation.preview.release.clone(),
+                expected_package_name: operation.preview.expected_package_name.clone(),
+                expected_rollout_ring: operation.preview.expected_rollout_ring.clone(),
+                issued_at_ms: now_unsigned,
+                expires_at_ms: expires_unsigned,
+            },
+            now_unsigned,
+        ) {
+            return api_error(StatusCode::CONFLICT, "manifold_command_rejected", error);
+        }
+        operation = match candidate_hub.prepare_package_install_release_invocation(
+            &operation.operation_id,
+            &device_id,
+            owner_action_request_id,
+            now_ms,
+        ) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+        let Some(invocation) = operation
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+            .and_then(|target| target.invocation.clone())
+        else {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "package_invocation_missing",
+                "package dispatch preparation omitted its exact owner invocation",
+            );
+        };
+        if let Err(error) = runtime
+            .package_updater_adapter
+            .prepare_invocation(invocation, now_ms)
+        {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_invocation_invalid",
+                error.to_string(),
+            );
+        }
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) =
+        state_store.persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+    {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    *adapter = candidate_adapter;
+    Json(operation).into_response()
+}
+
+async fn acknowledge_package_install_release(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes = match strict_json_body(
+        request,
+        MAX_OPERATION_BYTES,
+        "package updater acknowledgement",
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let acknowledgement =
+        match serde_json::from_slice::<PackageUpdaterInvocationAcknowledgement>(&bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_package_acknowledgement_json",
+                    format!("package updater acknowledgement is not valid JSON: {error}"),
+                );
+            }
+        };
+    if operation_id != acknowledgement.operation_id {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_identity_mismatch",
+            "package operation path and acknowledgement identity must match",
+        );
+    }
+    let runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let binding_exists = operation.targets.iter().any(|target| {
+        target.device_id == acknowledgement.device_id
+            && target.invocation.as_ref().is_some_and(|invocation| {
+                invocation.owner_action_request_id == acknowledgement.owner_action_request_id
+            })
+    });
+    if !binding_exists {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_acknowledgement_binding_mismatch",
+            "acknowledgement does not bind a prepared package invocation",
+        );
+    }
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "package_owner_authenticated_ingress_unavailable",
+        "Fleet will not admit an updater acknowledgement until an authenticated owner transport verifies it",
+    )
+}
+
+async fn apply_package_install_release_receipt(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "package updater receipt").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let submission = match serde_json::from_slice::<PackageUpdaterReceiptSubmission>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_receipt_json",
+                format!("package updater receipt is not valid JSON: {error}"),
+            );
+        }
+    };
+    if let Err(failures) = submission.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_package_receipt_submission",
+            format_contract_failures(&failures),
+        );
+    }
+    if operation_id != submission.effective_receipt.operation_id {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_identity_mismatch",
+            "package operation path and receipt identity must match",
+        );
+    }
+    let runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let binding_exists = operation.targets.iter().any(|target| {
+        target.device_id == submission.effective_receipt.device_id
+            && target.invocation.as_ref().is_some_and(|invocation| {
+                invocation.owner_action_request_id
+                    == submission.effective_receipt.owner_action_request_id
+            })
+    });
+    if !binding_exists {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_receipt_binding_mismatch",
+            "receipt does not bind a prepared package invocation",
+        );
+    }
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "package_owner_authenticated_ingress_unavailable",
+        "Fleet will not mark package work Applied until an authenticated updater transport provides raw owner evidence",
+    )
+}
+
+async fn package_install_release_status(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => Json(operation).into_response(),
+        Err(error) => hub_operation_error(error),
+    }
+}
+
 async fn summary(State(state): State<LocalHubState>) -> Response {
     let now_ms = match unix_time_ms() {
         Ok(value) => value,
@@ -1404,6 +1893,32 @@ fn operation_ids(request: &OperationPreviewRequest, now_ms: i64) -> (String, Str
     )
 }
 
+fn package_operation_ids(
+    request: &PackageInstallReleasePreviewRequest,
+    now_ms: i64,
+) -> (String, String) {
+    let sequence = OPERATION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.package.operation.v1\0");
+    digest.update(serde_json::to_vec(request).unwrap_or_default());
+    digest.update(now_ms.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    let suffix = hex::encode(digest.finalize());
+    (
+        format!("package-operation-{}", &suffix[..32]),
+        format!("package-preview-{}", &suffix[32..64]),
+    )
+}
+
+fn package_owner_action_request_id(operation_id: &str, device_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.package.owner-action.v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(device_id.as_bytes());
+    format!("fleetpkg-{}", &hex::encode(digest.finalize())[..32])
+}
+
 fn owner_action_request_id(operation_id: &str, device_id: &str, attempt: u8) -> String {
     let mut digest = Sha256::new();
     digest.update(b"rusty.fleet.kiosk.owner-action.v1\0");
@@ -1437,11 +1952,19 @@ fn hub_operation_error(error: fleet_hub::HubError) -> Response {
         "kiosk_operation_not_found" | "kiosk_target_not_found" => {
             (StatusCode::NOT_FOUND, "operation_not_found")
         }
+        "package_operation_not_found" | "package_target_not_found" => {
+            (StatusCode::NOT_FOUND, "operation_not_found")
+        }
         "kiosk_preview_mismatch"
         | "kiosk_operation_id_conflict"
         | "kiosk_preview_expired"
         | "kiosk_target_changed_since_preview"
-        | "kiosk_target_identity_changed" => (StatusCode::CONFLICT, "operation_conflict"),
+        | "kiosk_target_identity_changed"
+        | "package_preview_mismatch"
+        | "package_operation_id_conflict"
+        | "package_preview_expired"
+        | "package_target_changed_since_preview"
+        | "package_target_identity_changed" => (StatusCode::CONFLICT, "operation_conflict"),
         _ => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation"),
     };
     api_error(status, code, error.to_string())
@@ -2690,6 +3213,200 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn package_routes_persist_dispatch_ready_and_reject_untrusted_owner_evidence() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[11_u8; 32]);
+        let (config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
+        let app = router(state.clone());
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let identity_revision = signed.claims.observation.identity.identity_revision;
+        let accepted = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let preview_request = serde_json::json!({
+            "schema": "rusty.fleet.package_install_release_preview_request.v1",
+            "action_id": "packages.install-release",
+            "release": {
+                "kind": "manifest_url",
+                "manifest_url": "https://updates.example.invalid/alpha/envelope.json"
+            },
+            "expected_package_name": "io.github.mesmerprism.rustykiosk",
+            "expected_rollout_ring": "alpha",
+            "targets": {"device.quest.1": identity_revision}
+        });
+        let preview = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/package-install-releases/preview",
+                serde_json::to_vec(&preview_request).expect("preview JSON"),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(preview.status(), StatusCode::OK);
+        let preview_json: Value = serde_json::from_slice(
+            &to_bytes(preview.into_body(), 256 * 1024)
+                .await
+                .expect("preview body"),
+        )
+        .expect("preview JSON");
+        assert_eq!(preview_json["lifecycle"], "proposed");
+        assert_eq!(preview_json["targets"][0]["stage"], "preview_ready");
+
+        let operation_id = preview_json["operation_id"]
+            .as_str()
+            .expect("operation ID")
+            .to_owned();
+        let preview_id = preview_json["preview"]["preview_id"]
+            .as_str()
+            .expect("preview ID")
+            .to_owned();
+        let execute_request = serde_json::json!({
+            "schema": "rusty.fleet.package_install_release_execute_request.v1",
+            "operation_id": operation_id,
+            "preview_id": preview_id
+        });
+        let execute = app
+            .clone()
+            .oneshot(json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/execute"),
+                serde_json::to_vec(&execute_request).expect("execute JSON"),
+            ))
+            .await
+            .expect("execute response");
+        assert_eq!(execute.status(), StatusCode::OK);
+        let execute_json: Value = serde_json::from_slice(
+            &to_bytes(execute.into_body(), 256 * 1024)
+                .await
+                .expect("execute body"),
+        )
+        .expect("execute JSON");
+        assert_eq!(execute_json["lifecycle"], "accepted");
+        assert_eq!(execute_json["targets"][0]["stage"], "dispatch_ready");
+        assert!(
+            execute_json["targets"][0]["invocation"]
+                .as_object()
+                .is_some()
+        );
+        let owner_action_request_id =
+            execute_json["targets"][0]["invocation"]["owner_action_request_id"]
+                .as_str()
+                .expect("owner request")
+                .to_owned();
+
+        let acknowledgement = serde_json::json!({
+            "schema": "rusty.fleet.package_updater_invocation_acknowledgement.v1",
+            "operation_id": operation_id,
+            "device_id": "device.quest.1",
+            "owner_action_request_id": owner_action_request_id,
+            "accepted": true,
+            "code": "accepted",
+            "acknowledged_at_ms": now_ms + 2
+        });
+        let rejected = app
+            .clone()
+            .oneshot(json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/acknowledgements"),
+                serde_json::to_vec(&acknowledgement).expect("acknowledgement JSON"),
+            ))
+            .await
+            .expect("acknowledgement response");
+        assert_eq!(rejected.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let receipt = serde_json::json!({
+            "schema": "rusty.fleet.package_updater_receipt_submission.v1",
+            "effective_receipt": {
+                "schema": "rusty.fleet.package_updater_effective_receipt.v1",
+                "operation_id": operation_id,
+                "device_id": "device.quest.1",
+                "identity_revision": identity_revision,
+                "owner_action_request_id": owner_action_request_id,
+                "updater_receipt": {
+                    "schema": "rusty.quest.package_update_receipt.v1",
+                    "stage": "install_commit",
+                    "decision": "accepted",
+                    "code": "installed",
+                    "observed_at_ms": now_ms + 2,
+                    "envelope_sha256": format!("sha256:{}", "b".repeat(64)),
+                    "signed_manifest_sha256": digest,
+                    "key_id": "release-key-1",
+                    "manifest_id": "release-15",
+                    "package_name": "io.github.mesmerprism.rustykiosk",
+                    "rollout_ring": "alpha",
+                    "sequence": 15,
+                    "version_code": 15,
+                    "prior_checkpoint": null,
+                    "accepted_checkpoint": {
+                        "package_name": "io.github.mesmerprism.rustykiosk",
+                        "rollout_ring": "alpha",
+                        "sequence": 15,
+                        "version_code": 15,
+                        "signed_manifest_sha256": digest
+                    },
+                    "state_changed": true
+                },
+                "wrapped_at_ms": now_ms + 2
+            }
+        });
+        let rejected_receipt = app
+            .clone()
+            .oneshot(json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/receipts"),
+                serde_json::to_vec(&receipt).expect("receipt JSON"),
+            ))
+            .await
+            .expect("receipt response");
+        assert_eq!(rejected_receipt.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/fleet/v1/package-install-releases/{operation_id}"))
+                    .body(Body::empty())
+                    .expect("status request"),
+            )
+            .await
+            .expect("status response");
+        let status_json: Value = serde_json::from_slice(
+            &to_bytes(status.into_body(), 256 * 1024)
+                .await
+                .expect("status body"),
+        )
+        .expect("status JSON");
+        assert_eq!(status_json["lifecycle"], "accepted");
+        assert_eq!(status_json["targets"][0]["stage"], "dispatch_ready");
+        drop(app);
+        drop(state);
+
+        let restored =
+            LocalHubState::from_config(&config, now_ms + 3).expect("restore package operation");
+        let restored_operation = restored
+            .runtime
+            .lock()
+            .await
+            .hub
+            .package_operation(&operation_id)
+            .expect("restored package operation");
+        assert_eq!(restored_operation.lifecycle, CommandLifecycle::Accepted);
+        assert_eq!(
+            serde_json::to_value(restored_operation.targets[0].stage).expect("stage JSON"),
+            serde_json::json!("dispatch_ready")
+        );
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
     async fn startup_resumes_durable_accepted_targets_without_reconfirmation() {
         let now_ms = unix_time_ms().expect("current time");
         let signing_key = SigningKey::from_bytes(&[10_u8; 32]);
@@ -2964,6 +3681,23 @@ mod tests {
                 observed_at_ms: now_ms,
                 fresh_until_ms: now_ms + 60_000,
                 owner: "rusty-kiosk".to_owned(),
+                reason: "owner_ready".to_owned(),
+                extensions: BTreeMap::new(),
+            },
+        );
+        observation.capabilities.capabilities.insert(
+            "rusty-quest.package-updater".to_owned(),
+            CapabilityState {
+                capability_id: "rusty-quest.package-updater".to_owned(),
+                support: SupportState::Supported,
+                enablement: EnablementState::Enabled,
+                authorization: AuthorizationState::Authorized,
+                reachability: ReachabilityState::Reachable,
+                freshness: FreshnessState::Current,
+                evidence_revision: revision,
+                observed_at_ms: now_ms,
+                fresh_until_ms: now_ms + 60_000,
+                owner: "rusty-quest".to_owned(),
                 reason: "owner_ready".to_owned(),
                 extensions: BTreeMap::new(),
             },

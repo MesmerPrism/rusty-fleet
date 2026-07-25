@@ -248,6 +248,23 @@ preflight. Aggregate counts are navigation into the per-target ledger, never a
 replacement for it. Retry and cancellation create explicit lineage, and
 cleanup remains a separate terminal dimension.
 
+### Package install/release checkpoint
+
+The additive `packages.install-release` surface freezes a signed release
+reference, expected package/ring, exact identities, and the pinned Rusty Quest
+attended-updater contract. Fleet confirmation authorizes and durably prepares
+one invocation per eligible target. Preparation is `accepted` /
+`dispatch_ready`; it is neither transport dispatch nor application and does
+not consume the future owner-delivery parallelism budget.
+
+Authenticated package-owner ingress is not present. Public local-operator
+acknowledgement and receipt routes fail with HTTP 501 and never mutate Hub
+state. The production Hub exposes no plain-struct transition into
+`dispatched`, `running`, or `applied`. A future owner ingress must verify raw
+transport authentication before admitting acknowledgement evidence, enforce
+the frozen delivery parallelism, and require the exact Rusty Quest
+`install_commit` installed-version receipt before application.
+
 ## Kiosk and foreground control
 
 No-ADB control is limited to participating applications and explicitly granted

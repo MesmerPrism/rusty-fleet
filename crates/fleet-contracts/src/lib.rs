@@ -10,6 +10,7 @@ mod command;
 mod condition;
 mod identity;
 mod kiosk;
+mod packages;
 mod projection;
 mod query;
 mod stream;
@@ -42,6 +43,19 @@ pub use kiosk::{
     KioskShowControlsPreview, KioskShowControlsTargetLedger, KioskShowControlsTargetPreflight,
     OPERATION_EXECUTE_REQUEST_SCHEMA, OPERATION_PREVIEW_REQUEST_SCHEMA, OperationExecuteRequest,
     OperationPreviewRequest,
+};
+pub use packages::{
+    PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_INSTALL_PREVIEW_REQUEST_SCHEMA,
+    PACKAGE_UPDATE_MANIFEST_ENVELOPE_SCHEMA, PACKAGE_UPDATE_RECEIPT_SCHEMA,
+    PACKAGE_UPDATER_ACK_SCHEMA, PACKAGE_UPDATER_CAPABILITY_ID, PACKAGE_UPDATER_OWNER,
+    PACKAGE_UPDATER_RECEIPT_SUBMISSION_SCHEMA, PACKAGES_INSTALL_RELEASE_ACTION_ID,
+    PackageInstallReleaseExecuteRequest, PackageInstallReleaseOperation,
+    PackageInstallReleasePreview, PackageInstallReleasePreviewRequest, PackageInstallStage,
+    PackageInstallTargetLedger, PackageInstallTargetPreflight, PackageReleaseReference,
+    PackageUpdateCheckpoint, PackageUpdateReceipt, PackageUpdateReceiptDecision,
+    PackageUpdateReceiptStage, PackageUpdaterEffectiveReceipt, PackageUpdaterInvocation,
+    PackageUpdaterInvocationAcknowledgement, PackageUpdaterOwnerContractBinding,
+    PackageUpdaterReceiptSubmission,
 };
 pub use projection::{
     DeviceDetailProjection, DeviceInspectorProjection, DeviceRowProjection, FleetQueryResult,

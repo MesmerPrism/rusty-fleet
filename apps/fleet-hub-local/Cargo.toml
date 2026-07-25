@@ -13,6 +13,7 @@ fleet-contracts = { path = "../../crates/fleet-contracts" }
 fleet-hub = { path = "../../crates/fleet-hub" }
 fleet-kiosk-adapter = { path = "../../crates/fleet-kiosk-adapter" }
 fleet-manifold-adapter = { path = "../../crates/fleet-manifold-adapter" }
+fleet-package-updater-adapter = { path = "../../crates/fleet-package-updater-adapter" }
 hex.workspace = true
 rusty-manifold-model.workspace = true
 rusty-manifold-peer.workspace = true

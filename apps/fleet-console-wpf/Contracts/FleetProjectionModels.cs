@@ -590,6 +590,220 @@ public sealed class KioskEffectiveReceipt
     public long WrappedAtMs { get; init; }
 }
 
+public static class PackageOperationActions
+{
+    public const string InstallRelease = "packages.install-release";
+}
+
+public sealed class PackageReleaseReference
+{
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = string.Empty;
+
+    [JsonPropertyName("manifest_url")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ManifestUrl { get; init; }
+
+    [JsonPropertyName("release_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReleaseId { get; init; }
+}
+
+public sealed class PackageInstallReleasePreviewRequest
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } =
+        "rusty.fleet.package_install_release_preview_request.v1";
+
+    [JsonPropertyName("action_id")]
+    public string ActionId { get; init; } = PackageOperationActions.InstallRelease;
+
+    [JsonPropertyName("release")]
+    public PackageReleaseReference Release { get; init; } = new();
+
+    [JsonPropertyName("expected_package_name")]
+    public string ExpectedPackageName { get; init; } = string.Empty;
+
+    [JsonPropertyName("expected_rollout_ring")]
+    public string ExpectedRolloutRing { get; init; } = string.Empty;
+
+    [JsonPropertyName("targets")]
+    public IReadOnlyDictionary<string, ulong> Targets { get; init; } =
+        new SortedDictionary<string, ulong>(StringComparer.Ordinal);
+}
+
+public sealed class PackageInstallReleaseExecuteRequest
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } =
+        "rusty.fleet.package_install_release_execute_request.v1";
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("preview_id")]
+    public string PreviewId { get; init; } = string.Empty;
+}
+
+public sealed class PackageUpdaterOwnerContractBinding
+{
+    [JsonPropertyName("owner_repo_id")]
+    public string OwnerRepoId { get; init; } = string.Empty;
+
+    [JsonPropertyName("capability_id")]
+    public string CapabilityId { get; init; } = string.Empty;
+
+    [JsonPropertyName("manifest_envelope_schema")]
+    public string ManifestEnvelopeSchema { get; init; } = string.Empty;
+
+    [JsonPropertyName("receipt_schema")]
+    public string ReceiptSchema { get; init; } = string.Empty;
+
+    [JsonPropertyName("install_mode")]
+    public string InstallMode { get; init; } = string.Empty;
+
+    [JsonPropertyName("application_proof")]
+    public string ApplicationProof { get; init; } = string.Empty;
+}
+
+public sealed class PackageInstallReleasePreview
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("preview_id")]
+    public string PreviewId { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("action_id")]
+    public string ActionId { get; init; } = string.Empty;
+
+    [JsonPropertyName("created_at_ms")]
+    public long CreatedAtMs { get; init; }
+
+    [JsonPropertyName("expires_at_ms")]
+    public long ExpiresAtMs { get; init; }
+
+    [JsonPropertyName("fleet_revision")]
+    public ulong FleetRevision { get; init; }
+
+    [JsonPropertyName("release")]
+    public PackageReleaseReference Release { get; init; } = new();
+
+    [JsonPropertyName("expected_package_name")]
+    public string ExpectedPackageName { get; init; } = string.Empty;
+
+    [JsonPropertyName("expected_rollout_ring")]
+    public string ExpectedRolloutRing { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_contract")]
+    public PackageUpdaterOwnerContractBinding OwnerContract { get; init; } = new();
+
+    [JsonPropertyName("targets")]
+    public IReadOnlyList<OperationTargetPreflight> Targets { get; init; } = [];
+}
+
+public sealed class PackageUpdaterInvocation
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("preview_id")]
+    public string PreviewId { get; init; } = string.Empty;
+
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; init; } = string.Empty;
+
+    [JsonPropertyName("identity_revision")]
+    public ulong IdentityRevision { get; init; }
+
+    [JsonPropertyName("owner_action_request_id")]
+    public string OwnerActionRequestId { get; init; } = string.Empty;
+
+    [JsonPropertyName("release")]
+    public PackageReleaseReference Release { get; init; } = new();
+
+    [JsonPropertyName("expected_package_name")]
+    public string ExpectedPackageName { get; init; } = string.Empty;
+
+    [JsonPropertyName("expected_rollout_ring")]
+    public string ExpectedRolloutRing { get; init; } = string.Empty;
+
+    [JsonPropertyName("expires_at_ms")]
+    public long ExpiresAtMs { get; init; }
+}
+
+public sealed class PackageInstallTargetLedger
+{
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; init; } = string.Empty;
+
+    [JsonPropertyName("identity_revision")]
+    public ulong IdentityRevision { get; init; }
+
+    [JsonPropertyName("preflight")]
+    public OperationTargetPreflight Preflight { get; init; } = new();
+
+    [JsonPropertyName("lifecycle")]
+    public string Lifecycle { get; init; } = string.Empty;
+
+    [JsonPropertyName("stage")]
+    public string Stage { get; init; } = string.Empty;
+
+    [JsonPropertyName("invocation")]
+    public PackageUpdaterInvocation? Invocation { get; init; }
+
+    [JsonPropertyName("invocation_acknowledgement")]
+    public JsonElement? InvocationAcknowledgement { get; init; }
+
+    [JsonPropertyName("effective_receipt")]
+    public JsonElement? EffectiveReceipt { get; init; }
+
+    [JsonPropertyName("reason_code")]
+    public string ReasonCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("last_transition_ms")]
+    public long LastTransitionMs { get; init; }
+}
+
+public sealed class PackageInstallReleaseOperation
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("action_id")]
+    public string ActionId { get; init; } = string.Empty;
+
+    [JsonPropertyName("created_at_ms")]
+    public long CreatedAtMs { get; init; }
+
+    [JsonPropertyName("preview")]
+    public PackageInstallReleasePreview Preview { get; init; } = new();
+
+    [JsonPropertyName("lifecycle")]
+    public string Lifecycle { get; init; } = string.Empty;
+
+    [JsonPropertyName("max_parallelism")]
+    public ushort MaxParallelism { get; init; }
+
+    [JsonPropertyName("cleanup_required")]
+    public bool CleanupRequired { get; init; }
+
+    [JsonPropertyName("targets")]
+    public IReadOnlyList<PackageInstallTargetLedger> Targets { get; init; } = [];
+}
+
 public sealed class FleetSummaryProjection
 {
     [JsonPropertyName("schema")]

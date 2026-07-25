@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use fleet_contracts::{
     KIOSK_SHOW_CONTROLS_ACTION_ID, KioskShowControlsOperation, OPERATION_EXECUTE_REQUEST_SCHEMA,
     OPERATION_PREVIEW_REQUEST_SCHEMA, OperationExecuteRequest, OperationPreviewRequest,
-    ValidateContract,
+    PackageInstallReleaseExecuteRequest, PackageInstallReleasePreviewRequest, ValidateContract,
 };
 
 use crate::CliFailure;
@@ -27,12 +27,47 @@ pub trait FleetOperationClient {
     ) -> Result<serde_json::Value, CliFailure>;
 
     fn get_operation(&mut self, operation_id: &str) -> Result<serde_json::Value, CliFailure>;
+
+    fn preview_package_install_release(
+        &mut self,
+        _request: &PackageInstallReleasePreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_operation_client_required",
+            "the injected Fleet client does not support package operations",
+        ))
+    }
+
+    fn execute_package_install_release(
+        &mut self,
+        _request: &PackageInstallReleaseExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_operation_client_required",
+            "the injected Fleet client does not support package operations",
+        ))
+    }
+
+    fn get_package_install_release(
+        &mut self,
+        _operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_operation_client_required",
+            "the injected Fleet client does not support package operations",
+        ))
+    }
 }
 
 pub fn is_operation_command(command: &str) -> bool {
     matches!(
         command,
-        "operation-preview" | "operation-execute" | "operation-get"
+        "operation-preview"
+            | "operation-execute"
+            | "operation-get"
+            | "package-preview"
+            | "package-execute"
+            | "package-get"
     )
 }
 
@@ -161,7 +196,7 @@ fn get<C: FleetOperationClient + ?Sized>(
     Ok(raw)
 }
 
-fn parse_target(target: &str) -> Result<(String, u64), CliFailure> {
+pub(crate) fn parse_target(target: &str) -> Result<(String, u64), CliFailure> {
     let (device_id, revision) = target.rsplit_once('@').ok_or_else(|| {
         CliFailure::new(
             "invalid_target",
@@ -189,7 +224,7 @@ fn parse_target(target: &str) -> Result<(String, u64), CliFailure> {
     Ok((device_id.to_owned(), identity_revision))
 }
 
-fn validate_identifier(value: &str, name: &str) -> Result<(), CliFailure> {
+pub(crate) fn validate_identifier(value: &str, name: &str) -> Result<(), CliFailure> {
     if value.is_empty() || value.len() > 256 {
         return Err(CliFailure::new(
             "invalid_identifier",
@@ -199,7 +234,10 @@ fn validate_identifier(value: &str, name: &str) -> Result<(), CliFailure> {
     Ok(())
 }
 
-fn validate_request<T: ValidateContract>(request: &T, code: &str) -> Result<(), CliFailure> {
+pub(crate) fn validate_request<T: ValidateContract>(
+    request: &T,
+    code: &str,
+) -> Result<(), CliFailure> {
     request.validate().map_err(|failures| {
         CliFailure::new(
             code,
@@ -235,7 +273,7 @@ fn preview_targets(operation: &KioskShowControlsOperation) -> BTreeMap<String, u
         .collect()
 }
 
-fn violation_summary(failures: &[fleet_contracts::ContractViolation]) -> String {
+pub(crate) fn violation_summary(failures: &[fleet_contracts::ContractViolation]) -> String {
     failures
         .iter()
         .map(|failure| format!("{}@{}", failure.code, failure.path))

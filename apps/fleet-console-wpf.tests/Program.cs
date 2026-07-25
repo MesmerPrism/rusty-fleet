@@ -61,6 +61,42 @@ internal static class Program
             Require(
                 damagedKioskOperationRejected,
                 "damaged Rust-owned Kiosk show-controls fixture was accepted");
+            var packageOperationFixture =
+                JsonSerializer.Deserialize<PackageInstallReleaseOperation>(
+                    File.ReadAllText(
+                        Path.Combine(
+                            repoRoot,
+                            "fixtures",
+                            "contracts",
+                            "package-install-release-operation.valid.json")),
+                    FleetJson.Options) ?? throw new JsonException(
+                    "Package install/release operation fixture was empty.");
+            FleetProjectionValidation.ValidatePackageInstallReleaseOperation(
+                packageOperationFixture);
+            var damagedPackageOperationRejected = false;
+            try
+            {
+                var damagedPackageOperation =
+                    JsonSerializer.Deserialize<PackageInstallReleaseOperation>(
+                        File.ReadAllText(
+                            Path.Combine(
+                                repoRoot,
+                                "fixtures",
+                                "contracts",
+                                "package-install-release-operation.damaged.json")),
+                        FleetJson.Options) ?? throw new JsonException(
+                        "Damaged package install/release operation fixture was empty.");
+                FleetProjectionValidation.ValidatePackageInstallReleaseOperation(
+                    damagedPackageOperation);
+            }
+            catch (InvalidOperationException)
+            {
+                damagedPackageOperationRejected = true;
+            }
+
+            Require(
+                damagedPackageOperationRejected,
+                "damaged Rust-owned package install/release fixture was accepted");
             var json = RunFleetctl(
                 repoRoot,
                 "operator-fixture",
@@ -516,6 +552,103 @@ internal static class Program
                     StringComparison.Ordinal),
                 "mismatched operation evidence did not fail closed");
 
+            operationWorkspace.PackageManifestUrl =
+                "https://updates.example.invalid/alpha/envelope.json";
+            operationWorkspace.PackageName = "org.example.kiosk";
+            operationWorkspace.PackageRolloutRing = "alpha";
+            operationWorkspace.PreviewPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            var packagePreview = operationWorkspace.CurrentPackageOperation ??
+                                 throw new InvalidOperationException(
+                                     "package install/release preview was not projected");
+            Require(
+                operationSource.LastPackagePreviewRequest is { } packagePreviewRequest &&
+                packagePreviewRequest.Release.Kind == "manifest_url" &&
+                packagePreviewRequest.Release.ManifestUrl ==
+                operationWorkspace.PackageManifestUrl &&
+                packagePreviewRequest.ExpectedPackageName ==
+                operationWorkspace.PackageName &&
+                packagePreviewRequest.ExpectedRolloutRing ==
+                operationWorkspace.PackageRolloutRing &&
+                packagePreviewRequest.Targets.Count == 2 &&
+                packagePreviewRequest.Targets[operationFirst.DeviceId] ==
+                operationFirst.Projection.Identity.IdentityRevision &&
+                packagePreviewRequest.Targets[operationSecond.DeviceId] ==
+                operationSecond.Projection.Identity.IdentityRevision,
+                "package preview did not bind the exact signed release and target identities");
+            Require(
+                operationWorkspace.IsPackageInputLocked &&
+                operationWorkspace.PackageOperationSummaryText.Contains(
+                    operationWorkspace.PackageManifestUrl,
+                    StringComparison.Ordinal) &&
+                operationWorkspace.PackageOperationSummaryText.Contains(
+                    $"package {operationWorkspace.PackageName}",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.PackageOperationSummaryText.Contains(
+                    $"ring {operationWorkspace.PackageRolloutRing}",
+                    StringComparison.Ordinal),
+                "active package preview did not visibly lock and summarize its immutable release binding");
+            Require(
+                packagePreview.Targets.All(target =>
+                    target.Lifecycle == "proposed" &&
+                    target.Stage == "preview_ready" &&
+                    target.Invocation is null &&
+                    target.InvocationAcknowledgement is null &&
+                    target.EffectiveReceipt is null),
+                "package preview claimed owner delivery evidence");
+
+            operationWorkspace.ConfirmPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            var preparedPackage = operationWorkspace.CurrentPackageOperation ??
+                                  throw new InvalidOperationException(
+                                      "confirmed package operation was not projected");
+            Require(
+                operationSource.LastPackageExecuteRequest is { } packageExecuteRequest &&
+                packageExecuteRequest.OperationId == packagePreview.OperationId &&
+                packageExecuteRequest.PreviewId == packagePreview.Preview.PreviewId,
+                "package confirmation did not bind the immutable preview");
+            Require(
+                preparedPackage.Lifecycle == "accepted" &&
+                preparedPackage.MaxParallelism == 1 &&
+                preparedPackage.Targets.Count == 2 &&
+                preparedPackage.Targets.All(target =>
+                    target.Lifecycle == "accepted" &&
+                    target.Stage == "dispatch_ready" &&
+                    target.Invocation is not null &&
+                    target.InvocationAcknowledgement is null &&
+                    target.EffectiveReceipt is null) &&
+                operationWorkspace.PackageOperationTargets.All(target =>
+                    target.AccessibleName.Contains(
+                        "No package dispatch or installation is claimed",
+                        StringComparison.Ordinal)) &&
+                operationWorkspace.PackageOperationStatusText.Contains(
+                    "no package was dispatched or installed",
+                    StringComparison.Ordinal),
+                "package preparation exceeded owner authority or stranded a target");
+            Require(
+                operationWorkspace.SelectedDevice?.StableKey == operationSelected &&
+                operationWorkspace.BatchSelectionText == operationBatch &&
+                operationWorkspace.ActiveScopeText == operationScope &&
+                operationWorkspace.Rows.Select(row => row.StableKey)
+                    .SequenceEqual(operationStableKeys),
+                "package operation changed fleet context");
+
+            var retainedPackageOperation = operationWorkspace.CurrentPackageOperation;
+            operationSource.DamageNextPackageOperationResponse = true;
+            operationWorkspace.RefreshPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedPackageOperation,
+                    operationWorkspace.CurrentPackageOperation) &&
+                operationWorkspace.PackageOperationStatusText.StartsWith(
+                    "Refresh failed · prior package projection retained",
+                    StringComparison.Ordinal),
+                "damaged package operation evidence did not fail closed");
+
             var operationWindow = new MainWindow(operationWorkspace)
             {
                 ShowActivated = false,
@@ -544,6 +677,34 @@ internal static class Program
                 AutomationProperties.GetName(operationWindow.DismissOperationControl) ==
                 "Dismiss operation projection",
                 "kiosk operation controls were not visibly and accessibly exposed");
+            Require(
+                AutomationProperties.GetName(operationWindow.PackageOperationRegion) ==
+                "Package install and release operation" &&
+                AutomationProperties.GetName(
+                    operationWindow.PackageManifestUrlControl) ==
+                "Signed package manifest HTTPS URL" &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewPackageInstallReleaseControl).Contains(
+                    "exact selected devices",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.ConfirmPackageInstallReleaseControl).Contains(
+                    "exact package preview",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.ConfirmPackageInstallReleaseControl).Contains(
+                    "cannot approve Android PackageInstaller",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.RefreshPackageInstallReleaseControl) ==
+                "Refresh package operation results" &&
+                AutomationProperties.GetName(
+                    operationWindow.DismissPackageInstallReleaseControl) ==
+                "Dismiss package operation projection" &&
+                operationWindow.PackageManifestUrlControl.IsReadOnly &&
+                operationWindow.PackageNameControl.IsReadOnly &&
+                operationWindow.PackageRolloutRingControl.IsReadOnly,
+                "package operation controls were not visibly and accessibly bounded");
             operationWindow.Close();
 
             var liveSource = new StaticFleetDataSource(
@@ -1040,6 +1201,15 @@ internal static class Program
                 kiosk_show_controls_accessible = true,
                 kiosk_show_controls_fail_closed = true,
                 kiosk_show_controls_rust_fixture_aligned = true,
+                package_install_release_preview = true,
+                package_install_release_exact_release_and_targets = true,
+                package_install_release_explicit_confirmation = true,
+                package_install_release_dispatch_ready_only = true,
+                package_install_release_all_targets_prepared = true,
+                package_install_release_owner_ingress_unavailable = true,
+                package_install_release_accessible = true,
+                package_install_release_fail_closed = true,
+                package_install_release_rust_fixture_aligned = true,
                 empty_scope_preserved = true,
                 grouped_virtualization = true,
                 stable_live_ordering = true,
@@ -1312,6 +1482,14 @@ internal static class Program
         public OperationLedger? LastOperation { get; private set; }
 
         public bool DamageNextOperationResponse { get; set; }
+
+        public PackageInstallReleasePreviewRequest? LastPackagePreviewRequest { get; private set; }
+
+        public PackageInstallReleaseExecuteRequest? LastPackageExecuteRequest { get; private set; }
+
+        public PackageInstallReleaseOperation? LastPackageOperation { get; private set; }
+
+        public bool DamageNextPackageOperationResponse { get; set; }
 
         public Task<FleetQueryResult> QueryAsync(
             FleetQuery query,
@@ -1611,6 +1789,52 @@ internal static class Program
             return Task.FromResult(ReturnOperation());
         }
 
+        public Task<PackageInstallReleaseOperation> PreviewPackageInstallReleaseAsync(
+            PackageInstallReleasePreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastPackagePreviewRequest = request;
+            LastPackageOperation = CreatePackageOperation(request, prepared: false);
+            return Task.FromResult(ReturnPackageOperation());
+        }
+
+        public Task<PackageInstallReleaseOperation> ExecutePackageInstallReleaseAsync(
+            PackageInstallReleaseExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastPackageExecuteRequest = request;
+            if (LastPackageOperation is null ||
+                LastPackageOperation.OperationId != request.OperationId ||
+                LastPackageOperation.Preview.PreviewId != request.PreviewId ||
+                LastPackagePreviewRequest is null)
+            {
+                throw new InvalidOperationException(
+                    "package execute request did not match the synthetic preview");
+            }
+
+            LastPackageOperation = CreatePackageOperation(
+                LastPackagePreviewRequest,
+                prepared: true);
+            return Task.FromResult(ReturnPackageOperation());
+        }
+
+        public Task<PackageInstallReleaseOperation> PackageInstallReleaseAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastPackageOperation is null ||
+                LastPackageOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic package operation not found");
+            }
+
+            return Task.FromResult(ReturnPackageOperation());
+        }
+
         private OperationLedger ReturnOperation()
         {
             var operation = LastOperation ??
@@ -1789,6 +2013,157 @@ internal static class Program
                 MaxParallelism = 8,
                 MaxAttemptsPerTarget = 3,
                 CleanupRequired = false,
+                Targets = targets
+            };
+        }
+
+        private PackageInstallReleaseOperation CreatePackageOperation(
+            PackageInstallReleasePreviewRequest request,
+            bool prepared)
+        {
+            var canonicalIdentities = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal);
+            foreach (var target in request.Targets)
+            {
+                canonicalIdentities.Add(target.Key, target.Value);
+            }
+            var createdAt = Projection.AsOfMs;
+            var operationId = "operation-package-install-release-0001";
+            var previewId = "preview-package-install-release-0001";
+            var preflights = canonicalIdentities
+                .Select((identity, index) =>
+                    new OperationTargetPreflight
+                    {
+                        DeviceId = identity.Key,
+                        IdentityRevision = identity.Value,
+                        CapabilityId = "rusty-quest.package-updater",
+                        CapabilityEvidenceRevision = (ulong)(61 + index),
+                        CapabilityOwner = "rusty-quest",
+                        Support = "supported",
+                        Enablement = "enabled",
+                        Authorization = "authorized",
+                        Reachability = "reachable",
+                        Freshness = "current",
+                        ObservedAtMs = createdAt - 100,
+                        FreshUntilMs = createdAt + 30_000,
+                        EvaluatedAtMs = createdAt + 100,
+                        Eligible = true,
+                        ReasonCode = "ready",
+                        Message = "Attended package updater is current and ready."
+                    })
+                .ToArray();
+            var targets = preflights
+                .Select((preflight, index) =>
+                {
+                    var ownerRequestId = $"package-owner-{index + 1:D4}";
+                    return new PackageInstallTargetLedger
+                    {
+                        DeviceId = preflight.DeviceId,
+                        IdentityRevision = preflight.IdentityRevision,
+                        Preflight = preflight,
+                        Lifecycle = prepared ? "accepted" : "proposed",
+                        Stage = prepared ? "dispatch_ready" : "preview_ready",
+                        Invocation = prepared
+                            ? new PackageUpdaterInvocation
+                            {
+                                Schema = "rusty.fleet.package_updater_invocation.v1",
+                                OperationId = operationId,
+                                PreviewId = previewId,
+                                DeviceId = preflight.DeviceId,
+                                IdentityRevision = preflight.IdentityRevision,
+                                OwnerActionRequestId = ownerRequestId,
+                                Release = request.Release,
+                                ExpectedPackageName = request.ExpectedPackageName,
+                                ExpectedRolloutRing = request.ExpectedRolloutRing,
+                                ExpiresAtMs = createdAt + 60_000
+                            }
+                            : null,
+                        InvocationAcknowledgement = null,
+                        EffectiveReceipt = null,
+                        ReasonCode = prepared
+                            ? "owner_dispatch_ready"
+                            : "preview_ready",
+                        Message = prepared
+                            ? "Exact updater invocation is ready for delivery; application remains unproven"
+                            : "Target is ready for explicit confirmation",
+                        LastTransitionMs = createdAt + (prepared ? 200 : 100)
+                    };
+                })
+                .ToArray();
+            return new PackageInstallReleaseOperation
+            {
+                Schema = "rusty.fleet.package_install_release_operation.v1",
+                OperationId = operationId,
+                ActionId = PackageOperationActions.InstallRelease,
+                CreatedAtMs = createdAt,
+                Preview = new PackageInstallReleasePreview
+                {
+                    Schema = "rusty.fleet.package_install_release_preview.v1",
+                    PreviewId = previewId,
+                    OperationId = operationId,
+                    ActionId = PackageOperationActions.InstallRelease,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    Release = request.Release,
+                    ExpectedPackageName = request.ExpectedPackageName,
+                    ExpectedRolloutRing = request.ExpectedRolloutRing,
+                    OwnerContract = new PackageUpdaterOwnerContractBinding
+                    {
+                        OwnerRepoId = "rusty-quest",
+                        CapabilityId = "rusty-quest.package-updater",
+                        ManifestEnvelopeSchema =
+                            "rusty.quest.package_update_manifest_envelope.v1",
+                        ReceiptSchema = "rusty.quest.package_update_receipt.v1",
+                        InstallMode = "attended_package_installer",
+                        ApplicationProof = "effective_installed_version_receipt"
+                    },
+                    Targets = preflights
+                },
+                Lifecycle = prepared ? "accepted" : "proposed",
+                MaxParallelism = 1,
+                CleanupRequired = false,
+                Targets = targets
+            };
+        }
+
+        private PackageInstallReleaseOperation ReturnPackageOperation()
+        {
+            var operation = LastPackageOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic package operation was not created");
+            if (!DamageNextPackageOperationResponse)
+            {
+                return operation;
+            }
+
+            DamageNextPackageOperationResponse = false;
+            var targets = operation.Targets.ToArray();
+            var first = targets[0];
+            targets[0] = new PackageInstallTargetLedger
+            {
+                DeviceId = first.DeviceId,
+                IdentityRevision = first.IdentityRevision + 1,
+                Preflight = first.Preflight,
+                Lifecycle = first.Lifecycle,
+                Stage = first.Stage,
+                Invocation = first.Invocation,
+                InvocationAcknowledgement = first.InvocationAcknowledgement,
+                EffectiveReceipt = first.EffectiveReceipt,
+                ReasonCode = first.ReasonCode,
+                Message = first.Message,
+                LastTransitionMs = first.LastTransitionMs
+            };
+            return new PackageInstallReleaseOperation
+            {
+                Schema = operation.Schema,
+                OperationId = operation.OperationId,
+                ActionId = operation.ActionId,
+                CreatedAtMs = operation.CreatedAtMs,
+                Preview = operation.Preview,
+                Lifecycle = operation.Lifecycle,
+                MaxParallelism = operation.MaxParallelism,
+                CleanupRequired = operation.CleanupRequired,
                 Targets = targets
             };
         }

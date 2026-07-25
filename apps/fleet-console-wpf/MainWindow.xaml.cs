@@ -57,6 +57,22 @@ public partial class MainWindow : Window
 
     public Button DismissOperationControl => DismissOperationButton;
 
+    public FrameworkElement PackageOperationRegion => PackageOperationPane;
+
+    public TextBox PackageManifestUrlControl => PackageManifestUrlBox;
+
+    public TextBox PackageNameControl => PackageNameBox;
+
+    public TextBox PackageRolloutRingControl => PackageRolloutRingBox;
+
+    public Button PreviewPackageInstallReleaseControl => PreviewPackageInstallReleaseButton;
+
+    public Button ConfirmPackageInstallReleaseControl => ConfirmPackageInstallReleaseButton;
+
+    public Button RefreshPackageInstallReleaseControl => RefreshPackageInstallReleaseButton;
+
+    public Button DismissPackageInstallReleaseControl => DismissPackageInstallReleaseButton;
+
     public FrameworkElement InspectorRegion => InspectorPane;
 
     public FrameworkElement FullDeviceDetailRegion => FullDetailRegion;

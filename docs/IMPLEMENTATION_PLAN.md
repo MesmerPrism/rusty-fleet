@@ -303,6 +303,13 @@ remains inert without private direct-operator configuration. Live Quest
 validation is a separately authorized later unit and is not inferred from the
 source checkpoint.
 
+An additive package source checkpoint is documented in
+[Package Install/Release](PACKAGE_INSTALL_RELEASE.md). It reuses the same
+immutable target, explicit confirmation, Manifold authorization, durable
+ledger, and Console/CLI/API projection principles while preserving Rusty Quest
+package authority. It ends at `dispatch_ready`; authenticated updater ingress
+and live delivery are a separately authorized owner/device unit.
+
 ### Acceptance
 
 - Transport acknowledgement never appears as applied completion.

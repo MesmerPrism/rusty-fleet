@@ -64,6 +64,13 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private string _operationSummaryText = "No kiosk operation preview";
     private string _operationStatusText =
         "Select exact devices, then preview Show Kiosk controls";
+    private PackageInstallReleaseOperation? _currentPackageOperation;
+    private string _packageManifestUrl = string.Empty;
+    private string _packageName = string.Empty;
+    private string _packageRolloutRing = "alpha";
+    private string _packageOperationSummaryText = "No package operation preview";
+    private string _packageOperationStatusText =
+        "Enter a signed manifest URL and package identity, then select exact devices";
 
     public FleetWorkspaceViewModel(Func<Uri, IFleetDataSource> sourceFactory)
     {
@@ -98,6 +105,21 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         DismissOperationCommand = new RelayCommand(
             DismissOperation,
             () => !IsBusy && CurrentOperation is not null);
+        PreviewPackageInstallReleaseCommand = new AsyncCommand(
+            PreviewPackageInstallReleaseAsync,
+            () => !IsBusy &&
+                  _source is not null &&
+                  _batchSelection.Count > 0 &&
+                  CurrentPackageOperation is null);
+        ConfirmPackageInstallReleaseCommand = new AsyncCommand(
+            ConfirmPackageInstallReleaseAsync,
+            () => !IsBusy && _source is not null && CurrentPackageOperation is not null);
+        RefreshPackageInstallReleaseCommand = new AsyncCommand(
+            RefreshPackageInstallReleaseAsync,
+            () => !IsBusy && _source is not null && CurrentPackageOperation is not null);
+        DismissPackageInstallReleaseCommand = new RelayCommand(
+            DismissPackageInstallRelease,
+            () => !IsBusy && CurrentPackageOperation is not null);
         if (RowsView is ICollectionViewLiveShaping liveView &&
             liveView.CanChangeLiveGrouping)
         {
@@ -123,6 +145,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public ObservableCollection<SavedView> SavedViews { get; } = [];
 
     public ObservableCollection<OperationTargetViewModel> OperationTargets { get; } = [];
+
+    public ObservableCollection<PackageOperationTargetViewModel> PackageOperationTargets { get; } =
+        [];
 
     public ICollectionView RowsView { get; }
 
@@ -163,6 +188,14 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public AsyncCommand RefreshOperationCommand { get; }
 
     public RelayCommand DismissOperationCommand { get; }
+
+    public AsyncCommand PreviewPackageInstallReleaseCommand { get; }
+
+    public AsyncCommand ConfirmPackageInstallReleaseCommand { get; }
+
+    public AsyncCommand RefreshPackageInstallReleaseCommand { get; }
+
+    public RelayCommand DismissPackageInstallReleaseCommand { get; }
 
     public event Action<SavedView>? SavedViewRestorationRequested;
 
@@ -288,6 +321,54 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         private set => SetProperty(ref _operationStatusText, value);
     }
 
+    public string PackageManifestUrl
+    {
+        get => _packageManifestUrl;
+        set => SetProperty(ref _packageManifestUrl, value);
+    }
+
+    public string PackageName
+    {
+        get => _packageName;
+        set => SetProperty(ref _packageName, value);
+    }
+
+    public string PackageRolloutRing
+    {
+        get => _packageRolloutRing;
+        set => SetProperty(ref _packageRolloutRing, value);
+    }
+
+    public PackageInstallReleaseOperation? CurrentPackageOperation
+    {
+        get => _currentPackageOperation;
+        private set
+        {
+            if (SetProperty(ref _currentPackageOperation, value))
+            {
+                OnPropertyChanged(nameof(IsPackageInputLocked));
+                PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                ConfirmPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                RefreshPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                DismissPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsPackageInputLocked => CurrentPackageOperation is not null;
+
+    public string PackageOperationSummaryText
+    {
+        get => _packageOperationSummaryText;
+        private set => SetProperty(ref _packageOperationSummaryText, value);
+    }
+
+    public string PackageOperationStatusText
+    {
+        get => _packageOperationStatusText;
+        private set => SetProperty(ref _packageOperationStatusText, value);
+    }
+
     public bool IsBusy
     {
         get => _isBusy;
@@ -306,6 +387,10 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 ConfirmOperationCommand.RaiseCanExecuteChanged();
                 RefreshOperationCommand.RaiseCanExecuteChanged();
                 DismissOperationCommand.RaiseCanExecuteChanged();
+                PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                ConfirmPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                RefreshPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                DismissPackageInstallReleaseCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -511,6 +596,169 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         OperationSummaryText = "No kiosk operation preview";
         OperationStatusText =
             "Select exact devices, then preview Show Kiosk controls";
+    }
+
+    public async Task PreviewPackageInstallReleaseAsync()
+    {
+        if (_source is null)
+        {
+            PackageOperationStatusText = "Not connected to a Fleet Hub";
+            return;
+        }
+        if (_batchSelection.Count == 0)
+        {
+            PackageOperationStatusText =
+                "Select at least one exact device before previewing a package operation";
+            return;
+        }
+
+        var manifestUrl = PackageManifestUrl.Trim();
+        var packageName = PackageName.Trim();
+        var rolloutRing = PackageRolloutRing.Trim();
+        if (!Uri.TryCreate(manifestUrl, UriKind.Absolute, out var manifest) ||
+            manifest.Scheme != Uri.UriSchemeHttps ||
+            !string.IsNullOrEmpty(manifest.UserInfo) ||
+            !string.IsNullOrEmpty(manifest.Fragment) ||
+            string.IsNullOrWhiteSpace(packageName) ||
+            string.IsNullOrWhiteSpace(rolloutRing))
+        {
+            PackageOperationStatusText =
+                "Use a credential-free HTTPS manifest URL, Android package identity, and rollout ring";
+            return;
+        }
+
+        var requestedTargets = new SortedDictionary<string, ulong>(
+            _batchSelection,
+            StringComparer.Ordinal);
+        var request = new PackageInstallReleasePreviewRequest
+        {
+            Release = new PackageReleaseReference
+            {
+                Kind = "manifest_url",
+                ManifestUrl = manifestUrl
+            },
+            ExpectedPackageName = packageName,
+            ExpectedRolloutRing = rolloutRing,
+            Targets = requestedTargets
+        };
+        IsBusy = true;
+        PackageOperationStatusText =
+            $"Requesting immutable package preview for {requestedTargets.Count} exact device(s)";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.PreviewPackageInstallReleaseAsync(
+                request,
+                timeout.Token);
+            ValidatePackageOperationBinding(operation, request);
+            ProjectPackageOperation(operation);
+            PackageOperationStatusText =
+                "Preview ready · review every target and signed release reference before confirming";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            PackageOperationStatusText =
+                $"Preview failed · prior package projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task ConfirmPackageInstallReleaseAsync()
+    {
+        var prior = CurrentPackageOperation;
+        if (_source is null || prior is null)
+        {
+            PackageOperationStatusText =
+                "Preview a package operation before confirming it";
+            return;
+        }
+        var request = new PackageInstallReleaseExecuteRequest
+        {
+            OperationId = prior.OperationId,
+            PreviewId = prior.Preview.PreviewId
+        };
+        IsBusy = true;
+        PackageOperationStatusText =
+            $"Confirming package operation {prior.OperationId} against immutable preview " +
+            prior.Preview.PreviewId;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.ExecutePackageInstallReleaseAsync(
+                request,
+                timeout.Token);
+            ValidatePackageOperationBinding(
+                operation,
+                prior.Preview.Release,
+                prior.Preview.ExpectedPackageName,
+                prior.Preview.ExpectedRolloutRing,
+                PackagePreviewIdentities(prior));
+            RequireSamePackageOperation(prior, operation);
+            ProjectPackageOperation(operation);
+            PackageOperationStatusText =
+                "Prepared for owner delivery · authenticated updater ingress is unavailable · " +
+                "no package was dispatched or installed";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            PackageOperationStatusText =
+                $"Confirmation failed · prior package projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task RefreshPackageInstallReleaseAsync()
+    {
+        var prior = CurrentPackageOperation;
+        if (_source is null || prior is null)
+        {
+            PackageOperationStatusText = "No package operation is available to refresh";
+            return;
+        }
+        IsBusy = true;
+        PackageOperationStatusText = $"Refreshing package operation {prior.OperationId}";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.PackageInstallReleaseAsync(
+                prior.OperationId,
+                timeout.Token);
+            ValidatePackageOperationBinding(
+                operation,
+                prior.Preview.Release,
+                prior.Preview.ExpectedPackageName,
+                prior.Preview.ExpectedRolloutRing,
+                PackagePreviewIdentities(prior));
+            RequireSamePackageOperation(prior, operation);
+            ProjectPackageOperation(operation);
+            PackageOperationStatusText =
+                "Package operation refreshed · owner ingress remains unavailable · " +
+                "no package dispatch or installation is claimed";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            PackageOperationStatusText =
+                $"Refresh failed · prior package projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public void DismissPackageInstallRelease()
+    {
+        CurrentPackageOperation = null;
+        PackageOperationTargets.Clear();
+        PackageOperationSummaryText = "No package operation preview";
+        PackageOperationStatusText =
+            "Enter a signed manifest URL and package identity, then select exact devices";
     }
 
     public async Task SelectDeviceAsync(DeviceRowViewModel? device)
@@ -995,6 +1243,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         AsOfText = $"As of {FormatInstant(result.AsOfMs)}";
         OnPropertyChanged(nameof(BatchSelectionText));
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
+        PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
         return invalidatedSelections;
     }
 
@@ -1394,6 +1643,37 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             (operation.CleanupRequired ? " · cleanup required" : string.Empty);
     }
 
+    private void ProjectPackageOperation(PackageInstallReleaseOperation operation)
+    {
+        FleetProjectionValidation.ValidatePackageInstallReleaseOperation(operation);
+        var targets = operation.Targets
+            .OrderBy(target => target.DeviceId, StringComparer.Ordinal)
+            .Select(target => new PackageOperationTargetViewModel(target))
+            .ToArray();
+        CurrentPackageOperation = operation;
+        PackageOperationTargets.Clear();
+        foreach (var target in targets)
+        {
+            PackageOperationTargets.Add(target);
+        }
+
+        var eligible = operation.Targets.Count(target => target.Preflight.Eligible);
+        var prepared = operation.Targets.Count(target => target.Stage == "dispatch_ready");
+        var excluded = operation.Targets.Count - eligible;
+        var releaseReference = operation.Preview.Release.Kind == "manifest_url"
+            ? operation.Preview.Release.ManifestUrl
+            : operation.Preview.Release.ReleaseId;
+        PackageOperationSummaryText =
+            $"Package install/release · operation {operation.OperationId} · " +
+            $"preview {operation.Preview.PreviewId} · " +
+            $"release {releaseReference} · " +
+            $"package {operation.Preview.ExpectedPackageName} · " +
+            $"ring {operation.Preview.ExpectedRolloutRing} · " +
+            $"{operation.Targets.Count} exact target(s) · {eligible} eligible · " +
+            $"{excluded} excluded · {prepared} prepared only · " +
+            $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}";
+    }
+
     private static void ValidateOperationBinding(
         OperationLedger operation,
         string expectedActionId,
@@ -1431,6 +1711,61 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             target => target.IdentityRevision,
             StringComparer.Ordinal);
 
+    private static IReadOnlyDictionary<string, ulong> PackagePreviewIdentities(
+        PackageInstallReleaseOperation operation) =>
+        operation.Preview.Targets.ToDictionary(
+            target => target.DeviceId,
+            target => target.IdentityRevision,
+            StringComparer.Ordinal);
+
+    private static void ValidatePackageOperationBinding(
+        PackageInstallReleaseOperation operation,
+        PackageInstallReleasePreviewRequest request) =>
+        ValidatePackageOperationBinding(
+            operation,
+            request.Release,
+            request.ExpectedPackageName,
+            request.ExpectedRolloutRing,
+            request.Targets);
+
+    private static void ValidatePackageOperationBinding(
+        PackageInstallReleaseOperation operation,
+        PackageReleaseReference expectedRelease,
+        string expectedPackageName,
+        string expectedRolloutRing,
+        IReadOnlyDictionary<string, ulong> expectedTargets)
+    {
+        FleetProjectionValidation.ValidatePackageInstallReleaseOperation(operation);
+        if (operation.ActionId != PackageOperationActions.InstallRelease ||
+            JsonSerializer.Serialize(operation.Preview.Release, FleetJson.Options) !=
+            JsonSerializer.Serialize(expectedRelease, FleetJson.Options) ||
+            operation.Preview.ExpectedPackageName != expectedPackageName ||
+            operation.Preview.ExpectedRolloutRing != expectedRolloutRing ||
+            operation.Preview.Targets.Count != expectedTargets.Count ||
+            expectedTargets.Any(target =>
+                operation.Preview.Targets.All(preflight =>
+                    preflight.DeviceId != target.Key ||
+                    preflight.IdentityRevision != target.Value)))
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub package operation does not bind the exact release and target identities.");
+        }
+    }
+
+    private static void RequireSamePackageOperation(
+        PackageInstallReleaseOperation prior,
+        PackageInstallReleaseOperation current)
+    {
+        if (prior.OperationId != current.OperationId ||
+            prior.Preview.PreviewId != current.Preview.PreviewId ||
+            JsonSerializer.Serialize(prior.Preview, FleetJson.Options) !=
+            JsonSerializer.Serialize(current.Preview, FleetJson.Options))
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub changed immutable package operation facts.");
+        }
+    }
+
     private static bool IsProjectionFailure(Exception error) =>
         error is HttpRequestException or JsonException or TaskCanceledException or
             InvalidOperationException;
@@ -1445,6 +1780,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         _batchSelection.Clear();
         OnPropertyChanged(nameof(BatchSelectionText));
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
+        PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
     }
 
     private void SelectAllVisible()
@@ -1456,6 +1792,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
         OnPropertyChanged(nameof(BatchSelectionText));
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
+        PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
     }
 
     private void OnRowPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)
@@ -1475,6 +1812,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
             OnPropertyChanged(nameof(BatchSelectionText));
             PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
+            PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
         }
     }
 

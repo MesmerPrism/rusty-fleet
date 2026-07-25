@@ -6,7 +6,10 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
-use fleet_contracts::{OperationExecuteRequest, OperationPreviewRequest};
+use fleet_contracts::{
+    OperationExecuteRequest, OperationPreviewRequest, PackageInstallReleaseExecuteRequest,
+    PackageInstallReleasePreviewRequest,
+};
 
 use crate::{CliFailure, FleetOperationClient};
 
@@ -126,6 +129,49 @@ impl FleetOperationClient for LocalFleetOperationClient {
         self.request(
             "GET",
             &format!("/fleet/v1/operations/{}", encode_path_segment(operation_id)),
+            None,
+        )
+    }
+
+    fn preview_package_install_release(
+        &mut self,
+        request: &PackageInstallReleasePreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            "/fleet/v1/package-install-releases/preview",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn execute_package_install_release(
+        &mut self,
+        request: &PackageInstallReleaseExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/execute",
+                encode_path_segment(&request.operation_id)
+            ),
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn get_package_install_release(
+        &mut self,
+        operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/package-install-releases/{}",
+                encode_path_segment(operation_id)
+            ),
             None,
         )
     }
