@@ -610,28 +610,19 @@ Every milestone answers:
 
 ## Next implementation action
 
-Complete the active corrective
-`morphospace/iteration-units/fleet-m1-functional-closeout.json` without
-rewriting the immutable original M1 unit. The accepted source foundation remains documented in
-[Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md); the active bounded
-ingress and authority behavior are documented in
-[Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md). Durable restart
-recovery and the first bounded Quest checkpoint are now present. The
-[M1 consolidation readiness record](M1_CONSOLIDATION_READINESS.md) confirms
-that the final automated host-side Quick, Standard, Deep, workflow-contract,
-instruction-impact, and exact Quest-owner `Host` gates pass. The
-current-settings presented keyboard pass and preliminary Narrator confirmation
-are informative rather than comprehensive accessibility conformance. Keep
-automated keyboard/UI Automation regression at every WPF milestone and run the
-complete Narrator, Accessibility Insights, high-contrast, large-text, scaling,
-and multi-monitor matrix as the existing Milestone 7 cumulative release gate.
-The deterministic M1 lifecycle
-projection now covers sleep/wake aging, route loss/recovery, duplicate and
-stale check-ins, agent upgrade, old-epoch replay, and final independent-device
-recovery; the exact pinned Manifold adapter covers key rotation and old-signer
-rejection. The native 1,000-device table/inspector, canonical
-search/freshness scope, grouping, stable hidden selection, out-of-scope
-inspector context, mixed fresh/stale/offline and empty-scope fixture, and
-presented keyboard/UI Automation path are now present. Do not create
-transport-, screen-, or test-sized M1 sub-units. Corrections remain inside
-this active stack.
+Close the source-only `kiosk.show-controls` checkpoint through source-first
+publication and external planning acceptance. Then claim a separate,
+device-required validation unit for the exact published Fleet revision and
+pinned Kiosk owner contract. That later unit must use private routes and
+pairing material, require current signed Kiosk owner completion for every
+target, preserve per-device evidence, and keep ADB limited to explicit setup
+and observation; it must not infer live behavior from the source gate.
+
+The accepted source foundation remains documented in
+[Milestone 0 Source Foundation](M0_SOURCE_FOUNDATION.md), the bounded monitoring
+runtime in [Milestone 1 Local Monitoring Runtime](M1_LOCAL_MONITORING.md), and
+the first operation vertical in
+[Milestone 2 Kiosk Show Controls](M2_KIOSK_SHOW_CONTROLS.md). Keep automated
+keyboard/UI Automation regression at every WPF milestone and retain the full
+Narrator, Accessibility Insights, high-contrast, large-text, scaling, and
+multi-monitor matrix as the Milestone 7 cumulative release gate.
