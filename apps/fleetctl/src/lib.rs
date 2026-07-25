@@ -4,6 +4,9 @@
 //! `fleetctl` command projection over the same in-process API used by tests and
 //! future UI consumers.
 
+mod local_client;
+mod operation;
+
 use fleet_contracts::{
     Comparison, FleetQuery, FleetQueryResult, FleetSummaryProjection, ProjectionFreshness,
     QueryExpression, QueryField, QueryValue, SavedView, SavedViewCollection,
@@ -15,6 +18,9 @@ use fleet_simulator::{
     m1_lifecycle_scenario, mixed_freshness_fixture, supported_scale_fixtures,
 };
 use serde::{Deserialize, Serialize};
+
+pub use local_client::LocalFleetOperationClient;
+pub use operation::{FleetOperationClient, is_operation_command};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliFailure {
@@ -61,7 +67,7 @@ pub struct M1LifecycleProjection {
 }
 
 impl CliFailure {
-    fn new(code: &str, message: impl Into<String>) -> Self {
+    pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.to_owned(),
             message: message.into(),
@@ -71,6 +77,12 @@ impl CliFailure {
 
 pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> {
     let command = arguments.first().map_or("help", String::as_str);
+    if operation::is_operation_command(command) {
+        return Err(CliFailure::new(
+            "operation_client_required",
+            "operation commands require an injected Fleet operation client",
+        ));
+    }
     if command == "help" {
         return Ok(serde_json::json!({
             "schema": "rusty.fleet.cli_help.v1",
@@ -83,7 +95,10 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 "scenario [count]",
                 "m1-lifecycle",
                 "operator-fixture mixed-freshness [count]",
-                "saved-view-roundtrip [count]"
+                "saved-view-roundtrip [count]",
+                "operation-preview kiosk.show-controls DEVICE@IDENTITY_REVISION...",
+                "operation-execute OPERATION_ID PREVIEW_ID",
+                "operation-get OPERATION_ID"
             ],
             "scale_fixtures": supported_scale_fixtures()
         }));
@@ -156,6 +171,20 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
             "unknown_command",
             format!("unknown command {command}"),
         )),
+    }
+}
+
+/// Executes all existing deterministic commands plus operation commands over
+/// an explicitly injected Fleet Hub projection client.
+pub fn execute_with_operation_client<C: FleetOperationClient + ?Sized>(
+    arguments: Vec<String>,
+    client: &mut C,
+) -> Result<serde_json::Value, CliFailure> {
+    let command = arguments.first().map_or("help", String::as_str);
+    if operation::is_operation_command(command) {
+        operation::execute_operation_command(&arguments, client)
+    } else {
+        execute(arguments)
     }
 }
 

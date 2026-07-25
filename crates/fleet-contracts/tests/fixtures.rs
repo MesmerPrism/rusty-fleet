@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use fleet_contracts::{
-    DeviceObservation, FleetCheckInClaims, FleetQuery, SavedView, StreamDescriptor,
-    ValidateContract,
+    DeviceObservation, FleetCheckInClaims, FleetQuery, KioskShowControlsOperation, SavedView,
+    StreamDescriptor, ValidateContract,
 };
 
 #[test]
@@ -36,6 +36,12 @@ fn committed_valid_contract_fixtures_round_trip() {
     ))
     .expect("valid saved-view JSON");
     assert!(saved_view.validate().is_ok());
+
+    let kiosk_operation: KioskShowControlsOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/kiosk-show-controls-operation.valid.json"
+    ))
+    .expect("valid Kiosk show-controls JSON");
+    assert!(kiosk_operation.validate().is_ok());
 }
 
 #[test]

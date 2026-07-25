@@ -60,6 +60,10 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private bool _watchInitialized;
     private string? _watchFailureReason;
     private bool _lastRefreshSucceeded;
+    private OperationLedger? _currentOperation;
+    private string _operationSummaryText = "No kiosk operation preview";
+    private string _operationStatusText =
+        "Select exact devices, then preview Show Kiosk controls";
 
     public FleetWorkspaceViewModel(Func<Uri, IFleetDataSource> sourceFactory)
     {
@@ -82,6 +86,18 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         DeleteSavedViewCommand = new AsyncCommand(
             DeleteSavedViewAsync,
             () => !IsBusy && _source is not null && SelectedSavedView is not null);
+        PreviewKioskShowControlsCommand = new AsyncCommand(
+            PreviewKioskShowControlsAsync,
+            () => !IsBusy && _source is not null && _batchSelection.Count > 0);
+        ConfirmOperationCommand = new AsyncCommand(
+            ConfirmOperationAsync,
+            () => !IsBusy && _source is not null && CurrentOperation is not null);
+        RefreshOperationCommand = new AsyncCommand(
+            RefreshOperationAsync,
+            () => !IsBusy && _source is not null && CurrentOperation is not null);
+        DismissOperationCommand = new RelayCommand(
+            DismissOperation,
+            () => !IsBusy && CurrentOperation is not null);
         if (RowsView is ICollectionViewLiveShaping liveView &&
             liveView.CanChangeLiveGrouping)
         {
@@ -105,6 +121,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public ObservableCollection<DeviceRowViewModel> Rows { get; } = [];
 
     public ObservableCollection<SavedView> SavedViews { get; } = [];
+
+    public ObservableCollection<OperationTargetViewModel> OperationTargets { get; } = [];
 
     public ICollectionView RowsView { get; }
 
@@ -137,6 +155,14 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public AsyncCommand ApplySavedViewCommand { get; }
 
     public AsyncCommand DeleteSavedViewCommand { get; }
+
+    public AsyncCommand PreviewKioskShowControlsCommand { get; }
+
+    public AsyncCommand ConfirmOperationCommand { get; }
+
+    public AsyncCommand RefreshOperationCommand { get; }
+
+    public RelayCommand DismissOperationCommand { get; }
 
     public event Action<SavedView>? SavedViewRestorationRequested;
 
@@ -236,6 +262,32 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         private set => SetProperty(ref _inspectorContextText, value);
     }
 
+    public OperationLedger? CurrentOperation
+    {
+        get => _currentOperation;
+        private set
+        {
+            if (SetProperty(ref _currentOperation, value))
+            {
+                ConfirmOperationCommand.RaiseCanExecuteChanged();
+                RefreshOperationCommand.RaiseCanExecuteChanged();
+                DismissOperationCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public string OperationSummaryText
+    {
+        get => _operationSummaryText;
+        private set => SetProperty(ref _operationSummaryText, value);
+    }
+
+    public string OperationStatusText
+    {
+        get => _operationStatusText;
+        private set => SetProperty(ref _operationStatusText, value);
+    }
+
     public bool IsBusy
     {
         get => _isBusy;
@@ -250,6 +302,10 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 ApplyQueuedOrderingChangesCommand.RaiseCanExecuteChanged();
                 ApplySavedViewCommand.RaiseCanExecuteChanged();
                 DeleteSavedViewCommand.RaiseCanExecuteChanged();
+                PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
+                ConfirmOperationCommand.RaiseCanExecuteChanged();
+                RefreshOperationCommand.RaiseCanExecuteChanged();
+                DismissOperationCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -322,6 +378,139 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             await EstablishWatchCursorAsync();
         }
         await TryLoadSavedViewsAsync();
+    }
+
+    public async Task PreviewKioskShowControlsAsync()
+    {
+        if (_source is null)
+        {
+            OperationStatusText = "Not connected to a Fleet Hub";
+            return;
+        }
+
+        if (_batchSelection.Count == 0)
+        {
+            OperationStatusText =
+                "Select at least one exact device before previewing Show Kiosk controls";
+            return;
+        }
+
+        var requestedTargets = new SortedDictionary<string, ulong>(
+            _batchSelection,
+            StringComparer.Ordinal);
+        var request = new OperationPreviewRequest
+        {
+            Targets = requestedTargets
+        };
+        IsBusy = true;
+        OperationStatusText =
+            $"Requesting immutable preview for {requestedTargets.Count} exact device(s)";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.PreviewOperationAsync(request, timeout.Token);
+            ValidateOperationBinding(operation, request.ActionId, requestedTargets);
+            ProjectOperation(operation);
+            OperationStatusText =
+                "Preview ready · review every target, then explicitly confirm this operation";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            OperationStatusText =
+                $"Preview failed · prior operation projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task ConfirmOperationAsync()
+    {
+        var prior = CurrentOperation;
+        if (_source is null || prior is null)
+        {
+            OperationStatusText = "Preview an operation before confirming it";
+            return;
+        }
+
+        var request = new OperationExecuteRequest
+        {
+            OperationId = prior.OperationId,
+            PreviewId = prior.Preview.PreviewId
+        };
+        IsBusy = true;
+        OperationStatusText =
+            $"Confirming operation {prior.OperationId} against immutable preview " +
+            prior.Preview.PreviewId;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.ExecuteOperationAsync(request, timeout.Token);
+            ValidateOperationBinding(
+                operation,
+                prior.ActionId,
+                PreviewIdentities(prior));
+            RequireSameOperation(prior, operation);
+            ProjectOperation(operation);
+            OperationStatusText =
+                "Execution accepted · per-device results below remain server-owned";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            OperationStatusText =
+                $"Confirmation failed · prior operation projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task RefreshOperationAsync()
+    {
+        var prior = CurrentOperation;
+        if (_source is null || prior is null)
+        {
+            OperationStatusText = "No operation is available to refresh";
+            return;
+        }
+
+        IsBusy = true;
+        OperationStatusText = $"Refreshing operation {prior.OperationId}";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.OperationAsync(
+                prior.OperationId,
+                timeout.Token);
+            ValidateOperationBinding(
+                operation,
+                prior.ActionId,
+                PreviewIdentities(prior));
+            RequireSameOperation(prior, operation);
+            ProjectOperation(operation);
+            OperationStatusText =
+                "Operation results refreshed from the Fleet Hub";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            OperationStatusText =
+                $"Refresh failed · prior operation projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public void DismissOperation()
+    {
+        CurrentOperation = null;
+        OperationTargets.Clear();
+        OperationSummaryText = "No kiosk operation preview";
+        OperationStatusText =
+            "Select exact devices, then preview Show Kiosk controls";
     }
 
     public async Task SelectDeviceAsync(DeviceRowViewModel? device)
@@ -805,6 +994,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
               $"result revision {result.ResultRevision}";
         AsOfText = $"As of {FormatInstant(result.AsOfMs)}";
         OnPropertyChanged(nameof(BatchSelectionText));
+        PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
         return invalidatedSelections;
     }
 
@@ -1177,6 +1367,74 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         await ApplyScopeAsync();
     }
 
+    private void ProjectOperation(OperationLedger operation)
+    {
+        FleetProjectionValidation.ValidateOperationLedger(operation);
+        var targets = operation.Targets
+            .OrderBy(target => target.DeviceId, StringComparer.Ordinal)
+            .Select(target => new OperationTargetViewModel(target))
+            .ToArray();
+
+        CurrentOperation = operation;
+        OperationTargets.Clear();
+        foreach (var target in targets)
+        {
+            OperationTargets.Add(target);
+        }
+
+        var eligible = operation.Targets.Count(target =>
+            target.Preflight.Eligible);
+        var excluded = operation.Targets.Count - eligible;
+        OperationSummaryText =
+            $"Show Kiosk controls · operation {operation.OperationId} · " +
+            $"preview {operation.Preview.PreviewId} · " +
+            $"{operation.Targets.Count} exact target(s) · {eligible} eligible · " +
+            $"{excluded} excluded · " +
+            $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}" +
+            (operation.CleanupRequired ? " · cleanup required" : string.Empty);
+    }
+
+    private static void ValidateOperationBinding(
+        OperationLedger operation,
+        string expectedActionId,
+        IReadOnlyDictionary<string, ulong> expectedTargets)
+    {
+        FleetProjectionValidation.ValidateOperationLedger(operation);
+        if (operation.ActionId != expectedActionId ||
+            operation.Preview.Targets.Count != expectedTargets.Count ||
+            expectedTargets.Any(target =>
+                !operation.Preview.Targets.Any(previewTarget =>
+                    previewTarget.DeviceId == target.Key &&
+                    previewTarget.IdentityRevision == target.Value)))
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub returned operation evidence for a different action or immutable preview.");
+        }
+    }
+
+    private static void RequireSameOperation(
+        OperationLedger expected,
+        OperationLedger actual)
+    {
+        if (actual.OperationId != expected.OperationId ||
+            actual.Preview.PreviewId != expected.Preview.PreviewId)
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub returned a different operation or immutable preview.");
+        }
+    }
+
+    private static IReadOnlyDictionary<string, ulong> PreviewIdentities(
+        OperationLedger operation) =>
+        operation.Preview.Targets.ToDictionary(
+            target => target.DeviceId,
+            target => target.IdentityRevision,
+            StringComparer.Ordinal);
+
+    private static bool IsProjectionFailure(Exception error) =>
+        error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException;
+
     private void ClearBatchSelection()
     {
         foreach (var row in Rows)
@@ -1186,6 +1444,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
         _batchSelection.Clear();
         OnPropertyChanged(nameof(BatchSelectionText));
+        PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
     }
 
     private void SelectAllVisible()
@@ -1196,6 +1455,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         }
 
         OnPropertyChanged(nameof(BatchSelectionText));
+        PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
     }
 
     private void OnRowPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)
@@ -1214,6 +1474,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             }
 
             OnPropertyChanged(nameof(BatchSelectionText));
+            PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
         }
     }
 

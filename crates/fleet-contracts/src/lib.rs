@@ -9,6 +9,7 @@ mod checkin;
 mod command;
 mod condition;
 mod identity;
+mod kiosk;
 mod projection;
 mod query;
 mod stream;
@@ -27,6 +28,20 @@ pub use condition::{ConditionFamily, ConditionState, Sensitivity, StatusConditio
 pub use identity::{
     ApplicationLifecycle, ApplicationObservation, DeviceIdentity, DeviceObservation,
     FactProvenance, ForegroundAuthority, ForegroundState, KioskState, PowerObservation,
+};
+pub use kiosk::{
+    KIOSK_CLI_RESULT_SCHEMA, KIOSK_DIRECT_OPERATOR_CAPABILITY_ID,
+    KIOSK_DIRECT_OPERATOR_INVOKE_METHOD, KIOSK_DIRECT_OPERATOR_INVOKE_TARGET,
+    KIOSK_DIRECT_OPERATOR_MAX_CLOCK_SKEW_SECONDS, KIOSK_DIRECT_OPERATOR_OWNER,
+    KIOSK_DIRECT_OPERATOR_PORT, KIOSK_DIRECT_OPERATOR_REQUEST_AUTH,
+    KIOSK_DIRECT_OPERATOR_RESPONSE_AUTH, KIOSK_DIRECT_OPERATOR_RESULT_METHOD,
+    KIOSK_DIRECT_OPERATOR_RESULT_REQUEST_ID_PARAMETER, KIOSK_DIRECT_OPERATOR_RESULT_TARGET,
+    KIOSK_DIRECT_OPERATOR_REVISION, KIOSK_DIRECT_OPERATOR_SCHEMA, KIOSK_SHOW_CONTROLS_ACTION_ID,
+    KIOSK_SHOW_CONTROLS_COMMAND, KioskCancelDisposition, KioskEffectiveReceipt,
+    KioskOwnerContractBinding, KioskRetryDisposition, KioskShowControlsOperation,
+    KioskShowControlsPreview, KioskShowControlsTargetLedger, KioskShowControlsTargetPreflight,
+    OPERATION_EXECUTE_REQUEST_SCHEMA, OPERATION_PREVIEW_REQUEST_SCHEMA, OperationExecuteRequest,
+    OperationPreviewRequest,
 };
 pub use projection::{
     DeviceDetailProjection, DeviceInspectorProjection, DeviceRowProjection, FleetQueryResult,

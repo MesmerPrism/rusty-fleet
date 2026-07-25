@@ -16,5 +16,11 @@ pair covers exact canonical-query/navigation restoration and fail-closed
 bounds, duplication, density, and schema-version damage. Fixture size is not
 a supported-scale claim.
 
+The Kiosk show-controls pair binds one immutable Fleet target preview to
+per-target preflight and ledger state. Its valid case accepts only a verified
+Kiosk-owned effective receipt; its damaged case covers owner-contract drift,
+preview mutation, false application, unsafe retry/cancellation, and forbidden
+cleanup.
+
 Real device exports, endpoints, serials, logs, captures, and private payloads
 do not belong in this directory.

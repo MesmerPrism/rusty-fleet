@@ -11,16 +11,44 @@ use fleet_contracts::{
     StatusSource, ValidateContract,
 };
 use fleet_hub::{FleetHub, ObservationDecision};
-use rusty_manifold_model::DottedId;
+use rusty_manifold_model::{DottedId, Revision};
 use rusty_manifold_peer::{
     ManifoldAcceptedPeerState, ManifoldPeerApplicationReceipt, ManifoldPeerCredentialStatus,
     ManifoldPeerDecision, ManifoldPeerDecisionOutcome, ManifoldPeerEnrollmentReceipt,
     ManifoldPeerEnrollmentRequest, ManifoldPeerEnrollmentState, ManifoldPeerReviewCase,
     ManifoldPeerStatusProposal, review_and_apply_peer_enrollment, review_and_apply_peer_proposal,
 };
+use rusty_manifold_runtime_host::{
+    HOST_COMMAND_REQUEST_SCHEMA, HOST_SNAPSHOT_SCHEMA, HOST_TYPED_PARAMS_DIGEST_SCHEMA,
+    ManifoldRuntimeApplicationReceipt, ManifoldRuntimeCommandDescriptor,
+    ManifoldRuntimeCommandRequest, ManifoldRuntimeDispatchOutcome, ManifoldRuntimeDispatchReceipt,
+    ManifoldRuntimeHost, ManifoldRuntimeHostSnapshot, ManifoldRuntimeTypedParamsDigest,
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const MAX_SEEN_CHECKINS: usize = 10_000;
+const FLEET_RUNTIME_HOST_ID: &str = "runtime.fleet.hub";
+const KIOSK_SHOW_CONTROLS_COMMAND_ID: &str = "kiosk.show-controls";
+const KIOSK_SHOW_CONTROLS_PARAMS_TYPE_ID: &str = "rusty.fleet.kiosk.show-controls.params.v1";
+const FLEET_MANIFOLD_SNAPSHOT_V1_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v1";
+const FLEET_MANIFOLD_SNAPSHOT_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v2";
+const MAX_KIOSK_COMMAND_LIFETIME_MS: u64 = 90_000;
+
+#[must_use]
+pub fn kiosk_manifold_request_id(
+    operation_id: &str,
+    device_id: &str,
+    owner_action_request_id: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.kiosk.manifold-request.v1\0");
+    for value in [operation_id, device_id, owner_action_request_id] {
+        digest.update(value.as_bytes());
+        digest.update([0]);
+    }
+    format!("request.fleet.kiosk.{}", hex::encode(digest.finalize()))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +82,38 @@ pub struct FleetManifoldAdapterSnapshot {
     schema: String,
     accepted_peers: ManifoldAcceptedPeerState,
     seen_checkins: BTreeMap<String, i64>,
+    #[serde(default)]
+    runtime_host: Option<ManifoldRuntimeHostSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KioskShowControlsCommandAuthorization {
+    pub manifold_request_id: String,
+    pub owner_action_request_id: String,
+    pub requester_id: String,
+    pub operation_id: String,
+    pub preview_id: String,
+    pub device_id: String,
+    pub identity_revision: u64,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KioskShowControlsAuthorityReceipt {
+    pub request: ManifoldRuntimeCommandRequest,
+    pub dispatch: ManifoldRuntimeDispatchReceipt,
+    pub application: ManifoldRuntimeApplicationReceipt,
+}
+
+#[derive(Serialize)]
+struct KioskShowControlsTypedParams<'a> {
+    schema: &'static str,
+    operation_id: &'a str,
+    preview_id: &'a str,
+    action_id: &'static str,
+    device_id: &'a str,
+    identity_revision: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -62,11 +122,27 @@ pub struct FleetManifoldAdapter {
     accepted_peers: ManifoldAcceptedPeerState,
     trusted_operator_ids: Vec<DottedId>,
     seen_checkins: BTreeMap<String, i64>,
+    runtime_host: ManifoldRuntimeHost,
 }
 
 impl FleetManifoldAdapter {
     #[must_use]
     pub fn new(trusted_operator_ids: Vec<DottedId>) -> Self {
+        let runtime_host = ManifoldRuntimeHost::from_snapshot(ManifoldRuntimeHostSnapshot {
+            schema_id: schema_id(HOST_SNAPSHOT_SCHEMA),
+            host_id: DottedId::new(FLEET_RUNTIME_HOST_ID).expect("static runtime host id"),
+            authority_revision: Revision::INITIAL,
+            commands: vec![ManifoldRuntimeCommandDescriptor {
+                command_id: DottedId::new(KIOSK_SHOW_CONTROLS_COMMAND_ID)
+                    .expect("static command id"),
+                required_lease_scope: None,
+            }],
+            leases: Vec::new(),
+            applied_request_ids: Vec::new(),
+            reviewed_sweep_ids: Vec::new(),
+            audit_events: Vec::new(),
+        })
+        .expect("static Fleet runtime host snapshot");
         Self {
             enrollment: ManifoldPeerEnrollmentState::empty(),
             accepted_peers: ManifoldAcceptedPeerState {
@@ -77,6 +153,7 @@ impl FleetManifoldAdapter {
             },
             trusted_operator_ids,
             seen_checkins: BTreeMap::new(),
+            runtime_host,
         }
     }
 
@@ -102,9 +179,10 @@ impl FleetManifoldAdapter {
     #[must_use]
     pub fn snapshot(&self) -> FleetManifoldAdapterSnapshot {
         FleetManifoldAdapterSnapshot {
-            schema: "rusty.fleet.manifold_adapter_snapshot.v1".to_owned(),
+            schema: FLEET_MANIFOLD_SNAPSHOT_SCHEMA.to_owned(),
             accepted_peers: self.accepted_peers.clone(),
             seen_checkins: self.seen_checkins.clone(),
+            runtime_host: Some(self.runtime_host.snapshot().clone()),
         }
     }
 
@@ -113,8 +191,13 @@ impl FleetManifoldAdapter {
         mut snapshot: FleetManifoldAdapterSnapshot,
         now_ms: i64,
     ) -> Result<(), String> {
-        if snapshot.schema != "rusty.fleet.manifold_adapter_snapshot.v1" {
+        if snapshot.schema != FLEET_MANIFOLD_SNAPSHOT_V1_SCHEMA
+            && snapshot.schema != FLEET_MANIFOLD_SNAPSHOT_SCHEMA
+        {
             return Err("Fleet Manifold adapter snapshot schema is not supported".to_owned());
+        }
+        if snapshot.schema == FLEET_MANIFOLD_SNAPSHOT_SCHEMA && snapshot.runtime_host.is_none() {
+            return Err("Fleet Manifold adapter v2 snapshot omitted runtime authority".to_owned());
         }
         if snapshot.seen_checkins.len() > MAX_SEEN_CHECKINS
             || snapshot.accepted_peers.applied_proposal_ids.len() > MAX_SEEN_CHECKINS
@@ -160,9 +243,141 @@ impl FleetManifoldAdapter {
         snapshot
             .seen_checkins
             .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+        let restored_runtime_host = match snapshot.runtime_host {
+            Some(runtime_snapshot) => {
+                if runtime_snapshot.authority_revision.get() == u64::MAX {
+                    return Err(
+                        "Fleet runtime authority cannot recover at the terminal revision"
+                            .to_owned(),
+                    );
+                }
+                ManifoldRuntimeHost::from_snapshot(runtime_snapshot).map_err(|error| {
+                    format!("Fleet runtime authority snapshot is invalid: {error}")
+                })?
+            }
+            None => self.runtime_host.clone(),
+        };
         self.accepted_peers = snapshot.accepted_peers;
         self.seen_checkins = snapshot.seen_checkins;
+        self.runtime_host = restored_runtime_host;
         Ok(())
+    }
+
+    #[must_use]
+    pub const fn runtime_host_snapshot(&self) -> &ManifoldRuntimeHostSnapshot {
+        self.runtime_host.snapshot()
+    }
+
+    #[must_use]
+    pub fn has_applied_kiosk_authorization(
+        &self,
+        operation_id: &str,
+        device_id: &str,
+        owner_action_request_id: &str,
+    ) -> bool {
+        let expected = kiosk_manifold_request_id(operation_id, device_id, owner_action_request_id);
+        self.runtime_host
+            .snapshot()
+            .applied_request_ids
+            .iter()
+            .any(|request_id| request_id.as_str() == expected)
+    }
+
+    pub fn authorize_kiosk_show_controls(
+        &mut self,
+        authorization: &KioskShowControlsCommandAuthorization,
+        now_ms: u64,
+    ) -> Result<KioskShowControlsAuthorityReceipt, String> {
+        if authorization.operation_id.is_empty()
+            || authorization.operation_id.len() > 256
+            || authorization.preview_id.is_empty()
+            || authorization.preview_id.len() > 256
+            || authorization.device_id.is_empty()
+            || authorization.device_id.len() > 256
+            || authorization.identity_revision == 0
+            || authorization.issued_at_ms > now_ms
+            || now_ms >= authorization.expires_at_ms
+            || authorization.expires_at_ms <= authorization.issued_at_ms
+            || authorization
+                .expires_at_ms
+                .checked_sub(authorization.issued_at_ms)
+                .is_none_or(|lifetime| lifetime > MAX_KIOSK_COMMAND_LIFETIME_MS)
+        {
+            return Err("Fleet Kiosk command authorization is invalid or expired".to_owned());
+        }
+        if authorization.owner_action_request_id.is_empty()
+            || authorization.manifold_request_id
+                != kiosk_manifold_request_id(
+                    &authorization.operation_id,
+                    &authorization.device_id,
+                    &authorization.owner_action_request_id,
+                )
+        {
+            return Err(
+                "Fleet Kiosk Manifold request identity does not bind the owner action".to_owned(),
+            );
+        }
+        if self.runtime_host.snapshot().authority_revision.get() == u64::MAX {
+            return Err("Fleet runtime authority reached its terminal revision".to_owned());
+        }
+        let params = KioskShowControlsTypedParams {
+            schema: "rusty.fleet.kiosk_show_controls_params.v1",
+            operation_id: &authorization.operation_id,
+            preview_id: &authorization.preview_id,
+            action_id: KIOSK_SHOW_CONTROLS_COMMAND_ID,
+            device_id: &authorization.device_id,
+            identity_revision: authorization.identity_revision,
+        };
+        let canonical_params = serde_jcs::to_vec(&params)
+            .map_err(|error| format!("Fleet Kiosk parameters are not canonicalizable: {error}"))?;
+        if canonical_params.is_empty() || canonical_params.len() > 4_096 {
+            return Err("Fleet Kiosk parameters exceed the Manifold command bound".to_owned());
+        }
+        let canonical_size_bytes = u32::try_from(canonical_params.len())
+            .map_err(|_| "Fleet Kiosk parameter size is not representable".to_owned())?;
+        let request = ManifoldRuntimeCommandRequest {
+            schema_id: schema_id(HOST_COMMAND_REQUEST_SCHEMA),
+            request_id: DottedId::new(authorization.manifold_request_id.clone())
+                .map_err(|error| format!("invalid Manifold request ID: {error}"))?,
+            expected_authority_revision: self.runtime_host.snapshot().authority_revision,
+            requester_id: DottedId::new(authorization.requester_id.clone())
+                .map_err(|error| format!("invalid Manifold requester ID: {error}"))?,
+            command_id: DottedId::new(KIOSK_SHOW_CONTROLS_COMMAND_ID).expect("static command id"),
+            lease_id: None,
+            params_digest: Some(ManifoldRuntimeTypedParamsDigest {
+                schema_id: schema_id(HOST_TYPED_PARAMS_DIGEST_SCHEMA),
+                params_type_id: DottedId::new(KIOSK_SHOW_CONTROLS_PARAMS_TYPE_ID)
+                    .expect("static params type id"),
+                canonical_sha256: format!(
+                    "sha256:{}",
+                    hex::encode(Sha256::digest(&canonical_params))
+                ),
+                canonical_size_bytes,
+            }),
+            issued_at_ms: authorization.issued_at_ms,
+            expires_at_ms: authorization.expires_at_ms,
+        };
+        let dispatch = self.runtime_host.review_command(&request, now_ms);
+        if dispatch.outcome != ManifoldRuntimeDispatchOutcome::Ready {
+            return Err(format!(
+                "Manifold rejected Fleet Kiosk dispatch review: {:?}",
+                dispatch.rejection_reason
+            ));
+        }
+        let application = self
+            .runtime_host
+            .apply_dispatch(&request, &dispatch, now_ms);
+        if !application.applied {
+            return Err(format!(
+                "Manifold rejected Fleet Kiosk dispatch application: {:?}",
+                application.rejection_reason
+            ));
+        }
+        Ok(KioskShowControlsAuthorityReceipt {
+            request,
+            dispatch,
+            application,
+        })
     }
 
     pub fn apply_enrollment(
@@ -407,7 +622,105 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
-    use super::{CheckInRejectionReason, FleetManifoldAdapter};
+    use super::{
+        CheckInRejectionReason, FleetManifoldAdapter, FleetManifoldAdapterSnapshot,
+        KioskShowControlsCommandAuthorization, kiosk_manifold_request_id,
+    };
+
+    #[test]
+    fn kiosk_command_authority_binds_typed_params_and_survives_restart() {
+        let mut adapter = FleetManifoldAdapter::new(vec![dotted("operator.local")]);
+        let owner_action_request_id = "owner-action-0001";
+        let authorization = KioskShowControlsCommandAuthorization {
+            manifold_request_id: kiosk_manifold_request_id(
+                "operation-1",
+                "device-1",
+                owner_action_request_id,
+            ),
+            owner_action_request_id: owner_action_request_id.to_owned(),
+            requester_id: "operator.local".to_owned(),
+            operation_id: "operation-1".to_owned(),
+            preview_id: "preview-1".to_owned(),
+            device_id: "device-1".to_owned(),
+            identity_revision: 7,
+            issued_at_ms: 2_000,
+            expires_at_ms: 92_000,
+        };
+        let receipt = adapter
+            .authorize_kiosk_show_controls(&authorization, 2_000)
+            .expect("Manifold authority applies exact Kiosk command");
+        assert!(receipt.application.applied);
+        let digest = receipt
+            .request
+            .params_digest
+            .as_ref()
+            .expect("typed parameters are mandatory");
+        assert!(digest.canonical_sha256.starts_with("sha256:"));
+        assert!(digest.canonical_size_bytes > 0);
+        assert_eq!(adapter.runtime_host_snapshot().authority_revision.get(), 2);
+        assert!(adapter.has_applied_kiosk_authorization(
+            "operation-1",
+            "device-1",
+            owner_action_request_id
+        ));
+
+        let snapshot_json =
+            serde_json::to_string(&adapter.snapshot()).expect("snapshot serializes");
+        let snapshot: FleetManifoldAdapterSnapshot =
+            serde_json::from_str(&snapshot_json).expect("snapshot deserializes");
+        let mut restarted = FleetManifoldAdapter::new(vec![dotted("operator.local")]);
+        restarted
+            .restore_session(snapshot, 2_001)
+            .expect("runtime authority restarts");
+        assert_eq!(
+            restarted.runtime_host_snapshot().authority_revision.get(),
+            2
+        );
+        assert!(
+            restarted
+                .authorize_kiosk_show_controls(&authorization, 2_001)
+                .expect_err("the same authority request cannot replay")
+                .contains("ReplayedRequest")
+        );
+    }
+
+    #[test]
+    fn kiosk_command_authority_rejects_overlong_expiry_and_terminal_revision() {
+        let owner_action_request_id = "owner-action-0001";
+        let authorization = KioskShowControlsCommandAuthorization {
+            manifold_request_id: kiosk_manifold_request_id(
+                "operation-1",
+                "device-1",
+                owner_action_request_id,
+            ),
+            owner_action_request_id: owner_action_request_id.to_owned(),
+            requester_id: "operator.local".to_owned(),
+            operation_id: "operation-1".to_owned(),
+            preview_id: "preview-1".to_owned(),
+            device_id: "device-1".to_owned(),
+            identity_revision: 7,
+            issued_at_ms: 2_000,
+            expires_at_ms: 92_001,
+        };
+        let mut adapter = FleetManifoldAdapter::new(vec![dotted("operator.local")]);
+        assert!(
+            adapter
+                .authorize_kiosk_show_controls(&authorization, 2_000)
+                .is_err()
+        );
+
+        let mut snapshot_value =
+            serde_json::to_value(adapter.snapshot()).expect("snapshot serializes");
+        snapshot_value["runtime_host"]["authority_revision"] = serde_json::json!(u64::MAX);
+        let snapshot: FleetManifoldAdapterSnapshot =
+            serde_json::from_value(snapshot_value).expect("terminal snapshot deserializes");
+        assert!(
+            FleetManifoldAdapter::new(vec![dotted("operator.local")])
+                .restore_session(snapshot, 2_000)
+                .expect_err("terminal revision recovery must fail")
+                .contains("terminal revision")
+        );
+    }
 
     #[test]
     fn authenticated_checkin_is_admitted_once_by_manifold_and_fleet() {

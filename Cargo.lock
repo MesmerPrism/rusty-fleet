@@ -226,6 +226,7 @@ dependencies = [
  "ed25519-dalek",
  "fleet-contracts",
  "fleet-hub",
+ "fleet-kiosk-adapter",
  "fleet-manifold-adapter",
  "fleet-simulator",
  "hex",
@@ -239,6 +240,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-kiosk-adapter"
+version = "0.1.0"
+dependencies = [
+ "fleet-contracts",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "fleet-manifold-adapter"
 version = "0.1.0"
 dependencies = [
@@ -249,7 +261,9 @@ dependencies = [
  "hex",
  "rusty-manifold-model",
  "rusty-manifold-peer",
+ "rusty-manifold-runtime-host",
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha2",
 ]
@@ -543,7 +557,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-admission"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=5c3679b5b7faaacfe65daecfaf48d442af279870#5c3679b5b7faaacfe65daecfaf48d442af279870"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
 dependencies = [
  "rusty-manifold-model",
  "serde",
@@ -553,7 +567,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-media-session"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=5c3679b5b7faaacfe65daecfaf48d442af279870#5c3679b5b7faaacfe65daecfaf48d442af279870"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
 dependencies = [
  "rusty-manifold-admission",
  "rusty-manifold-model",
@@ -566,7 +580,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-model"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=5c3679b5b7faaacfe65daecfaf48d442af279870#5c3679b5b7faaacfe65daecfaf48d442af279870"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
 dependencies = [
  "serde",
 ]
@@ -574,7 +588,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-peer"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=5c3679b5b7faaacfe65daecfaf48d442af279870#5c3679b5b7faaacfe65daecfaf48d442af279870"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
 dependencies = [
  "ed25519-dalek",
  "rusty-manifold-media-session",
@@ -588,7 +602,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-runtime-host"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=5c3679b5b7faaacfe65daecfaf48d442af279870#5c3679b5b7faaacfe65daecfaf48d442af279870"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
 dependencies = [
  "rusty-manifold-model",
  "serde",
