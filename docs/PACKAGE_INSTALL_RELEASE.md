@@ -83,7 +83,12 @@ package-get OPERATION_ID
 The WPF Console accepts a credential-free HTTPS signed-manifest URL, expected
 package identity, and rollout ring. Confirmation is labeled as preparation,
 and the live status explicitly states that owner ingress is unavailable and
-that no package was dispatched or installed.
+that no package was dispatched or installed. The input lock is visible once
+the preview is immutable, an accepted preparation cannot be confirmed again,
+and `Close view` clears only the local Console projection; it does not cancel
+or mutate the Hub operation. Batch operations are collapsed by default to
+preserve the normal fleet workspace, and package inputs reflow within the
+declared minimum window before the operator opens the bounded target ledger.
 
 ## Persistence and restart
 
@@ -106,8 +111,10 @@ Focused validation covers:
 - CLI preview/execute/get and malformed-response rejection;
 - local API 501 acknowledgement and receipt rejection without mutation;
 - durable restart at `dispatch_ready`;
-- WPF exact-release/target confirmation, fail-closed refresh, accessible
-  non-color target evidence, and explicit no-dispatch/no-install language.
+- WPF exact-release/target confirmation across the normal 50-device fixture,
+  fail-closed refresh, a virtualized accessible per-target ledger, disabled
+  repeat confirmation, non-color target evidence, and explicit
+  no-dispatch/no-install language.
 
 Repository Quick and Standard gates are device-free. A live package update
 requires a separately authorized owner/device validation unit and cannot be

@@ -41,7 +41,9 @@ Quick is safe during normal editing and checks:
   acknowledgement/receipt HTTP 501 rejection without mutation, and
   CLI/API/WPF parity with explicit no-dispatch/no-install language;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
-  against the real 1,000-device Rust projection;
+  across off-screen 10/50/100-row layout windows cut from deterministic
+  50/250-device Rust projections, with the 50-device source projection as the
+  normal operator fixture and the only presented-window profile;
 - native grid/inspector UI Automation peers and names, grouped recycling
   virtualization, bounded realized rows, readable default column widths,
   stable view models, canonical search/freshness expressions and Hub-owned
@@ -221,6 +223,7 @@ WPF surface exists:
 | --- | ---: | ---: | ---: | ---: |
 | canonical condition/query/projection fixtures | required | focused | Standard | Deep |
 | deterministic 4/50/250/1k/5k datasets | required | affected profile | Standard | Deep |
+| Console 10/50/100-row off-screen layout window | not applicable | focused | Standard | regression |
 | Console/CLI/API membership and reason parity | contract only | focused | Standard | Deep |
 | keyboard and UI Automation regression | not applicable | focused | Standard | Standard |
 | Narrator, Accessibility Insights, high contrast, large text, scaling, multi-monitor | not applicable | defect-targeted spot check | informative current-settings check | cumulative full release gate |
@@ -232,6 +235,16 @@ Performance thresholds in the UI guide are candidates until a milestone
 records reference hardware, data profile, method, distribution, achieved
 result, and headroom. Do not convert a single fast run into a supported-scale
 claim.
+
+The WPF acceptance focus is a realistic 10-to-100-device fleet, with 50 as
+the normal fixture. The larger deterministic datasets continue to exercise
+contracts and stress behavior; they are not the normal operator layout target
+and do not expand the supported production-fleet claim.
+
+The v1 WPF receipt retains the generic `projection_rows`, `realized_rows`, and
+freshness-count fields as deprecated aliases for the 1,000-row stress sentinel
+because the existing repository gate consumes them. New evidence uses explicit
+`normal_*`, `operator_*`, and `stress_*` fields.
 
 Screenshot matrices detect layout drift but do not replace keyboard, UI
 Automation, screen-reader, or interaction tests.

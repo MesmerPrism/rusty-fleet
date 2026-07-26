@@ -59,7 +59,8 @@ Live device work is never implied by a source or documentation task.
   loopback-only local API projection;
 - `apps/fleet-console-wpf.tests`: package-free native DataGrid, UI Automation,
   watch-cursor/damage, stable-context/order, grouped virtualization, presented
-  keyboard, and 1,000-device scale validation;
+  keyboard, 10/50/100-row off-screen layout validation, and a normal 50-row
+  presented-window check;
 - `schemas`: versioned JSON Schema projection;
 - `fixtures`: small committed contracts and deterministic scenario manifests.
 
@@ -129,7 +130,9 @@ The detailed contract is [docs/OPERATOR_UI.md](docs/OPERATOR_UI.md).
   selection, query, accessibility, or virtualization behavior.
 - A WPF surface is not accepted from a four-device happy path; use the
   milestone's keyboard, UI Automation, high-contrast, scaling, and scale
-  fixtures.
+  fixtures. Treat 50 devices as the normal operator fixture and validate the
+  realistic 10-to-100-device window; larger deterministic datasets are
+  separate stress evidence and must not drive the default layout.
 
 ## Stacked milestone rule
 

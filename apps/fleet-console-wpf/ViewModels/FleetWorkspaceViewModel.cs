@@ -113,7 +113,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                   CurrentPackageOperation is null);
         ConfirmPackageInstallReleaseCommand = new AsyncCommand(
             ConfirmPackageInstallReleaseAsync,
-            () => !IsBusy && _source is not null && CurrentPackageOperation is not null);
+            () => CanConfirmPackageInstallRelease);
         RefreshPackageInstallReleaseCommand = new AsyncCommand(
             RefreshPackageInstallReleaseAsync,
             () => !IsBusy && _source is not null && CurrentPackageOperation is not null);
@@ -347,6 +347,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             if (SetProperty(ref _currentPackageOperation, value))
             {
                 OnPropertyChanged(nameof(IsPackageInputLocked));
+                OnPropertyChanged(nameof(PackageInputLockText));
+                OnPropertyChanged(nameof(CanConfirmPackageInstallRelease));
+                OnPropertyChanged(nameof(PackageConfirmationButtonText));
                 PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 ConfirmPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 RefreshPackageInstallReleaseCommand.RaiseCanExecuteChanged();
@@ -356,6 +359,20 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     }
 
     public bool IsPackageInputLocked => CurrentPackageOperation is not null;
+
+    public string PackageInputLockText => IsPackageInputLocked
+        ? "Locked to immutable preview"
+        : string.Empty;
+
+    public bool CanConfirmPackageInstallRelease =>
+        !IsBusy &&
+        _source is not null &&
+        IsPackagePreviewReady(CurrentPackageOperation);
+
+    public string PackageConfirmationButtonText =>
+        CurrentPackageOperation?.Lifecycle == "accepted"
+            ? "Preparation accepted"
+            : "Confirm preparation";
 
     public string PackageOperationSummaryText
     {
@@ -388,6 +405,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 RefreshOperationCommand.RaiseCanExecuteChanged();
                 DismissOperationCommand.RaiseCanExecuteChanged();
                 PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanConfirmPackageInstallRelease));
                 ConfirmPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 RefreshPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 DismissPackageInstallReleaseCommand.RaiseCanExecuteChanged();
@@ -673,6 +691,13 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         {
             PackageOperationStatusText =
                 "Preview a package operation before confirming it";
+            return;
+        }
+        if (!IsPackagePreviewReady(prior))
+        {
+            PackageOperationStatusText = prior.Lifecycle == "accepted"
+                ? "Preparation is already accepted · refresh or close the operation view"
+                : "The current package operation is not ready for confirmation";
             return;
         }
         var request = new PackageInstallReleaseExecuteRequest
@@ -1672,6 +1697,22 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             $"{operation.Targets.Count} exact target(s) · {eligible} eligible · " +
             $"{excluded} excluded · {prepared} prepared only · " +
             $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}";
+    }
+
+    private static bool IsPackagePreviewReady(PackageInstallReleaseOperation? operation)
+    {
+        if (operation is null || operation.Lifecycle != "proposed")
+        {
+            return false;
+        }
+
+        var eligible = operation.Targets
+            .Where(target => target.Preflight.Eligible)
+            .ToArray();
+        return eligible.Length > 0 &&
+               eligible.All(target =>
+                   target.Lifecycle == "proposed" &&
+                   target.Stage == "preview_ready");
     }
 
     private static void ValidateOperationBinding(

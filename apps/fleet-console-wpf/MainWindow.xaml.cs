@@ -47,6 +47,10 @@ public partial class MainWindow : Window
 
     public TextBox SavedViewNameControl => SavedViewNameBox;
 
+    public Expander BatchOperationsControl => BatchOperationsExpander;
+
+    public ScrollViewer BatchOperationsScrollControl => BatchOperationsScrollViewer;
+
     public FrameworkElement KioskOperationRegion => OperationPane;
 
     public Button PreviewKioskShowControlsControl => PreviewKioskShowControlsButton;
@@ -72,6 +76,8 @@ public partial class MainWindow : Window
     public Button RefreshPackageInstallReleaseControl => RefreshPackageInstallReleaseButton;
 
     public Button DismissPackageInstallReleaseControl => DismissPackageInstallReleaseButton;
+
+    public DataGrid PackageOperationTargetsControl => PackageOperationTargetsGrid;
 
     public FrameworkElement InspectorRegion => InspectorPane;
 

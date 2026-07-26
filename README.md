@@ -27,8 +27,8 @@ structured `fleetctl detail` parity and a keyboard-accessible full-device
 detail surface with overview, status, capability, work, stream, and retained
 condition-history tabs; returning preserves the exact fleet scope, selection,
 scroll anchor, and stable identity. Its package-free
-1,000-device and presented-window
-keyboard/UI Automation checks pass. The automated host-side source stack has
+10/50/100-row off-screen layout/virtualization checks and normal 50-row
+presented-window keyboard/UI Automation checks pass. The automated host-side source stack has
 also passed Quick, Standard, Deep, workflow-contract, and exact Quest-owner
 `Host` validation; see the
 [M1 consolidation readiness record](docs/M1_CONSOLIDATION_READINESS.md).
@@ -113,7 +113,8 @@ The current implementation is split into:
   full-device detail over the canonical local API;
 - `fleet-console-wpf.tests`: package-free native UI Automation,
   watch-cursor/reset/damage, grouped virtualization, stable-context/order,
-  capability-family, presented keyboard, and 1,000-device checks.
+  capability-family, normal 50-row presented keyboard, and 10/50/100-row
+  off-screen layout checks.
 
 The deterministic M1 negative-path harness runs four independent devices
 through sleep/wake aging, route loss/recovery, duplicate and stale check-ins,
@@ -245,8 +246,11 @@ restart have passed with private evidence and complete device cleanup. M1
 now also has its native WPF table/inspector, canonical scope/sort/grouping,
 Hub-owned saved-view persistence/restoration, stable-context behavior,
 explicit queued live ordering, and automated
-1,000-device virtualization/UI Automation baseline over a mixed
-500-fresh/250-stale/250-offline canonical projection. A real presented-window
+10/50/100-row off-screen layout/virtualization coverage, with a normal
+50-device mixed 25-fresh/13-stale/12-offline projection and a separate
+50-row presented-window keyboard/UI Automation pass. Larger generated
+fleets remain separate stress evidence rather than the default Console design
+target. A real presented-window
 pass verifies search, grid, batch, and inspector keyboard focus. Its
 self-checking lifecycle projection and exact-owner key-rotation gate cover the
 remaining Fleet-owned deterministic lifecycle cases. M1 is functionally
