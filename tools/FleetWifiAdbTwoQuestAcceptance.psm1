@@ -37,8 +37,10 @@ public static class RustyFleetAcceptanceNative
 "@
 }
 
-$script:ConfigSchema = "rusty.fleet.wifi_adb_two_quest_run_config.v1"
-$script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v4"
+$script:ConfigSchema = "rusty.fleet.wifi_adb_two_quest_run_config.v2"
+$script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v5"
+$script:AgentBoardReceiptSchema =
+    "rusty.fleet.wifi_adb_two_quest_agent_board_receipt.v1"
 $script:QfmCommit = "a6d8e88c9d65f642d0cbf74fc8b92c8f1cd19ae5"
 $script:HelperCommit = "d800e5c7c5f8c77ad2bae52450f32092f3c92ace"
 $script:ArtifactIds = @(
@@ -255,7 +257,8 @@ function Read-StrictJsonFile {
         }
         Assert-NoDuplicateJsonProperties -Json $json
         try {
-            $value = $json | ConvertFrom-Json -AsHashtable -Depth 64
+            $value = $json |
+                ConvertFrom-Json -AsHashtable -Depth 64 -DateKind String
         } catch {
             throw (New-AcceptanceError "private_input_json_invalid" `
                 "$Context must be strict JSON.")
@@ -324,6 +327,7 @@ function Read-ValidatedRunConfig {
         "schema",
         "run_id",
         "private_state_root",
+        "agent_board",
         "source_commits",
         "artifact_pins",
         "onboarding",
@@ -352,6 +356,39 @@ function Read-ValidatedRunConfig {
     Assert-Condition (-not $stateRoot.StartsWith("\\", [StringComparison]::Ordinal)) `
         "private_state_root_invalid" "private_state_root must not be a UNC path."
     $config.private_state_root = $stateRoot
+
+    Assert-ExactProperties -Value $config.agent_board -Required @(
+        "cli_path",
+        "cli_sha256",
+        "lease_duration_seconds"
+    ) -Context "agent_board"
+    Assert-Condition (
+        [string]$config.agent_board.cli_sha256 -cmatch '^[0-9a-f]{64}$'
+    ) "agent_board_cli_hash_invalid" `
+        "The Agent Board wrapper needs one lowercase SHA-256 pin."
+    $config.agent_board.cli_path = Resolve-PrivateLeaf `
+        -Path ([string]$config.agent_board.cli_path) `
+        -Context "Agent Board wrapper"
+    Assert-Condition (
+        [IO.Path]::GetExtension([string]$config.agent_board.cli_path) -ceq
+            ".ps1"
+    ) "agent_board_cli_type_invalid" `
+        "The Agent Board coordination owner must be a pinned PowerShell wrapper."
+    Assert-Condition (
+        (Get-Sha256 -Path ([string]$config.agent_board.cli_path)) -ceq
+            [string]$config.agent_board.cli_sha256
+    ) "agent_board_cli_hash_mismatch" `
+        "The Agent Board wrapper does not match its configured SHA-256."
+    Assert-Condition (
+        $config.agent_board.lease_duration_seconds -is [int] -or
+        $config.agent_board.lease_duration_seconds -is [long]
+    ) "agent_board_duration_invalid" `
+        "The Agent Board lease duration must be an integer."
+    Assert-Condition (
+        [long]$config.agent_board.lease_duration_seconds -ge 600 -and
+        [long]$config.agent_board.lease_duration_seconds -le 28800
+    ) "agent_board_duration_invalid" `
+        "The Agent Board lease duration must be between 10 minutes and 8 hours."
 
     Assert-ExactProperties -Value $config.onboarding `
         -Required @("request_path", "inventory_path") -Context "onboarding"
@@ -898,6 +935,7 @@ function Write-SanitizedState {
     $privateValues = @(
         [string]$Context.Path,
         [string]$Context.Config.private_state_root,
+        [string]$Context.Config.agent_board.cli_path,
         [string]$Context.Config.hub.config_path,
         [string]$Context.Config.onboarding.request_path,
         [string]$Context.Config.onboarding.inventory_path
@@ -956,8 +994,15 @@ function Assert-ValidSanitizedStateShape {
         "schema", "run_id_hash", "config_sha256", "status", "phase",
         "sequence", "checkpoint", "devices", "hub", "onboarding", "cleanup",
         "claims", "events", "mutation", "mutation_history",
-        "journal_head_sha256", "final_receipt_sha256"
+        "journal_head_sha256", "final_receipt_sha256",
+        "agent_board_reservation"
     ) -Context "acceptance state"
+    Assert-Condition (
+        $null -eq $State.agent_board_reservation -or
+        @("bound", "expired", "released") -ccontains
+            [string]$State.agent_board_reservation
+    ) "agent_board_projection_invalid" `
+        "The sanitized reservation projection must use its bounded vocabulary."
     Assert-ExactProperties -Value $State.hub -Required @(
         "started_by_run", "process_id", "firewall_created",
         "two_fresh_baseline_checkins"
@@ -1086,6 +1131,544 @@ function Read-SanitizedState {
     return $state
 }
 
+function Get-AgentBoardReceiptPath {
+    param([Parameter(Mandatory)][object] $Context)
+    return Join-Path ([string]$Context.Config.private_state_root) `
+        "agent-board-reservation.json"
+}
+
+function Write-AgentBoardReceipt {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $Receipt
+    )
+    $root = [IO.Path]::GetFullPath(
+        [string]$Context.Config.private_state_root)
+    Assert-Condition (Test-Path -LiteralPath $root -PathType Container) `
+        "state_root_missing" `
+        "The private state root has not been created by Preflight."
+    $path = Get-AgentBoardReceiptPath -Context $Context
+    $temporary = Join-Path $root (
+        ".agent-board-reservation-" +
+        [guid]::NewGuid().ToString("N") + ".pending")
+    $json = $Receipt | ConvertTo-Json -Depth 16
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(
+        $json + [Environment]::NewLine)
+    $stream = [IO.FileStream]::new(
+        $temporary,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None,
+        4096,
+        [IO.FileOptions]::WriteThrough)
+    try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally {
+        $stream.Dispose()
+        [Array]::Clear($bytes, 0, $bytes.Length)
+    }
+    $temporaryItem = Get-Item -LiteralPath $temporary -Force
+    Assert-Condition (-not (
+            $temporaryItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint
+        )) "agent_board_receipt_temporary_reparse" `
+        "The randomized reservation receipt became a reparse point."
+    [RustyFleetAcceptanceNative]::PublishWriteThrough($temporary, $path)
+}
+
+function Get-AgentBoardBinding {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)]
+        [ValidateSet("device_a", "device_b")]
+        [string] $Slot
+    )
+    $device = Get-DeviceBySlot -Context $Context -Slot $Slot
+    return [pscustomobject]@{
+        Slot = $Slot
+        DeviceId = [string]$device.device_id
+        UsbSerial = [string]$device.usb_serial
+        Resource = "quest:" + [string]$device.usb_serial
+        Owner = "rusty-fleet-wifi-adb-" +
+            [string]$Context.Config.run_id
+        Task = "two-quest acceptance $Slot"
+        Reason = "run=$($Context.Config.run_id);slot=$Slot;" +
+            "device=$($device.device_id)"
+    }
+}
+
+function ConvertFrom-AgentBoardTimestamp {
+    param([Parameter(Mandatory)][string] $Text)
+    $parsed = [DateTimeOffset]::MinValue
+    $valid = $Text -cmatch
+        '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' -and
+        [DateTimeOffset]::TryParse(
+        $Text,
+        [Globalization.CultureInfo]::InvariantCulture,
+        (
+            [Globalization.DateTimeStyles]::AssumeUniversal -bor
+            [Globalization.DateTimeStyles]::AdjustToUniversal
+        ),
+        [ref]$parsed)
+    Assert-Condition $valid "agent_board_timestamp_invalid" `
+        "Agent Board returned an invalid lease timestamp."
+    return $parsed.ToUniversalTime()
+}
+
+function Invoke-AgentBoardCli {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][string[]] $Arguments,
+        [int[]] $AllowedExitCodes = @(0)
+    )
+    Assert-Condition (
+        (Get-Sha256 -Path ([string]$Context.Config.agent_board.cli_path)) -ceq
+            [string]$Context.Config.agent_board.cli_sha256
+    ) "agent_board_cli_hash_mismatch" `
+        "The pinned Agent Board wrapper changed after config validation."
+    $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+    $result = Invoke-BoundedProcess -FilePath $pwsh -Arguments (@(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", [string]$Context.Config.agent_board.cli_path
+        ) + $Arguments) -TimeoutSeconds 30
+    Assert-Condition ($result.ExitCode -in $AllowedExitCodes) `
+        "agent_board_command_rejected" `
+        "Agent Board rejected the exact reservation operation."
+    Assert-Condition (
+        -not [string]::IsNullOrWhiteSpace($result.Stdout) -and
+        $result.Stdout.Length -le 65536
+    ) "agent_board_json_invalid" `
+        "Agent Board returned no bounded JSON receipt."
+    Assert-NoDuplicateJsonProperties -Json $result.Stdout
+    try {
+        return $result.Stdout |
+            ConvertFrom-Json -AsHashtable -Depth 32 -DateKind String
+    } catch {
+        throw (New-AcceptanceError "agent_board_json_invalid" `
+            "Agent Board returned invalid JSON.")
+    }
+}
+
+function Assert-AgentBoardExternalLease {
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary] $Lease,
+        [Parameter(Mandatory)][object] $Binding,
+        [string] $ExpectedLeaseId = "",
+        [Parameter(Mandatory)][string[]] $AllowedStatuses,
+        [switch] $RequireFuture
+    )
+    Assert-ExactProperties -Value $Lease -Required @(
+        "id", "resource", "owner", "task", "reason", "status", "host",
+        "owner_pid", "created_at", "expected_until", "lease_until",
+        "released_at", "result", "note"
+    ) -Context "Agent Board external lease"
+    Assert-Condition (
+        [string]$Lease.id -cmatch
+            '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -and
+        (-not $ExpectedLeaseId -or
+            [string]$Lease.id -ceq $ExpectedLeaseId) -and
+        [string]$Lease.resource -ceq [string]$Binding.Resource -and
+        [string]$Lease.owner -ceq [string]$Binding.Owner -and
+        [string]$Lease.task -ceq [string]$Binding.Task -and
+        [string]$Lease.reason -ceq [string]$Binding.Reason -and
+        $AllowedStatuses -ccontains [string]$Lease.status
+    ) "agent_board_lease_binding_invalid" `
+        "Agent Board did not return the exact run, slot, device, and resource binding."
+    $leaseUntil = ConvertFrom-AgentBoardTimestamp `
+        -Text ([string]$Lease.lease_until)
+    if ($RequireFuture) {
+        Assert-Condition (
+            $leaseUntil -gt [DateTimeOffset]::UtcNow.AddSeconds(5)
+        ) "agent_board_lease_expired" `
+            "Agent Board did not return a currently active lease horizon."
+    }
+}
+
+function ConvertTo-AgentBoardReceiptLease {
+    param(
+        [Parameter(Mandatory)][object] $Binding,
+        [Parameter(Mandatory)][Collections.IDictionary] $Lease
+    )
+    return [ordered]@{
+        slot = [string]$Binding.Slot
+        device_id = [string]$Binding.DeviceId
+        "usb_serial" = [string]$Binding.UsbSerial
+        lease_id = [string]$Lease.id
+        resource = [string]$Lease.resource
+        owner = [string]$Lease.owner
+        task = [string]$Lease.task
+        reason = [string]$Lease.reason
+        status = [string]$Lease.status
+        lease_until = [string]$Lease.lease_until
+    }
+}
+
+function Assert-AgentBoardReceiptShape {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $Receipt
+    )
+    Assert-ExactProperties -Value $Receipt -Required @(
+        "schema", "run_id", "config_sha256", "state",
+        "created_at_ms", "updated_at_ms", "leases"
+    ) -Context "private Agent Board reservation receipt"
+    Assert-Condition (
+        [string]$Receipt.schema -ceq $script:AgentBoardReceiptSchema -and
+        [string]$Receipt.run_id -ceq [string]$Context.Config.run_id -and
+        [string]$Receipt.config_sha256 -ceq [string]$Context.Sha256 -and
+        @("acquiring", "bound", "expired", "released") -ccontains
+            [string]$Receipt.state -and
+        $Receipt.leases -is [Collections.IList] -and
+        $Receipt.leases.Count -le 2
+    ) "agent_board_receipt_invalid" `
+        "The private Agent Board reservation receipt is not bound to this run."
+    if ([string]$Receipt.state -ceq "bound") {
+        Assert-Condition ($Receipt.leases.Count -eq 2) `
+            "agent_board_receipt_incomplete" `
+            "A bound reservation receipt must contain both logical slots."
+    }
+    $seen = @()
+    foreach ($record in @($Receipt.leases)) {
+        Assert-ExactProperties -Value $record -Required @(
+            "slot", "device_id", "usb_serial", "lease_id", "resource",
+            "owner", "task", "reason", "status", "lease_until"
+        ) -Context "private Agent Board lease binding"
+        Assert-Condition (
+            [string]$record.slot -cin @("device_a", "device_b") -and
+            [string]$record.lease_id -cmatch
+                '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -and
+            @("active", "expired", "released") -ccontains
+                [string]$record.status
+        ) "agent_board_receipt_lease_invalid" `
+            "The private Agent Board receipt contains an invalid lease."
+        $binding = Get-AgentBoardBinding -Context $Context `
+            -Slot ([string]$record.slot)
+        Assert-Condition (
+            [string]$record.device_id -ceq [string]$binding.DeviceId -and
+            [string]$record.usb_serial -ceq [string]$binding.UsbSerial -and
+            [string]$record.resource -ceq [string]$binding.Resource -and
+            [string]$record.owner -ceq [string]$binding.Owner -and
+            [string]$record.task -ceq [string]$binding.Task -and
+            [string]$record.reason -ceq [string]$binding.Reason
+        ) "agent_board_receipt_binding_invalid" `
+            "The private receipt does not bind the exact configured device."
+        [void](ConvertFrom-AgentBoardTimestamp `
+            -Text ([string]$record.lease_until))
+        $seen += [string]$record.slot
+    }
+    Assert-Condition (@($seen | Sort-Object -Unique).Count -eq $seen.Count) `
+        "agent_board_receipt_slot_duplicate" `
+        "The private receipt contains a duplicate logical slot."
+}
+
+function Read-AgentBoardReceipt {
+    param([Parameter(Mandatory)][object] $Context)
+    $path = Get-AgentBoardReceiptPath -Context $Context
+    $receipt = (Read-StrictJsonFile -Path $path `
+            -Context "private Agent Board reservation receipt" `
+            -MaximumBytes 65536).Value
+    Assert-AgentBoardReceiptShape -Context $Context -Receipt $receipt
+    return $receipt
+}
+
+function New-AgentBoardReceipt {
+    param([Parameter(Mandatory)][object] $Context)
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    return [ordered]@{
+        schema = $script:AgentBoardReceiptSchema
+        run_id = [string]$Context.Config.run_id
+        config_sha256 = [string]$Context.Sha256
+        state = "acquiring"
+        created_at_ms = $now
+        updated_at_ms = $now
+        leases = @()
+    }
+}
+
+function Set-AgentBoardReceiptLease {
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary] $Receipt,
+        [Parameter(Mandatory)][Collections.IDictionary] $Record
+    )
+    $others = @($Receipt.leases | Where-Object {
+        [string]$_.slot -cne [string]$Record.slot
+    })
+    $Receipt.leases = @($others + $Record | Sort-Object {
+        [string]$_.slot
+    })
+    $Receipt.updated_at_ms =
+        [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+}
+
+function Invoke-AgentBoardReserve {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][object] $Binding
+    )
+    $seconds = [long]$Context.Config.agent_board.lease_duration_seconds
+    $response = Invoke-AgentBoardCli -Context $Context -Arguments @(
+        "reserve", [string]$Binding.Resource,
+        "--owner", [string]$Binding.Owner,
+        "--task", [string]$Binding.Task,
+        "--reason", [string]$Binding.Reason,
+        "--duration", "$seconds" + "s",
+        "--json"
+    )
+    Assert-ExactProperties -Value $response -Required @(
+        "ok", "status", "lease"
+    ) -Context "Agent Board reserve response"
+    Assert-Condition (
+        $response.ok -eq $true -and
+        [string]$response.status -ceq "reserved" -and
+        $response.lease -is [Collections.IDictionary]
+    ) "agent_board_reserve_failed" `
+        "Agent Board did not reserve the exact Quest resource."
+    Assert-AgentBoardExternalLease -Lease $response.lease `
+        -Binding $Binding -AllowedStatuses @("active") -RequireFuture
+    return ConvertTo-AgentBoardReceiptLease `
+        -Binding $Binding -Lease $response.lease
+}
+
+function Invoke-AgentBoardHeartbeat {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][object] $Binding,
+        [Parameter(Mandatory)][Collections.IDictionary] $Record
+    )
+    $seconds = [long]$Context.Config.agent_board.lease_duration_seconds
+    $response = Invoke-AgentBoardCli -Context $Context -Arguments @(
+        "heartbeat", [string]$Record.lease_id,
+        "--duration", "$seconds" + "s",
+        "--json"
+    ) -AllowedExitCodes @(0, 2)
+    Assert-ExactProperties -Value $response -Required @(
+        "ok", "status", "lease"
+    ) -Context "Agent Board heartbeat response"
+    Assert-Condition (
+        $response.ok -eq $true -and
+        [string]$response.status -ceq "active" -and
+        $response.lease -is [Collections.IDictionary]
+    ) "agent_board_heartbeat_failed" `
+        "Agent Board could not revalidate an exact Quest reservation."
+    Assert-AgentBoardExternalLease -Lease $response.lease `
+        -Binding $Binding -ExpectedLeaseId ([string]$Record.lease_id) `
+        -AllowedStatuses @("active") -RequireFuture
+    return ConvertTo-AgentBoardReceiptLease `
+        -Binding $Binding -Lease $response.lease
+}
+
+function Assert-AgentBoardReservation {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State
+    )
+    $receipt = $null
+    try {
+        Assert-Condition (
+            [string]$State.agent_board_reservation -ceq "bound"
+        ) "agent_board_reservation_required" `
+            "Both exact Quest reservations are required before device access."
+        $receipt = Read-AgentBoardReceipt -Context $Context
+        Assert-Condition ([string]$receipt.state -ceq "bound") `
+            "agent_board_reservation_required" `
+            "The private two-device reservation receipt is not bound."
+        foreach ($slot in @("device_a", "device_b")) {
+            $record = @($receipt.leases | Where-Object {
+                [string]$_.slot -ceq $slot
+            })
+            Assert-Condition ($record.Count -eq 1) `
+                "agent_board_reservation_required" `
+                "The private reservation receipt is missing a logical slot."
+            $binding = Get-AgentBoardBinding -Context $Context -Slot $slot
+            $renewed = Invoke-AgentBoardHeartbeat `
+                -Context $Context -Binding $binding -Record $record[0]
+            Set-AgentBoardReceiptLease -Receipt $receipt -Record $renewed
+            Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+        }
+        $receipt.state = "bound"
+        $receipt.updated_at_ms =
+            [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+        return $receipt
+    } catch {
+        if ($null -ne $receipt) {
+            $receipt.state = "expired"
+            $receipt.updated_at_ms =
+                [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+        }
+        $State.agent_board_reservation = "expired"
+        Write-SanitizedState -Context $Context -State $State
+        throw
+    }
+}
+
+function Ensure-AgentBoardReservation {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [switch] $AllowRepair
+    )
+    $path = Get-AgentBoardReceiptPath -Context $Context
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        try {
+            $State.agent_board_reservation = "bound"
+            return Assert-AgentBoardReservation `
+                -Context $Context -State $State
+        } catch {
+            if (-not $AllowRepair) {
+                throw
+            }
+        }
+        $receipt = Read-AgentBoardReceipt -Context $Context
+    } else {
+        $receipt = New-AgentBoardReceipt -Context $Context
+        Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+    }
+
+    $receipt.state = "acquiring"
+    Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+    try {
+        foreach ($slot in @("device_a", "device_b")) {
+            $binding = Get-AgentBoardBinding -Context $Context -Slot $slot
+            $record = @($receipt.leases | Where-Object {
+                [string]$_.slot -ceq $slot
+            })
+            $active = $null
+            if (
+                $record.Count -eq 1 -and
+                [string]$record[0].status -ceq "active"
+            ) {
+                try {
+                    $active = Invoke-AgentBoardHeartbeat `
+                        -Context $Context -Binding $binding -Record $record[0]
+                } catch {
+                    $active = $null
+                }
+            }
+            if ($null -eq $active) {
+                $active = Invoke-AgentBoardReserve `
+                    -Context $Context -Binding $binding
+            }
+            Set-AgentBoardReceiptLease -Receipt $receipt -Record $active
+            Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+        }
+        $receipt.state = "bound"
+        $receipt.updated_at_ms =
+            [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+        $State.agent_board_reservation = "bound"
+        Write-SanitizedState -Context $Context -State $State
+        return $receipt
+    } catch {
+        $receipt.state = "expired"
+        $receipt.updated_at_ms =
+            [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+        $State.agent_board_reservation = "expired"
+        Write-SanitizedState -Context $Context -State $State
+        throw
+    }
+}
+
+function Release-AgentBoardReservation {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State
+    )
+    Assert-Condition (
+        [string]$State.cleanup.status -ceq "complete" -and
+        [string]$State.status -ceq "complete"
+    ) "agent_board_release_before_cleanup" `
+        "Quest reservations remain held until terminal cleanup is durable."
+    $receipt = Read-AgentBoardReceipt -Context $Context
+    $releaseFailed = $false
+    foreach ($slot in @("device_a", "device_b")) {
+        $record = @($receipt.leases | Where-Object {
+            [string]$_.slot -ceq $slot
+        })
+        if ($record.Count -ne 1) {
+            $releaseFailed = $true
+            continue
+        }
+        if (@("released", "expired") -ccontains
+            [string]$record[0].status) {
+            continue
+        }
+        $binding = Get-AgentBoardBinding -Context $Context -Slot $slot
+        try {
+            $response = Invoke-AgentBoardCli -Context $Context -Arguments @(
+                "release", [string]$record[0].lease_id,
+                "--result", "done",
+                "--note", "terminal cleanup complete",
+                "--json"
+            ) -AllowedExitCodes @(0, 2)
+            Assert-ExactProperties -Value $response -Required @(
+                "ok", "status", "lease"
+            ) -Context "Agent Board release response"
+            Assert-Condition (
+                $response.ok -eq $true -and
+                @("released", "expired") -ccontains
+                    [string]$response.status -and
+                $response.lease -is [Collections.IDictionary]
+            ) "agent_board_release_failed" `
+                "Agent Board did not terminalize an exact Quest reservation."
+            Assert-AgentBoardExternalLease -Lease $response.lease `
+                -Binding $binding `
+                -ExpectedLeaseId ([string]$record[0].lease_id) `
+                -AllowedStatuses @("released", "expired")
+            $released = ConvertTo-AgentBoardReceiptLease `
+                -Binding $binding -Lease $response.lease
+            Set-AgentBoardReceiptLease -Receipt $receipt -Record $released
+            Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+        } catch {
+            $releaseFailed = $true
+        }
+    }
+    if ($releaseFailed) {
+        $receipt.state = "expired"
+        $State.agent_board_reservation = "expired"
+        Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+        Write-SanitizedState -Context $Context -State $State
+        throw (New-AcceptanceError "agent_board_release_incomplete" `
+            "Terminal cleanup is complete, but reservation release is incomplete.")
+    }
+    $receipt.state = "released"
+    $receipt.updated_at_ms =
+        [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    Write-AgentBoardReceipt -Context $Context -Receipt $receipt
+    $State.agent_board_reservation = "released"
+    Write-SanitizedState -Context $Context -State $State
+    return $receipt
+}
+
+function Set-AgentBoardStatusProjection {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State
+    )
+    if ([string]$State.agent_board_reservation -cne "bound") {
+        return
+    }
+    try {
+        $receipt = Read-AgentBoardReceipt -Context $Context
+        if (
+            [string]$receipt.state -cne "bound" -or
+            @($receipt.leases | Where-Object {
+                (ConvertFrom-AgentBoardTimestamp `
+                    -Text ([string]$_.lease_until)) -le
+                    [DateTimeOffset]::UtcNow
+            }).Count -ne 0
+        ) {
+            $State.agent_board_reservation = "expired"
+        }
+    } catch {
+        $State.agent_board_reservation = "expired"
+    }
+}
+
 function Get-MutationJournalSha256 {
     param([Parameter(Mandatory)][Collections.IDictionary] $Mutation)
     $parts = @(
@@ -1189,6 +1772,10 @@ function Start-DurableMutation {
     )
     Assert-Condition ($null -eq $State.mutation) "mutation_already_active" `
         "A durable mutation must be reconciled before another can start."
+    if (-not $ModeledNoDeviceProjection) {
+        [void](Assert-AgentBoardReservation `
+            -Context $Context -State $State)
+    }
     $ordinal = @($State.mutation_history).Count + 1
     $requestMaterial = "$($Context.Sha256)`0$Kind`0$Slot`0$ordinal"
     $mutationHash = Get-BytesSha256 -Bytes (
@@ -1279,6 +1866,13 @@ function Set-DurableMutationSent {
         [string]$State.mutation.stage -ceq "prepared_not_sent"
     ) "mutation_not_prepared" `
         "A mutation cannot be sent without a durable prepared record."
+    if (
+        [string]$State.mutation.isolation_scope -cne
+            "modeled_not_executed"
+    ) {
+        [void](Assert-AgentBoardReservation `
+            -Context $Context -State $State)
+    }
     $State.mutation.stage = "sent_outcome_unknown"
     $State.mutation.sent_at_ms =
         [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -1508,6 +2102,7 @@ function New-SanitizedState {
         mutation_history = @()
         journal_head_sha256 = "0" * 64
         final_receipt_sha256 = "0" * 64
+        agent_board_reservation = $null
         devices = $devices
         hub = [ordered]@{
             started_by_run = $false
@@ -1913,8 +2508,8 @@ function ConvertFrom-ClosedAdbdSocketOwnerReadback {
     $lines = @($Text.Replace("`r`n", "`n").Replace("`r", "`n").Trim() `
         -split "`n")
     if (
-        $lines.Count -lt 25 -or
-        $lines[0] -cne "rusty.fleet.adbd_socket_owner.v2"
+        $lines.Count -lt 29 -or
+        $lines[0] -cne "rusty.fleet.adbd_socket_owner.v3"
     ) {
         return $unknown
     }
@@ -1947,30 +2542,29 @@ function ConvertFrom-ClosedAdbdSocketOwnerReadback {
         $lineIndex++
         if (
             $lineIndex -ge $lines.Count -or
-            $lines[$lineIndex] -cne "fd_begin=1"
+            $lines[$lineIndex] -cne "pre_fd_begin=1"
         ) {
             return $unknown
         }
         $lineIndex++
 
-        $inodes = [Collections.Generic.HashSet[string]]::new(
+        $preInodes = [Collections.Generic.HashSet[string]]::new(
             [StringComparer]::Ordinal)
         while (
             $lineIndex -lt $lines.Count -and
-            $lines[$lineIndex] -cne "fd_end=1"
+            $lines[$lineIndex] -cne "pre_fd_end=1"
         ) {
             if (
-                $lines[$lineIndex] -cnotmatch '^inode=([1-9][0-9]*)$' -or
-                -not $inodes.Add([string]$Matches[1])
+                $lines[$lineIndex] -cnotmatch '^pre_inode=([1-9][0-9]*)$'
             ) {
                 return $unknown
             }
+            [void]$preInodes.Add([string]$Matches[1])
             $lineIndex++
         }
         if (
-            $inodes.Count -eq 0 -or
             $lineIndex -ge $lines.Count -or
-            $lines[$lineIndex] -cne "fd_end=1"
+            $lines[$lineIndex] -cne "pre_fd_end=1"
         ) {
             return $unknown
         }
@@ -2038,6 +2632,35 @@ function ConvertFrom-ClosedAdbdSocketOwnerReadback {
 
         if (
             $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cne "post_fd_begin=1"
+        ) {
+            return $unknown
+        }
+        $lineIndex++
+        $postInodes = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::Ordinal)
+        while (
+            $lineIndex -lt $lines.Count -and
+            $lines[$lineIndex] -cne "post_fd_end=1"
+        ) {
+            if (
+                $lines[$lineIndex] -cnotmatch '^post_inode=([1-9][0-9]*)$'
+            ) {
+                return $unknown
+            }
+            [void]$postInodes.Add([string]$Matches[1])
+            $lineIndex++
+        }
+        if (
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cne "post_fd_end=1"
+        ) {
+            return $unknown
+        }
+        $lineIndex++
+
+        if (
+            $lineIndex -ge $lines.Count -or
             $lines[$lineIndex] -cnotmatch '^post_pid=([1-9][0-9]*)$'
         ) {
             return $unknown
@@ -2062,15 +2685,19 @@ function ConvertFrom-ClosedAdbdSocketOwnerReadback {
 
         if (
             $prePid -cne $postPid -or
-            $preStartTime -cne $postStartTime
+            $preStartTime -cne $postStartTime -or
+            $preInodes.Count -ne $postInodes.Count -or
+            @($preInodes | Where-Object {
+                -not $postInodes.Contains([string]$_)
+            }).Count -ne 0
         ) {
             return $unknown
         }
         $ownedRows = @($rows | Where-Object {
-            $inodes.Contains([string]$_.Inode)
+            $preInodes.Contains([string]$_.Inode)
         })
         $projectionParts = @(
-            @($inodes | Sort-Object | ForEach-Object { "inode=$_" })
+            @($preInodes | Sort-Object | ForEach-Object { "inode=$_" })
             @($ownedRows | ForEach-Object {
                 [string]$_.Canonical
             } | Sort-Object)
@@ -2239,12 +2866,13 @@ function Get-AdbNetworkObservation {
         -PropertyName "service.adb.tls.port"
 
     # Resolve the exact adbd process's socket FDs against the kernel TCP
-    # tables twice. Each complete sample is bounded by the same PID and
-    # /proc/<pid>/stat start time before and after capture. Only identical
-    # consecutive owner projections can prove presence or absence.
+    # tables twice. Each complete sample is bounded by the same PID,
+    # /proc/<pid>/stat start time, and complete socket-FD inode set before and
+    # after the TCP tables. Only identical consecutive owner projections can
+    # prove presence or absence.
     $ownerSocketCommand = @'
 command -v awk >/dev/null 2>&1 || exit 40
-printf "rusty.fleet.adbd_socket_owner.v2\n"
+printf "rusty.fleet.adbd_socket_owner.v3\n"
 for sample in 1 2; do
   pre_pid=$(pidof adbd) || exit 41
   case "$pre_pid" in ''|*[!0-9]*) exit 42 ;; esac
@@ -2255,25 +2883,34 @@ for sample in 1 2; do
   ' /proc/"$pre_pid"/stat) || exit 43
   case "$pre_starttime" in ''|*[!0-9]*) exit 43 ;; esac
 
-  printf "sample_begin=%s\npre_pid=%s\npre_starttime=%s\nfd_begin=1\n" "$sample" "$pre_pid" "$pre_starttime"
-  saw_socket=0
+  printf "sample_begin=%s\npre_pid=%s\npre_starttime=%s\npre_fd_begin=1\n" "$sample" "$pre_pid" "$pre_starttime"
   for fd in /proc/"$pre_pid"/fd/*; do
     link=$(readlink "$fd") || exit 44
     case "$link" in
       socket:\[*\])
         inode=$(printf "%s" "$link" | awk -F'[][]' '{print $2}')
         case "$inode" in ''|*[!0-9]*) exit 45 ;; esac
-        printf "inode=%s\n" "$inode"
-        saw_socket=1
+        printf "pre_inode=%s\n" "$inode"
         ;;
     esac
   done
-  [ "$saw_socket" = 1 ] || exit 46
-  printf "fd_end=1\ntcp4_begin=1\n"
+  printf "pre_fd_end=1\ntcp4_begin=1\n"
   awk 'NR > 1 { print "tcp4=" $2 "," $3 "," $4 "," $10 }' /proc/net/tcp || exit 47
   printf "tcp4_end=1\ntcp6_begin=1\n"
   awk 'NR > 1 { print "tcp6=" $2 "," $3 "," $4 "," $10 }' /proc/net/tcp6 || exit 48
-  printf "tcp6_end=1\n"
+  printf "tcp6_end=1\npost_fd_begin=1\n"
+
+  for fd in /proc/"$pre_pid"/fd/*; do
+    link=$(readlink "$fd") || exit 49
+    case "$link" in
+      socket:\[*\])
+        inode=$(printf "%s" "$link" | awk -F'[][]' '{print $2}')
+        case "$inode" in ''|*[!0-9]*) exit 50 ;; esac
+        printf "post_inode=%s\n" "$inode"
+        ;;
+    esac
+  done
+  printf "post_fd_end=1\n"
 
   post_pid=$(pidof adbd) || exit 41
   case "$post_pid" in ''|*[!0-9]*) exit 42 ;; esac
@@ -2291,7 +2928,7 @@ done
     $ownerSocketsResult = Invoke-AdbExact `
         -Context $Context -Device $Device `
         -Arguments @("shell", "sh", "-c", $ownerSocketCommand) `
-        -AllowedExitCodes (@(0) + @(40..48))
+        -AllowedExitCodes (@(0) + @(40..50))
     $ownerSockets = if ($ownerSocketsResult.ExitCode -eq 0) {
         ConvertFrom-ClosedAdbdSocketOwnerReadback `
             -Text $ownerSocketsResult.Stdout
@@ -4909,6 +5546,15 @@ function Invoke-AcceptanceCleanup {
         [Parameter(Mandatory)][object] $Context,
         [Parameter(Mandatory)][Collections.IDictionary] $State
     )
+    if ([string]$State.cleanup.status -ceq "complete") {
+        if ([string]$State.agent_board_reservation -cne "released") {
+            [void](Release-AgentBoardReservation `
+                -Context $Context -State $State)
+        }
+        return $State
+    }
+    [void](Ensure-AgentBoardReservation `
+        -Context $Context -State $State -AllowRepair)
     $State.cleanup.attempted = $true
     $State.cleanup.status = "running"
     $State.status = "cleanup_running"
@@ -5113,6 +5759,10 @@ function Invoke-AcceptanceCleanup {
     Set-FinalReceiptDigest -State $State `
         -Disposition "cleanup-$($truth.Status)"
     Write-SanitizedState -Context $Context -State $State
+    if ($truth.Status -ceq "complete") {
+        [void](Release-AgentBoardReservation `
+            -Context $Context -State $State)
+    }
     return $State
 }
 
@@ -5174,6 +5824,10 @@ function Invoke-FleetWifiAdbTwoQuestAcceptance {
             } else {
                 $null
             }
+            if ($null -ne $state) {
+                Set-AgentBoardStatusProjection `
+                    -Context $context -State $state
+            }
             return Get-SanitizedStatus -Context $context -State $state
         }
         "Execute" {
@@ -5183,6 +5837,8 @@ function Invoke-FleetWifiAdbTwoQuestAcceptance {
             Assert-NoAmbiguousMutation -Context $context -State $state
             Assert-Condition ([string]$state.phase -ceq "preflight") `
                 "execute_requires_preflight" "Execute starts only from completed Preflight."
+            [void](Ensure-AgentBoardReservation `
+                -Context $context -State $state -AllowRepair)
             return Invoke-ResumeTransition -Context $context -State $state `
                 -ConfirmCurrentCheckpoint:$false
         }
@@ -5191,6 +5847,8 @@ function Invoke-FleetWifiAdbTwoQuestAcceptance {
                 "Resume requires -ConfirmMutation."
             $state = Read-SanitizedState -Context $context
             Assert-NoAmbiguousMutation -Context $context -State $state
+            [void](Assert-AgentBoardReservation `
+                -Context $context -State $state)
             return Invoke-ResumeTransition -Context $context -State $state `
                 -ConfirmCurrentCheckpoint:$ConfirmCurrentCheckpoint
         }
@@ -5212,6 +5870,9 @@ Export-ModuleMember -Function @(
     "New-SanitizedState",
     "Write-SanitizedState",
     "Read-SanitizedState",
+    "Ensure-AgentBoardReservation",
+    "Assert-AgentBoardReservation",
+    "Release-AgentBoardReservation",
     "Start-DurableMutation",
     "Set-DurableMutationSent",
     "Complete-DurableMutation",

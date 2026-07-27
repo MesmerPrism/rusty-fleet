@@ -27,6 +27,7 @@ tcp6_begin=1
 tcp6_end=1
 post_fd_begin=1
 post_inode=44001
+post_inode=54321
 post_fd_end=1
 post_pid=1265
 post_starttime=98765

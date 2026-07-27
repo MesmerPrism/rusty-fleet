@@ -20,6 +20,9 @@ owner tools; it does not absorb their authority.
   preparation, loopback execution, and the short-lived exact-shell proof.
 - Rusty Quest's Fleet Agent authenticates, sanitizes, signs, and publishes that
   owner proof. It is non-sticky and requires an explicit relaunch after reboot.
+- Agent Board owns machine-wide exclusivity. Fleet owns the private
+  two-resource receipt and its run/slot/device binding, not the Board database
+  or lease authority.
 - Meta owns the protected wearer prompt. The runner never presses, bypasses,
   infers, or fabricates approval.
 
@@ -35,6 +38,8 @@ and replace every placeholder. The completed config must remain outside the
 checkout. It is the runner's only private input and contains:
 
 - exact reviewed QFM and helper source commits;
+- the absolute pinned Agent Board PowerShell wrapper, its SHA-256, and a
+  bounded 10-minute-to-8-hour lease duration;
 - SHA-256 pins and private paths for the ten closed owner artifacts;
 - a private offline-onboarding request and expected inventory;
 - the future private Hub-config path plus loopback operator origin;
@@ -49,7 +54,8 @@ The parser rejects unknown and duplicate JSON properties, extra artifacts,
 wrong hashes, wrong source commits, nonlocal or reparse input paths, duplicate
 slots/identities/serials, partial profile/seed pairs, cross-device QFM
 enrollments, wrong profile identities, seed lengths other than 32 bytes, and
-duplicate seeds.
+duplicate seeds. The Board wrapper hash is checked again before every
+coordination command.
 
 `Preflight` requires the expected inventory, Hub config, and both profile/seed
 pairs to be absent. This gives the transaction exclusive, auditable ownership
@@ -113,31 +119,40 @@ pairing-in-progress flag, so Fleet never derives those facts from
 Actual dynamic listener and pending-pairing ports come from the ADB owner's
 closed `adb mdns services` projection, target-bound by the Quest's current
 global IPv4 address or platform-serial service prefix. A closed
-`rusty.fleet.adbd_socket_owner.v2` readback resolves the exact `adbd` process's
-socket FDs to `/proc/net/tcp*`. Each complete sample binds the PID and
-`/proc/<pid>/stat` start time before and after the FD and TCP-table capture.
-Fleet requires two consecutive samples with the same process identity and
-identical complete owner projection before deriving actual listener/session
-facts. A listener appearing between FD and TCP capture, PID reuse, process or
-socket churn, inaccessible procfs ownership, an unrecognized readback, or
-disagreement between properties/mDNS and the owned socket set remains
-`unknown`, never `absent`. Any unknown manager, mDNS, or socket-owner grammar
-therefore fails Preflight and cannot satisfy terminal cleanup. Because AOSP v1
-omits pairing-in-progress, missing mDNS while Wireless Debugging remains
-enabled also stays `unknown`; only an observed pairing service is `pending`,
-and only disabled owner flags can close it as `absent`. Final cleanup also
-requires the retained pairing/trusted-network digest to equal its initial
-value.
+`rusty.fleet.adbd_socket_owner.v3` readback resolves the exact `adbd` process's
+socket FDs to `/proc/net/tcp*`. Each complete sample captures the PID and
+`/proc/<pid>/stat` start time, a full pre-table socket-FD inode set, both TCP
+tables, a full post-table socket-FD inode set, and the identity again. The two
+FD sets and process identity must match within the sample. Fleet then requires
+two consecutive complete samples with identical identities, inode sets, and
+owned TCP row/state projections before deriving listener/session facts.
+A late listener or accepted session, close/reopen on a reused port, any FD
+churn, a state change on the same inode, partial TCP6 read, PID reuse, or
+second-sample right-edge churn therefore remains `unknown`, never `absent`.
+Any unknown manager, mDNS, or socket-owner grammar fails Preflight and cannot
+satisfy terminal cleanup. Because AOSP v1 omits pairing-in-progress, missing
+mDNS while Wireless Debugging remains enabled also stays `unknown`; only an
+observed pairing service is `pending`, and only disabled owner flags can close
+it as `absent`. Final cleanup also requires the retained
+pairing/trusted-network digest to equal its initial value.
 
-This readback correction advances private acceptance state to v4. A v3 state
-cannot be migrated safely because it has no retained-pairing baseline and may
-already contain false `absent` listener/session/pending claims. The current
-runner rejects it before resume. Finish cleanup with the exact runner checkout
-that created the v3 state, retain that cleanup evidence, and begin v4 with a
-fresh absent private state root; do not copy or synthesize v4 fields.
+This correction advances private run config from v1 to v2 and acceptance state
+from v4 to v5. A v4 state cannot be migrated safely: it has no exact private
+Agent Board receipt, and its v2 socket-owner capture could omit right-edge FD
+churn and preserve a false `absent` fact. The current runner rejects v4 before
+resume. Finish cleanup with the exact runner checkout that created that v4
+state, retain its cleanup evidence, and begin v5 with a fresh absent private
+state root and a v2 config. Do not copy or synthesize v5 fields. Older states
+retain their previously documented exact-checkout cleanup requirement.
 
 `Execute` and each `Resume` perform one durable transition. Both require
-`-ConfirmMutation`. Reusing a different config rejects before resume.
+`-ConfirmMutation`. Before Execute, the runner obtains fresh external
+reservations for both exact `quest:<usb-serial>` resources. The private receipt
+binds each lease ID to the run ID, logical slot, Fleet device ID, USB serial,
+resource, owner, task, reason, and deadline. Resume heartbeats and validates
+both exact leases before any device-touching transition. Every durable
+mutation repeats that validation before its isolation readback and again
+immediately before dispatch. Reusing a different config rejects before resume.
 
 The transaction stops with one of five typed attended checkpoints:
 
@@ -229,7 +244,11 @@ provisioning uses the same complete physical projection for the non-target.
 The private state file is resumable but sanitized. It stores logical slots,
 hashes, bounded states (including tri-state claims), accepted revisions,
 operation IDs, stable reason codes, bounded event history, run-owned inventory,
-and cleanup truth. Its schema
+cleanup truth, and only `bound`, `expired`, or `released` for Agent Board
+coordination. Lease IDs, resources, serials, owners, reasons, and deadlines
+remain solely in the private `agent-board-reservation.json` receipt. `Status`
+can downgrade a stale `bound` deadline to `expired` in its returned projection
+without mutating durable state or querying Board. Its schema
 rejects unknown and duplicate state fields. Before every write the runner
 rejects any configured path, serial, device ID, endpoint, enrollment path,
 profile path, seed path, or artifact path that appears in serialized state.
@@ -290,6 +309,14 @@ It attempts every bounded cleanup step even after a failure:
 - remove only the exact run-owned firewall rule and verified runtime stage;
 - invoke the inventory-bound onboarding cleanup after the Hub stops.
 
+Cleanup requires both exact Board reservations too. If one expired, Cleanup
+may retain the still-active slot and reserve only the missing exact resource,
+then writes a newly bound private bundle before device access. A partial
+cleanup retains the bundle. Only after complete terminal cleanup and its final
+receipt are durably written does the runner release both leases. Partial
+release is projected as `expired` and a later Cleanup retries release without
+redispatching device cleanup.
+
 Seed deletion is not Manifold authorization revocation. Use the onboarding
 owner's separate `revoke-plan` and the Manifold owner's authorized workflow
 when enrollment revocation is required.
@@ -321,6 +348,10 @@ bindings, signed-admission UID/freshness/device/operation/hash/key/revision/
 unsigned/replay rejection, durable prepared/sent/confirmed crash models, a
 real module process-boundary reload, no-redispatch recovery, exact-operation
 proof consumption and snapshot/restore rejection of cross-operation reuse,
-digest-chain tampering, write-through publication,
+digest-chain tampering, write-through publication, private two-lease
+acquisition/reload/revalidation, wrong-resource and expired-lease rejection,
+single-slot repair, deadline-only status downgrade, pre-dispatch heartbeats,
+release-before-cleanup rejection, partial release retry, within-sample late
+listener/session, close/reopen, FD/state/PID/TCP6/right-edge churn,
 resume mismatch, partial cleanup truth, parser checks, and forbidden
 ADB/approval surfaces. It does not touch a device or claim a live pass.

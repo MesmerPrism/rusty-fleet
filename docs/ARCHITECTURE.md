@@ -358,6 +358,12 @@ Wireless ADB helper. Its plan is non-mutating, its state is caller-private and
 sanitized, and each resume performs one durable transition around explicit
 Termux-restart, wearer-approval, and attended-reboot checkpoints. See
 [Two-Quest Wi-Fi ADB Acceptance](QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md).
+The orchestrator also owns coordination safety: a pinned Agent Board wrapper
+must yield a private run/slot/device-bound lease for each exact Quest before
+Execute. Both leases are revalidated before every mutation, retained through
+partial cleanup, and released only after terminal cleanup is durably complete.
+Lease IDs, serials, resources, and deadlines never enter the public state
+projection.
 
 ## Identity and security
 

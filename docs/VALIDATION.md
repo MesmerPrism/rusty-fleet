@@ -221,7 +221,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 
 Quick runs that modeled host-conformance gate plus the integrated synthetic
 signed-Hub exact-operation/proof-consumption and process-restart fault gates
-without contacting a device. The live phase remains an
+without contacting a device. The host gate also models the private two-device
+Agent Board receipt, restart revalidation, wrong binding, expiry/repair,
+pre-dispatch heartbeats, partial release, and release-after-cleanup rule. The
+live phase remains an
 explicitly confirmed, serial-reserved Meta Quest workflow with attended wearer
 and reboot checkpoints plus complete cleanup truth.
 The icon provenance test proves LF, CRLF, and CR canonical source text bind to

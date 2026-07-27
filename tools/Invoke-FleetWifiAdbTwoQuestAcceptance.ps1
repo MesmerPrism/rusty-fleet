@@ -23,7 +23,7 @@ if ($PSVersionTable.PSEdition -ne "Core" -or
 }
 
 Import-Module (Join-Path $PSScriptRoot "FleetWifiAdbTwoQuestAcceptance.psm1") `
-    -Force
+    -Force -DisableNameChecking
 
 try {
     $result = Invoke-FleetWifiAdbTwoQuestAcceptance `

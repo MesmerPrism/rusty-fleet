@@ -84,7 +84,10 @@ binds offline onboarding, File Manager profiles, the proof helper, signed
 Fleet state, two-device isolation, typed wearer/reboot checkpoints, and exact
 cleanup without putting private run inputs in this repository. Its host
 mutation journal is write-through, digest-chained, and never redispatches an
-interrupted unknown outcome.
+interrupted unknown outcome. A pinned Agent Board wrapper supplies a private,
+run-bound reservation receipt for both exact Quest resources; the runner
+revalidates both leases before every mutation, retains them through cleanup,
+and exposes only a sanitized reservation disposition.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status

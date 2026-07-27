@@ -1,7 +1,12 @@
 {
-  "schema": "rusty.fleet.wifi_adb_two_quest_run_config.v1",
+  "schema": "rusty.fleet.wifi_adb_two_quest_run_config.v2",
   "run_id": "wifi-adb-acceptance-example",
   "private_state_root": "<new-private-state-root>",
+  "agent_board": {
+    "cli_path": "<private-agent-board-wrapper-script>",
+    "cli_sha256": "<lowercase-sha256>",
+    "lease_duration_seconds": 3600
+  },
   "source_commits": {
     "questionable_file_manager": "a6d8e88c9d65f642d0cbf74fc8b92c8f1cd19ae5",
     "wireless_adb_helper": "d800e5c7c5f8c77ad2bae52450f32092f3c92ace"

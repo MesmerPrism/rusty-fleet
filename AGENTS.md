@@ -24,6 +24,11 @@ The Fleet-owned two-Quest Wi-Fi ADB acceptance runner is resumable and
 attended. Its Plan phase is completely non-mutating; Preflight creates private
 state only after strict source/artifact/config and read-only snapshot checks.
 Execute, Resume, attended-checkpoint confirmation, and Cleanup are distinct.
+Execute first acquires a private Agent Board bundle for both exact
+`quest:<serial>` resources. Resume and every durable mutation revalidate both
+leases; Cleanup repairs an expired slot when possible, retains the bundle
+through partial cleanup, and releases it only after complete terminal cleanup.
+Only `bound`, `expired`, or `released` may appear in sanitized state.
 Never automate Meta approval, restart the ADB daemon, persist raw owner output,
 or remove packages/profiles/processes that the run did not create.
 

@@ -15,7 +15,7 @@ if ($PSVersionTable.PSEdition -ne "Core" -or
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $PSScriptRoot "FleetWifiAdbTwoQuestAcceptance.psm1"
 $runnerPath = Join-Path $PSScriptRoot "Invoke-FleetWifiAdbTwoQuestAcceptance.ps1"
-Import-Module $modulePath -Force
+Import-Module $modulePath -Force -DisableNameChecking
 
 function Assert-True {
     param(
@@ -144,7 +144,14 @@ $emptyOwnerSockets = ConvertFrom-ClosedAdbdSocketOwnerReadback -Text (
         Join-Path $ownerFixtureRoot "adbd-sockets-empty.txt") -Raw)
 $unstableOwnerSockets = @(
     "adbd-sockets-listener-churn.txt",
-    "adbd-sockets-pid-reuse.txt"
+    "adbd-sockets-pid-reuse.txt",
+    "adbd-sockets-within-sample-late-listener.txt",
+    "adbd-sockets-within-sample-late-session.txt",
+    "adbd-sockets-close-reopen-reused-port.txt",
+    "adbd-sockets-fd-churn-same-identity.txt",
+    "adbd-sockets-tcp-state-churn-same-inode.txt",
+    "adbd-sockets-partial-tcp6-read.txt",
+    "adbd-sockets-second-sample-right-edge-churn.txt"
 ) | ForEach-Object {
     ConvertFrom-ClosedAdbdSocketOwnerReadback -Text (
         Get-Content -LiteralPath (Join-Path $ownerFixtureRoot $_) -Raw)
@@ -203,30 +210,32 @@ Assert-True (
     $pendingWithoutListener.WirelessPendingState -ceq "pending"
 ) "A conclusive empty owner projection lost the pending activation."
 
-$unstableFacts = Resolve-AdbOwnerNetworkFacts `
-    -Manager $retainedManager `
-    -Mdns ([pscustomobject]@{ ParseState = "known"; Services = @() }) `
-    -OwnerSockets $unstableOwnerSockets[0] `
-    -Tcp $inactivePort -Tls $inactivePort -WifiSetting "0" `
-    -PersistentTlsSetting "0" -TargetServices @()
-Assert-True (
-    $unstableFacts.ListenerState -ceq "unknown" -and
-    $unstableFacts.WirelessSessionState -ceq "unknown" -and
-    $unstableFacts.WirelessPendingState -ceq "unknown"
-) "Owner-snapshot churn did not poison every derived network fact."
-$preflightWouldAdmit =
-    $unstableFacts.ListenerState -ceq "absent" -and
-    $unstableFacts.WirelessSessionState -ceq "absent" -and
-    $unstableFacts.WirelessPendingState -ceq "absent"
-$terminalCleanupWouldAccept =
-    $unstableFacts.ListenerState -ceq "absent" -and
-    $unstableFacts.WirelessSessionState -ceq "absent" -and
-    $unstableFacts.WirelessPendingState -ceq "absent" -and
-    $retainedManager.Format -ceq "android.debugging_manager.text.v1"
-Assert-True (-not $preflightWouldAdmit) `
-    "An unstable owner snapshot could pass Preflight admission."
-Assert-True (-not $terminalCleanupWouldAccept) `
-    "An unstable owner snapshot could satisfy terminal cleanup."
+foreach ($unstableOwner in $unstableOwnerSockets) {
+    $unstableFacts = Resolve-AdbOwnerNetworkFacts `
+        -Manager $retainedManager `
+        -Mdns ([pscustomobject]@{ ParseState = "known"; Services = @() }) `
+        -OwnerSockets $unstableOwner `
+        -Tcp $inactivePort -Tls $inactivePort -WifiSetting "0" `
+        -PersistentTlsSetting "0" -TargetServices @()
+    Assert-True (
+        $unstableFacts.ListenerState -ceq "unknown" -and
+        $unstableFacts.WirelessSessionState -ceq "unknown" -and
+        $unstableFacts.WirelessPendingState -ceq "unknown"
+    ) "Owner-snapshot churn did not poison every derived network fact."
+    $preflightWouldAdmit =
+        $unstableFacts.ListenerState -ceq "absent" -and
+        $unstableFacts.WirelessSessionState -ceq "absent" -and
+        $unstableFacts.WirelessPendingState -ceq "absent"
+    $terminalCleanupWouldAccept =
+        $unstableFacts.ListenerState -ceq "absent" -and
+        $unstableFacts.WirelessSessionState -ceq "absent" -and
+        $unstableFacts.WirelessPendingState -ceq "absent" -and
+        $retainedManager.Format -ceq "android.debugging_manager.text.v1"
+    Assert-True (-not $preflightWouldAdmit) `
+        "An unstable owner snapshot could pass Preflight admission."
+    Assert-True (-not $terminalCleanupWouldAccept) `
+        "An unstable owner snapshot could satisfy terminal cleanup."
+}
 
 $unknownFacts = Resolve-AdbOwnerNetworkFacts `
     -Manager $unknownManager -Mdns $dynamicMdns `
@@ -273,6 +282,164 @@ try {
                 Hash.ToLowerInvariant()
         }
     }
+
+    $fakeBoardStatePath = Join-Path $testRoot "fake-agent-board-state.json"
+    $fakeBoardPath = Join-Path $testRoot "fake-agent-board.ps1"
+    $fakeBoardScript = @'
+$ErrorActionPreference = "Stop"
+$statePath = '__STATE_PATH__'
+$commandArguments = @($args)
+if (Test-Path -LiteralPath $statePath) {
+    $state = Get-Content -LiteralPath $statePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16 -DateKind String
+} else {
+    $state = [ordered]@{
+        mode = "normal"
+        reserve_count = 0
+        heartbeat_count = 0
+        release_count = 0
+        leases = @()
+    }
+}
+function Save-State {
+    [IO.File]::WriteAllText(
+        $statePath,
+        ($state | ConvertTo-Json -Depth 16) + [Environment]::NewLine,
+        [Text.UTF8Encoding]::new($false))
+}
+function Get-Option {
+    param([string] $Name)
+    $items = $commandArguments
+    for ($i = 0; $i -lt $items.Count - 1; $i++) {
+        if ([string]$items[$i] -ceq $Name) {
+            return [string]$items[$i + 1]
+        }
+    }
+    return ""
+}
+function Send-Json {
+    param([object] $Value, [int] $ExitCode = 0)
+    $Value | ConvertTo-Json -Depth 16
+    Save-State
+    exit $ExitCode
+}
+function Get-IsoTimestamp {
+    param([DateTimeOffset] $Value)
+    return $Value.ToUniversalTime().ToString(
+        "yyyy-MM-ddTHH:mm:ssZ",
+        [Globalization.CultureInfo]::InvariantCulture)
+}
+$command = [string]$args[0]
+$now = [DateTimeOffset]::UtcNow
+if ($command -ceq "reserve") {
+    $state.reserve_count = [int]$state.reserve_count + 1
+    $resource = [string]$args[1]
+    if (
+        [string]$state.mode -ceq "reserve_second_failure" -and
+        $resource.EndsWith("SYNTHETICb", [StringComparison]::Ordinal)
+    ) {
+        Send-Json -Value ([ordered]@{
+            ok = $false
+            status = "busy"
+            blocking_lease = [ordered]@{}
+        }) -ExitCode 2
+    }
+    $lease = [ordered]@{
+        id = [guid]::NewGuid().ToString()
+        resource = $resource
+        owner = Get-Option "--owner"
+        task = Get-Option "--task"
+        reason = Get-Option "--reason"
+        status = "active"
+        host = "synthetic-host"
+        owner_pid = 1234
+        created_at = Get-IsoTimestamp -Value $now
+        expected_until = Get-IsoTimestamp -Value ($now.AddHours(1))
+        lease_until = Get-IsoTimestamp -Value ($now.AddHours(1))
+        released_at = $null
+        result = $null
+        note = $null
+    }
+    $state.leases = @($state.leases) + $lease
+    Send-Json -Value ([ordered]@{
+        ok = $true
+        status = "reserved"
+        lease = $lease
+    })
+}
+if ($command -ceq "heartbeat") {
+    $state.heartbeat_count = [int]$state.heartbeat_count + 1
+    $leaseId = [string]$args[1]
+    $lease = @($state.leases | Where-Object {
+        [string]$_.id -ceq $leaseId
+    })[0]
+    if (
+        [string]$state.mode -ceq "heartbeat_second_expired" -and
+        [string]$lease.resource -clike "*SYNTHETICb"
+    ) {
+        $lease.status = "expired"
+        Send-Json -Value ([ordered]@{
+            ok = $false
+            status = "expired"
+            lease = $lease
+        }) -ExitCode 2
+    }
+    $lease.lease_until = Get-IsoTimestamp -Value ($now.AddHours(1))
+    $responseLease = $lease
+    if (
+        [string]$state.mode -ceq "heartbeat_wrong_resource" -and
+        [string]$lease.resource -clike "*SYNTHETICb"
+    ) {
+        $responseLease = [ordered]@{}
+        foreach ($entry in $lease.GetEnumerator()) {
+            $responseLease[[string]$entry.Key] = $entry.Value
+        }
+        $responseLease.resource = "quest:WRONG"
+    }
+    Send-Json -Value ([ordered]@{
+        ok = $true
+        status = "active"
+        lease = $responseLease
+    })
+}
+if ($command -ceq "release") {
+    $state.release_count = [int]$state.release_count + 1
+    $leaseId = [string]$args[1]
+    $lease = @($state.leases | Where-Object {
+        [string]$_.id -ceq $leaseId
+    })[0]
+    if (
+        [string]$state.mode -ceq "release_second_failure" -and
+        [string]$lease.resource -clike "*SYNTHETICb"
+    ) {
+        Send-Json -Value ([ordered]@{
+            ok = $false
+            status = "busy"
+            lease = $lease
+        }) -ExitCode 2
+    }
+    $lease.status = "released"
+    $lease.released_at = Get-IsoTimestamp -Value $now
+    $lease.result = "done"
+    $lease.note = "terminal cleanup complete"
+    Send-Json -Value ([ordered]@{
+        ok = $true
+        status = "released"
+        lease = $lease
+    })
+}
+Send-Json -Value ([ordered]@{
+    ok = $false
+    status = "unsupported"
+}) -ExitCode 2
+'@
+    $escapedFakeBoardStatePath =
+        $fakeBoardStatePath.Replace("'", "''")
+    [IO.File]::WriteAllText(
+        $fakeBoardPath,
+        $fakeBoardScript.Replace(
+            "__STATE_PATH__", $escapedFakeBoardStatePath),
+        [Text.UTF8Encoding]::new($false))
 
     $onboardingPath = Join-Path $testRoot "onboarding-request.json"
     $onboarding = [ordered]@{
@@ -354,9 +521,16 @@ try {
     }
 
     $config = [ordered]@{
-        schema = "rusty.fleet.wifi_adb_two_quest_run_config.v1"
+        schema = "rusty.fleet.wifi_adb_two_quest_run_config.v2"
         run_id = "wifi-adb-synthetic"
         private_state_root = Join-Path $testRoot "state"
+        agent_board = [ordered]@{
+            cli_path = $fakeBoardPath
+            cli_sha256 = (
+                Get-FileHash -LiteralPath $fakeBoardPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            lease_duration_seconds = 3600
+        }
         source_commits = [ordered]@{
             questionable_file_manager =
                 "a6d8e88c9d65f642d0cbf74fc8b92c8f1cd19ae5"
@@ -440,6 +614,14 @@ try {
     Write-Json -Path $wrongHashPath -Value $wrongHash
     Assert-ThrowsCode -Code "artifact_hash_mismatch" -Operation {
         Read-ValidatedRunConfig -RunConfig $wrongHashPath | Out-Null
+    }
+
+    $wrongBoardHash = Copy-JsonValue $config
+    $wrongBoardHash.agent_board.cli_sha256 = "0" * 64
+    $wrongBoardHashPath = Join-Path $testRoot "wrong-board-hash.json"
+    Write-Json -Path $wrongBoardHashPath -Value $wrongBoardHash
+    Assert-ThrowsCode -Code "agent_board_cli_hash_mismatch" -Operation {
+        Read-ValidatedRunConfig -RunConfig $wrongBoardHashPath | Out-Null
     }
 
     $duplicateDevice = Copy-JsonValue $config
@@ -671,13 +853,229 @@ try {
     $roundTrip = Read-SanitizedState -Context $validated
     Assert-True (
         [string]$roundTrip.schema -ceq
-            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v4" -and
+            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v5" -and
         [string]$roundTrip.claims.installed -ceq "not_evaluated" -and
         [string]$roundTrip.claims.reachable -ceq "not_evaluated" -and
+        $null -eq $roundTrip.agent_board_reservation -and
         @(Get-ChildItem -LiteralPath $config.private_state_root `
             -Filter "*.pending").Count -eq 0
     ) "Write-through state publication did not round-trip cleanly."
 
+    Assert-ThrowsCode -Code "agent_board_reservation_required" -Operation {
+        Assert-AgentBoardReservation `
+            -Context $validated -State $roundTrip | Out-Null
+    }
+    Assert-True (
+        [string](Read-SanitizedState `
+            -Context $validated).agent_board_reservation -ceq "expired"
+    ) "A missing private two-device receipt did not fail closed."
+
+    $modelState = Read-SanitizedState -Context $validated
+    [void](Ensure-AgentBoardReservation `
+        -Context $validated -State $modelState -AllowRepair)
+    $privateReservationPath = Join-Path `
+        $config.private_state_root "agent-board-reservation.json"
+    $privateReservation = Get-Content `
+        -LiteralPath $privateReservationPath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    $sanitizedReservationJson = Get-Content -LiteralPath (
+        Join-Path $config.private_state_root "acceptance-state.json") -Raw
+    Assert-True (
+        [string]$modelState.agent_board_reservation -ceq "bound" -and
+        [string]$privateReservation.state -ceq "bound" -and
+        $privateReservation.leases.Count -eq 2 -and
+        @($privateReservation.leases.slot | Sort-Object -Unique).Count -eq 2 -and
+        $sanitizedReservationJson.Contains(
+            '"agent_board_reservation": "bound"',
+            [StringComparison]::Ordinal) -and
+        -not $sanitizedReservationJson.Contains(
+            "SYNTHETICa", [StringComparison]::Ordinal) -and
+        -not $sanitizedReservationJson.Contains(
+            "SYNTHETICb", [StringComparison]::Ordinal) -and
+        -not $sanitizedReservationJson.Contains(
+            [string]$privateReservation.leases[0].lease_id,
+            [StringComparison]::Ordinal)
+    ) "The private two-device reservation was not bound or leaked into public state."
+
+    $fakeBoardState = Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    Assert-True (
+        [int]$fakeBoardState.reserve_count -eq 2 -and
+        [int]$fakeBoardState.release_count -eq 0
+    ) "The exact two resources were not freshly reserved."
+
+    $heartbeatBefore = [int]$fakeBoardState.heartbeat_count
+    [void](Assert-AgentBoardReservation `
+        -Context $validated -State $modelState)
+    $fakeBoardState = Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    Assert-True (
+        [int]$fakeBoardState.heartbeat_count -eq $heartbeatBefore + 2
+    ) "Reservation revalidation did not heartbeat both exact leases."
+
+    $restartScript = @"
+`$ErrorActionPreference = "Stop"
+Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
+`$context = Read-ValidatedRunConfig -RunConfig '$($configPath.Replace("'", "''"))'
+`$state = Read-SanitizedState -Context `$context
+[void](Assert-AgentBoardReservation -Context `$context -State `$state)
+"@
+    $encodedRestartScript = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes($restartScript))
+    $reservationRestart = Invoke-RunnerProcess -Arguments @(
+        "-NoProfile", "-EncodedCommand", $encodedRestartScript)
+    Assert-True ($reservationRestart.ExitCode -eq 0) `
+        "A fresh process could not reload and revalidate the private lease bundle."
+
+    $validPrivateReservation = Get-Content `
+        -LiteralPath $privateReservationPath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16 -DateKind String
+    $wrongRunReservation = Copy-JsonValue $validPrivateReservation
+    $wrongRunReservation.run_id = "wifi-adb-other-run"
+    Write-Json -Path $privateReservationPath -Value $wrongRunReservation
+    Assert-ThrowsCode -Code "agent_board_receipt_invalid" -Operation {
+        Assert-AgentBoardReservation `
+            -Context $validated -State $modelState | Out-Null
+    }
+    Write-Json -Path $privateReservationPath `
+        -Value $validPrivateReservation
+    $modelState = Read-SanitizedState -Context $validated
+    $modelState.agent_board_reservation = "bound"
+    Write-SanitizedState -Context $validated -State $modelState
+
+    $wrongSlotReservation = Copy-JsonValue $validPrivateReservation
+    $wrongSlotReservation.leases[0].slot = "device_b"
+    Write-Json -Path $privateReservationPath -Value $wrongSlotReservation
+    Assert-ThrowsCode -Code "agent_board_receipt_binding_invalid" -Operation {
+        Assert-AgentBoardReservation `
+            -Context $validated -State $modelState | Out-Null
+    }
+    Write-Json -Path $privateReservationPath `
+        -Value $validPrivateReservation
+    $modelState = Read-SanitizedState -Context $validated
+    $modelState.agent_board_reservation = "bound"
+    Write-SanitizedState -Context $validated -State $modelState
+
+    $fakeBoardState = Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    $fakeBoardState.mode = "heartbeat_wrong_resource"
+    Write-Json -Path $fakeBoardStatePath -Value $fakeBoardState
+    Assert-ThrowsCode -Code "agent_board_lease_binding_invalid" -Operation {
+        Assert-AgentBoardReservation `
+            -Context $validated -State $modelState | Out-Null
+    }
+    Assert-True (
+        [string](Read-SanitizedState `
+            -Context $validated).agent_board_reservation -ceq "expired"
+    ) "A wrong-resource heartbeat did not poison the public projection."
+    $fakeBoardState = Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    $fakeBoardState.mode = "normal"
+    Write-Json -Path $fakeBoardStatePath -Value $fakeBoardState
+    $modelState = Read-SanitizedState -Context $validated
+    [void](Ensure-AgentBoardReservation `
+        -Context $validated -State $modelState -AllowRepair)
+
+    $fakeBoardState = Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    $fakeBoardState.mode = "heartbeat_second_expired"
+    Write-Json -Path $fakeBoardStatePath -Value $fakeBoardState
+    Assert-ThrowsCode -Code "agent_board_heartbeat_failed" -Operation {
+        Assert-AgentBoardReservation `
+            -Context $validated -State $modelState | Out-Null
+    }
+    $fakeBoardState = Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    $fakeBoardState.mode = "normal"
+    Write-Json -Path $fakeBoardStatePath -Value $fakeBoardState
+    $modelState = Read-SanitizedState -Context $validated
+    [void](Ensure-AgentBoardReservation `
+        -Context $validated -State $modelState -AllowRepair)
+    Assert-True (
+        [string]$modelState.agent_board_reservation -ceq "bound"
+    ) "Cleanup-capable repair could not replace one expired exact lease."
+
+    $privateReservation = Get-Content `
+        -LiteralPath $privateReservationPath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    foreach ($lease in $privateReservation.leases) {
+        $lease.lease_until = "2000-01-01T00:00:00Z"
+    }
+    Write-Json -Path $privateReservationPath -Value $privateReservation
+    $projectedStatus = Invoke-FleetWifiAdbTwoQuestAcceptance `
+        -Action Status -RunConfig $configPath
+    Assert-True (
+        [string]$projectedStatus.agent_board_reservation -ceq "expired" -and
+        [string](Read-SanitizedState `
+            -Context $validated).agent_board_reservation -ceq "bound"
+    ) "Status did not derive an expired public projection without mutating state."
+    $modelState = Read-SanitizedState -Context $validated
+    [void](Ensure-AgentBoardReservation `
+        -Context $validated -State $modelState -AllowRepair)
+
+    Assert-ThrowsCode -Code "agent_board_release_before_cleanup" -Operation {
+        Release-AgentBoardReservation `
+            -Context $validated -State $modelState | Out-Null
+    }
+
+    $heartbeatBefore = [int](
+        Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    ).heartbeat_count
+    [void](Start-DurableMutation -Context $validated -State $modelState `
+        -Kind "modeled-board-dispatch" -ActionId "test.board.dispatch" `
+        -OwnerId "modeled-owner" -ModeledNoDeviceProjection)
+    & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
+        param($context, $state)
+        $state.mutation.isolation_scope = "both"
+        $state.mutation.journal_sha256 =
+            Get-MutationJournalSha256 -Mutation $state.mutation
+        Write-SanitizedState -Context $context -State $state
+    } $validated $modelState
+    Set-DurableMutationSent -Context $validated -State $modelState
+    $heartbeatAfter = [int](
+        Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    ).heartbeat_count
+    Assert-True (
+        $heartbeatAfter -eq $heartbeatBefore + 2 -and
+        [string]$modelState.mutation.stage -ceq "sent_outcome_unknown"
+    ) "The final pre-dispatch boundary did not revalidate both reservations."
+
+    $modelState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $modelState
+    [void](Ensure-AgentBoardReservation `
+        -Context $validated -State $modelState -AllowRepair)
+    $modelState.cleanup.status = "complete"
+    $modelState.status = "complete"
+    Write-SanitizedState -Context $validated -State $modelState
+    $fakeBoardState = Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    $fakeBoardState.mode = "release_second_failure"
+    Write-Json -Path $fakeBoardStatePath -Value $fakeBoardState
+    Assert-ThrowsCode -Code "agent_board_release_incomplete" -Operation {
+        Release-AgentBoardReservation `
+            -Context $validated -State $modelState | Out-Null
+    }
+    Assert-True (
+        [string](Read-SanitizedState `
+            -Context $validated).agent_board_reservation -ceq "expired"
+    ) "Partial terminal release was falsely projected as released."
+    $fakeBoardState = Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+        ConvertFrom-Json -AsHashtable -Depth 16
+    $fakeBoardState.mode = "normal"
+    Write-Json -Path $fakeBoardStatePath -Value $fakeBoardState
+    $modelState = Read-SanitizedState -Context $validated
+    [void](Release-AgentBoardReservation `
+        -Context $validated -State $modelState)
+    Assert-True (
+        [string]$modelState.agent_board_reservation -ceq "released"
+    ) "Terminal retry did not release the retained exact reservation."
+
+    $modelState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $modelState
     $unknownState = Copy-JsonValue $modelState
     $unknownState["unexpected"] = $true
     Write-Json -Path (
@@ -811,8 +1209,12 @@ try {
         "ConvertFrom-ClosedAdbManagerDump",
         "ConvertFrom-ClosedAdbMdnsServices",
         "ConvertFrom-ClosedAdbdSocketOwnerReadback",
-        "rusty.fleet.adbd_socket_owner.v2",
+        "rusty.fleet.adbd_socket_owner.v3",
         "pre_starttime",
+        "pre_fd_begin",
+        "post_fd_begin",
+        "agent_board_reservation",
+        "Assert-AgentBoardReservation",
         "adb_retained_pairing_sha256",
         "wireless_pending_state",
         "host_forward_count",
