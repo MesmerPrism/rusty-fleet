@@ -224,7 +224,15 @@ impl FleetHub {
             .and_then(|value| value.generation.clone());
         let ownership_generation = match existing.preview.action {
             WindowsHotspotAction::Start | WindowsHotspotAction::Status => None,
-            WindowsHotspotAction::Ensure => current_generation,
+            WindowsHotspotAction::Ensure => {
+                if current_generation != existing.preview.preflight.ownership_generation {
+                    return Err(HubError::new(
+                        "windows_hotspot_generation_changed",
+                        "Fleet hotspot generation changed after preview",
+                    ));
+                }
+                current_generation
+            }
             WindowsHotspotAction::Stop => {
                 let expected = current_generation.ok_or_else(|| {
                     HubError::new(
@@ -285,6 +293,12 @@ impl FleetHub {
             )
         })?;
         let existing = self.windows_hotspot_operation(&receipt.operation_id)?;
+        if existing.lifecycle != CommandLifecycle::Dispatched || existing.receipt.is_some() {
+            return Err(HubError::new(
+                "windows_hotspot_receipt_replay",
+                "only one receipt may settle a dispatched hotspot invocation",
+            ));
+        }
         let invocation = existing.invocation.as_ref().ok_or_else(|| {
             HubError::new(
                 "windows_hotspot_invocation_missing",
@@ -306,6 +320,9 @@ impl FleetHub {
                             .ownership_generation
                             .as_deref()
                             .is_some_and(|value| !value.is_empty())
+                        && (receipt.action != WindowsHotspotAction::Ensure
+                            || invocation.ownership_generation.is_none()
+                            || receipt.ownership_generation == invocation.ownership_generation)
                 }
                 WindowsHotspotAction::Stop => {
                     receipt.operational_state == "Off"
@@ -321,41 +338,99 @@ impl FleetHub {
             }
         }
         let prior = self.windows_hotspot_observation.clone();
-        self.windows_hotspot_observation = match receipt.operational_state.as_str() {
-            "On" if receipt.ownership_generation.is_some() => Some(WindowsHotspotObservedState {
+        self.windows_hotspot_observation = match (
+            receipt.outcome,
+            receipt.action,
+            receipt.operational_state.as_str(),
+        ) {
+            (
+                WindowsHotspotResult::Verified,
+                WindowsHotspotAction::Start | WindowsHotspotAction::Ensure,
+                "On",
+            ) => Some(WindowsHotspotObservedState {
                 active: true,
                 ownership: WindowsHotspotOwnership::Fleet,
                 generation: receipt.ownership_generation.clone(),
                 observed_at_ms: now_ms,
             }),
-            "On" if receipt.action == WindowsHotspotAction::Status
-                && receipt.outcome == WindowsHotspotResult::Verified
-                && prior
+            (WindowsHotspotResult::Verified, WindowsHotspotAction::Status, "On")
+                if prior.as_ref().is_some_and(|value| {
+                    value.ownership == WindowsHotspotOwnership::Fleet
+                        && receipt
+                            .ownership_generation
+                            .as_ref()
+                            .is_none_or(|generation| Some(generation) == value.generation.as_ref())
+                }) =>
+            {
+                prior
+            }
+            (WindowsHotspotResult::Verified, WindowsHotspotAction::Status, "On") => {
+                Some(WindowsHotspotObservedState {
+                    active: true,
+                    ownership: WindowsHotspotOwnership::External,
+                    generation: None,
+                    observed_at_ms: now_ms,
+                })
+            }
+            (WindowsHotspotResult::Verified, WindowsHotspotAction::Stop, "Off")
+            | (WindowsHotspotResult::Verified, WindowsHotspotAction::Status, "Off") => {
+                Some(WindowsHotspotObservedState {
+                    active: false,
+                    ownership: WindowsHotspotOwnership::None,
+                    generation: None,
+                    observed_at_ms: now_ms,
+                })
+            }
+            (_, _, "On") if receipt.reason == "ownership.generation_mismatch" => {
+                Some(WindowsHotspotObservedState {
+                    active: true,
+                    ownership: WindowsHotspotOwnership::External,
+                    generation: None,
+                    observed_at_ms: now_ms,
+                })
+            }
+            (_, _, "On")
+                if matches!(
+                    receipt.reason.as_str(),
+                    "state.restart_detected"
+                        | "ownership.prior_boot_generation"
+                        | "ownership.external_hotspot_on"
+                ) =>
+            {
+                Some(WindowsHotspotObservedState {
+                    active: true,
+                    ownership: WindowsHotspotOwnership::External,
+                    generation: None,
+                    observed_at_ms: now_ms,
+                })
+            }
+            (_, _, "Off")
+                if matches!(
+                    receipt.reason.as_str(),
+                    "state.restart_detected" | "ownership.prior_boot_generation"
+                ) =>
+            {
+                Some(WindowsHotspotObservedState {
+                    active: false,
+                    ownership: WindowsHotspotOwnership::None,
+                    generation: None,
+                    observed_at_ms: now_ms,
+                })
+            }
+            (_, _, "On")
+                if prior
                     .as_ref()
                     .is_some_and(|value| value.ownership == WindowsHotspotOwnership::Fleet) =>
             {
                 prior
             }
-            "On" if receipt.reason == "ownership.generation_mismatch"
-                && prior
-                    .as_ref()
-                    .is_some_and(|value| value.ownership == WindowsHotspotOwnership::Fleet) =>
-            {
-                prior
-            }
-            "On" => Some(WindowsHotspotObservedState {
+            (_, _, "On") => Some(WindowsHotspotObservedState {
                 active: true,
                 ownership: WindowsHotspotOwnership::External,
                 generation: None,
                 observed_at_ms: now_ms,
             }),
-            "Off" => Some(WindowsHotspotObservedState {
-                active: false,
-                ownership: WindowsHotspotOwnership::None,
-                generation: None,
-                observed_at_ms: now_ms,
-            }),
-            _ if receipt.reason == "state.restart_detected" => None,
+            (_, _, _) if receipt.reason == "state.restart_detected" => None,
             _ => prior,
         };
         let operation = self
@@ -723,5 +798,211 @@ mod tests {
                 .lifecycle,
             CommandLifecycle::Expired
         );
+    }
+
+    #[test]
+    fn ensure_cannot_cross_the_generation_frozen_in_its_preview() {
+        let mut hub = FleetHub::new(HubPolicy::default());
+        start_owned(&mut hub, "start-one", 1_000);
+        let ensure = hub
+            .preview_windows_hotspot(plan(WindowsHotspotAction::Ensure, "ensure", 2_000))
+            .expect("ensure preview");
+        let stop = dispatch(&mut hub, WindowsHotspotAction::Stop, "stop", 3_000);
+        hub.apply_windows_hotspot_receipt(
+            receipt(
+                &stop,
+                WindowsHotspotResult::Verified,
+                "stop.readback_verified",
+                "Off",
+                None,
+            ),
+            3_003,
+        )
+        .expect("stop");
+        let start_two = dispatch(&mut hub, WindowsHotspotAction::Start, "start-two", 4_000);
+        hub.apply_windows_hotspot_receipt(
+            receipt(
+                &start_two,
+                WindowsHotspotResult::Verified,
+                "start.readback_verified",
+                "On",
+                Some("hostess-generation.2"),
+            ),
+            4_003,
+        )
+        .expect("second start");
+        hub.confirm_windows_hotspot(&ensure.operation_id, &ensure.preview.preview_id, 5_000)
+            .expect("confirm old preview");
+        assert_eq!(
+            hub.prepare_windows_hotspot_invocation(
+                &ensure.operation_id,
+                "request.ensure".to_owned(),
+                5_001,
+            )
+            .expect_err("generation drift")
+            .code,
+            "windows_hotspot_generation_changed"
+        );
+    }
+
+    #[test]
+    fn nonverified_receipt_cannot_manufacture_fleet_ownership() {
+        let mut hub = FleetHub::new(HubPolicy::default());
+        let start = dispatch(&mut hub, WindowsHotspotAction::Start, "failed-start", 1_000);
+        hub.apply_windows_hotspot_receipt(
+            receipt(
+                &start,
+                WindowsHotspotResult::Failed,
+                "start.state_write_failed",
+                "On",
+                Some("untrusted-generation"),
+            ),
+            1_003,
+        )
+        .expect("failed receipt");
+        let stop = hub
+            .preview_windows_hotspot(plan(WindowsHotspotAction::Stop, "stop", 2_000))
+            .expect("stop preview");
+        assert_eq!(stop.lifecycle, CommandLifecycle::Rejected);
+        assert_eq!(
+            stop.preview.preflight.ownership,
+            WindowsHotspotOwnership::External
+        );
+    }
+
+    #[test]
+    fn terminal_receipt_replay_cannot_resurrect_an_old_generation() {
+        let mut hub = FleetHub::new(HubPolicy::default());
+        let start = dispatch(&mut hub, WindowsHotspotAction::Start, "start", 1_000);
+        let start_receipt = receipt(
+            &start,
+            WindowsHotspotResult::Verified,
+            "start.readback_verified",
+            "On",
+            Some("hostess-generation.1"),
+        );
+        hub.apply_windows_hotspot_receipt(start_receipt.clone(), 1_003)
+            .expect("start");
+        let stop = dispatch(&mut hub, WindowsHotspotAction::Stop, "stop", 2_000);
+        hub.apply_windows_hotspot_receipt(
+            receipt(
+                &stop,
+                WindowsHotspotResult::Verified,
+                "stop.readback_verified",
+                "Off",
+                None,
+            ),
+            2_003,
+        )
+        .expect("stop");
+        assert_eq!(
+            hub.apply_windows_hotspot_receipt(start_receipt, 3_000)
+                .expect_err("receipt replay")
+                .code,
+            "windows_hotspot_receipt_replay"
+        );
+        let next_stop = hub
+            .preview_windows_hotspot(plan(WindowsHotspotAction::Stop, "next-stop", 4_000))
+            .expect("stop preview");
+        assert_eq!(next_stop.lifecycle, CommandLifecycle::Rejected);
+    }
+
+    #[test]
+    fn generation_mismatch_invalidates_prior_or_absent_ownership() {
+        let mut owned = FleetHub::new(HubPolicy::default());
+        start_owned(&mut owned, "owned-start", 1_000);
+        let ensure = dispatch(
+            &mut owned,
+            WindowsHotspotAction::Ensure,
+            "owned-ensure",
+            2_000,
+        );
+        owned
+            .apply_windows_hotspot_receipt(
+                receipt(
+                    &ensure,
+                    WindowsHotspotResult::Rejected,
+                    "ownership.generation_mismatch",
+                    "On",
+                    None,
+                ),
+                2_003,
+            )
+            .expect("mismatch receipt");
+        assert_eq!(
+            owned
+                .windows_hotspot_observation
+                .as_ref()
+                .expect("observation")
+                .ownership,
+            WindowsHotspotOwnership::External
+        );
+
+        let mut absent = FleetHub::new(HubPolicy::default());
+        let ensure = dispatch(
+            &mut absent,
+            WindowsHotspotAction::Ensure,
+            "absent-ensure",
+            3_000,
+        );
+        absent
+            .apply_windows_hotspot_receipt(
+                receipt(
+                    &ensure,
+                    WindowsHotspotResult::Rejected,
+                    "ownership.generation_mismatch",
+                    "On",
+                    None,
+                ),
+                3_003,
+            )
+            .expect("mismatch receipt");
+        assert_eq!(
+            absent
+                .windows_hotspot_observation
+                .as_ref()
+                .expect("observation")
+                .ownership,
+            WindowsHotspotOwnership::External
+        );
+    }
+
+    #[test]
+    fn verified_status_preserves_only_omitted_or_matching_generation() {
+        let mut hub = FleetHub::new(HubPolicy::default());
+        start_owned(&mut hub, "start", 1_000);
+        for (suffix, generation, expected) in [
+            ("status-omitted", None, WindowsHotspotOwnership::Fleet),
+            (
+                "status-matching",
+                Some("hostess-generation.1"),
+                WindowsHotspotOwnership::Fleet,
+            ),
+            (
+                "status-changed",
+                Some("hostess-generation.2"),
+                WindowsHotspotOwnership::External,
+            ),
+        ] {
+            let status = dispatch(&mut hub, WindowsHotspotAction::Status, suffix, 2_000);
+            hub.apply_windows_hotspot_receipt(
+                receipt(
+                    &status,
+                    WindowsHotspotResult::Verified,
+                    "status.read",
+                    "On",
+                    generation,
+                ),
+                2_003,
+            )
+            .expect("status receipt");
+            assert_eq!(
+                hub.windows_hotspot_observation
+                    .as_ref()
+                    .expect("observation")
+                    .ownership,
+                expected
+            );
+        }
     }
 }

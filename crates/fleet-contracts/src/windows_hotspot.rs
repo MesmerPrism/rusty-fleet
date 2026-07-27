@@ -149,6 +149,7 @@ pub struct WindowsHotspotProviderRequest {
     pub action: WindowsHotspotAction,
     pub expires_at_utc: String,
     pub timeout_ms: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ownership_generation: Option<String>,
 }
 
@@ -413,5 +414,62 @@ impl ValidateContract for WindowsHotspotOperation {
             ));
         }
         finish(failures)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(
+        action: WindowsHotspotAction,
+        generation: Option<&str>,
+    ) -> WindowsHotspotProviderRequest {
+        WindowsHotspotProviderRequest {
+            schema: WINDOWS_HOTSPOT_PROVIDER_REQUEST_SCHEMA.to_owned(),
+            request_id: "request.1".to_owned(),
+            operation_id: "operation.1".to_owned(),
+            action,
+            expires_at_utc: "2026-07-27T12:00:00.0000000Z".to_owned(),
+            timeout_ms: 30_000,
+            ownership_generation: generation.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn provider_requests_omit_absent_generation_and_use_only_exact_hostess_fields() {
+        for (action, generation) in [
+            (WindowsHotspotAction::Status, None),
+            (WindowsHotspotAction::Start, None),
+            (WindowsHotspotAction::Ensure, None),
+            (WindowsHotspotAction::Ensure, Some("generation.1")),
+            (WindowsHotspotAction::Stop, Some("generation.1")),
+        ] {
+            let request = request(action, generation);
+            request.validate().expect("valid request");
+            let object = serde_json::to_value(request)
+                .expect("request JSON")
+                .as_object()
+                .expect("request object")
+                .clone();
+            assert_eq!(
+                object
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                [
+                    "schema",
+                    "request_id",
+                    "operation_id",
+                    "action",
+                    "expires_at_utc",
+                    "timeout_ms",
+                ]
+                .into_iter()
+                .chain(generation.map(|_| "ownership_generation"))
+                .map(str::to_owned)
+                .collect()
+            );
+        }
     }
 }
