@@ -518,6 +518,38 @@ impl LocalHubConfig {
         Ok(bind)
     }
 
+    /// Validate the complete offline configuration, including every proposed
+    /// enrollment, without opening the durable state directory.
+    ///
+    /// Offline bootstrap tooling must use this owner validator rather than
+    /// hand-asserting that generated JSON will be accepted at runtime.
+    pub fn validate_offline(&self, now_ms: i64) -> Result<SocketAddr, String> {
+        let bind = self.validate()?;
+        let now_unsigned =
+            u64::try_from(now_ms).map_err(|_| "current time must be nonnegative".to_owned())?;
+        let mut adapter = FleetManifoldAdapter::new(self.trusted_operator_ids.clone());
+        for enrollment in &self.enrollments {
+            let request = ManifoldPeerEnrollmentRequest {
+                schema_id: schema_id("rusty.manifold.peer.enrollment_request.v1")?,
+                request_id: enrollment.request_id.clone(),
+                expected_authority_revision: adapter.enrollment().authority_revision,
+                operator_id: enrollment.operator_id.clone(),
+                issued_at_ms: now_unsigned,
+                action: ManifoldPeerEnrollmentAction::Enroll {
+                    credential: enrollment.credential.clone(),
+                },
+            };
+            let receipt = adapter.apply_enrollment(&request, now_unsigned);
+            if !receipt.applied {
+                return Err(format!(
+                    "enrollment {} was rejected: {:?}",
+                    enrollment.request_id, receipt.rejection_reason
+                ));
+            }
+        }
+        Ok(bind)
+    }
+
     fn checkin_socket(&self) -> Result<Option<SocketAddr>, String> {
         self.checkin_bind
             .as_ref()
@@ -896,10 +928,12 @@ pub struct LocalHubState {
 
 impl LocalHubState {
     pub fn from_config(config: &LocalHubConfig, now_ms: i64) -> Result<Self, String> {
-        config.validate()?;
+        config.validate_offline(now_ms)?;
+        let mut adapter = FleetManifoldAdapter::new(config.trusted_operator_ids.clone());
+        // `validate_offline` proved the same ordered enrollments. Reapply them
+        // to the runtime adapter that will be paired with durable Hub state.
         let now_unsigned =
             u64::try_from(now_ms).map_err(|_| "current time must be nonnegative".to_owned())?;
-        let mut adapter = FleetManifoldAdapter::new(config.trusted_operator_ids.clone());
         for enrollment in &config.enrollments {
             let request = ManifoldPeerEnrollmentRequest {
                 schema_id: schema_id("rusty.manifold.peer.enrollment_request.v1")?,
@@ -913,10 +947,7 @@ impl LocalHubState {
             };
             let receipt = adapter.apply_enrollment(&request, now_unsigned);
             if !receipt.applied {
-                return Err(format!(
-                    "enrollment {} was rejected: {:?}",
-                    enrollment.request_id, receipt.rejection_reason
-                ));
+                return Err("offline-validated enrollment changed before runtime apply".to_owned());
             }
         }
         let mut hub = FleetHub::new(config.hub_policy.clone().into());
@@ -5919,6 +5950,46 @@ mod tests {
     };
 
     static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn offline_validator_matches_runtime_enrollment_acceptance() {
+        let now_ms = BASE_TIME_MS;
+        let signing_key = SigningKey::from_bytes(&[41_u8; 32]);
+        let (config, _) = config(&signing_key, now_ms);
+        assert!(config.validate_offline(now_ms).is_ok());
+        assert!(LocalHubState::from_config(&config, now_ms).is_ok());
+        fs::remove_dir_all(&config.state_directory).expect("remove state directory");
+
+        let mut damaged = config;
+        damaged.enrollments[0].credential.public_key_sha256 = format!("sha256:{}", "00".repeat(32));
+        assert!(damaged.validate().is_ok());
+        assert!(damaged.validate_offline(now_ms).is_err());
+        assert!(LocalHubState::from_config(&damaged, now_ms).is_err());
+    }
+
+    #[test]
+    fn offline_validator_accepts_exact_dual_ingress_and_rejects_bind_damage() {
+        let now_ms = BASE_TIME_MS;
+        let signing_key = SigningKey::from_bytes(&[42_u8; 32]);
+        let (mut config, _) = config(&signing_key, now_ms);
+        config.checkin_bind = Some("192.0.2.10:18742".to_owned());
+        config.allow_non_loopback_checkin = true;
+        assert!(config.validate_offline(now_ms).is_ok());
+
+        for damaged_bind in [
+            "127.0.0.1:18742",
+            "0.0.0.0:18742",
+            "224.0.0.1:18742",
+            "255.255.255.255:18742",
+        ] {
+            let mut damaged = config.clone();
+            damaged.checkin_bind = Some(damaged_bind.to_owned());
+            assert!(
+                damaged.validate_offline(now_ms).is_err(),
+                "{damaged_bind} must fail closed"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn checkin_listener_mounts_only_authenticated_checkin_ingress() {

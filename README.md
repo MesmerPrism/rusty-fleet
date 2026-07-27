@@ -149,6 +149,16 @@ The current implementation is split into:
   watch-cursor/reset/damage, grouped virtualization, stable-context/order,
   capability-family, normal 50-row presented keyboard, and 10/50/100-row
   off-screen layout checks.
+- `fleet-onboarding` and `fleet-onboard`: a standalone, offline,
+  confirmation-bound generator for new current-user-only Fleet Agent
+  profiles, seeds, public key records, and Hub enrollment configuration. Its
+  pinned developer-evidence tool runs from a deny-rename retained path inside
+  a bounded Windows Job Object, and rollback/cleanup use a closed
+  retained-handle inventory. The current capsule is machine-bound evidence,
+  not a supported distribution artifact; distribution requires a separately
+  owner-issued release capsule. It neither installs nor enrolls devices and is
+  documented in
+  [Offline Fleet Onboarding](docs/OFFLINE_ONBOARDING.md).
 
 ## Consolidation maturity
 

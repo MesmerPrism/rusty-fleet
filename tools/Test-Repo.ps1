@@ -220,6 +220,8 @@ function Test-RequiredFiles {
         "apps/fleetctl/src/quest_awake_operation.rs",
         "apps/fleetctl/tests/package_commands.rs",
         "apps/fleetctl/tests/quest_awake_commands.rs",
+        "apps/fleet-onboard/Cargo.toml",
+        "apps/fleet-onboard/src/main.rs",
         "apps/fleet-console-wpf/RustyFleet.FleetConsole.csproj",
         "apps/fleet-console-wpf/App.xaml",
         "apps/fleet-console-wpf/App.xaml.cs",
@@ -248,6 +250,10 @@ function Test-RequiredFiles {
         "crates/fleet-hub/tests/quest_awake.rs",
         "crates/fleet-manifold-adapter/Cargo.toml",
         "crates/fleet-manifold-adapter/src/lib.rs",
+        "crates/fleet-onboarding/Cargo.toml",
+        "crates/fleet-onboarding/src/lib.rs",
+        "crates/fleet-onboarding-windows-kernel/Cargo.toml",
+        "crates/fleet-onboarding-windows-kernel/src/lib.rs",
         "crates/fleet-package-updater-adapter/Cargo.toml",
         "crates/fleet-package-updater-adapter/src/lib.rs",
         "crates/fleet-provider-catalog/Cargo.toml",
@@ -269,6 +275,8 @@ function Test-RequiredFiles {
         "fixtures/contracts/package-install-release-operation.damaged.json",
         "fixtures/contracts/quest-awake-operation.valid.json",
         "fixtures/contracts/quest-awake-operation.damaged.json",
+        "fixtures/onboarding/offline-onboarding-request.example.json",
+        "fixtures/onboarding/rusty-quest-fleet-agent-profile.disabled.owner-de144.json",
         "fixtures/scenarios/scale-and-damage.v1.json",
         "schemas/rusty.fleet.checkin_claims.v1.schema.json",
         "schemas/rusty.fleet.checkin_signing_vector.v1.schema.json",
@@ -278,6 +286,9 @@ function Test-RequiredFiles {
         "schemas/rusty.fleet.package_install_release_operation.v1.schema.json",
         "schemas/rusty.fleet.quest_awake_operation.v1.schema.json",
         "schemas/rusty.fleet.query.v1.schema.json",
+        "schemas/rusty.fleet.offline_onboarding_request.v1.schema.json",
+        "schemas/rusty.fleet.offline_onboarding_plan.v1.schema.json",
+        "schemas/rusty.fleet.offline_onboarding_private_inventory.v1.schema.json",
         "schemas/rusty.fleet.signed_checkin.v1.schema.json",
         "schemas/rusty.fleet.stream_descriptor.v1.schema.json",
         "docs/ARCHITECTURE.md",
@@ -294,6 +305,7 @@ function Test-RequiredFiles {
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
         "docs/PROVIDER_CAPABILITY_CATALOG.md",
         "tools/New-FleetIcon.ps1",
+        "tools/Test-FleetOnboardingSecurity.ps1",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
         "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
         "docs/decisions/0005-m1-checkin-authority.md",
@@ -423,9 +435,12 @@ function Test-SourceImplementation {
     foreach ($member in @(
         "apps/fleet-hub-local",
         "apps/fleetctl",
+        "apps/fleet-onboard",
         "crates/fleet-contracts",
         "crates/fleet-hub",
         "crates/fleet-manifold-adapter",
+        "crates/fleet-onboarding",
+        "crates/fleet-onboarding-windows-kernel",
         "crates/fleet-provider-catalog",
         "crates/fleet-simulator"
     )) {
@@ -855,6 +870,11 @@ try {
     }
 
     if ($Tier -eq "Deep") {
+        & pwsh -NoProfile -ExecutionPolicy Bypass `
+            -File (Join-Path $repoRoot "tools/Test-FleetOnboardingSecurity.ps1")
+        if ($LASTEXITCODE -ne 0) {
+            throw "Offline Fleet onboarding security validation failed."
+        }
         Test-TrackedTree
         Test-ReleaseCandidateDependencies
     }

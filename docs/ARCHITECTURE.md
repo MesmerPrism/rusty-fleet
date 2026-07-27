@@ -1,5 +1,24 @@
 # Architecture
 
+## Offline onboarding boundary
+
+Offline trust bootstrap is owned by the standalone `fleet-onboarding` engine
+and `fleet-onboard` CLI. The engine consumes one private operator request,
+validates the exact repository-generated Rusty Quest key-record tool manifest,
+and creates a confirmation-bound private bundle. Rusty Quest continues to own
+the profile and key-record schemas; Manifold continues to own enrollment and
+revocation. Fleet Hub, `fleetctl`, the local API, and WPF neither generate
+seeds nor execute key tools. See
+[Offline Fleet Onboarding](OFFLINE_ONBOARDING.md).
+
+The plan/read boundary is non-mutating. Apply is a current-user-only,
+create-new transaction with inventory-last evidence and retained object
+identities. Cleanup uses a closed enumeration and exact retained handles for
+only inventory-bound generated material; rollback never recursively deletes a
+path. Revocation remains an explicit authorization-owner workflow.
+No stage implies installation, enrollment, reachability, activation, health,
+or revocation.
+
 The local composition includes a fail-closed, metadata-only provider catalog.
 It consumes no descriptor-derived invocation data and shares one revisioned
 snapshot across API, CLI, and WPF projections. Provider/operator routes remain

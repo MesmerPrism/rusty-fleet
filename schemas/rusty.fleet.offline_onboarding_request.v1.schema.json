@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MesmerPrism/rusty-fleet/schemas/rusty.fleet.offline_onboarding_request.v1.schema.json",
+  "title": "Rusty Fleet offline onboarding private request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "output_root", "tool_manifest", "hub", "devices"],
+  "properties": {
+    "schema": { "const": "rusty.fleet.offline_onboarding_request.v1" },
+    "output_root": { "type": "string", "minLength": 3, "maxLength": 32767 },
+    "tool_manifest": { "type": "string", "minLength": 3, "maxLength": 32767 },
+    "hub": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bind", "checkin_bind", "state_directory", "operator_id", "request_id_prefix", "credential_valid_from_ms", "credential_expires_at_ms"],
+      "properties": {
+        "bind": { "type": "string", "pattern": "^127\\.0\\.0\\.1:[0-9]{1,5}$" },
+        "checkin_bind": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "state_directory": { "type": "string", "minLength": 3, "maxLength": 32767 },
+        "operator_id": { "$ref": "#/$defs/dottedId" },
+        "request_id_prefix": { "$ref": "#/$defs/dottedId" },
+        "credential_valid_from_ms": { "type": "integer", "minimum": 0 },
+        "credential_expires_at_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "devices": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/device" }
+    }
+  },
+  "$defs": {
+    "dottedId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$"
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "display_name", "model", "hardware_class", "identity_revision", "expected_authority_revision", "status_revision", "source_revision", "source_epoch", "key_id", "key_generation", "trust_domain", "checkin_ttl_ms", "checkin_interval_ms", "hub_endpoint"],
+      "properties": {
+        "device_id": { "$ref": "#/$defs/dottedId" },
+        "display_name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "hardware_class": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "identity_revision": { "type": "integer", "minimum": 1 },
+        "expected_authority_revision": { "type": "integer", "minimum": 1 },
+        "status_revision": { "type": "integer", "minimum": 1 },
+        "source_revision": { "type": "integer", "minimum": 1 },
+        "source_epoch": { "$ref": "#/$defs/dottedId" },
+        "key_id": { "$ref": "#/$defs/dottedId" },
+        "key_generation": { "type": "integer", "minimum": 1 },
+        "trust_domain": { "$ref": "#/$defs/dottedId" },
+        "checkin_ttl_ms": { "type": "integer", "minimum": 10000, "maximum": 300000 },
+        "checkin_interval_ms": { "type": "integer", "minimum": 5000, "maximum": 299999 },
+        "hub_endpoint": { "type": "string", "pattern": "^https?://[^@#]+$", "maxLength": 2048 },
+        "tags": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 }
+        }
+      }
+    }
+  }
+}

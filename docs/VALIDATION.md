@@ -141,6 +141,9 @@ with:
 
 Deep includes Standard and adds:
 
+- the offline onboarding closed-inventory, ACL, hard-link/reparse,
+  substitution-race, exact rollback, owner-profile/Hub-validator conformance,
+  and bounded Windows Job Object security suite;
 - tracked-file reconciliation and large/generated artifact checks;
 - architecture/authority/public-boundary review markers;
 - source-candidate dependency convergence and unsigned/non-publishable
@@ -175,6 +178,8 @@ Focused commands:
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --locked -p fleet-onboarding -p fleet-onboard
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-FleetOnboardingSecurity.ps1
 cargo run --locked -p fleetctl -- list 4
 cargo run --locked -p fleetctl -- detail sim-00001 4
 cargo run --locked -p fleetctl -- m1-lifecycle

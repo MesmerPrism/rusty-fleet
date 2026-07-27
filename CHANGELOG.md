@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added the standalone `fleet-onboard` offline onboarding generator with
+  deterministic confirmation-bound planning, exact pinned Rusty Quest
+  key-record invocation from a deny-rename retained path in a bounded Windows
+  Job Object, current-user-only create-new private output,
+  identity/ACL/link/hash-closed inventory, exact-handle rollback and cleanup,
+  owner-profile and real Hub-validator conformance, and separate
+  cleanup/revocation plans. The current pinned capsule is explicitly
+  quarantined as machine-bound developer evidence; supported distribution
+  requires a separately owner-issued release capsule.
 - Added a fail-closed, revisioned provider capability catalog with shared local
   API, `fleetctl`, and WPF projections over exact hash-pinned
   `--describe-json` owner metadata.

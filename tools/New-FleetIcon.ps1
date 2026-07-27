@@ -18,9 +18,11 @@ if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
 }
 
 $source = [IO.File]::ReadAllText($sourcePath)
-$sourceSha256 = (
-    Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256
-).Hash.ToLowerInvariant()
+$normalizedSource = $source.Replace("`r`n", "`n").Replace("`r", "`n")
+$sourceBytes = [Text.UTF8Encoding]::new($false).GetBytes($normalizedSource)
+$sourceSha256 = [Convert]::ToHexString(
+    [Security.Cryptography.SHA256]::HashData($sourceBytes)
+).ToLowerInvariant()
 if ($sourceSha256 -cne $expectedSourceSha256) {
     throw (
         'The canonical Fleet SVG changed without updating its deterministic ' +

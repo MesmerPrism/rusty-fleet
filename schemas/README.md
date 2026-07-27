@@ -19,6 +19,10 @@ Milestone 0 defines versioned Rusty Fleet product contracts here:
 - the Fleet-owned `quest.wifi-adb-control` preview and per-target ledger,
   strict File Manager receipt binding, separate modern/classic routes, and
   independently signed Termux capability evidence.
+- the Fleet-owned offline-onboarding request, confirmation plan, and private
+  inventory. The request locates but does not select the pinned Rusty Quest
+  tool trust anchor; the inventory closes over exact object identities, ACL
+  digests, link counts, and file hashes.
 
 Rust validation remains normative for cross-field invariants that JSON Schema
 cannot express clearly, including identity/source-epoch/revision transitions,
@@ -60,3 +64,6 @@ proof fields and no private target details.
 Do not copy Manifold, Quest, Kiosk, File Manager, or LSL owner schemas into
 this directory. Reference owner-issued artifacts or wrap them with a separately
 named product projection that preserves provenance and authority.
+The committed disabled Rusty Quest profile fixture under `fixtures/onboarding`
+is hash-pinned conformance evidence for Fleet's deny-unknown-fields mirror; it
+does not transfer profile-schema ownership to Fleet.
