@@ -208,6 +208,23 @@ in [Quest Wi-Fi ADB Control](QUEST_WIFI_ADB_CONTROL.md). Repository tiers use a
 fake provider plus signed synthetic check-ins only. They do not contact ADB,
 Kiosk, Credential Manager, Termux, Meta tooling, or a headset.
 
+The Fleet-owned
+[two-Quest Wi-Fi ADB acceptance transaction](QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md)
+has a separate host/synthetic gate:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Test-FleetWifiAdbTwoQuestAcceptance.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Test-FleetIconProvenance.ps1
+```
+
+Quick runs that gate without contacting a device. The live phase remains an
+explicitly confirmed, serial-reserved Meta Quest workflow with attended wearer
+and reboot checkpoints plus complete cleanup truth.
+The icon provenance test proves LF, CRLF, and CR canonical source text bind to
+the same reviewed SHA-256 before the deterministic ICO check runs.
+
 For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
 surface separately:
 

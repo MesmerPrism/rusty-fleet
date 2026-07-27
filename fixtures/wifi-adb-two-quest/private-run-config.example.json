@@ -1,0 +1,96 @@
+{
+  "schema": "rusty.fleet.wifi_adb_two_quest_run_config.v1",
+  "run_id": "wifi-adb-acceptance-example",
+  "private_state_root": "<new-private-state-root>",
+  "source_commits": {
+    "questionable_file_manager": "a6d8e88c9d65f642d0cbf74fc8b92c8f1cd19ae5",
+    "wireless_adb_helper": "d800e5c7c5f8c77ad2bae52450f32092f3c92ace"
+  },
+  "artifact_pins": [
+    {
+      "artifact_id": "adb",
+      "path": "<private-adb-executable>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "fleet-onboard",
+      "path": "<private-fleet-onboard-executable>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "fleet-hub",
+      "path": "<private-fleet-hub-executable>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "fleetctl",
+      "path": "<private-fleetctl-executable>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "questionable-file-manager",
+      "path": "<private-file-manager-executable>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "helper-operator",
+      "path": "<private-helper-operator-script>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "fleet-agent-apk",
+      "path": "<private-fleet-agent-apk>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "wireless-adb-helper-apk",
+      "path": "<private-wireless-adb-helper-apk>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "termux-apk",
+      "path": "<private-termux-apk>",
+      "sha256": "<lowercase-sha256>"
+    },
+    {
+      "artifact_id": "kiosk-setup-helper-apk",
+      "path": "<private-kiosk-setup-helper-apk>",
+      "sha256": "<lowercase-sha256>"
+    }
+  ],
+  "onboarding": {
+    "request_path": "<private-offline-onboarding-request>",
+    "inventory_path": "<future-private-onboarding-inventory>"
+  },
+  "hub": {
+    "config_path": "<future-private-hub-config>",
+    "operator_url": "http://127.0.0.1:<loopback-port>",
+    "manage_firewall": false
+  },
+  "devices": [
+    {
+      "slot": "device_a",
+      "device_id": "<private-fleet-device-a>",
+      "identity_revision": 1,
+      "usb_serial": "<private-usb-serial-a>",
+      "qfm_enrollment_path": "<private-qfm-enrollment-a>",
+      "fleet_agent_profile_path": "<future-private-fleet-agent-profile-a>",
+      "fleet_agent_seed_path": "<future-private-fleet-agent-seed-a>"
+    },
+    {
+      "slot": "device_b",
+      "device_id": "<private-fleet-device-b>",
+      "identity_revision": 1,
+      "usb_serial": "<private-usb-serial-b>",
+      "qfm_enrollment_path": "<private-qfm-enrollment-b>",
+      "fleet_agent_profile_path": "<future-private-fleet-agent-profile-b>",
+      "fleet_agent_seed_path": "<future-private-fleet-agent-seed-b>"
+    }
+  ],
+  "timing": {
+    "baseline_timeout_seconds": 120,
+    "proof_timeout_seconds": 90,
+    "expiry_timeout_seconds": 120,
+    "reboot_timeout_seconds": 180
+  }
+}

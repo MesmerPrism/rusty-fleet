@@ -20,6 +20,13 @@ Use:
 
 Live device work is never implied by a source or documentation task.
 
+The Fleet-owned two-Quest Wi-Fi ADB acceptance runner is resumable and
+attended. Its Plan phase is completely non-mutating; Preflight creates private
+state only after strict source/artifact/config and read-only snapshot checks.
+Execute, Resume, attended-checkpoint confirmation, and Cleanup are distinct.
+Never automate Meta approval, restart the ADB daemon, persist raw owner output,
+or remove packages/profiles/processes that the run did not create.
+
 ## Read order
 
 1. `README.md`

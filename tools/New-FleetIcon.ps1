@@ -12,15 +12,15 @@ $iconPath = Join-Path $repoRoot (
     'apps\fleet-console-wpf\Assets\rusty-fleet.ico')
 $expectedSourceSha256 =
     '1dedfecaef954dda9bb6f4f133376535e4799908441e7832558a1f70f4ed6f79'
+Import-Module (Join-Path $PSScriptRoot 'FleetIconProvenance.psm1') -Force
 
 if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
     throw 'The canonical Fleet SVG source is missing.'
 }
 
-$source = [IO.File]::ReadAllText($sourcePath)
-$sourceSha256 = (
-    Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256
-).Hash.ToLowerInvariant()
+$source = ConvertTo-FleetCanonicalText -Text (
+    [IO.File]::ReadAllText($sourcePath))
+$sourceSha256 = Get-FleetCanonicalTextSha256 -Text $source
 if ($sourceSha256 -cne $expectedSourceSha256) {
     throw (
         'The canonical Fleet SVG changed without updating its deterministic ' +
