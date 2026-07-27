@@ -38,7 +38,8 @@
         <h2>One reviewed bundle</h2>
         <p>
           The Windows archive carries a complete manifest, SHA-256 checksums,
-          and an offline validation receipt for its exact contents.
+          an offline validation receipt, licenses, and third-party notices for
+          its exact contents.
         </p>
       </article>
       <article>
@@ -67,6 +68,10 @@
             GitHub Releases
           </a>. Releases are the binary source of truth; this site hosts no
           installers.
+        </li>
+        <li>
+          Use only a signed release. Unsigned developer bundles identify
+          themselves as <code>development_only</code> and cannot be published.
         </li>
         <li>
           Compare the ZIP with its adjacent <code>.zip.sha256</code> file.

@@ -32,24 +32,16 @@ on:
         description: Exact lowercase SHA-256 of the Hostess provider
         required: true
         type: string
-      hostess_provider_version:
-        description: Hostess provider version
+      hostess_provenance_document_url:
+        description: Owner-issued Hostess release provenance JSON URL
         required: true
         type: string
-      hostess_provider_source_repository:
-        description: Public HTTPS Hostess source repository
+      hostess_license_url:
+        description: Exact Hostess LICENSE companion URL
         required: true
         type: string
-      hostess_provider_source_revision:
-        description: Full 40-character Hostess source commit
-        required: true
-        type: string
-      hostess_provider_source_tree:
-        description: Full 40-character Hostess source tree
-        required: true
-        type: string
-      hostess_provider_provenance_url:
-        description: Public Hostess release or source-commit provenance URL
+      hostess_third_party_notices_url:
+        description: Exact Hostess THIRD-PARTY-NOTICES.txt companion URL
         required: true
         type: string
       publish_release:
@@ -71,11 +63,9 @@ jobs:
       SIGNING_MODE: ${{ inputs.signing_mode }}
       PROVIDER_URL: ${{ inputs.hostess_provider_url }}
       PROVIDER_SHA256: ${{ inputs.hostess_provider_sha256 }}
-      PROVIDER_VERSION: ${{ inputs.hostess_provider_version }}
-      PROVIDER_SOURCE_REPOSITORY: ${{ inputs.hostess_provider_source_repository }}
-      PROVIDER_SOURCE_REVISION: ${{ inputs.hostess_provider_source_revision }}
-      PROVIDER_SOURCE_TREE: ${{ inputs.hostess_provider_source_tree }}
-      PROVIDER_PROVENANCE_URL: ${{ inputs.hostess_provider_provenance_url }}
+      PROVIDER_PROVENANCE_DOCUMENT_URL: ${{ inputs.hostess_provenance_document_url }}
+      PROVIDER_LICENSE_URL: ${{ inputs.hostess_license_url }}
+      PROVIDER_NOTICES_URL: ${{ inputs.hostess_third_party_notices_url }}
       FLEET_SIGNING_PFX_BASE64: ${{ secrets.FLEET_SIGNING_PFX_BASE64 }}
       FLEET_SIGNING_PFX_PASSWORD: ${{ secrets.FLEET_SIGNING_PFX_PASSWORD }}
       GH_TOKEN: ${{ github.token }}
@@ -97,20 +87,20 @@ jobs:
           if ($env:PROVIDER_SHA256 -cnotmatch '^[0-9a-f]{64}$') {
             throw 'provider SHA-256 must be lowercase hexadecimal'
           }
-          if ($env:PROVIDER_SOURCE_REVISION -cnotmatch '^[0-9a-f]{40}$' -or
-              $env:PROVIDER_SOURCE_TREE -cnotmatch '^[0-9a-f]{40}$') {
-            throw 'provider source revision and tree must be full lowercase Git IDs'
-          }
           foreach ($value in @(
             $env:PROVIDER_URL,
-            $env:PROVIDER_SOURCE_REPOSITORY,
-            $env:PROVIDER_PROVENANCE_URL
+            $env:PROVIDER_PROVENANCE_DOCUMENT_URL,
+            $env:PROVIDER_LICENSE_URL,
+            $env:PROVIDER_NOTICES_URL
           )) {
             if (-not $value.StartsWith('https://', [StringComparison]::Ordinal)) {
               throw 'provider provenance and download URLs must use HTTPS'
             }
           }
           if ('${{ inputs.publish_release }}' -eq 'true') {
+            if ($env:SIGNING_MODE -ne 'signed-release') {
+              throw 'GitHub Release publication requires signed-release mode'
+            }
             $tag = "v$env:VERSION"
             & git show-ref --verify --quiet "refs/tags/$tag"
             if ($LASTEXITCODE -ne 0) {
@@ -162,6 +152,19 @@ jobs:
           if ($actual -cne $env:PROVIDER_SHA256) {
             throw 'downloaded Hostess provider does not match the supplied SHA-256'
           }
+          $metadata = Join-Path $env:RUNNER_TEMP 'hostess-provider-metadata'
+          [IO.Directory]::CreateDirectory($metadata) | Out-Null
+          Invoke-WebRequest `
+            -Uri $env:PROVIDER_PROVENANCE_DOCUMENT_URL `
+            -OutFile (
+              Join-Path $metadata 'rusty-hostess-hotspot-provider.provenance.json'
+            )
+          Invoke-WebRequest `
+            -Uri $env:PROVIDER_LICENSE_URL `
+            -OutFile (Join-Path $metadata 'LICENSE')
+          Invoke-WebRequest `
+            -Uri $env:PROVIDER_NOTICES_URL `
+            -OutFile (Join-Path $metadata 'THIRD-PARTY-NOTICES.txt')
 
       - name: Sign Fleet executables
         if: inputs.signing_mode == 'signed-release'
@@ -206,11 +209,9 @@ jobs:
             BuildKind = $env:SIGNING_MODE
             HostessProviderPath = $provider
             HostessProviderSha256 = $env:PROVIDER_SHA256
-            HostessProviderVersion = $env:PROVIDER_VERSION
-            HostessProviderSourceRepository = $env:PROVIDER_SOURCE_REPOSITORY
-            HostessProviderSourceRevision = $env:PROVIDER_SOURCE_REVISION
-            HostessProviderSourceTree = $env:PROVIDER_SOURCE_TREE
-            HostessProviderProvenanceUrl = $env:PROVIDER_PROVENANCE_URL
+            HostessProviderMetadataDirectory = (
+              Join-Path $env:RUNNER_TEMP 'hostess-provider-metadata'
+            )
             OutputDirectory = $output
             SourceRevision = $env:GITHUB_SHA
             SourceDateEpoch = [long] ((git show -s --format=%ct $env:GITHUB_SHA).Trim())

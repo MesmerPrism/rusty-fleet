@@ -15,21 +15,7 @@ param(
     [string] $HostessProviderSha256,
 
     [Parameter(Mandatory)]
-    [string] $HostessProviderVersion,
-
-    [Parameter(Mandatory)]
-    [string] $HostessProviderSourceRepository,
-
-    [Parameter(Mandatory)]
-    [ValidatePattern("^[0-9a-f]{40}$")]
-    [string] $HostessProviderSourceRevision,
-
-    [Parameter(Mandatory)]
-    [ValidatePattern("^[0-9a-f]{40}$")]
-    [string] $HostessProviderSourceTree,
-
-    [Parameter(Mandatory)]
-    [string] $HostessProviderProvenanceUrl,
+    [string] $HostessProviderMetadataDirectory,
 
     [ValidateSet("dev", "preview", "stable")]
     [string] $Channel = "dev",
@@ -60,9 +46,7 @@ Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 foreach ($pair in @(
     @($SourceRepository, "SourceRepository"),
     @($ReleaseBaseUrl, "ReleaseBaseUrl"),
-    @($PagesUrl, "PagesUrl"),
-    @($HostessProviderSourceRepository, "HostessProviderSourceRepository"),
-    @($HostessProviderProvenanceUrl, "HostessProviderProvenanceUrl")
+    @($PagesUrl, "PagesUrl")
 )) {
     Assert-RustyFleetHttpsUrl -Value $pair[0] -Name $pair[1]
 }
@@ -78,6 +62,11 @@ if ((Split-Path -Leaf $providerPath) -cne "rusty-hostess-hotspot-provider.exe") 
 if ((Get-RustyFleetSha256 -LiteralPath $providerPath) -cne $HostessProviderSha256) {
     throw "the external Hostess provider does not match its supplied SHA-256"
 }
+$hostessProvenance = Read-RustyFleetHostessProvenance `
+    -MetadataDirectory $HostessProviderMetadataDirectory `
+    -ProviderPath $providerPath `
+    -ProviderSha256 $HostessProviderSha256 `
+    -BuildKind $BuildKind
 
 if (-not $SourceRevision) {
     $SourceRevision = (& git -C $repoPath rev-parse HEAD).Trim()
@@ -196,6 +185,7 @@ try {
         "components\fleet-hub",
         "components\fleetctl",
         "providers\hostess-hotspot-provider",
+        "providers\hostess-hotspot-provider\provenance",
         "distribution-tools",
         "metadata"
     )) {
@@ -214,6 +204,13 @@ try {
         -Destination (Join-Path $bundleRoot "components\fleetctl\fleetctl.exe")
     Copy-Item -LiteralPath $providerPath `
         -Destination (Join-Path $bundleRoot "providers\hostess-hotspot-provider\rusty-hostess-hotspot-provider.exe")
+    foreach ($documentName in $hostessProvenance.documents.Values) {
+        Copy-Item `
+            -LiteralPath (Join-Path $hostessProvenance.root $documentName) `
+            -Destination (
+                Join-Path $bundleRoot "providers\hostess-hotspot-provider\provenance\$documentName"
+            )
+    }
     foreach ($tool in @(
         "Distribution.Common.psm1",
         "Install-RustyFleet.ps1",
@@ -302,11 +299,21 @@ try {
                 supplied_externally = $true
                 artifact_name = "rusty-hostess-hotspot-provider.exe"
                 artifact_sha256 = $HostessProviderSha256
-                version = $HostessProviderVersion
-                source_repository = $HostessProviderSourceRepository
-                source_revision = $HostessProviderSourceRevision
-                source_tree = $HostessProviderSourceTree
-                provenance_url = $HostessProviderProvenanceUrl
+                owner_document_schema = $hostessProvenance.provenance.schema
+                owner_document_path = "providers/hostess-hotspot-provider/provenance/rusty-hostess-hotspot-provider.provenance.json"
+                owner_document_sha256 = $hostessProvenance.provenance_sha256
+                license_path = "providers/hostess-hotspot-provider/provenance/LICENSE"
+                third_party_notices_path = "providers/hostess-hotspot-provider/provenance/THIRD-PARTY-NOTICES.txt"
+                source_repository = $hostessProvenance.provenance.source.repository
+                source_revision = $hostessProvenance.provenance.source.revision
+                source_tree = $hostessProvenance.provenance.source.tree
+                source_availability_url = $hostessProvenance.provenance.source.availability_url
+                dependency_count = @($hostessProvenance.provenance.dependencies).Count
+                bundled_native_library_count = @(
+                    $hostessProvenance.provenance.bundled_native_libraries
+                ).Count
+                signing_state = $hostessProvenance.provenance.signing.state
+                distribution_eligibility = $hostessProvenance.provenance.distribution.eligibility
             }
         }
     )
@@ -339,6 +346,13 @@ try {
             archive_asset = $archiveAsset
             pages_url = $PagesUrl
             pages_role = "human_documentation_only"
+            eligibility = if ($BuildKind -eq "signed-release") {
+                "signed_release"
+            }
+            else {
+                "development_only"
+            }
+            publication_allowed = $BuildKind -eq "signed-release"
         }
         components = $components
         payload = $payload
@@ -401,6 +415,9 @@ try {
         payload_files = $payload.Count
         runtime_components = 4
         exact_external_provider = $true
+        hostess_owner_provenance_sha256 = $hostessProvenance.provenance_sha256
+        distribution_eligibility = $manifest.distribution.eligibility
+        publication_allowed = $manifest.distribution.publication_allowed
         credentials_absent = $true
         private_configuration_absent = $true
         adb_absent = $true
@@ -444,6 +461,9 @@ try {
         manifest_sha256 = $receipt.manifest_sha256
         payload_files = $payload.Count
         provider_sha256 = $HostessProviderSha256
+        hostess_owner_provenance_sha256 = $hostessProvenance.provenance_sha256
+        distribution_eligibility = $manifest.distribution.eligibility
+        publication_allowed = $manifest.distribution.publication_allowed
     } | ConvertTo-Json -Depth 10
 }
 finally {

@@ -2,7 +2,8 @@
 
 This directory owns the portable Windows bundle and per-user installer
 workflow. Rusty Fleet remains directly installable: QuestIonAble File Manager
-is neither bundled nor required.
+is neither bundled nor required. An unsigned developer bundle is local
+development material, not a distributable release.
 
 ## Bundle boundary
 
@@ -14,9 +15,13 @@ Every bundle contains exactly four runtime components:
 4. one externally supplied `rusty-hostess-hotspot-provider.exe`.
 
 The Hostess provider is preserved as a separate owner artifact. The builder
-requires its exact SHA-256, public source repository, full source revision,
-version, and release URL. It rejects an alternate filename or digest. Its
-fixed invocation is:
+requires its exact SHA-256 and the owner-issued
+`rusty-hostess-hotspot-provider.provenance.json`, `LICENSE`, and
+`THIRD-PARTY-NOTICES.txt`. It independently checks the provider hash and size,
+clean source commit/tree and source availability, dependency and native
+library inventories, signing state, distribution eligibility, and companion
+document hashes. It rejects an alternate filename, digest, or Fleet-invented
+provenance. Its fixed invocation is:
 
 ```text
 rusty-hostess-hotspot-provider.exe integration windows-hotspot --json
@@ -43,11 +48,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -Version <semver> `
   -HostessProviderPath <provider-path> `
   -HostessProviderSha256 $providerSha256 `
-  -HostessProviderVersion <provider-version> `
-  -HostessProviderSourceRepository <public-https-repository> `
-  -HostessProviderSourceRevision <full-40-character-commit> `
-  -HostessProviderSourceTree <full-40-character-tree> `
-  -HostessProviderProvenanceUrl <public-https-release-or-commit-url>
+  -HostessProviderMetadataDirectory <owner-metadata-directory>
 ```
 
 Outputs are written below the ignored `artifacts/windows-distribution`
@@ -55,9 +56,9 @@ directory. They include the expanded bundle, deterministic ZIP, ZIP checksum,
 standalone release manifest, payload checksums, and validation receipt.
 
 The ZIP is reproducible for identical input bytes, revisions, version, and
-source-date epoch. It is an unsigned developer artifact unless the signed
-release workflow verifies valid Authenticode signatures for all four
-executables.
+source-date epoch. An unsigned bundle and its owner provenance must both say
+`development_only`; the Fleet manifest sets `publication_allowed` to false.
+It is not a release artifact.
 
 ## Inspect and install
 
@@ -96,10 +97,13 @@ previous release and switches the pointer; it does not delete either release.
 
 ## Publication
 
-GitHub Releases is the binary source of truth. The release workflow downloads
-the exact external provider, builds the three Fleet executables, optionally
-signs the Fleet executables, verifies all signatures for a signed release,
-builds the bundle, and publishes the ZIP plus hash-bound metadata.
+GitHub Releases is the binary source of truth. Publication is blocked unless
+the workflow runs in `signed-release` mode, all four executables have valid
+Authenticode signatures, and Hostess's owner document says
+`eligibility=signed_release` with a verified signing identity. The workflow
+downloads the provider and its three owner metadata documents, builds and
+signs the Fleet executables, validates the entire bundle, and publishes the
+ZIP plus hash-bound metadata.
 
 GitHub Pages is a human-facing guide only. It links to GitHub Releases and does
 not duplicate or proxy release binaries.

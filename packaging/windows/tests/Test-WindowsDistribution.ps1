@@ -39,6 +39,7 @@ function Invoke-TestBundle {
         [Parameter(Mandatory)][string] $FleetctlPath,
         [Parameter(Mandatory)][string] $ProviderPath,
         [Parameter(Mandatory)][string] $ProviderSha256,
+        [Parameter(Mandatory)][string] $ProviderMetadataDirectory,
         [string] $SourceRevision = ("1" * 40)
     )
 
@@ -48,11 +49,7 @@ function Invoke-TestBundle {
         -BuildKind unsigned-dev `
         -HostessProviderPath $ProviderPath `
         -HostessProviderSha256 $ProviderSha256 `
-        -HostessProviderVersion "0.0.0-test" `
-        -HostessProviderSourceRepository "https://example.invalid/rusty-hostess" `
-        -HostessProviderSourceRevision ("2" * 40) `
-        -HostessProviderSourceTree ("4" * 40) `
-        -HostessProviderProvenanceUrl "https://example.invalid/rusty-hostess/commit/test" `
+        -HostessProviderMetadataDirectory $ProviderMetadataDirectory `
         -OutputDirectory $OutputDirectory `
         -SourceRevision $SourceRevision `
         -SourceDateEpoch 1785110400 `
@@ -82,6 +79,85 @@ try {
     Write-TestArtifact -LiteralPath $fleetctl -Content "fleetctl-test-artifact`n"
     Write-TestArtifact -LiteralPath $provider -Content "hostess-provider-test-artifact`n"
     $providerSha256 = Get-RustyFleetSha256 -LiteralPath $provider
+    $providerMetadata = Join-Path $inputs "hostess-provider-metadata"
+    [System.IO.Directory]::CreateDirectory($providerMetadata) | Out-Null
+    $providerLicense = Join-Path $providerMetadata "LICENSE"
+    $providerNotices = Join-Path $providerMetadata "THIRD-PARTY-NOTICES.txt"
+    Write-TestArtifact `
+        -LiteralPath $providerLicense `
+        -Content "Synthetic AGPL-3.0-or-later owner license fixture.`n"
+    Write-TestArtifact `
+        -LiteralPath $providerNotices `
+        -Content "Synthetic third-party notices fixture; not release provenance.`n"
+    $providerProvenance = [ordered]@{
+        schema = "rusty.hostess.windows_hotspot.release_provenance.v1"
+        product_id = "rusty-hostess-windows-hotspot-provider"
+        provider_version = "0.0.0-test.1"
+        artifact = [ordered]@{
+            name = "rusty-hostess-hotspot-provider.exe"
+            sha256 = $providerSha256
+            size_bytes = (Get-Item -LiteralPath $provider).Length
+        }
+        source = [ordered]@{
+            repository = "https://github.com/MesmerPrism/rusty-hostess"
+            revision = "2" * 40
+            tree = "4" * 40
+            availability_url = (
+                "https://github.com/MesmerPrism/rusty-hostess/tree/" +
+                ("2" * 40)
+            )
+            tree_clean = $true
+        }
+        build = [ordered]@{
+            kind = "unsigned-dev"
+            framework = "net9.0-windows10.0.19041.0"
+            runtime_identifier = "win-x64"
+            source_date_epoch = 1785110400
+        }
+        dependencies = @(
+            [ordered]@{
+                name = "Synthetic.Dependency"
+                version = "1.0.0"
+                license = "MIT"
+                license_url = "https://example.invalid/licenses/mit"
+                project_url = "https://example.invalid/synthetic-dependency"
+            }
+        )
+        bundled_native_libraries = @(
+            [ordered]@{
+                name = "Synthetic.Native.dll"
+                sha256 = "5" * 64
+                size_bytes = 4096
+            }
+        )
+        signing = [ordered]@{
+            state = "unsigned"
+            status = "NotSigned"
+            subject = ""
+            thumbprint = ""
+        }
+        companion_documents = @(
+            [ordered]@{
+                name = "LICENSE"
+                sha256 = Get-RustyFleetSha256 -LiteralPath $providerLicense
+                size_bytes = (Get-Item -LiteralPath $providerLicense).Length
+            },
+            [ordered]@{
+                name = "THIRD-PARTY-NOTICES.txt"
+                sha256 = Get-RustyFleetSha256 -LiteralPath $providerNotices
+                size_bytes = (Get-Item -LiteralPath $providerNotices).Length
+            }
+        )
+        distribution = [ordered]@{
+            eligibility = "development_only"
+            binary_authority = "rusty-hostess-github-releases"
+        }
+    }
+    Write-TestArtifact `
+        -LiteralPath (
+            Join-Path $providerMetadata "rusty-hostess-hotspot-provider.provenance.json"
+        ) `
+        -Content (ConvertTo-RustyFleetJson -InputObject $providerProvenance)
 
     $badProviderHashRejected = $false
     try {
@@ -92,7 +168,8 @@ try {
             -HubPath $hub `
             -FleetctlPath $fleetctl `
             -ProviderPath $provider `
-            -ProviderSha256 ("0" * 64) | Out-Null
+            -ProviderSha256 ("0" * 64) `
+            -ProviderMetadataDirectory $providerMetadata | Out-Null
     }
     catch {
         $badProviderHashRejected = $true
@@ -108,7 +185,8 @@ try {
         -HubPath $hub `
         -FleetctlPath $fleetctl `
         -ProviderPath $provider `
-        -ProviderSha256 $providerSha256 | Out-Null
+        -ProviderSha256 $providerSha256 `
+        -ProviderMetadataDirectory $providerMetadata | Out-Null
     Invoke-TestBundle `
         -Version "0.0.0-test.1" `
         -OutputDirectory $outputTwo `
@@ -116,7 +194,8 @@ try {
         -HubPath $hub `
         -FleetctlPath $fleetctl `
         -ProviderPath $provider `
-        -ProviderSha256 $providerSha256 | Out-Null
+        -ProviderSha256 $providerSha256 `
+        -ProviderMetadataDirectory $providerMetadata | Out-Null
 
     $bundleNameOne = "RustyFleet-0.0.0-test.1-win-x64"
     $bundleOne = Join-Path $outputOne $bundleNameOne
@@ -158,6 +237,13 @@ try {
     Assert-Distribution (
         $manifest.components[3].provenance.artifact_sha256 -ceq $providerSha256
     ) "provider provenance did not bind the supplied artifact"
+    Assert-Distribution (
+        $manifest.components[3].provenance.owner_document_schema -eq
+            "rusty.hostess.windows_hotspot.release_provenance.v1" -and
+        $manifest.components[3].provenance.distribution_eligibility -eq
+            "development_only" -and
+        $manifest.distribution.publication_allowed -eq $false
+    ) "unsigned owner provenance or development-only eligibility is not preserved"
     Assert-Distribution (
         ($manifest.components[3].contract.arguments -join " ") -eq
         "integration windows-hotspot --json"
@@ -244,6 +330,7 @@ try {
         -FleetctlPath $fleetctl `
         -ProviderPath $provider `
         -ProviderSha256 $providerSha256 `
+        -ProviderMetadataDirectory $providerMetadata `
         -SourceRevision ("3" * 40) | Out-Null
     $bundleTwoVersion = Join-Path $outputThree "RustyFleet-0.0.0-test.2-win-x64"
     & (Join-Path $bundleTwoVersion "distribution-tools\Install-RustyFleet.ps1") `
@@ -291,6 +378,8 @@ try {
         exact_composition = $true
         provider_hash_pinned = $true
         provider_contract_exact = $true
+        owner_license_and_notices_bound = $true
+        unsigned_dev_non_distributable = $true
         tamper_rejected = $true
         extra_payload_rejected = $true
         plan_only_no_mutation = $true

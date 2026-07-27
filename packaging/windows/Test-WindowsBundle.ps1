@@ -42,6 +42,16 @@ if ($manifest.distribution.binary_authority -ne "github_releases" -or
     $manifest.distribution.pages_role -ne "human_documentation_only") {
     throw "GitHub Releases must remain binary truth and Pages must remain human-only"
 }
+if ($manifest.build.kind -eq "signed-release") {
+    if ($manifest.distribution.eligibility -ne "signed_release" -or
+        $manifest.distribution.publication_allowed -ne $true) {
+        throw "signed release distribution eligibility is invalid"
+    }
+}
+elseif ($manifest.distribution.eligibility -ne "development_only" -or
+    $manifest.distribution.publication_allowed -ne $false) {
+    throw "unsigned development bundles must be explicitly non-publishable"
+}
 
 $componentIds = @($manifest.components | ForEach-Object { $_.component_id })
 $expectedComponentIds = @(
@@ -70,7 +80,9 @@ if ($provider.Count -ne 1 -or
     $provider[0].contract.process_results.unavailable -ne 3 -or
     $provider[0].provenance.supplied_externally -ne $true -or
     $provider[0].provenance.source_revision -cnotmatch "^[0-9a-f]{40}$" -or
-    $provider[0].provenance.source_tree -cnotmatch "^[0-9a-f]{40}$") {
+    $provider[0].provenance.source_tree -cnotmatch "^[0-9a-f]{40}$" -or
+    $provider[0].provenance.owner_document_schema -ne
+        "rusty.hostess.windows_hotspot.release_provenance.v1") {
     throw "Hostess hotspot provider contract or provenance is not exact"
 }
 Assert-RustyFleetSha256 `
@@ -78,9 +90,44 @@ Assert-RustyFleetSha256 `
     -Name "Hostess provider provenance digest"
 foreach ($url in @(
     $provider[0].provenance.source_repository,
-    $provider[0].provenance.provenance_url
+    $provider[0].provenance.source_availability_url
 )) {
     Assert-RustyFleetHttpsUrl -Value $url -Name "Hostess provider provenance URL"
+}
+$providerPath = Join-Path $bundlePath $provider[0].entrypoint.Replace("/", "\")
+$ownerMetadataDirectory = Join-Path $bundlePath (
+    "providers\hostess-hotspot-provider\provenance"
+)
+$ownerProvenance = Read-RustyFleetHostessProvenance `
+    -MetadataDirectory $ownerMetadataDirectory `
+    -ProviderPath $providerPath `
+    -ProviderSha256 $provider[0].provenance.artifact_sha256 `
+    -BuildKind $manifest.build.kind
+if ($provider[0].provenance.owner_document_path -ne
+        "providers/hostess-hotspot-provider/provenance/rusty-hostess-hotspot-provider.provenance.json" -or
+    $provider[0].provenance.license_path -ne
+        "providers/hostess-hotspot-provider/provenance/LICENSE" -or
+    $provider[0].provenance.third_party_notices_path -ne
+        "providers/hostess-hotspot-provider/provenance/THIRD-PARTY-NOTICES.txt" -or
+    $provider[0].provenance.owner_document_sha256 -cne
+        $ownerProvenance.provenance_sha256 -or
+    $provider[0].provenance.source_repository -ne
+        $ownerProvenance.provenance.source.repository -or
+    $provider[0].provenance.source_revision -ne
+        $ownerProvenance.provenance.source.revision -or
+    $provider[0].provenance.source_tree -ne
+        $ownerProvenance.provenance.source.tree -or
+    $provider[0].provenance.source_availability_url -ne
+        $ownerProvenance.provenance.source.availability_url -or
+    [int] $provider[0].provenance.dependency_count -ne
+        @($ownerProvenance.provenance.dependencies).Count -or
+    [int] $provider[0].provenance.bundled_native_library_count -ne
+        @($ownerProvenance.provenance.bundled_native_libraries).Count -or
+    $provider[0].provenance.signing_state -ne
+        $ownerProvenance.provenance.signing.state -or
+    $provider[0].provenance.distribution_eligibility -ne
+        $ownerProvenance.provenance.distribution.eligibility) {
+    throw "Fleet projection does not preserve the Hostess owner provenance"
 }
 
 if ($manifest.build.kind -eq "signed-release") {
@@ -200,7 +247,11 @@ if ($receipt.schema -ne "rusty.fleet.windows_distribution_validation_receipt.v1"
     $receipt.version -ne $manifest.version -or
     $receipt.payload_files -ne $inventory.Count -or
     $receipt.manifest_sha256 -cne (Get-RustyFleetSha256 -LiteralPath $manifestPath) -or
-    $receipt.checksums_sha256 -cne (Get-RustyFleetSha256 -LiteralPath $checksumsPath)) {
+    $receipt.checksums_sha256 -cne (Get-RustyFleetSha256 -LiteralPath $checksumsPath) -or
+    $receipt.hostess_owner_provenance_sha256 -cne
+        $ownerProvenance.provenance_sha256 -or
+    $receipt.distribution_eligibility -ne $manifest.distribution.eligibility -or
+    $receipt.publication_allowed -ne $manifest.distribution.publication_allowed) {
     throw "distribution validation receipt is not bound to this bundle"
 }
 
