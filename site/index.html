@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Install and verify Rusty Fleet for Windows.">
+  <title>Rusty Fleet for Windows</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <a class="wordmark" href="./">Rusty Fleet</a>
+    <a class="release-link"
+       href="https://github.com/MesmerPrism/rusty-fleet/releases/latest">
+      Open verified releases
+    </a>
+  </header>
+  <main>
+    <section class="hero" aria-labelledby="hero-title">
+      <p class="eyebrow">Windows fleet operations</p>
+      <h1 id="hero-title">Install the fleet tools directly.</h1>
+      <p class="lede">
+        Fleet Console, Fleet Hub, and fleetctl ship together with one exact,
+        hash-pinned Hostess hotspot provider. QuestIonAble File Manager is not
+        required to install or run the fleet dashboard.
+      </p>
+      <div class="actions">
+        <a class="primary"
+           href="https://github.com/MesmerPrism/rusty-fleet/releases/latest">
+          Get the latest release
+        </a>
+        <a href="#verify">How verification works</a>
+      </div>
+    </section>
+
+    <section class="grid" aria-label="Release properties">
+      <article>
+        <h2>One reviewed bundle</h2>
+        <p>
+          The Windows archive carries a complete manifest, SHA-256 checksums,
+          and an offline validation receipt for its exact contents.
+        </p>
+      </article>
+      <article>
+        <h2>Private inputs stay private</h2>
+        <p>
+          Credentials, pairing material, device serials, private
+          configuration, and ADB are not distribution payloads.
+        </p>
+      </article>
+      <article>
+        <h2>Safe preview first</h2>
+        <p>
+          The installer shows its plan without changing the computer. Install
+          or rollback happens only after an explicit execute choice.
+        </p>
+      </article>
+    </section>
+
+    <section id="verify" class="steps" aria-labelledby="verify-title">
+      <p class="eyebrow">Before installation</p>
+      <h2 id="verify-title">Verify the release in three checks.</h2>
+      <ol>
+        <li>
+          Download only from
+          <a href="https://github.com/MesmerPrism/rusty-fleet/releases">
+            GitHub Releases
+          </a>. Releases are the binary source of truth; this site hosts no
+          installers.
+        </li>
+        <li>
+          Compare the ZIP with its adjacent <code>.zip.sha256</code> file.
+        </li>
+        <li>
+          Expand the archive and run the included offline validator before
+          reviewing the installer plan.
+        </li>
+      </ol>
+    </section>
+
+    <section class="boundary" aria-labelledby="boundary-title">
+      <h2 id="boundary-title">What the Hostess provider means</h2>
+      <p>
+        Windows hotspot behavior remains owned by Rusty Hostess. Fleet records
+        the provider’s public provenance and exact digest, then projects its
+        structured result. It does not absorb hotspot credentials or invent a
+        second implementation.
+      </p>
+    </section>
+  </main>
+  <footer>
+    <span>Rusty Fleet</span>
+    <a href="https://github.com/MesmerPrism/rusty-fleet">Source</a>
+    <a href="https://github.com/MesmerPrism/rusty-fleet/security">Security</a>
+  </footer>
+</body>
+</html>

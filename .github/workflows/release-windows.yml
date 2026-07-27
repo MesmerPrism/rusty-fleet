@@ -1,0 +1,260 @@
+name: Windows release bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer without a leading v
+        required: true
+        type: string
+      channel:
+        description: Release channel
+        required: true
+        default: preview
+        type: choice
+        options:
+          - dev
+          - preview
+          - stable
+      signing_mode:
+        description: Unsigned developer bundle or Authenticode-verified release
+        required: true
+        default: unsigned-dev
+        type: choice
+        options:
+          - unsigned-dev
+          - signed-release
+      hostess_provider_url:
+        description: Exact public Hostess provider artifact URL
+        required: true
+        type: string
+      hostess_provider_sha256:
+        description: Exact lowercase SHA-256 of the Hostess provider
+        required: true
+        type: string
+      hostess_provider_version:
+        description: Hostess provider version
+        required: true
+        type: string
+      hostess_provider_source_repository:
+        description: Public HTTPS Hostess source repository
+        required: true
+        type: string
+      hostess_provider_source_revision:
+        description: Full 40-character Hostess source commit
+        required: true
+        type: string
+      hostess_provider_source_tree:
+        description: Full 40-character Hostess source tree
+        required: true
+        type: string
+      hostess_provider_provenance_url:
+        description: Public Hostess release or source-commit provenance URL
+        required: true
+        type: string
+      publish_release:
+        description: Upload verified assets to the existing v<version> tag
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    environment: windows-release
+    env:
+      VERSION: ${{ inputs.version }}
+      CHANNEL: ${{ inputs.channel }}
+      SIGNING_MODE: ${{ inputs.signing_mode }}
+      PROVIDER_URL: ${{ inputs.hostess_provider_url }}
+      PROVIDER_SHA256: ${{ inputs.hostess_provider_sha256 }}
+      PROVIDER_VERSION: ${{ inputs.hostess_provider_version }}
+      PROVIDER_SOURCE_REPOSITORY: ${{ inputs.hostess_provider_source_repository }}
+      PROVIDER_SOURCE_REVISION: ${{ inputs.hostess_provider_source_revision }}
+      PROVIDER_SOURCE_TREE: ${{ inputs.hostess_provider_source_tree }}
+      PROVIDER_PROVENANCE_URL: ${{ inputs.hostess_provider_provenance_url }}
+      FLEET_SIGNING_PFX_BASE64: ${{ secrets.FLEET_SIGNING_PFX_BASE64 }}
+      FLEET_SIGNING_PFX_PASSWORD: ${{ secrets.FLEET_SIGNING_PFX_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.201
+
+      - name: Validate release inputs
+        shell: pwsh
+        run: |
+          if ($env:VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+            throw 'version is not SemVer'
+          }
+          if ($env:PROVIDER_SHA256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'provider SHA-256 must be lowercase hexadecimal'
+          }
+          if ($env:PROVIDER_SOURCE_REVISION -cnotmatch '^[0-9a-f]{40}$' -or
+              $env:PROVIDER_SOURCE_TREE -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'provider source revision and tree must be full lowercase Git IDs'
+          }
+          foreach ($value in @(
+            $env:PROVIDER_URL,
+            $env:PROVIDER_SOURCE_REPOSITORY,
+            $env:PROVIDER_PROVENANCE_URL
+          )) {
+            if (-not $value.StartsWith('https://', [StringComparison]::Ordinal)) {
+              throw 'provider provenance and download URLs must use HTTPS'
+            }
+          }
+          if ('${{ inputs.publish_release }}' -eq 'true') {
+            $tag = "v$env:VERSION"
+            & git show-ref --verify --quiet "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) {
+              throw "publish requires the existing tag $tag"
+            }
+            $tagCommit = (& git rev-list -n 1 $tag).Trim()
+            if ($tagCommit -cne $env:GITHUB_SHA) {
+              throw 'the release tag must resolve to the checked-out revision'
+            }
+          }
+
+      - name: Select Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup override set 1.96.0
+
+      - name: Run offline distribution tests
+        shell: pwsh
+        run: .\packaging\windows\tests\Test-WindowsDistribution.ps1
+
+      - name: Build Fleet executables
+        shell: pwsh
+        run: |
+          $console = Join-Path $env:RUNNER_TEMP 'fleet-console'
+          dotnet publish `
+            .\apps\fleet-console-wpf\RustyFleet.FleetConsole.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -o $console `
+            /p:PublishSingleFile=true `
+            /p:IncludeNativeLibrariesForSelfExtract=true `
+            /p:DebugType=None `
+            /p:DebugSymbols=false `
+            /p:PublishTrimmed=false `
+            /p:PublishReadyToRun=false `
+            /p:Deterministic=true
+          if ($LASTEXITCODE -ne 0) { throw 'Fleet Console publish failed' }
+          cargo build --release --locked --bin fleet-hub-local --bin fleetctl
+          if ($LASTEXITCODE -ne 0) { throw 'Fleet Hub or fleetctl build failed' }
+
+      - name: Download and verify exact Hostess provider
+        shell: pwsh
+        run: |
+          $provider = Join-Path $env:RUNNER_TEMP 'rusty-hostess-hotspot-provider.exe'
+          Invoke-WebRequest -Uri $env:PROVIDER_URL -OutFile $provider
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $provider).Hash.ToLowerInvariant()
+          if ($actual -cne $env:PROVIDER_SHA256) {
+            throw 'downloaded Hostess provider does not match the supplied SHA-256'
+          }
+
+      - name: Sign Fleet executables
+        if: inputs.signing_mode == 'signed-release'
+        shell: pwsh
+        run: |
+          if (-not $env:FLEET_SIGNING_PFX_BASE64 -or -not $env:FLEET_SIGNING_PFX_PASSWORD) {
+            throw 'signed-release requires the protected Fleet signing secrets'
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'fleet-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes(
+              $pfx,
+              [Convert]::FromBase64String($env:FLEET_SIGNING_PFX_BASE64)
+            )
+            $password = ConvertTo-SecureString `
+              $env:FLEET_SIGNING_PFX_PASSWORD `
+              -AsPlainText `
+              -Force
+            .\packaging\windows\Sign-WindowsArtifacts.ps1 `
+              -ExecutablePath @(
+                (Join-Path $env:RUNNER_TEMP 'fleet-console\RustyFleet.FleetConsole.exe'),
+                (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleet-hub-local.exe'),
+                (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleetctl.exe')
+              ) `
+              -PfxPath $pfx `
+              -PfxPassword $password
+          }
+          finally {
+            if (Test-Path -LiteralPath $pfx) {
+              Remove-Item -LiteralPath $pfx -Force
+            }
+          }
+
+      - name: Build and validate deterministic bundle
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
+          $provider = Join-Path $env:RUNNER_TEMP 'rusty-hostess-hotspot-provider.exe'
+          $arguments = @{
+            Version = $env:VERSION
+            Channel = $env:CHANNEL
+            BuildKind = $env:SIGNING_MODE
+            HostessProviderPath = $provider
+            HostessProviderSha256 = $env:PROVIDER_SHA256
+            HostessProviderVersion = $env:PROVIDER_VERSION
+            HostessProviderSourceRepository = $env:PROVIDER_SOURCE_REPOSITORY
+            HostessProviderSourceRevision = $env:PROVIDER_SOURCE_REVISION
+            HostessProviderSourceTree = $env:PROVIDER_SOURCE_TREE
+            HostessProviderProvenanceUrl = $env:PROVIDER_PROVENANCE_URL
+            OutputDirectory = $output
+            SourceRevision = $env:GITHUB_SHA
+            SourceDateEpoch = [long] ((git show -s --format=%ct $env:GITHUB_SHA).Trim())
+            SkipBuild = $true
+            ConsoleArtifactDirectory = (Join-Path $env:RUNNER_TEMP 'fleet-console')
+            HubArtifactPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleet-hub-local.exe')
+            FleetctlArtifactPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleetctl.exe')
+            RequireCleanSource = $true
+          }
+          if ($env:SIGNING_MODE -eq 'signed-release') {
+            $arguments.RequireAuthenticodeSignatures = $true
+          }
+          .\packaging\windows\New-WindowsBundle.ps1 @arguments
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: RustyFleet-${{ inputs.version }}-win-x64
+          path: |
+            artifacts/windows-distribution/*.zip
+            artifacts/windows-distribution/*.zip.sha256
+            artifacts/windows-distribution/*.manifest.json
+            artifacts/windows-distribution/*.checksums.sha256
+            artifacts/windows-distribution/*.validation-receipt.json
+          if-no-files-found: error
+
+      - name: Publish GitHub Release assets
+        if: inputs.publish_release
+        shell: pwsh
+        run: |
+          $tag = "v$env:VERSION"
+          $assets = Get-ChildItem `
+            -LiteralPath .\artifacts\windows-distribution `
+            -File |
+            Where-Object {
+              $_.Name -match '\.(zip|zip\.sha256|manifest\.json|checksums\.sha256|validation-receipt\.json)$'
+            } |
+            Select-Object -ExpandProperty FullName
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $assets --clobber
+          }
+          else {
+            $prerelease = if ($env:CHANNEL -eq 'stable') { @() } else { @('--prerelease') }
+            gh release create $tag $assets --verify-tag --generate-notes @prerelease
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed' }
