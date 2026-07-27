@@ -20,6 +20,7 @@ const DEFAULT_HUB_URL: &str = "http://127.0.0.1:8741";
 const HUB_URL_ENV: &str = "RUSTY_FLEET_HUB_URL";
 const PACKAGE_OWNER_TOKEN_ENV: &str = "RUSTY_FLEET_PACKAGE_OWNER_TOKEN";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const HOTSPOT_EXECUTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct LocalFleetOperationClient {
@@ -74,6 +75,16 @@ impl LocalFleetOperationClient {
         self.request_with_token(method, path, body, None)
     }
 
+    fn request_with_timeout(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        request_timeout: Duration,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_token_and_timeout(method, path, body, None, request_timeout)
+    }
+
     fn request_with_token(
         &self,
         method: &str,
@@ -81,15 +92,26 @@ impl LocalFleetOperationClient {
         body: Option<Vec<u8>>,
         bearer_token: Option<&str>,
     ) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_token_and_timeout(method, path, body, bearer_token, REQUEST_TIMEOUT)
+    }
+
+    fn request_with_token_and_timeout(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        bearer_token: Option<&str>,
+        request_timeout: Duration,
+    ) -> Result<serde_json::Value, CliFailure> {
         let body = body.unwrap_or_default();
-        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let deadline = Instant::now() + request_timeout;
         let mut stream = TcpStream::connect_timeout(&self.socket, REQUEST_TIMEOUT)
             .map_err(|error| transport_failure("connect", error))?;
         stream
-            .set_read_timeout(Some(REQUEST_TIMEOUT))
+            .set_read_timeout(Some(request_timeout))
             .map_err(|error| transport_failure("bound read", error))?;
         stream
-            .set_write_timeout(Some(REQUEST_TIMEOUT))
+            .set_write_timeout(Some(request_timeout))
             .map_err(|error| transport_failure("bound write", error))?;
         let mut wire = format!(
             "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
@@ -299,7 +321,7 @@ impl FleetOperationClient for LocalFleetOperationClient {
         &mut self,
         request: &WindowsHotspotExecuteRequest,
     ) -> Result<serde_json::Value, CliFailure> {
-        self.request(
+        self.request_with_timeout(
             "POST",
             &format!(
                 "/fleet/v1/windows-hotspot/{}/execute",
@@ -308,6 +330,7 @@ impl FleetOperationClient for LocalFleetOperationClient {
             Some(serde_json::to_vec(request).map_err(|error| {
                 CliFailure::new("request_serialization_failed", error.to_string())
             })?),
+            HOTSPOT_EXECUTE_REQUEST_TIMEOUT,
         )
     }
 

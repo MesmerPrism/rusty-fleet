@@ -69,7 +69,7 @@ use rusty_manifold_peer::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::time::timeout;
 use tower::limit::GlobalConcurrencyLimitLayer;
 
@@ -3063,54 +3063,20 @@ async fn execute_windows_hotspot(
             invocation,
         )
     };
-    let invoked = tokio::task::spawn_blocking(move || {
-        WindowsHotspotOwnerAdapter::default().invoke(&provider, &invocation)
-    })
-    .await;
-    let now_ms = unix_time_ms().unwrap_or(now_ms);
-    let mut runtime = state.runtime.lock().await;
-    runtime
-        .inflight_windows_hotspot_operations
-        .remove(&operation_id);
-    let mut candidate_hub = runtime.hub.clone();
-    let operation = match invoked {
-        Ok(Ok(receipt)) => match candidate_hub.apply_windows_hotspot_receipt(receipt, now_ms) {
-            Ok(value) => value,
-            Err(error) => return hub_operation_error(error),
-        },
-        Ok(Err(error)) => match candidate_hub.fail_windows_hotspot_operation(
-            &operation_id,
-            format!("provider_{}", error.code),
-            now_ms,
-        ) {
-            Ok(value) => value,
-            Err(hub_error) => return hub_operation_error(hub_error),
-        },
-        Err(_) => match candidate_hub.fail_windows_hotspot_operation(
-            &operation_id,
-            "provider_worker_failed".to_owned(),
-            now_ms,
-        ) {
-            Ok(value) => value,
-            Err(error) => return hub_operation_error(error),
-        },
-    };
-    let RuntimeState {
-        hub,
-        adapter,
-        state_store,
-        owner_receipts,
-        ..
-    } = &mut *runtime;
-    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
-        return api_error(
-            StatusCode::INSUFFICIENT_STORAGE,
-            "durable_state_failed",
+    match spawn_windows_hotspot_owner_work(state, operation_id, provider, invocation, now_ms).await
+    {
+        Ok(Ok(operation)) => Json(operation).into_response(),
+        Ok(Err(error)) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "windows_hotspot_settlement_failed",
             error,
-        );
+        ),
+        Err(_) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "windows_hotspot_settlement_lost",
+            "detached hotspot settlement task ended without a durable result",
+        ),
     }
-    *hub = candidate_hub;
-    Json(operation).into_response()
 }
 
 async fn windows_hotspot_status(
@@ -4051,58 +4017,102 @@ async fn schedule_recovered_windows_hotspot_work(state: LocalHubState) -> Result
         work
     };
     if let Some((operation_id, provider, invocation)) = work {
-        tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                WindowsHotspotOwnerAdapter::default().invoke(&provider, &invocation)
-            })
-            .await;
-            let now_ms = match unix_time_ms() {
-                Ok(value) => value,
-                Err(_) => return,
-            };
-            let mut runtime = state.runtime.lock().await;
-            runtime
-                .inflight_windows_hotspot_operations
-                .remove(&operation_id);
-            let mut candidate_hub = runtime.hub.clone();
-            let transition = match result {
-                Ok(Ok(receipt)) => candidate_hub
-                    .apply_windows_hotspot_receipt(receipt, now_ms)
-                    .map(|_| ()),
-                Ok(Err(error)) => candidate_hub
-                    .fail_windows_hotspot_operation(
-                        &operation_id,
-                        format!("provider_{}", error.code),
-                        now_ms,
-                    )
-                    .map(|_| ()),
-                Err(_) => candidate_hub
-                    .fail_windows_hotspot_operation(
-                        &operation_id,
-                        "provider_worker_failed".to_owned(),
-                        now_ms,
-                    )
-                    .map(|_| ()),
-            };
-            if transition.is_err() {
-                return;
-            }
-            let RuntimeState {
-                hub,
-                adapter,
-                state_store,
-                owner_receipts,
-                ..
-            } = &mut *runtime;
-            if state_store
-                .persist(&candidate_hub, adapter, owner_receipts, now_ms)
-                .is_ok()
-            {
-                *hub = candidate_hub;
-            }
-        });
+        drop(spawn_windows_hotspot_owner_work(
+            state,
+            operation_id,
+            provider,
+            invocation,
+            now_ms,
+        ));
     }
     Ok(())
+}
+
+fn spawn_windows_hotspot_owner_work(
+    state: LocalHubState,
+    operation_id: String,
+    provider: WindowsHotspotProviderConfig,
+    invocation: fleet_contracts::WindowsHotspotProviderRequest,
+    fallback_now_ms: i64,
+) -> oneshot::Receiver<Result<fleet_contracts::WindowsHotspotOperation, String>> {
+    spawn_windows_hotspot_owner_work_with_clock(
+        state,
+        operation_id,
+        provider,
+        invocation,
+        fallback_now_ms,
+        unix_time_ms,
+    )
+}
+
+fn spawn_windows_hotspot_owner_work_with_clock<C>(
+    state: LocalHubState,
+    operation_id: String,
+    provider: WindowsHotspotProviderConfig,
+    invocation: fleet_contracts::WindowsHotspotProviderRequest,
+    fallback_now_ms: i64,
+    settlement_clock: C,
+) -> oneshot::Receiver<Result<fleet_contracts::WindowsHotspotOperation, String>>
+where
+    C: FnOnce() -> Result<i64, String> + Send + 'static,
+{
+    let (sender, receiver) = oneshot::channel();
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            WindowsHotspotOwnerAdapter::default().invoke(&provider, &invocation)
+        })
+        .await;
+        let now_ms = settlement_clock().unwrap_or(fallback_now_ms);
+        let mut runtime = state.runtime.lock().await;
+        runtime
+            .inflight_windows_hotspot_operations
+            .remove(&operation_id);
+        let mut candidate_hub = runtime.hub.clone();
+        let transition = match result {
+            Ok(Ok(receipt)) => match candidate_hub.apply_windows_hotspot_receipt(receipt, now_ms) {
+                Ok(operation) => Ok(operation),
+                Err(_) => candidate_hub.fail_windows_hotspot_operation(
+                    &operation_id,
+                    "provider_receipt_rejected".to_owned(),
+                    now_ms,
+                ),
+            },
+            Ok(Err(error)) => candidate_hub.fail_windows_hotspot_operation(
+                &operation_id,
+                format!("provider_{}", error.code),
+                now_ms,
+            ),
+            Err(_) => candidate_hub.fail_windows_hotspot_operation(
+                &operation_id,
+                "provider_worker_failed".to_owned(),
+                now_ms,
+            ),
+        };
+        let operation = match transition {
+            Ok(operation) => operation,
+            Err(error) => {
+                let _ = sender.send(Err(format!(
+                    "hotspot settlement transition failed with code {}",
+                    error.code
+                )));
+                return;
+            }
+        };
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            ..
+        } = &mut *runtime;
+        if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+            let _ = sender.send(Err(error));
+            return;
+        }
+        *hub = candidate_hub;
+        let _ = sender.send(Ok(operation));
+    });
+    receiver
 }
 
 async fn schedule_pending_awake_work(state: LocalHubState, operation_id: &str) {
@@ -5661,8 +5671,9 @@ mod tests {
         IngressRateLimiter, LocalHubConfig, LocalHubState, MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW,
         MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS, RuntimeState, connectivity_dispatch_slots,
         connectivity_invocation_expired, prepare_pending_connectivity_batch, router,
-        schedule_recovered_owner_work, settle_connectivity_owner_result, state_slot_path,
-        transport_request_id, unix_time_ms,
+        schedule_recovered_owner_work, settle_connectivity_owner_result,
+        spawn_windows_hotspot_owner_work_with_clock, state_slot_path, transport_request_id,
+        unix_time_ms,
     };
 
     static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -6245,6 +6256,119 @@ mod tests {
             .await
             .expect("get response");
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn hotspot_settlement_survives_dropped_receiver_and_clock_failure() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[21_u8; 32]);
+        let (config, _) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
+        let operation_id = "hotspot-operation-detached".to_owned();
+        {
+            let mut runtime = state.runtime.lock().await;
+            runtime
+                .hub
+                .preview_windows_hotspot(fleet_hub::WindowsHotspotPreviewPlan {
+                    operation_id: operation_id.clone(),
+                    preview_id: "hotspot-preview-detached".to_owned(),
+                    lease_id: "hotspot-lease-detached".to_owned(),
+                    generation: "hotspot-generation-detached".to_owned(),
+                    request: fleet_contracts::WindowsHotspotPreviewRequest {
+                        schema: fleet_contracts::WINDOWS_HOTSPOT_PREVIEW_REQUEST_SCHEMA.to_owned(),
+                        action_id: fleet_contracts::WINDOWS_HOTSPOT_ACTION_ID.to_owned(),
+                        action: fleet_contracts::WindowsHotspotAction::Status,
+                    },
+                    created_at_ms: now_ms,
+                    expires_at_ms: now_ms + 60_000,
+                    provider_ready: true,
+                })
+                .expect("preview");
+            runtime
+                .hub
+                .confirm_windows_hotspot(&operation_id, "hotspot-preview-detached", now_ms + 1)
+                .expect("confirm");
+            runtime
+                .hub
+                .prepare_windows_hotspot_invocation(
+                    &operation_id,
+                    "hotspot-request-detached".to_owned(),
+                    now_ms + 2,
+                )
+                .expect("prepare invocation");
+            runtime
+                .inflight_windows_hotspot_operations
+                .insert(operation_id.clone());
+        }
+        let provider_root = state_directory.join("missing-provider");
+        let receiver = spawn_windows_hotspot_owner_work_with_clock(
+            state.clone(),
+            operation_id.clone(),
+            fleet_windows_hotspot_adapter::WindowsHotspotProviderConfig {
+                executable_path: provider_root.join("rusty-hostess-hotspot-provider.exe"),
+                executable_sha256: "a".repeat(64),
+                private_stage_root: state_directory.join("private-stages"),
+            },
+            state
+                .runtime
+                .lock()
+                .await
+                .hub
+                .windows_hotspot_operation(&operation_id)
+                .expect("prepared operation")
+                .invocation
+                .expect("invocation"),
+            now_ms + 2,
+            || Err("injected clock failure".to_owned()),
+        );
+        drop(receiver);
+
+        for _ in 0..100 {
+            let settled = {
+                let runtime = state.runtime.lock().await;
+                runtime
+                    .hub
+                    .windows_hotspot_operation(&operation_id)
+                    .expect("operation")
+                    .lifecycle
+                    == CommandLifecycle::Failed
+            };
+            if settled {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let runtime = state.runtime.lock().await;
+        let operation = runtime
+            .hub
+            .windows_hotspot_operation(&operation_id)
+            .expect("settled operation");
+        assert_eq!(operation.lifecycle, CommandLifecycle::Failed);
+        assert_eq!(
+            operation.failure_code.as_deref(),
+            Some("provider_provider_unavailable")
+        );
+        assert!(
+            !runtime
+                .inflight_windows_hotspot_operations
+                .contains(&operation_id)
+        );
+        drop(runtime);
+
+        let restored =
+            LocalHubState::from_config(&config, now_ms + 3).expect("durable settled state");
+        let restored_runtime = restored.runtime.lock().await;
+        assert_eq!(
+            restored_runtime
+                .hub
+                .windows_hotspot_operation(&operation_id)
+                .expect("restored operation")
+                .lifecycle,
+            CommandLifecycle::Failed
+        );
+        drop(restored_runtime);
         fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
