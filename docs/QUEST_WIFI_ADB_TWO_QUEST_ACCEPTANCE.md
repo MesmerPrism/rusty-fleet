@@ -100,6 +100,38 @@ After the Hub and signed Agents are active, a Fleet `status` operation must
 return a fresh direct Kiosk provider receipt; profile enrollment alone is not
 treated as direct-link evidence.
 
+The ADB-manager readback is not free-form text matching. Fleet accepts only the
+closed `android.debugging_manager.text.v1` envelope emitted by the reviewed
+AOSP/Quest `dumpsys adb` implementation, parses its version-1 keystore with DTDs
+disabled, and retains only a stable digest plus bounded pairing/trusted-network
+facts. Unknown fields, duplicate fields, an unknown envelope/version, malformed
+XML, or inconsistent user/keystore keys make the manager projection `unknown`.
+The v1 dump does not itself expose a TLS port, connected Wi-Fi key set, or
+pairing-in-progress flag, so Fleet never derives those facts from
+`connected_to_adb`.
+
+Actual dynamic listener and pending-pairing ports come from the ADB owner's
+closed `adb mdns services` projection, target-bound by the Quest's current
+global IPv4 address or platform-serial service prefix. A closed
+`rusty.fleet.adbd_socket_owner.v1` readback resolves the exact `adbd` process's
+socket FDs to `/proc/net/tcp*`; its owned listening and established sockets are
+the actual listener/session facts. Inaccessible procfs ownership, an
+unrecognized readback, or disagreement between properties/mDNS and the owned
+socket set remains `unknown`, never `absent`. Any unknown manager, mDNS, or
+socket-owner grammar therefore fails Preflight and cannot satisfy terminal
+cleanup. Because AOSP v1 omits pairing-in-progress, missing mDNS while Wireless
+Debugging remains enabled also stays `unknown`; only an observed pairing
+service is `pending`, and only disabled owner flags can close it as `absent`.
+Final cleanup also requires the retained pairing/trusted-network digest to
+equal its initial value.
+
+This readback correction advances private acceptance state to v4. A v3 state
+cannot be migrated safely because it has no retained-pairing baseline and may
+already contain false `absent` listener/session/pending claims. The current
+runner rejects it before resume. Finish cleanup with the exact runner checkout
+that created the v3 state, retain that cleanup evidence, and begin v4 with a
+fresh absent private state root; do not copy or synthesize v4 fields.
+
 `Execute` and each `Resume` perform one durable transition. Both require
 `-ConfirmMutation`. Reusing a different config rejects before resume.
 

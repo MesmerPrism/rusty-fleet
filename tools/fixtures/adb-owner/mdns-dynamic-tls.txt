@@ -1,0 +1,2 @@
+List of discovered mdns services
+adb-SYNTHETICa-Dynamic01  _adb-tls-connect._tcp  192.0.2.20:43127

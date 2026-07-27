@@ -1,0 +1,3 @@
+rusty.fleet.adbd_socket_owner.v1
+pid=1265
+inode=44001

@@ -91,6 +91,119 @@ function Invoke-RunnerProcess {
     }
 }
 
+$ownerFixtureRoot = Join-Path $PSScriptRoot "fixtures/adb-owner"
+$cleanManager = ConvertFrom-ClosedAdbManagerDump -Text (
+    Get-Content -LiteralPath (
+        Join-Path $ownerFixtureRoot "aosp-v1-clean.txt") -Raw)
+Assert-True (
+    $cleanManager.ParseState -ceq "known" -and
+    $cleanManager.Format -ceq "android.debugging_manager.text.v1" -and
+    $cleanManager.RetainedPairingState -ceq "absent" -and
+    $cleanManager.ListenerState -ceq "unknown" -and
+    $cleanManager.WirelessSessionState -ceq "unknown" -and
+    $cleanManager.WirelessPendingState -ceq "unknown"
+) "Closed AOSP v1 manager parsing invented a network fact."
+
+$retainedManager = ConvertFrom-ClosedAdbManagerDump -Text (
+    Get-Content -LiteralPath (
+        Join-Path $ownerFixtureRoot "aosp-v1-retained.txt") -Raw)
+Assert-True (
+    $retainedManager.ParseState -ceq "known" -and
+    $retainedManager.RetainedPairingState -ceq "present" -and
+    $retainedManager.RetainedPairingCount -eq 1 -and
+    $retainedManager.TrustedWifiNetworkCount -eq 1 -and
+    $retainedManager.RetainedPairingSha256 -cmatch '^[0-9a-f]{64}$'
+) "Closed AOSP v1 manager parsing lost retained pairing/trust."
+
+foreach ($fixture in @(
+    "aosp-v1-adversarial-dynamic.txt",
+    "unknown-version.txt"
+)) {
+    $unknownManager = ConvertFrom-ClosedAdbManagerDump -Text (
+        Get-Content -LiteralPath (Join-Path $ownerFixtureRoot $fixture) -Raw)
+    Assert-True (
+        $unknownManager.ParseState -ceq "unknown" -and
+        $unknownManager.ListenerState -ceq "unknown" -and
+        $unknownManager.WirelessSessionState -ceq "unknown" -and
+        $unknownManager.WirelessPendingState -ceq "unknown" -and
+        $unknownManager.RetainedPairingState -ceq "unknown"
+    ) "Unrecognized ADB-manager text was falsely interpreted as absent."
+}
+
+$dynamicMdns = ConvertFrom-ClosedAdbMdnsServices -Text (
+    Get-Content -LiteralPath (
+        Join-Path $ownerFixtureRoot "mdns-dynamic-tls.txt") -Raw)
+$pendingMdns = ConvertFrom-ClosedAdbMdnsServices -Text (
+    Get-Content -LiteralPath (
+        Join-Path $ownerFixtureRoot "mdns-dynamic-tls-pending.txt") -Raw)
+$dynamicOwnerSockets = ConvertFrom-ClosedAdbdSocketOwnerReadback -Text (
+    Get-Content -LiteralPath (
+        Join-Path $ownerFixtureRoot "adbd-sockets-dynamic.txt") -Raw)
+$emptyOwnerSockets = ConvertFrom-ClosedAdbdSocketOwnerReadback -Text (
+    Get-Content -LiteralPath (
+        Join-Path $ownerFixtureRoot "adbd-sockets-empty.txt") -Raw)
+Assert-True (
+    $dynamicOwnerSockets.ParseState -ceq "known" -and
+    @($dynamicOwnerSockets.ListenerPorts) -contains 43127 -and
+    @($dynamicOwnerSockets.EstablishedPorts) -contains 43127 -and
+    $emptyOwnerSockets.ParseState -ceq "known" -and
+    @($emptyOwnerSockets.ListenerPorts).Count -eq 0 -and
+    @($emptyOwnerSockets.EstablishedPorts).Count -eq 0
+) "The closed adbd socket-owner parser lost an owned listener/session."
+$inactivePort = [pscustomobject]@{ State = "inactive"; Port = 0 }
+$dynamicFacts = Resolve-AdbOwnerNetworkFacts `
+    -Manager $retainedManager -Mdns $dynamicMdns `
+    -OwnerSockets $dynamicOwnerSockets `
+    -Tcp $inactivePort -Tls $inactivePort -WifiSetting "1" `
+    -PersistentTlsSetting "1" -TargetServices $dynamicMdns.Services
+Assert-True (
+    $dynamicFacts.ListenerState -ceq "active" -and
+    $dynamicFacts.WirelessSessionState -ceq "active" -and
+    $dynamicFacts.WirelessPendingState -ceq "unknown"
+) "Empty properties hid a dynamic TLS listener/session."
+
+$pendingFacts = Resolve-AdbOwnerNetworkFacts `
+    -Manager $retainedManager -Mdns $pendingMdns `
+    -OwnerSockets ([pscustomobject]@{
+        ParseState = "known"
+        ListenerPorts = @(43127)
+        EstablishedPorts = @()
+    }) `
+    -Tcp $inactivePort -Tls $inactivePort -WifiSetting "1" `
+    -PersistentTlsSetting "1" -TargetServices $pendingMdns.Services
+Assert-True (
+    $pendingFacts.ListenerState -ceq "active" -and
+    $pendingFacts.WirelessSessionState -ceq "absent" -and
+    $pendingFacts.WirelessPendingState -ceq "pending"
+) "Dynamic pairing-server state was falsely interpreted as absent."
+
+$pendingWithoutListener = Resolve-AdbOwnerNetworkFacts `
+    -Manager $retainedManager `
+    -Mdns ([pscustomobject]@{ ParseState = "known"; Services = @() }) `
+    -OwnerSockets $emptyOwnerSockets `
+    -Tcp $inactivePort -Tls $inactivePort -WifiSetting "1" `
+    -PersistentTlsSetting "1" -TargetServices @()
+Assert-True (
+    $pendingWithoutListener.ListenerState -ceq "absent" -and
+    $pendingWithoutListener.WirelessSessionState -ceq "absent" -and
+    $pendingWithoutListener.WirelessPendingState -ceq "pending"
+) "A conclusive empty owner projection lost the pending activation."
+
+$unknownFacts = Resolve-AdbOwnerNetworkFacts `
+    -Manager $unknownManager -Mdns $dynamicMdns `
+    -OwnerSockets ([pscustomobject]@{
+        ParseState = "unknown"
+        ListenerPorts = @()
+        EstablishedPorts = @()
+    }) `
+    -Tcp $inactivePort -Tls $inactivePort -WifiSetting "1" `
+    -PersistentTlsSetting "1" -TargetServices $dynamicMdns.Services
+Assert-True (
+    $unknownFacts.ListenerState -ceq "unknown" -and
+    $unknownFacts.WirelessSessionState -ceq "unknown" -and
+    $unknownFacts.WirelessPendingState -ceq "unknown"
+) "Unknown ADB-manager output did not poison the combined owner readback."
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-wifi-adb-acceptance-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
@@ -497,6 +610,9 @@ try {
             wireless_pending_state = "absent"
             host_forward_count = 0
             host_reverse_count = 0
+            adb_manager_format = "android.debugging_manager.text.v1"
+            adb_retained_pairing_state = "absent"
+            adb_retained_pairing_sha256 = "4" * 64
             adb_manager_state_sha256 = "3" * 64
             helper_status_state = "absent"
             helper_in_flight = $false
@@ -516,7 +632,7 @@ try {
     $roundTrip = Read-SanitizedState -Context $validated
     Assert-True (
         [string]$roundTrip.schema -ceq
-            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v3" -and
+            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v4" -and
         [string]$roundTrip.claims.installed -ceq "not_evaluated" -and
         [string]$roundTrip.claims.reachable -ceq "not_evaluated" -and
         @(Get-ChildItem -LiteralPath $config.private_state_root `
@@ -652,6 +768,11 @@ try {
     foreach ($required in @(
         "service.adb.tcp.port",
         "service.adb.tls.port",
+        "persist.adb.tls_server.enable",
+        "ConvertFrom-ClosedAdbManagerDump",
+        "ConvertFrom-ClosedAdbMdnsServices",
+        "ConvertFrom-ClosedAdbdSocketOwnerReadback",
+        "adb_retained_pairing_sha256",
         "wireless_pending_state",
         "host_forward_count",
         "Get-QfmDirectLinkObservation",

@@ -1,0 +1,4 @@
+ADB MANAGER STATE version=99:
+listener=none
+session=none
+pending=none

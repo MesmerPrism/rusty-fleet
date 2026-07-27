@@ -38,7 +38,7 @@ public static class RustyFleetAcceptanceNative
 }
 
 $script:ConfigSchema = "rusty.fleet.wifi_adb_two_quest_run_config.v1"
-$script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v3"
+$script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v4"
 $script:QfmCommit = "a6d8e88c9d65f642d0cbf74fc8b92c8f1cd19ae5"
 $script:HelperCommit = "d800e5c7c5f8c77ad2bae52450f32092f3c92ace"
 $script:ArtifactIds = @(
@@ -997,7 +997,9 @@ function Assert-ValidSanitizedStateShape {
             "adb_tcp_port_state", "adb_tls_port_state",
             "adb_listener_state", "wireless_session_state",
             "wireless_pending_state", "host_forward_count",
-            "host_reverse_count", "adb_manager_state_sha256",
+            "host_reverse_count", "adb_manager_format",
+            "adb_retained_pairing_state",
+            "adb_retained_pairing_sha256", "adb_manager_state_sha256",
             "helper_status_state", "helper_in_flight",
             "helper_proof_listener_discovered",
             "signer_checks_complete", "agent_process_present",
@@ -1452,6 +1454,11 @@ function New-SanitizedState {
                 wireless_pending_state = $snapshot.wireless_pending_state
                 host_forward_count = $snapshot.host_forward_count
                 host_reverse_count = $snapshot.host_reverse_count
+                adb_manager_format = $snapshot.adb_manager_format
+                adb_retained_pairing_state =
+                    $snapshot.adb_retained_pairing_state
+                adb_retained_pairing_sha256 =
+                    $snapshot.adb_retained_pairing_sha256
                 adb_manager_state_sha256 = $snapshot.adb_manager_state_sha256
                 helper_status_state = $snapshot.helper_status_state
                 helper_in_flight = $snapshot.helper_in_flight
@@ -1623,6 +1630,479 @@ function Convert-AdbPortState {
     return [pscustomobject]@{ State = "active"; Port = $port }
 }
 
+function New-UnknownAdbManagerReadback {
+    param([Parameter(Mandatory)][string] $Reason)
+    return [pscustomobject]@{
+        Format = "unknown"
+        ParseState = "unknown"
+        Reason = $Reason
+        ManagerConnectedToAdbd = $null
+        RetainedPairingState = "unknown"
+        RetainedPairingCount = 0
+        TrustedWifiNetworkCount = 0
+        RetainedPairingSha256 = "0" * 64
+        ListenerState = "unknown"
+        WirelessSessionState = "unknown"
+        WirelessPendingState = "unknown"
+    }
+}
+
+function ConvertFrom-ClosedAdbManagerDump {
+    param([Parameter(Mandatory)][AllowEmptyString()][string] $Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 1048576) {
+        return New-UnknownAdbManagerReadback -Reason "empty_or_unbounded"
+    }
+    $normalized = $Text.Replace("`r`n", "`n").Replace("`r", "`n").Trim()
+    $lines = @($normalized -split "`n")
+    if (
+        $lines.Count -lt 6 -or
+        $lines[0] -cne "ADB MANAGER STATE (dumpsys adb):" -or
+        $lines[1] -cne "{" -or
+        $lines[2] -cne "  debugging_manager={" -or
+        $lines[$lines.Count - 2] -cne "  }" -or
+        $lines[$lines.Count - 1] -cne "}"
+    ) {
+        return New-UnknownAdbManagerReadback -Reason "unsupported_envelope"
+    }
+
+    $allowedFields = @(
+        "connected_to_adb",
+        "last_key_received",
+        "user_keys",
+        "system_keys",
+        "keystore"
+    )
+    $fields = [ordered]@{}
+    $current = ""
+    for ($index = 3; $index -lt ($lines.Count - 2); $index++) {
+        $line = [string]$lines[$index]
+        if ($line -ceq "" -or $line -ceq "    ") {
+            continue
+        }
+        if ($line -cmatch '^    ([a-z][a-z0-9_]*)=(.*)$') {
+            $name = [string]$Matches[1]
+            if ($name -cnotin $allowedFields -or $fields.Contains($name)) {
+                return New-UnknownAdbManagerReadback `
+                    -Reason "unsupported_or_duplicate_field"
+            }
+            $current = $name
+            $fields[$name] = @([string]$Matches[2])
+            continue
+        }
+        if (
+            -not $current -or
+            $current -cnotin @("user_keys", "system_keys", "keystore") -or
+            -not $line.StartsWith("    ", [StringComparison]::Ordinal)
+        ) {
+            return New-UnknownAdbManagerReadback `
+                -Reason "unsupported_continuation"
+        }
+        $fields[$current] = @($fields[$current]) + $line.Substring(4)
+    }
+    if (
+        -not $fields.Contains("connected_to_adb") -or
+        @($fields.connected_to_adb).Count -ne 1 -or
+        [string]$fields.connected_to_adb[0] -cnotin @("true", "false") -or
+        -not $fields.Contains("user_keys") -or
+        -not $fields.Contains("keystore")
+    ) {
+        return New-UnknownAdbManagerReadback -Reason "incomplete_v1_fields"
+    }
+
+    $userKeys = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    foreach ($line in @($fields.user_keys)) {
+        $key = ([string]$line).Trim()
+        if (-not $key) {
+            continue
+        }
+        if ($key.Length -gt 16384 -or $key -cmatch '[\x00-\x08\x0b\x0c\x0e-\x1f]') {
+            return New-UnknownAdbManagerReadback -Reason "invalid_user_key"
+        }
+        [void]$userKeys.Add($key)
+    }
+
+    $xmlText = (@($fields.keystore) -join "`n").Trim()
+    if ([string]::IsNullOrWhiteSpace($xmlText)) {
+        return New-UnknownAdbManagerReadback -Reason "missing_keystore"
+    }
+    $document = [Xml.XmlDocument]::new()
+    $document.XmlResolver = $null
+    $reader = $null
+    try {
+        $settings = [Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $settings.MaxCharactersInDocument = 1048576
+        $reader = [Xml.XmlReader]::Create(
+            [IO.StringReader]::new($xmlText),
+            $settings)
+        $document.Load($reader)
+    } catch {
+        return New-UnknownAdbManagerReadback -Reason "invalid_keystore_xml"
+    } finally {
+        if ($null -ne $reader) {
+            $reader.Dispose()
+        }
+    }
+    $root = $document.DocumentElement
+    if (
+        $null -eq $root -or
+        $root.Name -cne "keyStore" -or
+        $root.Attributes.Count -ne 1 -or
+        $root.GetAttribute("version") -cne "1"
+    ) {
+        return New-UnknownAdbManagerReadback `
+            -Reason "unsupported_keystore_version"
+    }
+
+    $keystoreKeys = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    $trustedNetworks = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    foreach ($node in @($root.ChildNodes)) {
+        if ($node.NodeType -ne [Xml.XmlNodeType]::Element) {
+            continue
+        }
+        if ($node.Name -ceq "adbKey") {
+            if (
+                $node.Attributes.Count -ne 2 -or
+                -not $node.HasAttribute("key") -or
+                -not $node.HasAttribute("lastConnection") -or
+                $node.GetAttribute("lastConnection") -cnotmatch '^[0-9]+$'
+            ) {
+                return New-UnknownAdbManagerReadback `
+                    -Reason "invalid_keystore_key"
+            }
+            $key = $node.GetAttribute("key")
+            if (-not $key -or $key.Length -gt 16384) {
+                return New-UnknownAdbManagerReadback `
+                    -Reason "invalid_keystore_key"
+            }
+            [void]$keystoreKeys.Add($key)
+        } elseif ($node.Name -ceq "wifiAP") {
+            if (
+                $node.Attributes.Count -ne 1 -or
+                -not $node.HasAttribute("bssid")
+            ) {
+                return New-UnknownAdbManagerReadback `
+                    -Reason "invalid_trusted_network"
+            }
+            $bssid = $node.GetAttribute("bssid")
+            if ($bssid -cnotmatch '^[0-9A-Fa-f:.-]{1,64}$') {
+                return New-UnknownAdbManagerReadback `
+                    -Reason "invalid_trusted_network"
+            }
+            [void]$trustedNetworks.Add($bssid.ToLowerInvariant())
+        } else {
+            return New-UnknownAdbManagerReadback `
+                -Reason "unsupported_keystore_element"
+        }
+    }
+    foreach ($key in $userKeys) {
+        if (-not $keystoreKeys.Contains($key)) {
+            return New-UnknownAdbManagerReadback `
+                -Reason "user_keystore_key_mismatch"
+        }
+    }
+    $retainedMaterial = @(
+        "rusty.fleet.adb-retained-authorization.v1"
+        @($keystoreKeys | Sort-Object | ForEach-Object { "key:$($_)" })
+        @($trustedNetworks | Sort-Object | ForEach-Object { "wifi:$($_)" })
+    ) -join "`0"
+    $retainedCount = $keystoreKeys.Count + $trustedNetworks.Count
+    return [pscustomobject]@{
+        Format = "android.debugging_manager.text.v1"
+        ParseState = "known"
+        Reason = "closed_v1"
+        ManagerConnectedToAdbd =
+            [string]$fields.connected_to_adb[0] -ceq "true"
+        RetainedPairingState = if ($retainedCount -gt 0) {
+            "present"
+        } else {
+            "absent"
+        }
+        RetainedPairingCount = $keystoreKeys.Count
+        TrustedWifiNetworkCount = $trustedNetworks.Count
+        RetainedPairingSha256 = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes($retainedMaterial))
+        # AOSP v1 does not expose these facts. They may only become known
+        # through the independent mDNS and socket-owner readbacks below.
+        ListenerState = "unknown"
+        WirelessSessionState = "unknown"
+        WirelessPendingState = "unknown"
+    }
+}
+
+function ConvertFrom-ClosedAdbMdnsServices {
+    param([Parameter(Mandatory)][AllowEmptyString()][string] $Text)
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 1048576) {
+        return [pscustomobject]@{
+            ParseState = "unknown"
+            Services = @()
+        }
+    }
+    $lines = @($Text.Replace("`r`n", "`n").Replace("`r", "`n").Trim() `
+        -split "`n")
+    if (
+        $lines.Count -lt 1 -or
+        $lines[0].Trim() -cne "List of discovered mdns services"
+    ) {
+        return [pscustomobject]@{
+            ParseState = "unknown"
+            Services = @()
+        }
+    }
+    $services = @()
+    foreach ($line in @($lines | Select-Object -Skip 1)) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        if ($line -cnotmatch (
+            '^\s*(\S+)\s+(_adb(?:-tls-(?:pairing|connect))?\._tcp)\.?' +
+            '\s+((?:[0-9]{1,3}\.){3}[0-9]{1,3}):([0-9]{1,5})\s*$'
+        )) {
+            return [pscustomobject]@{
+                ParseState = "unknown"
+                Services = @()
+            }
+        }
+        $address = $null
+        $port = [int]$Matches[4]
+        if (
+            -not [Net.IPAddress]::TryParse(
+                [string]$Matches[3],
+                [ref]$address) -or
+            $address.AddressFamily -ne
+                [Net.Sockets.AddressFamily]::InterNetwork -or
+            $port -lt 1 -or $port -gt 65535
+        ) {
+            return [pscustomobject]@{
+                ParseState = "unknown"
+                Services = @()
+            }
+        }
+        $services += [pscustomobject]@{
+            Instance = [string]$Matches[1]
+            Type = [string]$Matches[2]
+            Address = $address.ToString()
+            Port = $port
+        }
+    }
+    return [pscustomobject]@{
+        ParseState = "known"
+        Services = @($services)
+    }
+}
+
+function ConvertFrom-ClosedAdbdSocketOwnerReadback {
+    param([Parameter(Mandatory)][AllowEmptyString()][string] $Text)
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 1048576) {
+        return [pscustomobject]@{
+            ParseState = "unknown"
+            ListenerPorts = @()
+            EstablishedPorts = @()
+        }
+    }
+    $lines = @($Text.Replace("`r`n", "`n").Replace("`r", "`n").Trim() `
+        -split "`n")
+    if (
+        $lines.Count -lt 3 -or
+        $lines[0] -cne "rusty.fleet.adbd_socket_owner.v1" -or
+        $lines[1] -cnotmatch '^pid=([1-9][0-9]*)$'
+    ) {
+        return [pscustomobject]@{
+            ParseState = "unknown"
+            ListenerPorts = @()
+            EstablishedPorts = @()
+        }
+    }
+    $inodes = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    $rows = @()
+    foreach ($line in @($lines | Select-Object -Skip 2)) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        if ($line -cmatch '^inode=([1-9][0-9]*)$') {
+            if (-not $inodes.Add([string]$Matches[1])) {
+                return [pscustomobject]@{
+                    ParseState = "unknown"
+                    ListenerPorts = @()
+                    EstablishedPorts = @()
+                }
+            }
+            continue
+        }
+        if ($line -cnotmatch (
+            '^tcp(4|6)=([0-9A-F]{8}|[0-9A-F]{32}):([0-9A-F]{4}),' +
+            '([0-9A-F]{8}|[0-9A-F]{32}):([0-9A-F]{4}),' +
+            '([0-9A-F]{2}),([1-9][0-9]*)$'
+        )) {
+            return [pscustomobject]@{
+                ParseState = "unknown"
+                ListenerPorts = @()
+                EstablishedPorts = @()
+            }
+        }
+        $family = [int]$Matches[1]
+        $localAddress = [string]$Matches[2]
+        $remoteAddress = [string]$Matches[4]
+        if (
+            ($family -eq 4 -and (
+                $localAddress.Length -ne 8 -or
+                $remoteAddress.Length -ne 8
+            )) -or
+            ($family -eq 6 -and (
+                $localAddress.Length -ne 32 -or
+                $remoteAddress.Length -ne 32
+            ))
+        ) {
+            return [pscustomobject]@{
+                ParseState = "unknown"
+                ListenerPorts = @()
+                EstablishedPorts = @()
+            }
+        }
+        $port = [Convert]::ToInt32([string]$Matches[3], 16)
+        if ($port -lt 1 -or $port -gt 65535) {
+            return [pscustomobject]@{
+                ParseState = "unknown"
+                ListenerPorts = @()
+                EstablishedPorts = @()
+            }
+        }
+        $rows += [pscustomobject]@{
+            LocalPort = $port
+            State = [string]$Matches[6]
+            Inode = [string]$Matches[7]
+        }
+    }
+    if ($inodes.Count -eq 0) {
+        return [pscustomobject]@{
+            ParseState = "unknown"
+            ListenerPorts = @()
+            EstablishedPorts = @()
+        }
+    }
+    $ownedRows = @($rows | Where-Object {
+        $inodes.Contains([string]$_.Inode)
+    })
+    return [pscustomobject]@{
+        ParseState = "known"
+        ListenerPorts = @($ownedRows | Where-Object {
+            [string]$_.State -ceq "0A"
+        } | ForEach-Object { [int]$_.LocalPort } | Sort-Object -Unique)
+        EstablishedPorts = @($ownedRows | Where-Object {
+            [string]$_.State -ceq "01"
+        } | ForEach-Object { [int]$_.LocalPort } | Sort-Object -Unique)
+    }
+}
+
+function Resolve-AdbOwnerNetworkFacts {
+    param(
+        [Parameter(Mandatory)][object] $Manager,
+        [Parameter(Mandatory)][object] $Mdns,
+        [Parameter(Mandatory)][object] $OwnerSockets,
+        [Parameter(Mandatory)][object] $Tcp,
+        [Parameter(Mandatory)][object] $Tls,
+        [Parameter(Mandatory)][string] $WifiSetting,
+        [Parameter(Mandatory)][string] $PersistentTlsSetting,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $TargetServices
+    )
+    $unknown = [pscustomobject]@{
+        ListenerState = "unknown"
+        WirelessSessionState = "unknown"
+        WirelessPendingState = "unknown"
+    }
+    if (
+        $Manager.ParseState -cne "known" -or
+        $Mdns.ParseState -cne "known" -or
+        $OwnerSockets.ParseState -cne "known"
+    ) {
+        return $unknown
+    }
+
+    $connectServices = @($TargetServices | Where-Object {
+        [string]$_.Type -cin @("_adb._tcp", "_adb-tls-connect._tcp")
+    })
+    $pairingServices = @($TargetServices | Where-Object {
+        [string]$_.Type -ceq "_adb-tls-pairing._tcp"
+    })
+    $ownerListenerPorts = @($OwnerSockets.ListenerPorts)
+    $ownerEstablishedPorts = @($OwnerSockets.EstablishedPorts)
+    $propertyMismatch =
+        ($Tcp.State -ceq "active" -and
+            $ownerListenerPorts -notcontains [int]$Tcp.Port) -or
+        ($Tls.State -ceq "active" -and
+            $ownerListenerPorts -notcontains [int]$Tls.Port)
+    $advertisementMismatch = @($connectServices | Where-Object {
+        $ownerListenerPorts -notcontains [int]$_.Port
+    }).Count -gt 0
+    if ($propertyMismatch -or $advertisementMismatch) {
+        return $unknown
+    }
+
+    # The typed owner readback resolves /proc/<adbd>/fd socket inodes against
+    # the kernel TCP tables. Therefore zero here is an actual process-owned
+    # absence, not an inference from properties or a discovery timeout.
+    $listenerState = if (
+        $ownerListenerPorts.Count -gt 0 -or
+        $pairingServices.Count -gt 0
+    ) {
+        "active"
+    } else {
+        "absent"
+    }
+    $sessionState = if ($ownerEstablishedPorts.Count -gt 0) {
+        "active"
+    } else {
+        "absent"
+    }
+
+    $pendingState = if ($pairingServices.Count -gt 0) {
+        "pending"
+    } elseif (
+        (
+            $WifiSetting -ceq "1" -or
+            $PersistentTlsSetting -cin @("1", "true")
+        ) -and
+        $listenerState -cne "active"
+    ) {
+        "pending"
+    } elseif (
+        $WifiSetting -cin @("", "0", "null") -and
+        $PersistentTlsSetting -cin @("", "0", "false", "null")
+    ) {
+        "absent"
+    } else {
+        # AOSP v1 does not dump pairing-in-progress. A missing host mDNS
+        # discovery while Wireless Debugging is active is not proof that no
+        # pairing request exists.
+        "unknown"
+    }
+    return [pscustomobject]@{
+        ListenerState = $listenerState
+        WirelessSessionState = $sessionState
+        WirelessPendingState = $pendingState
+    }
+}
+
+function Invoke-AdbHostExact {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][string[]] $Arguments,
+        [ValidateRange(1, 600)][int] $TimeoutSeconds = 30
+    )
+    $result = Invoke-BoundedProcess `
+        -FilePath $Context.Artifacts["adb"].Path `
+        -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds
+    Assert-Condition ($result.ExitCode -eq 0) "host_adb_readback_failed" `
+        "ADB's bounded host-side owner readback failed."
+    return $result
+}
+
 function Get-AdbNetworkObservation {
     param(
         [Parameter(Mandatory)][object] $Context,
@@ -1634,6 +2114,14 @@ function Get-AdbNetworkObservation {
     Assert-Condition ($wifiValue -cin @("0", "1", "null", "")) `
         "wifi_setting_readback_invalid" `
         "Wireless Debugging setting readback was not bounded."
+    $persistentResult = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @(
+            "shell", "getprop", "persist.adb.tls_server.enable")
+    $persistentValue = $persistentResult.Stdout.Trim().ToLowerInvariant()
+    Assert-Condition (
+        $persistentValue -cin @("", "0", "1", "false", "true", "null")
+    ) "wifi_persistent_readback_invalid" `
+        "Wireless Debugging's persistent owner flag was not bounded."
 
     $tcpResult = Invoke-AdbExact -Context $Context -Device $Device `
         -Arguments @("shell", "getprop", "service.adb.tcp.port")
@@ -1644,42 +2132,91 @@ function Get-AdbNetworkObservation {
     $tls = Convert-AdbPortState -Value $tlsResult.Stdout `
         -PropertyName "service.adb.tls.port"
 
-    # `ss` is read-only. Requiring it, rather than interpreting an unavailable
-    # command as an empty result, makes listener state fail closed.
-    $sockets = Invoke-AdbExact -Context $Context -Device $Device -Arguments @(
-        "shell", "sh", "-c", "command -v ss >/dev/null 2>&1 && ss -ltn"
-    )
-    Assert-Condition ($sockets.Stdout.Length -le 1048576) `
-        "adb_listener_readback_unbounded" `
-        "The Quest listener readback exceeded its bounded projection."
-    $listeningPorts = @()
-    foreach ($line in @($sockets.Stdout -split "`r?`n")) {
-        if ($line -match '^\s*LISTEN\s+' -and
-            $line -match '[:.]([0-9]{1,5})\s+') {
-            $candidate = [int]$Matches[1]
-            if ($candidate -ge 1 -and $candidate -le 65535) {
-                $listeningPorts += $candidate
-            }
-        }
-    }
-    $tcpListening = $tcp.State -ceq "active" -and
-        $listeningPorts -contains $tcp.Port
-    $tlsListening = $tls.State -ceq "active" -and
-        $listeningPorts -contains $tls.Port
-    Assert-Condition (
-        ($tcp.State -ceq "inactive" -or $tcpListening) -and
-        ($tls.State -ceq "inactive" -or $tlsListening)
-    ) "adb_listener_property_mismatch" `
-        "An active ADB port property had no exact listening socket readback."
+    # Resolve the exact adbd process's socket FDs against the kernel TCP
+    # tables. If procfs ownership is unavailable, the fixed command fails and
+    # no property or discovery absence is allowed to substitute for it.
+    $ownerSocketCommand = @'
+command -v awk >/dev/null 2>&1 || exit 40
+pid=$(pidof adbd) || exit 41
+case "$pid" in *" "*) exit 42 ;; esac
+printf "rusty.fleet.adbd_socket_owner.v1\npid=%s\n" "$pid"
+for fd in /proc/"$pid"/fd/*; do
+  link=$(readlink "$fd") || exit 43
+  case "$link" in
+    socket:\[*\])
+      inode=$(printf "%s" "$link" | awk -F'[][]' '{print $2}')
+      printf "inode=%s\n" "$inode"
+      ;;
+  esac
+done
+awk 'NR > 1 { print "tcp4=" $2 "," $3 "," $4 "," $10 }' /proc/net/tcp || exit 44
+awk 'NR > 1 { print "tcp6=" $2 "," $3 "," $4 "," $10 }' /proc/net/tcp6 || exit 45
+'@
+    $ownerSocketCommand =
+        $ownerSocketCommand.Replace("`r`n", "`n").Replace("`r", "`n")
+    $ownerSocketsResult = Invoke-AdbExact `
+        -Context $Context -Device $Device `
+        -Arguments @("shell", "sh", "-c", $ownerSocketCommand)
+    $ownerSockets = ConvertFrom-ClosedAdbdSocketOwnerReadback `
+        -Text $ownerSocketsResult.Stdout
 
     $manager = Invoke-AdbExact -Context $Context -Device $Device `
         -Arguments @("shell", "dumpsys", "adb")
     $managerText = $manager.Stdout.Trim()
+    $managerReadback = ConvertFrom-ClosedAdbManagerDump -Text $managerText
+
+    $addressResult = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @(
+            "shell", "ip", "-o", "-4", "addr", "show", "up", "scope", "global")
+    $targetAddresses = @()
+    foreach ($line in @($addressResult.Stdout -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        Assert-Condition (
+            $line -cmatch '^\d+:\s+\S+\s+inet\s+([0-9.]+)/[0-9]+\s+'
+        ) "adb_target_address_readback_invalid" `
+            "The target's global IPv4 owner projection was malformed."
+        $address = $null
+        Assert-Condition (
+            [Net.IPAddress]::TryParse([string]$Matches[1], [ref]$address) -and
+            $address.AddressFamily -eq
+                [Net.Sockets.AddressFamily]::InterNetwork
+        ) "adb_target_address_readback_invalid" `
+            "The target returned an invalid global IPv4 address."
+        $targetAddresses += $address.ToString()
+    }
+    $serialResult = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @("shell", "getprop", "ro.serialno")
+    $platformSerial = $serialResult.Stdout.Trim()
     Assert-Condition (
-        -not [string]::IsNullOrWhiteSpace($managerText) -and
-        $managerText.Length -le 1048576
-    ) "adb_manager_readback_invalid" `
-        "Android's ADB manager returned no bounded state projection."
+        $platformSerial -cmatch '^[A-Za-z0-9._:-]{1,128}$'
+    ) "adb_platform_serial_readback_invalid" `
+        "The target returned no bounded platform serial."
+
+    $mdnsResult = Invoke-AdbHostExact -Context $Context `
+        -Arguments @("mdns", "services")
+    $mdnsReadback = ConvertFrom-ClosedAdbMdnsServices `
+        -Text $mdnsResult.Stdout
+    if ($targetAddresses.Count -eq 0) {
+        $mdnsReadback = [pscustomobject]@{
+            ParseState = "unknown"
+            Services = @()
+        }
+    }
+    $instancePrefix = "adb-$platformSerial"
+    $targetServices = @($mdnsReadback.Services | Where-Object {
+        $targetAddresses -contains [string]$_.Address -or
+        [string]$_.Instance -ceq $instancePrefix -or
+        ([string]$_.Instance).StartsWith(
+            "$instancePrefix-", [StringComparison]::Ordinal)
+    })
+    $networkFacts = Resolve-AdbOwnerNetworkFacts `
+        -Manager $managerReadback -Mdns $mdnsReadback `
+        -OwnerSockets $ownerSockets `
+        -Tcp $tcp -Tls $tls -WifiSetting $wifiValue `
+        -PersistentTlsSetting $persistentValue `
+        -TargetServices $targetServices
 
     $forwards = Invoke-AdbExact -Context $Context -Device $Device `
         -Arguments @("forward", "--list")
@@ -1705,24 +2242,18 @@ function Get-AdbNetworkObservation {
         $reverseCount++
     }
 
-    $listenerState = if ($tcpListening -or $tlsListening) {
-        "active"
-    } else {
-        "absent"
-    }
-    $sessionState = if ($tlsListening) { "active" } else { "absent" }
-    $pendingState = if ($wifiValue -ceq "1" -and -not $tlsListening) {
-        "pending"
-    } else {
-        "absent"
-    }
     return [pscustomobject]@{
         WifiSettingEnabled = $wifiValue -ceq "1"
         TcpPortState = [string]$tcp.State
         TlsPortState = [string]$tls.State
-        ListenerState = $listenerState
-        WirelessSessionState = $sessionState
-        WirelessPendingState = $pendingState
+        ListenerState = [string]$networkFacts.ListenerState
+        WirelessSessionState = [string]$networkFacts.WirelessSessionState
+        WirelessPendingState = [string]$networkFacts.WirelessPendingState
+        AdbManagerFormat = [string]$managerReadback.Format
+        AdbRetainedPairingState =
+            [string]$managerReadback.RetainedPairingState
+        AdbRetainedPairingSha256 =
+            [string]$managerReadback.RetainedPairingSha256
         HostForwardCount = $forwardCount
         HostReverseCount = $reverseCount
         AdbManagerStateSha256 = Get-BytesSha256 -Bytes (
@@ -1910,6 +2441,9 @@ function Get-DeviceSnapshot {
         wireless_pending_state = $network.WirelessPendingState
         host_forward_count = $network.HostForwardCount
         host_reverse_count = $network.HostReverseCount
+        adb_manager_format = $network.AdbManagerFormat
+        adb_retained_pairing_state = $network.AdbRetainedPairingState
+        adb_retained_pairing_sha256 = $network.AdbRetainedPairingSha256
         adb_manager_state_sha256 = $network.AdbManagerStateSha256
         helper_status_state = if ($null -ne $helperStatus) {
             "confirmed"
@@ -1992,6 +2526,10 @@ function Get-PhysicalIsolationProjection {
         wireless_pending_state = $snapshot.wireless_pending_state
         host_forward_count = $snapshot.host_forward_count
         host_reverse_count = $snapshot.host_reverse_count
+        adb_manager_format = $snapshot.adb_manager_format
+        adb_retained_pairing_state = $snapshot.adb_retained_pairing_state
+        adb_retained_pairing_sha256 =
+            $snapshot.adb_retained_pairing_sha256
         adb_manager_state_sha256 = $snapshot.adb_manager_state_sha256
         helper_status_state = $snapshot.helper_status_state
         helper_in_flight = $snapshot.helper_in_flight
@@ -2799,6 +3337,10 @@ function Get-SignedIsolationProjection {
         wireless_pending_state = $network.WirelessPendingState
         host_forward_count = $network.HostForwardCount
         host_reverse_count = $network.HostReverseCount
+        adb_manager_format = $network.AdbManagerFormat
+        adb_retained_pairing_state = $network.AdbRetainedPairingState
+        adb_retained_pairing_sha256 =
+            $network.AdbRetainedPairingSha256
         adb_manager_state_sha256 = $network.AdbManagerStateSha256
         usb_transport = $transport.Stdout.Trim()
         agent_private_inputs_absent = $agentPrivateInputsAbsent
@@ -4119,6 +4661,12 @@ function Add-FinalCleanupReadback {
                 [string]$fresh.adb_listener_state -ceq "absent" -and
                 [string]$fresh.wireless_session_state -ceq "absent" -and
                 [string]$fresh.wireless_pending_state -ceq "absent" -and
+                [string]$fresh.adb_manager_format -ceq
+                    "android.debugging_manager.text.v1" -and
+                [string]$fresh.adb_retained_pairing_state -ceq
+                    [string]$stateDevice.snapshot.adb_retained_pairing_state -and
+                [string]$fresh.adb_retained_pairing_sha256 -ceq
+                    [string]$stateDevice.snapshot.adb_retained_pairing_sha256 -and
                 [int]$fresh.host_forward_count -eq 0 -and
                 [int]$fresh.host_reverse_count -eq 0
             if ($Checks["$slot-final-wireless-listener-absent"]) {
@@ -4528,5 +5076,9 @@ Export-ModuleMember -Function @(
     "Start-DurableMutation",
     "Set-DurableMutationSent",
     "Complete-DurableMutation",
-    "Assert-NoAmbiguousMutation"
+    "Assert-NoAmbiguousMutation",
+    "ConvertFrom-ClosedAdbManagerDump",
+    "ConvertFrom-ClosedAdbMdnsServices",
+    "ConvertFrom-ClosedAdbdSocketOwnerReadback",
+    "Resolve-AdbOwnerNetworkFacts"
 )
