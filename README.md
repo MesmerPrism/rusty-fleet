@@ -42,13 +42,19 @@ not require ADB and remains inert without private Kiosk endpoint/key
 configuration. See the
 [M2 Kiosk show-controls guide](docs/M2_KIOSK_SHOW_CONTROLS.md).
 
-An additive source-only package checkpoint now exposes
+The additive package stack now exposes
 `packages.install-release` through the same local API, `fleetctl`, and WPF
 Console. It freezes a signed release reference and exact device identities,
 then prepares every eligible updater invocation after explicit confirmation.
-It deliberately stops at `dispatch_ready`: authenticated package-owner ingress
-is not implemented, acknowledgement/receipt routes fail closed without
-mutation, and no Fleet surface can claim dispatch or installation. See the
+When and only when private updater-owner configuration is present, the
+authenticated owner can claim one exact invocation through the durable bounded
+scheduler and return bound acknowledgement or effective install evidence.
+That owner ingress is loopback-only even when the general Hub configuration
+permits a non-loopback bind; it is a source-side admission surface, not an
+updater transport or client.
+Claims and acknowledgements never prove installation; only the exact accepted
+`install_commit` receipt advances a target to Applied. The ingress remains
+disabled by default. See the
 [package install/release checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
 
 The accepted operator-information architecture uses a dense virtualized fleet
@@ -264,9 +270,10 @@ M1 evidence and exact boundary are recorded in
 [M1 Consolidation Readiness](docs/M1_CONSOLIDATION_READINESS.md).
 The source-only M2 Kiosk slice is implemented and device-free validation is
 green; a live owner/device proof remains a separate explicit gate. The package
-checkpoint is source-complete only through durable `dispatch_ready`; adding
-authenticated updater ingress and live delivery remains a separate authority
-and device unit.
+source stack now includes disabled-by-default authenticated updater ingress and
+durable bounded owner claims. Live updater/device proof, attended wearer
+behavior, and WPF activation of post-claim controls remain separate explicit
+gates.
 
 ## License
 

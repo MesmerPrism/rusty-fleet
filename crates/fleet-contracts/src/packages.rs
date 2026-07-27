@@ -24,6 +24,11 @@ pub const PACKAGE_UPDATER_ACK_SCHEMA: &str =
     "rusty.fleet.package_updater_invocation_acknowledgement.v1";
 pub const PACKAGE_UPDATER_RECEIPT_SUBMISSION_SCHEMA: &str =
     "rusty.fleet.package_updater_receipt_submission.v1";
+pub const PACKAGE_UPDATER_CLAIM_REQUEST_SCHEMA: &str =
+    "rusty.fleet.package_updater_claim_request.v1";
+pub const PACKAGE_UPDATER_CLAIM_SCHEMA: &str = "rusty.fleet.package_updater_claim.v1";
+pub const PACKAGE_UPDATER_OFFER_SCHEMA: &str = "rusty.fleet.package_updater_offer.v1";
+pub const MAX_CONSUMED_PACKAGE_OWNER_CLAIMS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -652,6 +657,151 @@ pub struct PackageUpdaterReceiptSubmission {
     pub effective_receipt: PackageUpdaterEffectiveReceipt,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageUpdaterClaimRequest {
+    pub schema: String,
+    pub owner_id: String,
+    pub request_id: String,
+    pub operation_id: String,
+    pub device_id: String,
+    pub expected_invocation_sha256: String,
+}
+
+impl ValidateContract for PackageUpdaterClaimRequest {
+    fn validate(&self) -> Result<(), Vec<ContractViolation>> {
+        let mut failures = Vec::new();
+        if self.schema != PACKAGE_UPDATER_CLAIM_REQUEST_SCHEMA {
+            failures.push(ContractViolation::new(
+                "wrong_schema",
+                "schema",
+                "expected rusty.fleet.package_updater_claim_request.v1",
+            ));
+        }
+        for (path, value) in [
+            ("owner_id", self.owner_id.as_str()),
+            ("request_id", self.request_id.as_str()),
+            ("operation_id", self.operation_id.as_str()),
+            ("device_id", self.device_id.as_str()),
+        ] {
+            if !is_portable_id(value, 256) {
+                failures.push(ContractViolation::new(
+                    "invalid_identifier",
+                    path,
+                    "owner claim identifiers must be bounded portable identifiers",
+                ));
+            }
+        }
+        if !is_prefixed_sha256(&self.expected_invocation_sha256) {
+            failures.push(ContractViolation::new(
+                "invalid_sha256",
+                "expected_invocation_sha256",
+                "expected invocation digest must use sha256: followed by lowercase hex",
+            ));
+        }
+        finish(failures)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageUpdaterOffer {
+    pub schema: String,
+    pub owner_id: String,
+    pub operation_id: String,
+    pub device_id: String,
+    pub invocation_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageUpdaterClaim {
+    pub schema: String,
+    pub claim_id: String,
+    pub owner_id: String,
+    pub request_id: String,
+    pub claimed_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub invocation_sha256: String,
+    pub release_sha256: String,
+    pub target_sha256: String,
+    pub invocation: PackageUpdaterInvocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumedPackageUpdaterClaimIdentity {
+    pub claim_id: String,
+    pub request_id: String,
+}
+
+impl ValidateContract for PackageUpdaterClaim {
+    fn validate(&self) -> Result<(), Vec<ContractViolation>> {
+        let mut failures = Vec::new();
+        if self.schema != PACKAGE_UPDATER_CLAIM_SCHEMA
+            || self.claimed_at_ms < 0
+            || self.expires_at_ms <= self.claimed_at_ms
+            || self.expires_at_ms > self.invocation.expires_at_ms
+        {
+            failures.push(ContractViolation::new(
+                "invalid_claim",
+                "claim",
+                "owner claim schema or bounded lifetime is invalid",
+            ));
+        }
+        for (path, value) in [
+            ("claim_id", self.claim_id.as_str()),
+            ("owner_id", self.owner_id.as_str()),
+            ("request_id", self.request_id.as_str()),
+        ] {
+            if !is_portable_id(value, 256) {
+                failures.push(ContractViolation::new(
+                    "invalid_identifier",
+                    path,
+                    "claim identifiers must be bounded portable identifiers",
+                ));
+            }
+        }
+        for (path, digest) in [
+            ("invocation_sha256", self.invocation_sha256.as_str()),
+            ("release_sha256", self.release_sha256.as_str()),
+            ("target_sha256", self.target_sha256.as_str()),
+        ] {
+            if !is_prefixed_sha256(digest) {
+                failures.push(ContractViolation::new(
+                    "invalid_sha256",
+                    path,
+                    "claim digests must use sha256: followed by lowercase hex",
+                ));
+            }
+        }
+        if let Err(mut nested) = self.invocation.validate() {
+            failures.append(&mut nested);
+        }
+        finish(failures)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthenticatedPackageUpdaterAcknowledgement {
+    pub schema: String,
+    pub owner_id: String,
+    pub claim_id: String,
+    pub invocation_sha256: String,
+    pub acknowledgement: PackageUpdaterInvocationAcknowledgement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthenticatedPackageUpdaterReceipt {
+    pub schema: String,
+    pub owner_id: String,
+    pub claim_id: String,
+    pub invocation_sha256: String,
+    pub effective_receipt: PackageUpdaterEffectiveReceipt,
+}
+
 impl ValidateContract for PackageUpdaterReceiptSubmission {
     fn validate(&self) -> Result<(), Vec<ContractViolation>> {
         if self.schema == PACKAGE_UPDATER_RECEIPT_SUBMISSION_SCHEMA {
@@ -693,6 +843,12 @@ pub struct PackageInstallTargetLedger {
     pub lifecycle: CommandLifecycle,
     pub stage: PackageInstallStage,
     pub invocation: Option<PackageUpdaterInvocation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_claim: Option<PackageUpdaterClaim>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior_owner_claims: Vec<PackageUpdaterClaim>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consumed_owner_claim_identities: Vec<ConsumedPackageUpdaterClaimIdentity>,
     pub invocation_acknowledgement: Option<PackageUpdaterInvocationAcknowledgement>,
     pub effective_receipt: Option<PackageUpdaterEffectiveReceipt>,
     pub reason_code: String,
@@ -825,6 +981,7 @@ impl ValidateContract for PackageInstallReleaseOperation {
                 if target.lifecycle != CommandLifecycle::Rejected
                     || target.stage != PackageInstallStage::PreflightRejected
                     || target.invocation.is_some()
+                    || target.owner_claim.is_some()
                     || target.invocation_acknowledgement.is_some()
                     || target.effective_receipt.is_some()
                 {
@@ -836,10 +993,70 @@ impl ValidateContract for PackageInstallReleaseOperation {
                 }
                 continue;
             }
+            if target.prior_owner_claims.len() > 16
+                || target.prior_owner_claims.iter().any(|claim| {
+                    claim.validate().is_err()
+                        || target.invocation.as_ref() != Some(&claim.invocation)
+                })
+            {
+                failures.push(ContractViolation::new(
+                    "invalid_prior_owner_claims",
+                    &format!("targets[{index}].prior_owner_claims"),
+                    "prior claim evidence must be bounded and bind the exact immutable invocation",
+                ));
+            }
+            let consumed_identities_valid = target.consumed_owner_claim_identities.len()
+                <= MAX_CONSUMED_PACKAGE_OWNER_CLAIMS
+                && target
+                    .consumed_owner_claim_identities
+                    .iter()
+                    .all(|identity| {
+                        is_portable_id(&identity.claim_id, 256)
+                            && is_portable_id(&identity.request_id, 256)
+                    })
+                && target
+                    .consumed_owner_claim_identities
+                    .iter()
+                    .enumerate()
+                    .all(|(identity_index, identity)| {
+                        target.consumed_owner_claim_identities[..identity_index]
+                            .iter()
+                            .all(|prior| {
+                                prior.claim_id != identity.claim_id
+                                    && prior.request_id != identity.request_id
+                            })
+                    });
+            if !consumed_identities_valid
+                || target.prior_owner_claims.iter().any(|claim| {
+                    !target
+                        .consumed_owner_claim_identities
+                        .iter()
+                        .any(|identity| {
+                            identity.claim_id == claim.claim_id
+                                && identity.request_id == claim.request_id
+                        })
+                })
+                || target.owner_claim.as_ref().is_some_and(|claim| {
+                    !target
+                        .consumed_owner_claim_identities
+                        .iter()
+                        .any(|identity| {
+                            identity.claim_id == claim.claim_id
+                                && identity.request_id == claim.request_id
+                        })
+                })
+            {
+                failures.push(ContractViolation::new(
+                    "invalid_consumed_owner_claim_identities",
+                    &format!("targets[{index}].consumed_owner_claim_identities"),
+                    "durable replay authority must retain every unique consumed claim and request identity",
+                ));
+            }
             match target.lifecycle {
                 CommandLifecycle::Proposed => {
                     if target.stage != PackageInstallStage::PreviewReady
                         || target.invocation.is_some()
+                        || target.owner_claim.is_some()
                         || target.invocation_acknowledgement.is_some()
                         || target.effective_receipt.is_some()
                     {
@@ -864,6 +1081,16 @@ impl ValidateContract for PackageInstallReleaseOperation {
                             "invalid_accepted_state",
                             &format!("targets[{index}]"),
                             "accepted target must be approved or hold one not-yet-delivered invocation",
+                        ));
+                    }
+                    if target.owner_claim.as_ref().is_some_and(|claim| {
+                        claim.validate().is_err()
+                            || target.invocation.as_ref() != Some(&claim.invocation)
+                    }) {
+                        failures.push(ContractViolation::new(
+                            "owner_claim_binding_mismatch",
+                            &format!("targets[{index}].owner_claim"),
+                            "owner claim must bind the exact immutable invocation",
                         ));
                     }
                     if let Some(invocation) = &target.invocation
@@ -1068,21 +1295,22 @@ impl ValidateContract for PackageInstallReleaseOperation {
                 "operation lifecycle must be derived from target ledgers",
             ));
         }
-        let inflight = self
+        let occupied_delivery_slots = self
             .targets
             .iter()
             .filter(|target| {
                 matches!(
                     target.lifecycle,
                     CommandLifecycle::Dispatched | CommandLifecycle::Running
-                )
+                ) || (target.lifecycle == CommandLifecycle::Accepted
+                    && target.owner_claim.is_some())
             })
             .count();
-        if inflight > usize::from(self.max_parallelism) {
+        if occupied_delivery_slots > usize::from(self.max_parallelism) {
             failures.push(ContractViolation::new(
                 "operation_parallelism_exceeded",
                 "targets",
-                "in-flight targets exceed the frozen parallelism",
+                "active owner claims and in-flight targets exceed the frozen parallelism",
             ));
         }
         finish(failures)

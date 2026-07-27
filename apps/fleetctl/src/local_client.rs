@@ -7,14 +7,16 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use fleet_contracts::{
+    AuthenticatedPackageUpdaterAcknowledgement, AuthenticatedPackageUpdaterReceipt,
     OperationExecuteRequest, OperationPreviewRequest, PackageInstallReleaseExecuteRequest,
-    PackageInstallReleasePreviewRequest,
+    PackageInstallReleasePreviewRequest, PackageUpdaterClaimRequest,
 };
 
 use crate::{CliFailure, FleetOperationClient};
 
 const DEFAULT_HUB_URL: &str = "http://127.0.0.1:8741";
 const HUB_URL_ENV: &str = "RUSTY_FLEET_HUB_URL";
+const PACKAGE_OWNER_TOKEN_ENV: &str = "RUSTY_FLEET_PACKAGE_OWNER_TOKEN";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -67,6 +69,16 @@ impl LocalFleetOperationClient {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_token(method, path, body, None)
+    }
+
+    fn request_with_token(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        bearer_token: Option<&str>,
+    ) -> Result<serde_json::Value, CliFailure> {
         let body = body.unwrap_or_default();
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         let mut stream = TcpStream::connect_timeout(&self.socket, REQUEST_TIMEOUT)
@@ -85,6 +97,18 @@ impl LocalFleetOperationClient {
         .into_bytes();
         if !body.is_empty() {
             wire.extend_from_slice(b"Content-Type: application/json\r\n");
+        }
+        if let Some(token) = bearer_token {
+            if token.len() < 32
+                || token.len() > 512
+                || token.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(CliFailure::new(
+                    "invalid_package_owner_token",
+                    "package owner token must contain 32..512 non-control bytes",
+                ));
+            }
+            wire.extend_from_slice(format!("Authorization: Bearer {token}\r\n").as_bytes());
         }
         wire.extend_from_slice(b"\r\n");
         wire.extend_from_slice(&body);
@@ -173,6 +197,89 @@ impl FleetOperationClient for LocalFleetOperationClient {
                 encode_path_segment(operation_id)
             ),
             None,
+        )
+    }
+
+    fn claim_package_updater(
+        &mut self,
+        request: &PackageUpdaterClaimRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "POST",
+            "/fleet/v1/package-updater/claims",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+            Some(&token),
+        )
+    }
+
+    fn peek_package_updater_offer(&mut self) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "GET",
+            "/fleet/v1/package-updater/offers",
+            None,
+            Some(&token),
+        )
+    }
+
+    fn submit_package_updater_acknowledgement(
+        &mut self,
+        operation_id: &str,
+        submission: &AuthenticatedPackageUpdaterAcknowledgement,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "POST",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/acknowledgements",
+                encode_path_segment(operation_id)
+            ),
+            Some(serde_json::to_vec(submission).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+            Some(&token),
+        )
+    }
+
+    fn submit_package_updater_receipt(
+        &mut self,
+        operation_id: &str,
+        submission: &AuthenticatedPackageUpdaterReceipt,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "POST",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/receipts",
+                encode_path_segment(operation_id)
+            ),
+            Some(serde_json::to_vec(submission).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+            Some(&token),
         )
     }
 }

@@ -368,6 +368,13 @@
       "enum": [
         "proposed",
         "accepted",
+        "dispatched",
+        "running",
+        "applied",
+        "failed",
+        "expired",
+        "cancellation_requested",
+        "cancelled",
         "rejected"
       ]
     },
@@ -376,7 +383,16 @@
         "preflight_rejected",
         "preview_ready",
         "approved",
-        "dispatch_ready"
+        "dispatch_ready",
+        "owner_acknowledged",
+        "staged",
+        "awaiting_wearer",
+        "cancellation_requested",
+        "cancelled",
+        "applied",
+        "failed",
+        "expired",
+        "recovery_required"
       ]
     },
     "targetLedger": {
@@ -422,11 +438,66 @@
             }
           ]
         },
+        "owner_claim": {
+          "$ref": "rusty.fleet.package_updater_claim.v1.schema.json"
+        },
+        "prior_owner_claims": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "rusty.fleet.package_updater_claim.v1.schema.json"
+          }
+        },
+        "consumed_owner_claim_identities": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["claim_id", "request_id"],
+            "properties": {
+              "claim_id": {"$ref": "#/$defs/portableId"},
+              "request_id": {"$ref": "#/$defs/portableId"}
+            }
+          }
+        },
         "invocation_acknowledgement": {
-          "type": "null"
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["schema", "operation_id", "device_id", "owner_action_request_id", "accepted", "code", "acknowledged_at_ms"],
+              "properties": {
+                "schema": {"const": "rusty.fleet.package_updater_invocation_acknowledgement.v1"},
+                "operation_id": {"$ref": "#/$defs/portableId"},
+                "device_id": {"$ref": "#/$defs/portableId"},
+                "owner_action_request_id": {"$ref": "#/$defs/portableId"},
+                "accepted": {"type": "boolean"},
+                "code": {"$ref": "#/$defs/portableId"},
+                "acknowledged_at_ms": {"type": "integer", "minimum": 0}
+              }
+            }
+          ]
         },
         "effective_receipt": {
-          "type": "null"
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["schema", "operation_id", "device_id", "identity_revision", "owner_action_request_id", "updater_receipt", "wrapped_at_ms"],
+              "properties": {
+                "schema": {"const": "rusty.fleet.package_updater_effective_receipt.v1"},
+                "operation_id": {"$ref": "#/$defs/portableId"},
+                "device_id": {"$ref": "#/$defs/portableId"},
+                "identity_revision": {"type": "integer", "minimum": 1},
+                "owner_action_request_id": {"$ref": "#/$defs/portableId"},
+                "updater_receipt": {"type": "object"},
+                "wrapped_at_ms": {"type": "integer", "minimum": 0}
+              }
+            }
+          ]
         },
         "reason_code": {
           "$ref": "#/$defs/portableId"

@@ -2,19 +2,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use fleet_contracts::{
-    AuthorizationState, CommandLifecycle, EnablementState, FreshnessState,
-    PACKAGE_UPDATER_CAPABILITY_ID, PACKAGE_UPDATER_OWNER, PACKAGES_INSTALL_RELEASE_ACTION_ID,
-    PackageInstallReleaseOperation, PackageInstallReleasePreview,
-    PackageInstallReleasePreviewRequest, PackageInstallStage, PackageInstallTargetLedger,
-    PackageInstallTargetPreflight, PackageUpdaterInvocation, PackageUpdaterOwnerContractBinding,
-    ReachabilityState, SupportState, ValidateContract,
+    AuthorizationState, CommandLifecycle, ConsumedPackageUpdaterClaimIdentity, EnablementState,
+    FreshnessState, MAX_CONSUMED_PACKAGE_OWNER_CLAIMS, PACKAGE_UPDATER_CAPABILITY_ID,
+    PACKAGE_UPDATER_OWNER, PACKAGES_INSTALL_RELEASE_ACTION_ID, PackageInstallReleaseOperation,
+    PackageInstallReleasePreview, PackageInstallReleasePreviewRequest, PackageInstallStage,
+    PackageInstallTargetLedger, PackageInstallTargetPreflight, PackageUpdaterClaim,
+    PackageUpdaterEffectiveReceipt, PackageUpdaterInvocation,
+    PackageUpdaterInvocationAcknowledgement, PackageUpdaterOwnerContractBinding, ReachabilityState,
+    SupportState, ValidateContract,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{DeviceRecord, FleetHub, HubError, MAX_PACKAGE_OPERATIONS};
-
-#[cfg(test)]
-use fleet_contracts::{PackageUpdaterEffectiveReceipt, PackageUpdaterInvocationAcknowledgement};
 
 const PREVIEW_MAX_LIFETIME_MS: i64 = 15 * 60 * 1_000;
 
@@ -29,6 +28,42 @@ pub struct PackageInstallReleasePreviewPlan {
 }
 
 impl FleetHub {
+    #[must_use]
+    pub fn select_package_updater_offer(&self, now_ms: i64) -> Option<PackageUpdaterInvocation> {
+        self.package_operations.values().find_map(|operation| {
+            let occupied = operation
+                .targets
+                .iter()
+                .filter(|target| {
+                    matches!(
+                        target.lifecycle,
+                        CommandLifecycle::Dispatched | CommandLifecycle::Running
+                    ) || (target.lifecycle == CommandLifecycle::Accepted
+                        && target
+                            .owner_claim
+                            .as_ref()
+                            .is_some_and(|claim| claim.expires_at_ms > now_ms))
+                })
+                .count();
+            if occupied >= usize::from(operation.max_parallelism) {
+                return None;
+            }
+            operation.targets.iter().find_map(|target| {
+                let invocation = target.invocation.as_ref()?;
+                (target.lifecycle == CommandLifecycle::Accepted
+                    && target.stage == PackageInstallStage::DispatchReady
+                    && target
+                        .owner_claim
+                        .as_ref()
+                        .is_none_or(|claim| claim.expires_at_ms <= now_ms)
+                    && target.consumed_owner_claim_identities.len()
+                        < MAX_CONSUMED_PACKAGE_OWNER_CLAIMS
+                    && invocation.expires_at_ms > now_ms)
+                    .then(|| invocation.clone())
+            })
+        })
+    }
+
     pub fn preview_package_install_release(
         &mut self,
         plan: PackageInstallReleasePreviewPlan,
@@ -95,6 +130,9 @@ impl FleetHub {
                         PackageInstallStage::PreflightRejected
                     },
                     invocation: None,
+                    owner_claim: None,
+                    prior_owner_claims: Vec::new(),
+                    consumed_owner_claim_identities: Vec::new(),
                     invocation_acknowledgement: None,
                     effective_receipt: None,
                     reason_code: if eligible {
@@ -229,8 +267,143 @@ impl FleetHub {
         Ok(operation.clone())
     }
 
-    #[cfg(test)]
-    pub(crate) fn admit_test_authenticated_package_updater_acknowledgement(
+    pub fn offer_package_updater_claim(
+        &mut self,
+        claim: PackageUpdaterClaim,
+        now_ms: i64,
+    ) -> Result<PackageInstallReleaseOperation, HubError> {
+        if claim.validate().is_err()
+            || now_ms < claim.claimed_at_ms
+            || now_ms >= claim.expires_at_ms
+        {
+            return Err(HubError::new(
+                "package_owner_claim_invalid",
+                "owner claim is invalid or outside its bounded lifetime",
+            ));
+        }
+        if self.package_operations.values().any(|operation| {
+            operation.targets.iter().any(|target| {
+                target
+                    .consumed_owner_claim_identities
+                    .iter()
+                    .any(|existing| {
+                        existing.claim_id == claim.claim_id
+                            || existing.request_id == claim.request_id
+                    })
+            })
+        }) {
+            return Err(HubError::new(
+                "package_owner_claim_replay",
+                "owner claim or request identifier was already consumed",
+            ));
+        }
+        let operation = self
+            .package_operations
+            .get_mut(&claim.invocation.operation_id)
+            .ok_or_else(|| HubError::new("package_operation_not_found", "operation not found"))?;
+        let active = operation
+            .targets
+            .iter()
+            .filter(|target| {
+                target.owner_claim.as_ref().is_some_and(|existing| {
+                    existing.expires_at_ms > now_ms
+                        && !matches!(
+                            target.lifecycle,
+                            CommandLifecycle::Applied
+                                | CommandLifecycle::Failed
+                                | CommandLifecycle::Cancelled
+                                | CommandLifecycle::Expired
+                        )
+                })
+            })
+            .count();
+        if active >= usize::from(operation.max_parallelism) {
+            return Err(HubError::new(
+                "package_owner_scheduler_saturated",
+                "bounded package delivery scheduler has no free claim slot",
+            ));
+        }
+        let target = operation
+            .targets
+            .iter_mut()
+            .find(|target| target.device_id == claim.invocation.device_id)
+            .ok_or_else(|| HubError::new("package_target_not_found", "target not found"))?;
+        if target.lifecycle != CommandLifecycle::Accepted
+            || target.stage != PackageInstallStage::DispatchReady
+            || target.invocation.as_ref() != Some(&claim.invocation)
+            || target.owner_claim.is_some()
+        {
+            return Err(HubError::new(
+                "package_owner_claim_state_invalid",
+                "only one unclaimed dispatch-ready invocation can be offered",
+            ));
+        }
+        if target.consumed_owner_claim_identities.len() >= MAX_CONSUMED_PACKAGE_OWNER_CLAIMS {
+            return Err(HubError::new(
+                "package_owner_replay_authority_exhausted",
+                "bounded durable replay authority is exhausted for this target",
+            ));
+        }
+        target
+            .consumed_owner_claim_identities
+            .push(ConsumedPackageUpdaterClaimIdentity {
+                claim_id: claim.claim_id.clone(),
+                request_id: claim.request_id.clone(),
+            });
+        target.owner_claim = Some(claim);
+        target.reason_code = "owner_delivery_offered".to_owned();
+        target.message =
+            "Authenticated updater owner claimed the exact invocation; transport remains unacknowledged"
+                .to_owned();
+        target.last_transition_ms = now_ms;
+        validate_package_operation(operation)?;
+        Ok(operation.clone())
+    }
+
+    pub fn expire_package_updater_claims(&mut self, now_ms: i64) -> Result<usize, HubError> {
+        let mut expired = 0;
+        for operation in self.package_operations.values_mut() {
+            for target in &mut operation.targets {
+                if target.lifecycle == CommandLifecycle::Accepted
+                    && target.stage == PackageInstallStage::DispatchReady
+                    && target
+                        .owner_claim
+                        .as_ref()
+                        .is_some_and(|claim| claim.expires_at_ms <= now_ms)
+                {
+                    let prior = target.owner_claim.take().expect("expired claim exists");
+                    if target.prior_owner_claims.len() >= 16 {
+                        target.prior_owner_claims.remove(0);
+                    }
+                    target.prior_owner_claims.push(prior);
+                    if target.consumed_owner_claim_identities.len()
+                        >= MAX_CONSUMED_PACKAGE_OWNER_CLAIMS
+                    {
+                        target.lifecycle = CommandLifecycle::Failed;
+                        target.stage = PackageInstallStage::Failed;
+                        target.reason_code = "owner_replay_authority_exhausted".to_owned();
+                        target.message =
+                            "Bounded durable replay authority is exhausted; target failed closed"
+                                .to_owned();
+                    } else {
+                        target.lifecycle = CommandLifecycle::Accepted;
+                        target.stage = PackageInstallStage::DispatchReady;
+                        target.reason_code = "owner_claim_expired".to_owned();
+                        target.message =
+                            "Prior owner claim expired unacknowledged; a fresh exact request may retry"
+                                .to_owned();
+                    }
+                    target.last_transition_ms = now_ms;
+                    expired += 1;
+                }
+            }
+            operation.lifecycle = operation.derived_lifecycle();
+            validate_package_operation(operation)?;
+        }
+        Ok(expired)
+    }
+
+    pub fn admit_authenticated_package_updater_acknowledgement(
         &mut self,
         acknowledgement: PackageUpdaterInvocationAcknowledgement,
         now_ms: i64,
@@ -305,8 +478,7 @@ impl FleetHub {
         Ok(operation.clone())
     }
 
-    #[cfg(test)]
-    pub(crate) fn admit_test_authenticated_package_updater_receipt(
+    pub fn admit_authenticated_package_updater_receipt(
         &mut self,
         receipt: PackageUpdaterEffectiveReceipt,
         now_ms: i64,
@@ -719,7 +891,7 @@ mod tests {
             PackageInstallStage::DispatchReady
         );
         let dispatched = hub
-            .admit_test_authenticated_package_updater_acknowledgement(
+            .admit_authenticated_package_updater_acknowledgement(
                 PackageUpdaterInvocationAcknowledgement {
                     schema: PACKAGE_UPDATER_ACK_SCHEMA.to_owned(),
                     operation_id: preview.operation_id.clone(),
@@ -741,7 +913,7 @@ mod tests {
 
         let digest = format!("sha256:{}", "a".repeat(64));
         let applied = hub
-            .admit_test_authenticated_package_updater_receipt(
+            .admit_authenticated_package_updater_receipt(
                 PackageUpdaterEffectiveReceipt {
                     schema: "rusty.fleet.package_updater_effective_receipt.v1".to_owned(),
                     operation_id: preview.operation_id,
@@ -872,5 +1044,307 @@ mod tests {
                 && target.invocation_acknowledgement.is_none()
                 && target.effective_receipt.is_none()
         }));
+    }
+
+    #[test]
+    fn owner_claims_are_one_use_bounded_and_restart_safe() {
+        let mut hub = ready_hub_with_count(2);
+        let targets = ["sim-00001", "sim-00002"]
+            .into_iter()
+            .map(|device_id| {
+                let revision = hub
+                    .inspect(device_id, BASE_TIME_MS)
+                    .expect("device")
+                    .row
+                    .identity
+                    .identity_revision;
+                (device_id.to_owned(), revision)
+            })
+            .collect();
+        let mut package_plan = plan(&hub);
+        package_plan.request.targets = targets;
+        package_plan.max_parallelism = 1;
+        let preview = hub
+            .preview_package_install_release(package_plan)
+            .expect("preview");
+        hub.confirm_package_install_release(
+            &preview.operation_id,
+            &preview.preview.preview_id,
+            BASE_TIME_MS + 1,
+        )
+        .expect("confirm");
+        for (index, device_id) in ["sim-00001", "sim-00002"].into_iter().enumerate() {
+            hub.prepare_package_install_release_invocation(
+                &preview.operation_id,
+                device_id,
+                format!("package-owner-request-{}", index + 1),
+                BASE_TIME_MS + 2,
+            )
+            .expect("prepare");
+        }
+        let invocation = hub
+            .package_operation(&preview.operation_id)
+            .expect("operation")
+            .targets[0]
+            .invocation
+            .clone()
+            .expect("invocation");
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let claim = PackageUpdaterClaim {
+            schema: fleet_contracts::PACKAGE_UPDATER_CLAIM_SCHEMA.to_owned(),
+            claim_id: "claim-1".to_owned(),
+            owner_id: "rusty-quest.package-updater".to_owned(),
+            request_id: "claim-request-1".to_owned(),
+            claimed_at_ms: BASE_TIME_MS + 3,
+            expires_at_ms: BASE_TIME_MS + 30_000,
+            invocation_sha256: digest.clone(),
+            release_sha256: digest.clone(),
+            target_sha256: digest,
+            invocation,
+        };
+        hub.offer_package_updater_claim(claim.clone(), BASE_TIME_MS + 3)
+            .expect("first bounded claim");
+        let second_invocation = hub
+            .package_operation(&preview.operation_id)
+            .expect("operation")
+            .targets[1]
+            .invocation
+            .clone()
+            .expect("second invocation");
+        let mut second = claim.clone();
+        second.claim_id = "claim-2".to_owned();
+        second.request_id = "claim-request-2".to_owned();
+        second.invocation = second_invocation;
+        let damaged_second = second.clone();
+        assert_eq!(
+            hub.offer_package_updater_claim(second, BASE_TIME_MS + 4)
+                .expect_err("parallelism one"),
+            HubError::new(
+                "package_owner_scheduler_saturated",
+                "bounded package delivery scheduler has no free claim slot"
+            )
+        );
+        let mut damaged_snapshot = hub.snapshot();
+        let damaged_target = &mut damaged_snapshot
+            .package_operations
+            .get_mut(&preview.operation_id)
+            .expect("damaged operation")
+            .targets[1];
+        damaged_target
+            .consumed_owner_claim_identities
+            .push(ConsumedPackageUpdaterClaimIdentity {
+                claim_id: damaged_second.claim_id.clone(),
+                request_id: damaged_second.request_id.clone(),
+            });
+        damaged_target.owner_claim = Some(damaged_second);
+        let damaged_operation = damaged_snapshot
+            .package_operations
+            .get(&preview.operation_id)
+            .expect("damaged operation");
+        let violations = damaged_operation
+            .validate()
+            .expect_err("parallelism damage must violate the operation contract");
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, "operation_parallelism_exceeded");
+        assert_eq!(
+            FleetHub::restore(HubPolicy::default(), damaged_snapshot)
+                .expect_err("snapshot cannot restore claims beyond frozen parallelism")
+                .code,
+            "snapshot_package_operations_invalid"
+        );
+        let mut restored =
+            FleetHub::restore(HubPolicy::default(), hub.snapshot()).expect("claim restores");
+        assert_eq!(
+            restored
+                .package_operation(&preview.operation_id)
+                .expect("operation")
+                .targets[0]
+                .owner_claim,
+            Some(claim.clone())
+        );
+        assert_eq!(
+            restored
+                .expire_package_updater_claims(BASE_TIME_MS + 30_000)
+                .expect("expiry"),
+            1
+        );
+        let retry_ready = restored
+            .package_operation(&preview.operation_id)
+            .expect("retry-ready operation");
+        assert_eq!(
+            retry_ready.targets[0].stage,
+            PackageInstallStage::DispatchReady
+        );
+        assert!(retry_ready.targets[0].owner_claim.is_none());
+        assert_eq!(
+            retry_ready.targets[0].prior_owner_claims,
+            vec![claim.clone()]
+        );
+        let mut restarted = FleetHub::restore(HubPolicy::default(), restored.snapshot())
+            .expect("expired claim evidence restores");
+        let oldest_claim = claim;
+        for attempt in 2_i64..=18 {
+            let claimed_at_ms = BASE_TIME_MS + 30_001 + (attempt - 2) * 1_500;
+            let mut retry = oldest_claim.clone();
+            retry.claim_id = format!("claim-{attempt}");
+            retry.request_id = format!("claim-request-{attempt}");
+            retry.claimed_at_ms = claimed_at_ms;
+            retry.expires_at_ms = claimed_at_ms + 1_000;
+            restarted
+                .offer_package_updater_claim(retry, claimed_at_ms)
+                .expect("fresh retry claim");
+            restarted
+                .expire_package_updater_claims(claimed_at_ms + 1_000)
+                .expect("retry expiry");
+        }
+        let retained = restarted
+            .package_operation(&preview.operation_id)
+            .expect("retained replay authority");
+        assert_eq!(retained.targets[0].prior_owner_claims.len(), 16);
+        assert_eq!(
+            retained.targets[0].consumed_owner_claim_identities.len(),
+            18
+        );
+        let mut restarted = FleetHub::restore(HubPolicy::default(), restarted.snapshot())
+            .expect("17+ consumed identities restore");
+        let mut replay = oldest_claim;
+        replay.claimed_at_ms = BASE_TIME_MS + 56_000;
+        replay.expires_at_ms = BASE_TIME_MS + 57_000;
+        assert_eq!(
+            restarted
+                .offer_package_updater_claim(replay, BASE_TIME_MS + 56_000)
+                .expect_err("oldest request cannot replay after evidence truncation and restart")
+                .code,
+            "package_owner_claim_replay"
+        );
+        for attempt in 19_i64..=64 {
+            let claimed_at_ms = BASE_TIME_MS + 56_001 + (attempt - 19) * 80;
+            let mut retry = restarted
+                .package_operation(&preview.operation_id)
+                .expect("retry operation")
+                .targets[0]
+                .prior_owner_claims
+                .last()
+                .expect("prior claim template")
+                .clone();
+            retry.claim_id = format!("claim-{attempt}");
+            retry.request_id = format!("claim-request-{attempt}");
+            retry.claimed_at_ms = claimed_at_ms;
+            retry.expires_at_ms = claimed_at_ms + 50;
+            restarted
+                .offer_package_updater_claim(retry, claimed_at_ms)
+                .expect("bounded replay-authority claim");
+            restarted
+                .expire_package_updater_claims(claimed_at_ms + 50)
+                .expect("bounded replay-authority expiry");
+        }
+        let exhausted = restarted
+            .package_operation(&preview.operation_id)
+            .expect("exhausted target");
+        assert_eq!(exhausted.targets[0].lifecycle, CommandLifecycle::Failed);
+        assert_eq!(exhausted.targets[0].stage, PackageInstallStage::Failed);
+        assert_eq!(
+            exhausted.targets[0].consumed_owner_claim_identities.len(),
+            MAX_CONSUMED_PACKAGE_OWNER_CLAIMS
+        );
+        assert_eq!(
+            restarted
+                .select_package_updater_offer(BASE_TIME_MS + 59_700)
+                .expect("other target remains independently offerable")
+                .device_id,
+            "sim-00002"
+        );
+        FleetHub::restore(HubPolicy::default(), restarted.snapshot())
+            .expect("fail-closed replay authority restores");
+    }
+
+    #[test]
+    fn offer_selection_uses_logical_expiry_and_exact_capacity_without_mutation() {
+        let mut hub = ready_hub_with_count(2);
+        let targets = ["sim-00001", "sim-00002"]
+            .into_iter()
+            .map(|device_id| {
+                let revision = hub
+                    .inspect(device_id, BASE_TIME_MS)
+                    .expect("device")
+                    .row
+                    .identity
+                    .identity_revision;
+                (device_id.to_owned(), revision)
+            })
+            .collect();
+        let mut package_plan = plan(&hub);
+        package_plan.request.targets = targets;
+        package_plan.max_parallelism = 1;
+        let preview = hub
+            .preview_package_install_release(package_plan)
+            .expect("preview");
+        hub.confirm_package_install_release(
+            &preview.operation_id,
+            &preview.preview.preview_id,
+            BASE_TIME_MS + 1,
+        )
+        .expect("confirm");
+        for (index, device_id) in ["sim-00001", "sim-00002"].into_iter().enumerate() {
+            hub.prepare_package_install_release_invocation(
+                &preview.operation_id,
+                device_id,
+                format!("package-owner-request-{}", index + 1),
+                BASE_TIME_MS + 2,
+            )
+            .expect("prepare");
+        }
+        let invocation = hub
+            .select_package_updater_offer(BASE_TIME_MS + 3)
+            .expect("initial offer");
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let claim = PackageUpdaterClaim {
+            schema: fleet_contracts::PACKAGE_UPDATER_CLAIM_SCHEMA.to_owned(),
+            claim_id: "capacity-claim-1".to_owned(),
+            owner_id: PACKAGE_UPDATER_OWNER.to_owned(),
+            request_id: "capacity-request-1".to_owned(),
+            claimed_at_ms: BASE_TIME_MS + 3,
+            expires_at_ms: BASE_TIME_MS + 10,
+            invocation_sha256: digest.clone(),
+            release_sha256: digest.clone(),
+            target_sha256: digest,
+            invocation,
+        };
+        hub.offer_package_updater_claim(claim.clone(), BASE_TIME_MS + 3)
+            .expect("claim");
+        assert!(hub.select_package_updater_offer(BASE_TIME_MS + 4).is_none());
+
+        let before_logical_expiry = hub.snapshot();
+        assert_eq!(
+            hub.select_package_updater_offer(BASE_TIME_MS + 10)
+                .expect("logically expired claim becomes offerable")
+                .device_id,
+            "sim-00001"
+        );
+        assert_eq!(hub.snapshot(), before_logical_expiry);
+
+        hub.admit_authenticated_package_updater_acknowledgement(
+            PackageUpdaterInvocationAcknowledgement {
+                schema: PACKAGE_UPDATER_ACK_SCHEMA.to_owned(),
+                operation_id: preview.operation_id,
+                device_id: "sim-00001".to_owned(),
+                owner_action_request_id: claim.invocation.owner_action_request_id,
+                accepted: true,
+                code: "accepted".to_owned(),
+                acknowledged_at_ms: BASE_TIME_MS + 5,
+            },
+            BASE_TIME_MS + 5,
+        )
+        .expect("acknowledgement");
+        assert!(
+            hub.select_package_updater_offer(BASE_TIME_MS + 10)
+                .is_none()
+        );
+        let restarted = FleetHub::restore(HubPolicy::default(), hub.snapshot()).expect("restart");
+        assert!(
+            restarted
+                .select_package_updater_offer(BASE_TIME_MS + 10)
+                .is_none()
+        );
     }
 }

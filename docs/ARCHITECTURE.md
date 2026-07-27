@@ -248,22 +248,30 @@ preflight. Aggregate counts are navigation into the per-target ledger, never a
 replacement for it. Retry and cancellation create explicit lineage, and
 cleanup remains a separate terminal dimension.
 
-### Package install/release checkpoint
+### Package install/release owner ingress
 
 The additive `packages.install-release` surface freezes a signed release
 reference, expected package/ring, exact identities, and the pinned Rusty Quest
 attended-updater contract. Fleet confirmation authorizes and durably prepares
 one invocation per eligible target. Preparation is `accepted` /
 `dispatch_ready`; it is neither transport dispatch nor application and does
-not consume the future owner-delivery parallelism budget.
+not consume owner-delivery parallelism.
 
-Authenticated package-owner ingress is not present. Public local-operator
-acknowledgement and receipt routes fail with HTTP 501 and never mutate Hub
-state. The production Hub exposes no plain-struct transition into
-`dispatched`, `running`, or `applied`. A future owner ingress must verify raw
-transport authentication before admitting acknowledgement evidence, enforce
-the frozen delivery parallelism, and require the exact Rusty Quest
-`install_commit` installed-version receipt before application.
+An explicitly configured private owner identity and bearer secret activate a
+separate authenticated ingress. The owner supplies a one-use request ID and
+claims the next exact immutable invocation. The durable claim binds owner,
+request, target, release, invocation digest, and a short expiry. Claim
+admission counts current nonterminal claims against the operation's frozen
+`max_parallelism`; restart restores the same claims and request replay remains
+rejected. Missing configuration leaves the route inert with HTTP 501.
+
+Acknowledgement and receipt submissions must bind the authenticated owner,
+claim, invocation digest, operation, target, identity revision, release, and
+owner action request. Acknowledgement proves only dispatch. Submission,
+download, staging, PackageInstaller launch, and wearer prompt remain
+non-Applied states. Only the pinned Rusty Quest accepted `install_commit`
+checkpoint for the exact package, ring, manifest digest, sequence, and version
+can advance the Hub to Applied.
 
 ## Kiosk and foreground control
 

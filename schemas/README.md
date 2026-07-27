@@ -25,12 +25,19 @@ targets, authentication vocabulary, `show-controls` command, and
 `rusty.kiosk.cli_result.v1` readback fields. It does not copy or replace the
 owner schema.
 
-The package operation schema pins the Rusty Quest attended-updater owner,
+The package operation and claim schemas pin the Rusty Quest attended-updater owner,
 manifest-envelope and receipt schema names, expected package/ring, and exact
 target identities. `dispatch_ready` means only that Fleet durably prepared the
-owner invocation. Owner acknowledgement and effective receipt objects remain
-owner evidence and cannot be admitted through the local operator API while
-authenticated package-owner ingress is unavailable.
+owner invocation. A separately authenticated, disabled-by-default owner route
+issues short-lived one-use claims with exact invocation/release/target digests.
+The authenticated offer schema exposes only the next exact operation, device,
+and immutable invocation digest; the claim request must repeat all three.
+Owner acknowledgement and effective receipt objects remain untrusted evidence
+until the claim and every frozen binding validate.
+The operation keeps at most 16 full prior claims as readable evidence and
+separately retains up to 64 consumed claim/request identity pairs as
+non-truncating replay authority. Exhausting that authority fails the target
+closed.
 
 Do not copy Manifold, Quest, Kiosk, File Manager, or LSL owner schemas into
 this directory. Reference owner-issued artifacts or wrap them with a separately

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rusty-fleet.invalid/rusty.fleet.package_updater_claim.v1.schema.json",
+  "title": "Rusty Fleet bounded package updater owner claim v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "claim_id", "owner_id", "request_id", "claimed_at_ms",
+    "expires_at_ms", "invocation_sha256", "release_sha256", "target_sha256",
+    "invocation"
+  ],
+  "properties": {
+    "schema": {"const": "rusty.fleet.package_updater_claim.v1"},
+    "claim_id": {"$ref": "#/$defs/id"},
+    "owner_id": {"const": "rusty-quest.package-updater"},
+    "request_id": {"$ref": "#/$defs/id"},
+    "claimed_at_ms": {"type": "integer", "minimum": 0},
+    "expires_at_ms": {"type": "integer", "minimum": 1},
+    "invocation_sha256": {"$ref": "#/$defs/sha256"},
+    "release_sha256": {"$ref": "#/$defs/sha256"},
+    "target_sha256": {"$ref": "#/$defs/sha256"},
+    "invocation": {
+      "$ref": "rusty.fleet.package_install_release_operation.v1.schema.json#/$defs/invocation"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._/-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -45,9 +45,12 @@ Live device work is never implied by a source or documentation task.
   command authority;
 - `crates/fleet-kiosk-adapter`: signed bounded Kiosk direct-operator transport,
   effective receipt projection, and poll-only recovery;
+- `crates/fleet-package-updater-adapter`: exact immutable updater invocation
+  validation plus strict untrusted acknowledgement/effect validation behind
+  the separately authenticated local owner ingress;
 - `apps/fleet-hub-local`: explicit bounded local ingress, durable two-slot
-  runtime, saved-view/operation state, raw owner evidence, and canonical HTTP
-  projection adapter;
+  runtime, saved-view/operation state, raw owner evidence, bounded one-use
+  updater claims, and canonical HTTP projection adapter;
 - `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator,
   deterministic M1 lifecycle, and damage scenarios;
 - `apps/fleetctl`: structured JSON CLI, saved-view parity, and the self-checking

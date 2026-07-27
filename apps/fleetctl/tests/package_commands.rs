@@ -174,6 +174,9 @@ fn operation(
                 expected_rollout_ring: request.expected_rollout_ring.clone(),
                 expires_at_ms,
             }),
+            owner_claim: None,
+            prior_owner_claims: Vec::new(),
+            consumed_owner_claim_identities: Vec::new(),
             invocation_acknowledgement: None,
             effective_receipt: None,
             reason_code: if prepared {

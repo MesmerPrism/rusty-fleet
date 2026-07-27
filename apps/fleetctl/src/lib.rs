@@ -103,7 +103,10 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 "package-preview manifest-url URL PACKAGE RING DEVICE@IDENTITY_REVISION...",
                 "package-preview release-id RELEASE_ID PACKAGE RING DEVICE@IDENTITY_REVISION...",
                 "package-execute OPERATION_ID PREVIEW_ID",
-                "package-get OPERATION_ID"
+                "package-get OPERATION_ID",
+                "package-owner-offer | package-owner-claim OWNER_ID REQUEST_ID OPERATION_ID DEVICE_ID EXPECTED_INVOCATION_SHA256",
+                "package-owner-ack OPERATION_ID JSON",
+                "package-owner-receipt OPERATION_ID JSON"
             ],
             "scale_fixtures": supported_scale_fixtures()
         }));

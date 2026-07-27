@@ -22,10 +22,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use fleet_contracts::{
+    AuthenticatedPackageUpdaterAcknowledgement, AuthenticatedPackageUpdaterReceipt,
     CommandLifecycle, FleetQuery, OperationExecuteRequest, OperationPreviewRequest,
-    PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PackageInstallReleaseExecuteRequest,
-    PackageInstallReleasePreviewRequest, PackageReleaseReference,
-    PackageUpdaterInvocationAcknowledgement, PackageUpdaterReceiptSubmission,
+    PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_UPDATER_CLAIM_SCHEMA,
+    PackageInstallReleaseExecuteRequest, PackageInstallReleasePreviewRequest,
+    PackageReleaseReference, PackageUpdaterClaim, PackageUpdaterClaimRequest, PackageUpdaterOffer,
     SavedViewMutationRequest, SignedFleetCheckIn, ValidateContract,
 };
 use fleet_hub::{
@@ -74,6 +75,7 @@ const DEFAULT_OPERATION_PARALLELISM: u16 = 8;
 const DEFAULT_OPERATION_ATTEMPTS: u8 = 3;
 const PACKAGE_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
 const DEFAULT_PACKAGE_OPERATION_PARALLELISM: u16 = 8;
+const PACKAGE_OWNER_CLAIM_LIFETIME_MS: i64 = 60_000;
 
 static OPERATION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TRANSPORT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -127,6 +129,22 @@ pub struct ConfiguredKioskDirectOperator {
     pub pairing_key: String,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredPackageUpdaterOwner {
+    pub owner_id: String,
+    pub bearer_token: String,
+}
+
+impl std::fmt::Debug for ConfiguredPackageUpdaterOwner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredPackageUpdaterOwner")
+            .field("owner_id", &self.owner_id)
+            .field("bearer_token", &"[redacted]")
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for ConfiguredKioskDirectOperator {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -151,6 +169,8 @@ pub struct LocalHubConfig {
     #[serde(default)]
     pub kiosk_direct_operators: Vec<ConfiguredKioskDirectOperator>,
     #[serde(default)]
+    pub package_updater_owner: Option<ConfiguredPackageUpdaterOwner>,
+    #[serde(default)]
     pub hub_policy: LocalHubPolicy,
 }
 
@@ -167,6 +187,9 @@ impl LocalHubConfig {
             return Err(
                 "non-loopback binding requires explicit allow_non_loopback=true".to_owned(),
             );
+        }
+        if self.package_updater_owner.is_some() && !bind.ip().is_loopback() {
+            return Err("package updater owner ingress requires a loopback bind".to_owned());
         }
         if !self.state_directory.is_absolute() {
             return Err("state_directory must be an absolute private path".to_owned());
@@ -203,6 +226,16 @@ impl LocalHubConfig {
             validate_kiosk_endpoint(&direct_operator.endpoint)
                 .map_err(|error| format!("invalid Kiosk endpoint: {error}"))?;
         }
+        if let Some(owner) = &self.package_updater_owner
+            && (owner.owner_id != "rusty-quest.package-updater"
+                || owner.bearer_token.len() < 32
+                || owner.bearer_token.len() > 512)
+        {
+            return Err(
+                "package updater owner requires the pinned owner id and a 32..512 byte private bearer token"
+                    .to_owned(),
+            );
+        }
         if self.hub_policy.stale_after_ms <= 0
             || self.hub_policy.offline_after_ms <= self.hub_policy.stale_after_ms
             || self.hub_policy.history_limit_per_device == 0
@@ -224,6 +257,7 @@ struct RuntimeState {
     owner_receipts: BTreeMap<String, RawOwnerReceiptEvidence>,
     inflight_kiosk_targets: BTreeSet<(String, String)>,
     package_updater_adapter: PackageUpdaterOwnerAdapter,
+    package_updater_owner: Option<ConfiguredPackageUpdaterOwner>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -607,6 +641,7 @@ impl LocalHubState {
                     PackageUpdaterAdapterLimits::default(),
                 )
                 .map_err(|error| format!("invalid package updater adapter limits: {error}"))?,
+                package_updater_owner: config.package_updater_owner.clone(),
             })),
         })
     }
@@ -717,6 +752,14 @@ pub fn router(state: LocalHubState) -> Router {
         .route(
             "/fleet/v1/package-install-releases/{operation_id}/execute",
             post(execute_package_install_release),
+        )
+        .route(
+            "/fleet/v1/package-updater/claims",
+            post(claim_package_updater_work),
+        )
+        .route(
+            "/fleet/v1/package-updater/offers",
+            get(peek_package_updater_offer),
         )
         .route(
             "/fleet/v1/package-install-releases/{operation_id}/acknowledgements",
@@ -1496,11 +1539,240 @@ async fn execute_package_install_release(
     Json(operation).into_response()
 }
 
+async fn claim_package_updater_work(
+    State(state): State<LocalHubState>,
+    request: Request,
+) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
+    let bytes = match strict_json_body(request, MAX_OPERATION_BYTES, "package updater claim").await
+    {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let claim_request = match serde_json::from_slice::<PackageUpdaterClaimRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_claim_json",
+                error.to_string(),
+            );
+        }
+    };
+    if let Err(failures) = claim_request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_package_claim",
+            format_contract_failures(&failures),
+        );
+    }
+    if configured_owner
+        .as_ref()
+        .is_none_or(|owner| owner.owner_id != claim_request.owner_id)
+    {
+        return api_error(
+            StatusCode::UNAUTHORIZED,
+            "package_owner_identity_mismatch",
+            "authenticated package owner identity does not match the claim",
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let mut candidate_hub = runtime.hub.clone();
+    match candidate_hub.expire_package_updater_claims(now_ms) {
+        Ok(_) => {}
+        Err(error) => return hub_operation_error(error),
+    }
+    let selected = candidate_hub.select_package_updater_offer(now_ms);
+    let Some(invocation) = selected else {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_claim_offer_stale",
+            "the claimed package offer is no longer selectable",
+        );
+    };
+    let invocation_sha256 = json_sha256(&invocation);
+    if claim_request.operation_id != invocation.operation_id
+        || claim_request.device_id != invocation.device_id
+        || !constant_time_equal(
+            claim_request.expected_invocation_sha256.as_bytes(),
+            invocation_sha256.as_bytes(),
+        )
+    {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_claim_offer_mismatch",
+            "claim request does not match the current package offer",
+        );
+    }
+    if !runtime.adapter.has_applied_package_authorization(
+        &invocation.operation_id,
+        &invocation.device_id,
+        &invocation.owner_action_request_id,
+    ) {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_manifold_authority_unavailable",
+            "the exact prepared invocation no longer has retained Manifold command authority",
+        );
+    }
+    let release_sha256 = json_sha256(&invocation.release);
+    let target_sha256 = json_sha256(&(invocation.device_id.as_str(), invocation.identity_revision));
+    let claim_id = format!(
+        "package-claim-{}",
+        &sha256_hex(
+            format!(
+                "{}:{}:{}",
+                claim_request.owner_id, claim_request.request_id, invocation_sha256
+            )
+            .as_bytes()
+        )[..32]
+    );
+    let claim = PackageUpdaterClaim {
+        schema: PACKAGE_UPDATER_CLAIM_SCHEMA.to_owned(),
+        claim_id,
+        owner_id: claim_request.owner_id,
+        request_id: claim_request.request_id,
+        claimed_at_ms: now_ms,
+        expires_at_ms: invocation
+            .expires_at_ms
+            .min(now_ms.saturating_add(PACKAGE_OWNER_CLAIM_LIFETIME_MS)),
+        invocation_sha256,
+        release_sha256,
+        target_sha256,
+        invocation,
+    };
+    if let Err(error) = candidate_hub.offer_package_updater_claim(claim.clone(), now_ms) {
+        return hub_operation_error(error);
+    }
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        hub,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(claim).into_response()
+}
+
+async fn peek_package_updater_offer(
+    State(state): State<LocalHubState>,
+    request: Request,
+) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let runtime = state.runtime.lock().await;
+    let offer = runtime
+        .hub
+        .select_package_updater_offer(now_ms)
+        .map(|invocation| PackageUpdaterOffer {
+            schema: fleet_contracts::PACKAGE_UPDATER_OFFER_SCHEMA.to_owned(),
+            owner_id: configured_owner
+                .as_ref()
+                .expect("authenticated owner")
+                .owner_id
+                .clone(),
+            operation_id: invocation.operation_id.clone(),
+            device_id: invocation.device_id.clone(),
+            invocation_sha256: json_sha256(&invocation),
+        });
+    Json(serde_json::json!({
+        "schema": "rusty.fleet.package_updater_offer_result.v1",
+        "offer": offer
+    }))
+    .into_response()
+}
+
+fn authenticate_package_updater(
+    headers: &HeaderMap,
+    configured: Option<&ConfiguredPackageUpdaterOwner>,
+) -> Result<(), Box<Response>> {
+    let Some(configured) = configured else {
+        return Err(Box::new(api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "package_owner_authenticated_ingress_unavailable",
+            "package updater owner ingress is disabled without explicit private configuration",
+        )));
+    };
+    let supplied = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if supplied.is_none_or(|token| {
+        let supplied_digest = Sha256::digest(token.as_bytes());
+        let configured_digest = Sha256::digest(configured.bearer_token.as_bytes());
+        !constant_time_equal(supplied_digest.as_slice(), configured_digest.as_slice())
+    }) {
+        return Err(Box::new(api_error(
+            StatusCode::UNAUTHORIZED,
+            "package_owner_authentication_failed",
+            "package updater owner authentication failed",
+        )));
+    }
+    Ok(())
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
+fn json_sha256<T: Serialize>(value: &T) -> String {
+    let bytes = serde_json::to_vec(value).expect("contract serialization is infallible");
+    format!("sha256:{}", sha256_hex(&bytes))
+}
+
 async fn acknowledge_package_install_release(
     State(state): State<LocalHubState>,
     AxumPath(operation_id): AxumPath<String>,
     request: Request,
 ) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
     let bytes = match strict_json_body(
         request,
         MAX_OPERATION_BYTES,
@@ -1511,8 +1783,8 @@ async fn acknowledge_package_install_release(
         Ok(bytes) => bytes,
         Err(response) => return response,
     };
-    let acknowledgement =
-        match serde_json::from_slice::<PackageUpdaterInvocationAcknowledgement>(&bytes) {
+    let submission =
+        match serde_json::from_slice::<AuthenticatedPackageUpdaterAcknowledgement>(&bytes) {
             Ok(value) => value,
             Err(error) => {
                 return api_error(
@@ -1522,22 +1794,34 @@ async fn acknowledge_package_install_release(
                 );
             }
         };
-    if operation_id != acknowledgement.operation_id {
+    if submission.schema != "rusty.fleet.authenticated_package_updater_acknowledgement.v1"
+        || operation_id != submission.acknowledgement.operation_id
+    {
         return api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "package_operation_identity_mismatch",
             "package operation path and acknowledgement identity must match",
         );
     }
-    let runtime = state.runtime.lock().await;
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
     let operation = match runtime.hub.package_operation(&operation_id) {
         Ok(operation) => operation,
         Err(error) => return hub_operation_error(error),
     };
     let binding_exists = operation.targets.iter().any(|target| {
-        target.device_id == acknowledgement.device_id
-            && target.invocation.as_ref().is_some_and(|invocation| {
-                invocation.owner_action_request_id == acknowledgement.owner_action_request_id
+        target.device_id == submission.acknowledgement.device_id
+            && target.owner_claim.as_ref().is_some_and(|claim| {
+                claim.claim_id == submission.claim_id
+                    && claim.owner_id == submission.owner_id
+                    && constant_time_equal(
+                        claim.invocation_sha256.as_bytes(),
+                        submission.invocation_sha256.as_bytes(),
+                    )
+                    && claim.expires_at_ms > now_ms
             })
     });
     if !binding_exists {
@@ -1547,11 +1831,48 @@ async fn acknowledge_package_install_release(
             "acknowledgement does not bind a prepared package invocation",
         );
     }
-    api_error(
-        StatusCode::NOT_IMPLEMENTED,
-        "package_owner_authenticated_ingress_unavailable",
-        "Fleet will not admit an updater acknowledgement until an authenticated owner transport verifies it",
-    )
+    let target = operation
+        .targets
+        .iter()
+        .find(|target| target.device_id == submission.acknowledgement.device_id)
+        .expect("binding check found target");
+    let invocation = target.invocation.as_ref().expect("claim binds invocation");
+    let acknowledgement = match runtime
+        .package_updater_adapter
+        .validate_untrusted_acknowledgement(invocation, submission.acknowledgement, now_ms)
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_acknowledgement_invalid",
+                error.to_string(),
+            );
+        }
+    };
+    let mut candidate_hub = runtime.hub.clone();
+    let updated = match candidate_hub
+        .admit_authenticated_package_updater_acknowledgement(acknowledgement, now_ms)
+    {
+        Ok(value) => value,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        hub,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(updated).into_response()
 }
 
 async fn apply_package_install_release_receipt(
@@ -1559,12 +1880,21 @@ async fn apply_package_install_release_receipt(
     AxumPath(operation_id): AxumPath<String>,
     request: Request,
 ) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
     let bytes =
         match strict_json_body(request, MAX_OPERATION_BYTES, "package updater receipt").await {
             Ok(bytes) => bytes,
             Err(response) => return response,
         };
-    let submission = match serde_json::from_slice::<PackageUpdaterReceiptSubmission>(&bytes) {
+    let submission = match serde_json::from_slice::<AuthenticatedPackageUpdaterReceipt>(&bytes) {
         Ok(value) => value,
         Err(error) => {
             return api_error(
@@ -1574,30 +1904,43 @@ async fn apply_package_install_release_receipt(
             );
         }
     };
-    if let Err(failures) = submission.validate() {
-        return api_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "invalid_package_receipt_submission",
-            format_contract_failures(&failures),
-        );
-    }
-    if operation_id != submission.effective_receipt.operation_id {
+    if submission.schema != "rusty.fleet.authenticated_package_updater_receipt.v1"
+        || operation_id != submission.effective_receipt.operation_id
+    {
         return api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "package_operation_identity_mismatch",
             "package operation path and receipt identity must match",
         );
     }
-    let runtime = state.runtime.lock().await;
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
     let operation = match runtime.hub.package_operation(&operation_id) {
         Ok(operation) => operation,
         Err(error) => return hub_operation_error(error),
     };
     let binding_exists = operation.targets.iter().any(|target| {
         target.device_id == submission.effective_receipt.device_id
-            && target.invocation.as_ref().is_some_and(|invocation| {
-                invocation.owner_action_request_id
-                    == submission.effective_receipt.owner_action_request_id
+            && target.owner_claim.as_ref().is_some_and(|claim| {
+                claim.claim_id == submission.claim_id
+                    && claim.owner_id == submission.owner_id
+                    && constant_time_equal(
+                        claim.invocation_sha256.as_bytes(),
+                        submission.invocation_sha256.as_bytes(),
+                    )
+                    && target
+                        .invocation_acknowledgement
+                        .as_ref()
+                        .is_some_and(|ack| {
+                            ack.accepted
+                                && ack.operation_id == submission.effective_receipt.operation_id
+                                && ack.device_id == submission.effective_receipt.device_id
+                                && ack.owner_action_request_id
+                                    == submission.effective_receipt.owner_action_request_id
+                        })
             })
     });
     if !binding_exists {
@@ -1607,11 +1950,46 @@ async fn apply_package_install_release_receipt(
             "receipt does not bind a prepared package invocation",
         );
     }
-    api_error(
-        StatusCode::NOT_IMPLEMENTED,
-        "package_owner_authenticated_ingress_unavailable",
-        "Fleet will not mark package work Applied until an authenticated updater transport provides raw owner evidence",
-    )
+    let target = operation
+        .targets
+        .iter()
+        .find(|target| target.device_id == submission.effective_receipt.device_id)
+        .expect("binding check found target");
+    let invocation = target.invocation.as_ref().expect("claim binds invocation");
+    let receipt = match runtime
+        .package_updater_adapter
+        .validate_untrusted_effective_receipt(invocation, submission.effective_receipt, now_ms)
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_receipt_invalid",
+                error.to_string(),
+            );
+        }
+    };
+    let mut candidate_hub = runtime.hub.clone();
+    let updated = match candidate_hub.admit_authenticated_package_updater_receipt(receipt, now_ms) {
+        Ok(value) => value,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        hub,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(updated).into_response()
 }
 
 async fn package_install_release_status(
@@ -2757,9 +3135,10 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        ConfiguredEnrollment, ConfiguredKioskDirectOperator, IngressRateLimiter, LocalHubConfig,
-        LocalHubState, MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, RuntimeState, router,
-        schedule_recovered_owner_work, state_slot_path, transport_request_id, unix_time_ms,
+        ConfiguredEnrollment, ConfiguredKioskDirectOperator, ConfiguredPackageUpdaterOwner,
+        IngressRateLimiter, LocalHubConfig, LocalHubState, MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW,
+        RuntimeState, router, schedule_recovered_owner_work, state_slot_path, transport_request_id,
+        unix_time_ms,
     };
 
     static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -3216,7 +3595,7 @@ mod tests {
     async fn package_routes_persist_dispatch_ready_and_reject_untrusted_owner_evidence() {
         let now_ms = unix_time_ms().expect("current time");
         let signing_key = SigningKey::from_bytes(&[11_u8; 32]);
-        let (config, key_id) = config(&signing_key, now_ms);
+        let (mut config, key_id) = config(&signing_key, now_ms);
         let state_directory = config.state_directory.clone();
         let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
         let app = router(state.clone());
@@ -3389,8 +3768,61 @@ mod tests {
         drop(app);
         drop(state);
 
+        config.package_updater_owner = Some(ConfiguredPackageUpdaterOwner {
+            owner_id: "rusty-quest.package-updater".to_owned(),
+            bearer_token: "owner-token-that-is-at-least-thirty-two-bytes".to_owned(),
+        });
         let restored =
             LocalHubState::from_config(&config, now_ms + 3).expect("restore package operation");
+        let restored_app = router(restored.clone());
+        let offered_invocation = restored
+            .runtime
+            .lock()
+            .await
+            .hub
+            .package_operation(&operation_id)
+            .expect("restored package operation")
+            .targets[0]
+            .invocation
+            .clone()
+            .expect("prepared invocation");
+        let claim_body = serde_json::to_vec(&serde_json::json!({
+            "schema": "rusty.fleet.package_updater_claim_request.v1",
+            "owner_id": "rusty-quest.package-updater",
+            "request_id": "owner-claim-request-1",
+            "operation_id": operation_id,
+            "device_id": offered_invocation.device_id,
+            "expected_invocation_sha256": super::json_sha256(&offered_invocation)
+        }))
+        .expect("claim JSON");
+        let claim_response = restored_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/fleet/v1/package-updater/claims")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CONTENT_LENGTH, claim_body.len().to_string())
+                    .header(
+                        header::AUTHORIZATION,
+                        "Bearer owner-token-that-is-at-least-thirty-two-bytes",
+                    )
+                    .body(Body::from(claim_body))
+                    .expect("claim request"),
+            )
+            .await
+            .expect("claim response");
+        assert_eq!(claim_response.status(), StatusCode::OK);
+        let claim_json: Value = serde_json::from_slice(
+            &to_bytes(claim_response.into_body(), 256 * 1024)
+                .await
+                .expect("claim body"),
+        )
+        .expect("claim response JSON");
+        assert_eq!(claim_json["owner_id"], "rusty-quest.package-updater");
+        assert_eq!(
+            claim_json["invocation"]["owner_action_request_id"],
+            owner_action_request_id
+        );
         let restored_operation = restored
             .runtime
             .lock()
@@ -3403,6 +3835,7 @@ mod tests {
             serde_json::to_value(restored_operation.targets[0].stage).expect("stage JSON"),
             serde_json::json!("dispatch_ready")
         );
+        assert!(restored_operation.targets[0].owner_claim.is_some());
         fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
@@ -3560,6 +3993,16 @@ mod tests {
         assert!(config.validate().is_err());
         config.allow_non_loopback = true;
         assert!(config.validate().is_ok());
+        config.package_updater_owner = Some(ConfiguredPackageUpdaterOwner {
+            owner_id: "rusty-quest.package-updater".to_owned(),
+            bearer_token: "owner-token-that-is-at-least-thirty-two-bytes".to_owned(),
+        });
+        assert_eq!(
+            config
+                .validate()
+                .expect_err("owner ingress is loopback-only"),
+            "package updater owner ingress requires a loopback bind"
+        );
     }
 
     #[test]
@@ -3582,6 +4025,20 @@ mod tests {
         assert_ne!(first, transport_request_id("fedcba9876543210", 1));
         assert_ne!(first, transport_request_id("0123456789abcdef", 2));
         assert!(first.len() <= 64);
+    }
+
+    #[test]
+    fn package_owner_secret_comparison_is_equal_length_constant_time_and_debug_is_redacted() {
+        assert!(super::constant_time_equal(&[7_u8; 32], &[7_u8; 32]));
+        assert!(!super::constant_time_equal(&[7_u8; 32], &[8_u8; 32]));
+        assert!(!super::constant_time_equal(&[7_u8; 31], &[7_u8; 32]));
+        let owner = ConfiguredPackageUpdaterOwner {
+            owner_id: "rusty-quest.package-updater".to_owned(),
+            bearer_token: "a-private-owner-token-that-must-not-appear".to_owned(),
+        };
+        let debug = format!("{owner:?}");
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains(&owner.bearer_token));
     }
 
     fn config(signing_key: &SigningKey, now_ms: i64) -> (LocalHubConfig, DottedId) {
@@ -3617,6 +4074,7 @@ mod tests {
                     },
                 }],
                 kiosk_direct_operators: Vec::new(),
+                package_updater_owner: None,
                 hub_policy: Default::default(),
             },
             key_id,

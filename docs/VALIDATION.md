@@ -37,9 +37,13 @@ Quick is safe during normal editing and checks:
 - package install/release valid/damaged contracts, pinned attended-updater
   owner, immutable release/package/ring and exact targets, Manifold
   authorization, all-target `dispatch_ready` preparation independent of future
-  delivery parallelism, strict HTTP routes, durable restart, unauthenticated
-  acknowledgement/receipt HTTP 501 rejection without mutation, and
-  CLI/API/WPF parity with explicit no-dispatch/no-install language;
+  delivery parallelism, strict HTTP routes, durable restart, disabled-ingress
+  HTTP 501 rejection, independent owner authentication, one-use
+  claim/replay/expiry checks, 17+ attempt and restart-safe retained replay
+  authority, fail-closed replay-ledger exhaustion, shared logical-time GET/POST
+  offer selection, exact active/acknowledged capacity, stale-offer no-mutation,
+  bounded claim scheduling, exact claim/invocation digests, strict
+  acknowledgement/effective-receipt admission, and CLI/API projection parity;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
   across off-screen 10/50/100-row layout windows cut from deterministic
   50/250-device Rust projections, with the 50-device source projection as the
@@ -157,9 +161,10 @@ contact Kiosk or a headset.
 
 The package source commands use the same explicit loopback Hub and are
 documented in [Package Install/Release](PACKAGE_INSTALL_RELEASE.md). Repository
-tiers exercise preview, confirmation, status, restart, and fail-closed owner
-evidence only. They do not contact the updater or a headset, and
-`dispatch_ready` is not device evidence.
+tiers exercise preview, confirmation, status, restart, disabled ingress,
+synthetic authenticated claims, replay/saturation, and synthetic owner evidence
+only. They do not contact the updater or a headset; neither `dispatch_ready`
+nor an owner claim is device evidence.
 
 For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
 surface separately:
