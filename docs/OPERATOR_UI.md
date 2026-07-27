@@ -469,6 +469,25 @@ Cleanup is a first-class dimension. It may include session release, route
 closure, temporary-file removal, media-sink stop, prior-state restoration, and
 lease/concurrency release.
 
+### Quest awake-control presentation
+
+The awake-control review pane names all six modes instead of presenting one
+ambiguous toggle: status, bounded Meta hold (maximum eight hours), Windows
+watchdog, Quest watchdog, stop watchdogs, and restore normal. Duration and
+poll interval are visible frozen values. The Quest watchdog carries a visible
+“stops on reboot” note.
+
+`Stop watchdogs` explicitly says that current power/proximity settings remain
+unchanged. `Restore normal` explicitly says that it stops both watchdogs and
+then restores normal settings. Their buttons, confirmation text, receipts,
+and per-target outcomes remain distinct.
+
+Progress exposes stay-on, proximity, wake, Windows-watchdog,
+device-watchdog, settings-restored, and settings-left-unchanged facts
+independently. No “success” label is derived from ADB exit, a running process,
+or a single combined boolean. Provider absence disables action controls with
+a configuration reason but does not degrade ordinary monitoring.
+
 ## Empty, stale, and degraded behavior
 
 | Condition | Required projection |

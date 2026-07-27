@@ -30,5 +30,12 @@ future owner-delivery parallelism is one; neither target is `dispatched` or
 owner-contract drift, and a false application claim without an authenticated
 effective receipt.
 
+The Quest awake-control pair binds an exact target, eight-hour maximum policy,
+watchdog generation, File Manager owner contract, invocation, and receipt.
+Its valid stop-watchdogs case deliberately leaves the power settings unchanged.
+Its damaged case combines an over-limit duration, under-limit interval, owner
+drift, request mismatch, and an optimistic restore claim without restored
+settings.
+
 Real device exports, endpoints, serials, logs, captures, and private payloads
 do not belong in this directory.

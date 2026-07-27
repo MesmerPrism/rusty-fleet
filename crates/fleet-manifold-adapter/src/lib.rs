@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ed25519_dalek::{Signature, VerifyingKey};
 use fleet_contracts::{
     ConditionFamily, ConditionState, PACKAGES_INSTALL_RELEASE_ACTION_ID, PackageReleaseReference,
-    Sensitivity, SignedFleetCheckIn, StatusCondition, StatusSource, ValidateContract,
+    QUEST_AWAKE_ACTION_ID, QuestAwakeAction, Sensitivity, SignedFleetCheckIn, StatusCondition,
+    StatusSource, ValidateContract,
 };
 use fleet_hub::{FleetHub, ObservationDecision};
 use rusty_manifold_model::{DottedId, Revision};
@@ -34,10 +35,13 @@ const KIOSK_SHOW_CONTROLS_PARAMS_TYPE_ID: &str = "rusty.fleet.kiosk.show-control
 const PACKAGES_INSTALL_RELEASE_COMMAND_ID: &str = PACKAGES_INSTALL_RELEASE_ACTION_ID;
 const PACKAGES_INSTALL_RELEASE_PARAMS_TYPE_ID: &str =
     "rusty.fleet.packages.install-release.params.v1";
+const QUEST_AWAKE_COMMAND_ID: &str = QUEST_AWAKE_ACTION_ID;
+const QUEST_AWAKE_PARAMS_TYPE_ID: &str = "rusty.fleet.quest.awake-control.params.v1";
 const FLEET_MANIFOLD_SNAPSHOT_V1_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v1";
 const FLEET_MANIFOLD_SNAPSHOT_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v2";
 const MAX_KIOSK_COMMAND_LIFETIME_MS: u64 = 90_000;
 const MAX_PACKAGE_COMMAND_LIFETIME_MS: u64 = 15 * 60_000;
+const MAX_QUEST_AWAKE_COMMAND_LIFETIME_MS: u64 = 15 * 60_000;
 
 #[must_use]
 pub fn kiosk_manifold_request_id(
@@ -67,6 +71,24 @@ pub fn package_manifold_request_id(
         digest.update([0]);
     }
     format!("request.fleet.packages.{}", hex::encode(digest.finalize()))
+}
+
+#[must_use]
+pub fn quest_awake_manifold_request_id(
+    operation_id: &str,
+    device_id: &str,
+    owner_action_request_id: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-awake.manifold-request.v1\0");
+    for value in [operation_id, device_id, owner_action_request_id] {
+        digest.update(value.as_bytes());
+        digest.update([0]);
+    }
+    format!(
+        "request.fleet.quest-awake.{}",
+        hex::encode(digest.finalize())
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +170,30 @@ pub struct PackageInstallReleaseAuthorityReceipt {
     pub application: ManifoldRuntimeApplicationReceipt,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestAwakeCommandAuthorization {
+    pub manifold_request_id: String,
+    pub owner_action_request_id: String,
+    pub requester_id: String,
+    pub operation_id: String,
+    pub preview_id: String,
+    pub device_id: String,
+    pub identity_revision: u64,
+    pub action: QuestAwakeAction,
+    pub duration_ms: u32,
+    pub watchdog_interval_ms: u32,
+    pub watchdog_generation: String,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestAwakeAuthorityReceipt {
+    pub request: ManifoldRuntimeCommandRequest,
+    pub dispatch: ManifoldRuntimeDispatchReceipt,
+    pub application: ManifoldRuntimeApplicationReceipt,
+}
+
 #[derive(Serialize)]
 struct KioskShowControlsTypedParams<'a> {
     schema: &'static str,
@@ -171,6 +217,20 @@ struct PackageInstallReleaseTypedParams<'a> {
     expected_rollout_ring: &'a str,
 }
 
+#[derive(Serialize)]
+struct QuestAwakeTypedParams<'a> {
+    schema: &'static str,
+    operation_id: &'a str,
+    preview_id: &'a str,
+    action_id: &'static str,
+    device_id: &'a str,
+    identity_revision: u64,
+    action: QuestAwakeAction,
+    duration_ms: u32,
+    watchdog_interval_ms: u32,
+    watchdog_generation: &'a str,
+}
+
 #[derive(Clone, Debug)]
 pub struct FleetManifoldAdapter {
     enrollment: ManifoldPeerEnrollmentState,
@@ -191,6 +251,10 @@ impl FleetManifoldAdapter {
                 ManifoldRuntimeCommandDescriptor {
                     command_id: DottedId::new(KIOSK_SHOW_CONTROLS_COMMAND_ID)
                         .expect("static command id"),
+                    required_lease_scope: None,
+                },
+                ManifoldRuntimeCommandDescriptor {
+                    command_id: DottedId::new(QUEST_AWAKE_COMMAND_ID).expect("static command id"),
                     required_lease_scope: None,
                 },
                 ManifoldRuntimeCommandDescriptor {
@@ -559,6 +623,115 @@ impl FleetManifoldAdapter {
             ));
         }
         Ok(PackageInstallReleaseAuthorityReceipt {
+            request,
+            dispatch,
+            application,
+        })
+    }
+
+    pub fn authorize_quest_awake(
+        &mut self,
+        authorization: &QuestAwakeCommandAuthorization,
+        now_ms: u64,
+    ) -> Result<QuestAwakeAuthorityReceipt, String> {
+        if authorization.operation_id.is_empty()
+            || authorization.operation_id.len() > 256
+            || authorization.preview_id.is_empty()
+            || authorization.preview_id.len() > 256
+            || authorization.device_id.is_empty()
+            || authorization.device_id.len() > 256
+            || authorization.watchdog_generation.is_empty()
+            || authorization.watchdog_generation.len() > 256
+            || authorization.identity_revision == 0
+            || !(60_000..=28_800_000).contains(&authorization.duration_ms)
+            || !(1_000..=60_000).contains(&authorization.watchdog_interval_ms)
+            || authorization.issued_at_ms > now_ms
+            || now_ms >= authorization.expires_at_ms
+            || authorization.expires_at_ms <= authorization.issued_at_ms
+            || authorization
+                .expires_at_ms
+                .checked_sub(authorization.issued_at_ms)
+                .is_none_or(|lifetime| lifetime > MAX_QUEST_AWAKE_COMMAND_LIFETIME_MS)
+        {
+            return Err("Fleet Quest awake authorization is invalid or expired".to_owned());
+        }
+        if authorization.owner_action_request_id.is_empty()
+            || authorization.manifold_request_id
+                != quest_awake_manifold_request_id(
+                    &authorization.operation_id,
+                    &authorization.device_id,
+                    &authorization.owner_action_request_id,
+                )
+        {
+            return Err(
+                "Fleet Quest awake Manifold request identity does not bind the owner action"
+                    .to_owned(),
+            );
+        }
+        if self.runtime_host.snapshot().authority_revision.get() == u64::MAX {
+            return Err("Fleet runtime authority reached its terminal revision".to_owned());
+        }
+        let params = QuestAwakeTypedParams {
+            schema: "rusty.fleet.quest_awake_params.v1",
+            operation_id: &authorization.operation_id,
+            preview_id: &authorization.preview_id,
+            action_id: QUEST_AWAKE_COMMAND_ID,
+            device_id: &authorization.device_id,
+            identity_revision: authorization.identity_revision,
+            action: authorization.action,
+            duration_ms: authorization.duration_ms,
+            watchdog_interval_ms: authorization.watchdog_interval_ms,
+            watchdog_generation: &authorization.watchdog_generation,
+        };
+        let canonical_params = serde_jcs::to_vec(&params).map_err(|error| {
+            format!("Fleet Quest awake parameters are not canonicalizable: {error}")
+        })?;
+        if canonical_params.is_empty() || canonical_params.len() > 8_192 {
+            return Err(
+                "Fleet Quest awake parameters exceed the Manifold command bound".to_owned(),
+            );
+        }
+        let canonical_size_bytes = u32::try_from(canonical_params.len())
+            .map_err(|_| "Fleet Quest awake parameter size is not representable".to_owned())?;
+        let request = ManifoldRuntimeCommandRequest {
+            schema_id: schema_id(HOST_COMMAND_REQUEST_SCHEMA),
+            request_id: DottedId::new(authorization.manifold_request_id.clone())
+                .map_err(|error| format!("invalid Manifold request ID: {error}"))?,
+            expected_authority_revision: self.runtime_host.snapshot().authority_revision,
+            requester_id: DottedId::new(authorization.requester_id.clone())
+                .map_err(|error| format!("invalid Manifold requester ID: {error}"))?,
+            command_id: DottedId::new(QUEST_AWAKE_COMMAND_ID).expect("static command id"),
+            lease_id: None,
+            params_digest: Some(ManifoldRuntimeTypedParamsDigest {
+                schema_id: schema_id(HOST_TYPED_PARAMS_DIGEST_SCHEMA),
+                params_type_id: DottedId::new(QUEST_AWAKE_PARAMS_TYPE_ID)
+                    .expect("static params type id"),
+                canonical_sha256: format!(
+                    "sha256:{}",
+                    hex::encode(Sha256::digest(&canonical_params))
+                ),
+                canonical_size_bytes,
+            }),
+            issued_at_ms: authorization.issued_at_ms,
+            expires_at_ms: authorization.expires_at_ms,
+        };
+        let dispatch = self.runtime_host.review_command(&request, now_ms);
+        if dispatch.outcome != ManifoldRuntimeDispatchOutcome::Ready {
+            return Err(format!(
+                "Manifold rejected Fleet Quest awake dispatch review: {:?}",
+                dispatch.rejection_reason
+            ));
+        }
+        let application = self
+            .runtime_host
+            .apply_dispatch(&request, &dispatch, now_ms);
+        if !application.applied {
+            return Err(format!(
+                "Manifold rejected Fleet Quest awake dispatch application: {:?}",
+                application.rejection_reason
+            ));
+        }
+        Ok(QuestAwakeAuthorityReceipt {
             request,
             dispatch,
             application,

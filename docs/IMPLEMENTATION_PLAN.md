@@ -350,6 +350,13 @@ base agent.
 - Evaluate on-device ADB loopback only as a separate opt-in privileged adapter
   with explicit threat model and grant.
 
+The first bounded utility slice is
+[Quest Awake Control](QUEST_AWAKE_CONTROL.md). It adds an eight-hour maximum
+Meta development hold, explicit Windows and Quest watchdog modes, and separate
+stop-versus-restore actions through the pinned File Manager provider. It does
+not add general shell execution or ADB dependence to base monitoring, and it
+remains inert without private provider and exact-device bindings.
+
 ### Acceptance
 
 - ADB loss removes only privileged controls; base monitoring continues.

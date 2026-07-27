@@ -3,7 +3,8 @@
 
 use fleet_contracts::{
     DeviceObservation, FleetCheckInClaims, FleetQuery, KioskShowControlsOperation,
-    PackageInstallReleaseOperation, SavedView, StreamDescriptor, ValidateContract,
+    PackageInstallReleaseOperation, QuestAwakeOperation, SavedView, StreamDescriptor,
+    ValidateContract,
 };
 
 #[test]
@@ -48,6 +49,12 @@ fn committed_valid_contract_fixtures_round_trip() {
     ))
     .expect("valid package install/release JSON");
     assert!(package_operation.validate().is_ok());
+
+    let awake_operation: QuestAwakeOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/quest-awake-operation.valid.json"
+    ))
+    .expect("valid Quest awake JSON");
+    assert!(awake_operation.validate().is_ok());
 }
 
 #[test]
@@ -118,4 +125,33 @@ fn committed_damaged_package_operation_fails_closed() {
     assert!(codes.contains(&"invalid_manifest_url".to_owned()));
     assert!(codes.contains(&"owner_contract_mismatch".to_owned()));
     assert!(codes.contains(&"applied_without_effective_receipt".to_owned()));
+}
+
+#[test]
+fn committed_damaged_quest_awake_operation_fails_closed() {
+    let operation: QuestAwakeOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/quest-awake-operation.damaged.json"
+    ))
+    .expect("damaged Quest awake fixture remains syntactically valid JSON");
+    let codes = operation
+        .validate()
+        .expect_err("damaged Quest awake operation must fail")
+        .into_iter()
+        .map(|failure| failure.code)
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"invalid_duration".to_owned()));
+    assert!(codes.contains(&"invalid_watchdog_interval".to_owned()));
+    assert!(codes.contains(&"owner_contract_mismatch".to_owned()));
+    assert!(codes.contains(&"receipt_binding_mismatch".to_owned()));
+    assert!(codes.contains(&"applied_without_effective_receipt".to_owned()));
+    let receipt_codes = operation.targets[0]
+        .receipt
+        .as_ref()
+        .expect("damaged receipt")
+        .validate()
+        .expect_err("optimistic receipt must fail")
+        .into_iter()
+        .map(|failure| failure.code)
+        .collect::<Vec<_>>();
+    assert!(receipt_codes.contains(&"readback_summary_mismatch".to_owned()));
 }

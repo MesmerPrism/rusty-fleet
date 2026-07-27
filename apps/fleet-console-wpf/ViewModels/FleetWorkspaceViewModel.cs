@@ -71,6 +71,17 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private string _packageOperationSummaryText = "No package operation preview";
     private string _packageOperationStatusText =
         "Enter a signed manifest URL and package identity, then select exact devices";
+    private QuestAwakeOperation? _currentQuestAwakeOperation;
+    private QuestAwakeActionOption _selectedQuestAwakeAction =
+        new(
+            QuestAwakeActions.ApplyBounded,
+            "Meta keep-awake (up to 8 hours)",
+            "Uses Meta's bounded proximity hold and wake controls.");
+    private string _questAwakeDurationMinutes = "480";
+    private string _questAwakeWatchdogIntervalSeconds = "5";
+    private string _questAwakeSummaryText = "No headset awake-control preview";
+    private string _questAwakeStatusText =
+        "Choose an action, select exact devices, then preview";
 
     public FleetWorkspaceViewModel(Func<Uri, IFleetDataSource> sourceFactory)
     {
@@ -120,6 +131,23 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         DismissPackageInstallReleaseCommand = new RelayCommand(
             DismissPackageInstallRelease,
             () => !IsBusy && CurrentPackageOperation is not null);
+        PreviewQuestAwakeCommand = new AsyncCommand(
+            PreviewQuestAwakeAsync,
+            () => !IsBusy &&
+                  _source is not null &&
+                  _batchSelection.Count > 0 &&
+                  CurrentQuestAwakeOperation is null);
+        ConfirmQuestAwakeCommand = new AsyncCommand(
+            ConfirmQuestAwakeAsync,
+            () => CanConfirmQuestAwake);
+        RefreshQuestAwakeCommand = new AsyncCommand(
+            RefreshQuestAwakeAsync,
+            () => !IsBusy &&
+                  _source is not null &&
+                  CurrentQuestAwakeOperation is not null);
+        DismissQuestAwakeCommand = new RelayCommand(
+            DismissQuestAwake,
+            () => !IsBusy && CurrentQuestAwakeOperation is not null);
         if (RowsView is ICollectionViewLiveShaping liveView &&
             liveView.CanChangeLiveGrouping)
         {
@@ -149,6 +177,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public ObservableCollection<PackageOperationTargetViewModel> PackageOperationTargets { get; } =
         [];
 
+    public ObservableCollection<QuestAwakeTargetViewModel> QuestAwakeTargets { get; } = [];
+
     public ICollectionView RowsView { get; }
 
     public IReadOnlyList<string> FreshnessOptions { get; } =
@@ -162,6 +192,34 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
     public IReadOnlyList<string> SortDirectionOptions { get; } =
         ["Ascending", "Descending"];
+
+    public IReadOnlyList<QuestAwakeActionOption> QuestAwakeActionOptions { get; } =
+    [
+        new(
+            QuestAwakeActions.Status,
+            "Check current awake status",
+            "Reads power, proximity-hold, and watchdog state without changing it."),
+        new(
+            QuestAwakeActions.ApplyBounded,
+            "Meta keep-awake (up to 8 hours)",
+            "Applies Meta's bounded proximity hold and wakes the headset."),
+        new(
+            QuestAwakeActions.StartWindowsWatchdog,
+            "Keep awake with Windows watchdog",
+            "Windows checks the headset and repairs drift while the Fleet Hub is running."),
+        new(
+            QuestAwakeActions.StartDeviceWatchdog,
+            "Keep awake with Quest watchdog (stops on reboot)",
+            "Runs the drift-repair watchdog on the headset. It stops when the headset reboots."),
+        new(
+            QuestAwakeActions.StopWatchdogs,
+            "Stop watchdogs only (settings remain)",
+            "Stops both watchdog modes without restoring normal sleep or proximity settings."),
+        new(
+            QuestAwakeActions.RestoreNormal,
+            "Restore normal sleep settings",
+            "Stops watchdogs, then restores normal sleep and proximity behavior.")
+    ];
 
     public AsyncCommand ConnectCommand { get; }
 
@@ -196,6 +254,14 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public AsyncCommand RefreshPackageInstallReleaseCommand { get; }
 
     public RelayCommand DismissPackageInstallReleaseCommand { get; }
+
+    public AsyncCommand PreviewQuestAwakeCommand { get; }
+
+    public AsyncCommand ConfirmQuestAwakeCommand { get; }
+
+    public AsyncCommand RefreshQuestAwakeCommand { get; }
+
+    public RelayCommand DismissQuestAwakeCommand { get; }
 
     public event Action<SavedView>? SavedViewRestorationRequested;
 
@@ -386,6 +452,104 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         private set => SetProperty(ref _packageOperationStatusText, value);
     }
 
+    public QuestAwakeActionOption SelectedQuestAwakeAction
+    {
+        get => _selectedQuestAwakeAction;
+        set
+        {
+            if (value is not null &&
+                CurrentQuestAwakeOperation is null &&
+                SetProperty(ref _selectedQuestAwakeAction, value))
+            {
+                OnPropertyChanged(nameof(QuestAwakeActionHelpText));
+                OnPropertyChanged(nameof(QuestAwakeConfirmationButtonText));
+            }
+        }
+    }
+
+    public string QuestAwakeActionHelpText => SelectedQuestAwakeAction.HelpText;
+
+    public string QuestAwakeDurationMinutes
+    {
+        get => _questAwakeDurationMinutes;
+        set
+        {
+            if (CurrentQuestAwakeOperation is null)
+            {
+                SetProperty(ref _questAwakeDurationMinutes, value);
+            }
+        }
+    }
+
+    public string QuestAwakeWatchdogIntervalSeconds
+    {
+        get => _questAwakeWatchdogIntervalSeconds;
+        set
+        {
+            if (CurrentQuestAwakeOperation is null)
+            {
+                SetProperty(ref _questAwakeWatchdogIntervalSeconds, value);
+            }
+        }
+    }
+
+    public QuestAwakeOperation? CurrentQuestAwakeOperation
+    {
+        get => _currentQuestAwakeOperation;
+        private set
+        {
+            if (SetProperty(ref _currentQuestAwakeOperation, value))
+            {
+                OnPropertyChanged(nameof(IsQuestAwakeInputLocked));
+                OnPropertyChanged(nameof(IsQuestAwakeInputUnlocked));
+                OnPropertyChanged(nameof(QuestAwakeInputLockText));
+                OnPropertyChanged(nameof(CanConfirmQuestAwake));
+                OnPropertyChanged(nameof(QuestAwakeConfirmationButtonText));
+                PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
+                ConfirmQuestAwakeCommand.RaiseCanExecuteChanged();
+                RefreshQuestAwakeCommand.RaiseCanExecuteChanged();
+                DismissQuestAwakeCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsQuestAwakeInputLocked => CurrentQuestAwakeOperation is not null;
+
+    public bool IsQuestAwakeInputUnlocked => !IsQuestAwakeInputLocked;
+
+    public string QuestAwakeInputLockText => IsQuestAwakeInputLocked
+        ? "Locked to immutable preview"
+        : string.Empty;
+
+    public bool CanConfirmQuestAwake =>
+        !IsBusy &&
+        _source is not null &&
+        CurrentQuestAwakeOperation is
+        {
+            Lifecycle: "proposed",
+            ConfirmedAtMs: null
+        } operation &&
+        operation.Targets.Any(target => target.Preflight.Eligible);
+
+    public string QuestAwakeConfirmationButtonText =>
+        CurrentQuestAwakeOperation?.ConfirmedAtMs is not null
+            ? "Confirmed"
+            : SelectedQuestAwakeAction.Action == QuestAwakeActions.Status
+                ? "Confirm status check"
+                : "Confirm and apply";
+
+    public string QuestAwakeSummaryText
+    {
+        get => _questAwakeSummaryText;
+        private set => SetProperty(ref _questAwakeSummaryText, value);
+    }
+
+    public string QuestAwakeStatusText
+    {
+        get => _questAwakeStatusText;
+        private set => SetProperty(ref _questAwakeStatusText, value);
+    }
+
     public bool IsBusy
     {
         get => _isBusy;
@@ -409,6 +573,11 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 ConfirmPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 RefreshPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 DismissPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanConfirmQuestAwake));
+                ConfirmQuestAwakeCommand.RaiseCanExecuteChanged();
+                RefreshQuestAwakeCommand.RaiseCanExecuteChanged();
+                DismissQuestAwakeCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -784,6 +953,170 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         PackageOperationSummaryText = "No package operation preview";
         PackageOperationStatusText =
             "Enter a signed manifest URL and package identity, then select exact devices";
+    }
+
+    public async Task PreviewQuestAwakeAsync()
+    {
+        if (_source is null)
+        {
+            QuestAwakeStatusText = "Not connected to a Fleet Hub";
+            return;
+        }
+        if (_batchSelection.Count == 0)
+        {
+            QuestAwakeStatusText =
+                "Select at least one exact device before previewing awake controls";
+            return;
+        }
+        if (!TryReadQuestAwakePolicy(
+                out var durationMs,
+                out var watchdogIntervalMs,
+                out var validationMessage))
+        {
+            QuestAwakeStatusText = validationMessage;
+            return;
+        }
+
+        var requestedTargets = new SortedDictionary<string, ulong>(
+            _batchSelection,
+            StringComparer.Ordinal);
+        var request = new QuestAwakePreviewRequest
+        {
+            Action = SelectedQuestAwakeAction.Action,
+            DurationMs = durationMs,
+            WatchdogIntervalMs = watchdogIntervalMs,
+            Targets = requestedTargets
+        };
+        IsBusy = true;
+        QuestAwakeStatusText =
+            $"Requesting immutable awake-control preview for " +
+            $"{requestedTargets.Count} exact device(s)";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.PreviewQuestAwakeAsync(
+                request,
+                timeout.Token);
+            ValidateQuestAwakeBinding(operation, request);
+            ProjectQuestAwakeOperation(operation);
+            QuestAwakeStatusText =
+                "Preview ready · review every target and the exact action, then confirm";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            QuestAwakeStatusText =
+                $"Preview failed · prior awake-control projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task ConfirmQuestAwakeAsync()
+    {
+        var prior = CurrentQuestAwakeOperation;
+        if (_source is null || prior is null)
+        {
+            QuestAwakeStatusText =
+                "Preview an awake-control operation before confirming it";
+            return;
+        }
+        if (!CanConfirmQuestAwake)
+        {
+            QuestAwakeStatusText = prior.ConfirmedAtMs is not null
+                ? "This immutable awake-control preview is already confirmed"
+                : "The current awake-control preview has no eligible target to confirm";
+            return;
+        }
+
+        var request = new QuestAwakeExecuteRequest
+        {
+            OperationId = prior.OperationId,
+            PreviewId = prior.Preview.PreviewId
+        };
+        IsBusy = true;
+        QuestAwakeStatusText =
+            $"Confirming operation {prior.OperationId} against immutable preview " +
+            prior.Preview.PreviewId;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.ExecuteQuestAwakeAsync(
+                request,
+                timeout.Token);
+            ValidateQuestAwakeBinding(
+                operation,
+                prior.Preview.Action,
+                prior.Preview.DurationMs,
+                prior.Preview.WatchdogIntervalMs,
+                QuestAwakePreviewIdentities(prior));
+            RequireSameQuestAwakeOperation(prior, operation);
+            ProjectQuestAwakeOperation(operation);
+            QuestAwakeStatusText =
+                "Action accepted · refresh for current per-device readbacks";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            QuestAwakeStatusText =
+                $"Confirmation failed · prior awake-control projection retained · " +
+                error.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task RefreshQuestAwakeAsync()
+    {
+        var prior = CurrentQuestAwakeOperation;
+        if (_source is null || prior is null)
+        {
+            QuestAwakeStatusText =
+                "No awake-control operation is available to refresh";
+            return;
+        }
+
+        IsBusy = true;
+        QuestAwakeStatusText =
+            $"Refreshing awake-control operation {prior.OperationId}";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.QuestAwakeAsync(
+                prior.OperationId,
+                timeout.Token);
+            ValidateQuestAwakeBinding(
+                operation,
+                prior.Preview.Action,
+                prior.Preview.DurationMs,
+                prior.Preview.WatchdogIntervalMs,
+                QuestAwakePreviewIdentities(prior));
+            RequireSameQuestAwakeOperation(prior, operation);
+            ProjectQuestAwakeOperation(operation);
+            QuestAwakeStatusText =
+                "Awake-control results refreshed from the Fleet Hub";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            QuestAwakeStatusText =
+                $"Refresh failed · prior awake-control projection retained · " +
+                error.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public void DismissQuestAwake()
+    {
+        CurrentQuestAwakeOperation = null;
+        QuestAwakeTargets.Clear();
+        QuestAwakeSummaryText = "No headset awake-control preview";
+        QuestAwakeStatusText =
+            "Choose an action, select exact devices, then preview";
     }
 
     public async Task SelectDeviceAsync(DeviceRowViewModel? device)
@@ -1269,6 +1602,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         OnPropertyChanged(nameof(BatchSelectionText));
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
         PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+        PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
         return invalidatedSelections;
     }
 
@@ -1699,6 +2033,35 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}";
     }
 
+    private void ProjectQuestAwakeOperation(QuestAwakeOperation operation)
+    {
+        QuestAwakeProjectionValidation.ValidateOperation(operation);
+        var targets = operation.Targets
+            .OrderBy(target => target.DeviceId, StringComparer.Ordinal)
+            .Select(target => new QuestAwakeTargetViewModel(target))
+            .ToArray();
+        CurrentQuestAwakeOperation = operation;
+        QuestAwakeTargets.Clear();
+        foreach (var target in targets)
+        {
+            QuestAwakeTargets.Add(target);
+        }
+
+        var eligible = operation.Targets.Count(target => target.Preflight.Eligible);
+        var excluded = operation.Targets.Count - eligible;
+        var effective = operation.Targets.Count(target =>
+            target.Receipt?.Effective == true);
+        QuestAwakeSummaryText =
+            $"{QuestAwakeActionLabel(operation.Preview.Action)} · " +
+            $"operation {operation.OperationId} · " +
+            $"preview {operation.Preview.PreviewId} · " +
+            $"duration {operation.Preview.DurationMs / 60_000d:0.#} min · " +
+            $"check every {operation.Preview.WatchdogIntervalMs / 1_000d:0.#} sec · " +
+            $"{operation.Targets.Count} exact target(s) · {eligible} eligible · " +
+            $"{excluded} excluded · {effective} effective · " +
+            $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}";
+    }
+
     private static bool IsPackagePreviewReady(PackageInstallReleaseOperation? operation)
     {
         if (operation is null || operation.Lifecycle != "proposed")
@@ -1807,6 +2170,104 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         }
     }
 
+    private bool TryReadQuestAwakePolicy(
+        out uint durationMs,
+        out uint watchdogIntervalMs,
+        out string validationMessage)
+    {
+        durationMs = 0;
+        watchdogIntervalMs = 0;
+        if (!uint.TryParse(QuestAwakeDurationMinutes.Trim(), out var minutes) ||
+            minutes is < 1 or > 480)
+        {
+            validationMessage =
+                "Keep-awake duration must be a whole number from 1 through 480 minutes";
+            return false;
+        }
+        if (!uint.TryParse(
+                QuestAwakeWatchdogIntervalSeconds.Trim(),
+                out var seconds) ||
+            seconds is < 1 or > 60)
+        {
+            validationMessage =
+                "Watchdog check interval must be a whole number from 1 through 60 seconds";
+            return false;
+        }
+
+        durationMs = minutes * 60_000;
+        watchdogIntervalMs = seconds * 1_000;
+        validationMessage = string.Empty;
+        return true;
+    }
+
+    private static void ValidateQuestAwakeBinding(
+        QuestAwakeOperation operation,
+        QuestAwakePreviewRequest request) =>
+        ValidateQuestAwakeBinding(
+            operation,
+            request.Action,
+            request.DurationMs,
+            request.WatchdogIntervalMs,
+            request.Targets);
+
+    private static void ValidateQuestAwakeBinding(
+        QuestAwakeOperation operation,
+        string expectedAction,
+        uint expectedDurationMs,
+        uint expectedWatchdogIntervalMs,
+        IReadOnlyDictionary<string, ulong> expectedTargets)
+    {
+        QuestAwakeProjectionValidation.ValidateOperation(operation);
+        if (operation.ActionId != QuestAwakeActions.ActionId ||
+            operation.Preview.Action != expectedAction ||
+            operation.Preview.DurationMs != expectedDurationMs ||
+            operation.Preview.WatchdogIntervalMs != expectedWatchdogIntervalMs ||
+            operation.Preview.Targets.Count != expectedTargets.Count ||
+            expectedTargets.Any(target =>
+                operation.Preview.Targets.All(preflight =>
+                    preflight.DeviceId != target.Key ||
+                    preflight.IdentityRevision != target.Value)))
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub awake-control operation does not bind the exact action, policy, and target identities.");
+        }
+    }
+
+    private static void RequireSameQuestAwakeOperation(
+        QuestAwakeOperation prior,
+        QuestAwakeOperation current)
+    {
+        if (prior.OperationId != current.OperationId ||
+            prior.Preview.PreviewId != current.Preview.PreviewId ||
+            JsonSerializer.Serialize(prior.Preview, FleetJson.Options) !=
+            JsonSerializer.Serialize(current.Preview, FleetJson.Options))
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub changed immutable awake-control operation facts.");
+        }
+    }
+
+    private static IReadOnlyDictionary<string, ulong> QuestAwakePreviewIdentities(
+        QuestAwakeOperation operation) =>
+        operation.Preview.Targets.ToDictionary(
+            target => target.DeviceId,
+            target => target.IdentityRevision,
+            StringComparer.Ordinal);
+
+    private static string QuestAwakeActionLabel(string action) =>
+        action switch
+        {
+            QuestAwakeActions.Status => "Check current awake status",
+            QuestAwakeActions.ApplyBounded => "Meta keep-awake (up to 8 hours)",
+            QuestAwakeActions.StartWindowsWatchdog => "Windows watchdog",
+            QuestAwakeActions.StartDeviceWatchdog =>
+                "Quest watchdog (stops on reboot)",
+            QuestAwakeActions.StopWatchdogs =>
+                "Stop watchdogs only (settings remain)",
+            QuestAwakeActions.RestoreNormal => "Restore normal sleep settings",
+            _ => DeviceRowViewModel.Title(action)
+        };
+
     private static bool IsProjectionFailure(Exception error) =>
         error is HttpRequestException or JsonException or TaskCanceledException or
             InvalidOperationException;
@@ -1822,6 +2283,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         OnPropertyChanged(nameof(BatchSelectionText));
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
         PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+        PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
     }
 
     private void SelectAllVisible()
@@ -1834,6 +2296,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         OnPropertyChanged(nameof(BatchSelectionText));
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
         PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+        PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
     }
 
     private void OnRowPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)
@@ -1854,6 +2317,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             OnPropertyChanged(nameof(BatchSelectionText));
             PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
             PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+            PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
         }
     }
 

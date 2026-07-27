@@ -57,6 +57,16 @@ Claims and acknowledgements never prove installation; only the exact accepted
 disabled by default. See the
 [package install/release checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
 
+The additive Quest awake-control stack exposes the bounded Meta development
+hold (maximum eight hours), explicit Windows and on-device watchdog modes, and
+separate stop-watchdogs and restore-normal actions. Fleet owns immutable target
+policy and scheduling, Manifold owns command authorization, and a pinned
+QuestIonAble File Manager provider owns exact-serial ADB effects and readback.
+The surface is inert without separately SHA-256-pinned provider and `adb.exe`
+artifacts plus private exact-device bindings, and public receipts contain no
+serials or paths. See
+[Quest awake control](docs/QUEST_AWAKE_CONTROL.md).
+
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
 conditions, visible query/selection scope, and per-device operation evidence.
@@ -103,6 +113,9 @@ The current implementation is split into:
 - `fleet-package-updater-adapter`: bounded invocation and untrusted
   owner-evidence validation for the pinned attended Rusty Quest updater,
   without Android or evidence-admission authority;
+- `fleet-quest-awake-adapter`: pinned local File Manager provider execution,
+  exact invocation/receipt validation, and public readback projection without
+  serial or path disclosure;
 - `fleet-hub-local`: explicit bounded HTTP check-in ingress plus health,
   query, summary, inspect, detail, watch, saved-view, and operation projections
   over the same Hub and fully validated two-slot durable envelope;
@@ -110,8 +123,8 @@ The current implementation is split into:
   datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
   mutations;
 - `fleetctl`: structured JSON list/inspect/detail/watch projections,
-  saved-view parity fixtures, and package preview/execute/get commands over
-  the same loopback local API;
+  saved-view parity fixtures, package commands, and Quest awake
+  preview/execute/get commands over the same loopback local API;
 - `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical
   scope/sort/grouping, revisioned saved-view controls, stable live-order
   application, bounded monotonic watch synchronization, distinct inspection
@@ -157,6 +170,8 @@ bounded dependency, authority, activation, and instruction audit.
    [M2 Kiosk show-controls authority and recovery boundary](docs/M2_KIOSK_SHOW_CONTROLS.md).
 8. Review the
    [package install/release source boundary](docs/PACKAGE_INSTALL_RELEASE.md).
+9. Review the
+   [Quest awake-control boundary](docs/QUEST_AWAKE_CONTROL.md).
 
 The current source stack contains the first M2 participating-app operation,
 `kiosk.show-controls`, plus the additive `packages.install-release`
@@ -205,6 +220,8 @@ The M2 operation commands use the explicit loopback Hub and are documented in
 the [M2 guide](docs/M2_KIOSK_SHOW_CONTROLS.md).
 Package commands use that same loopback Hub and are documented in the
 [package checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
+Quest awake commands use that same loopback Hub and are documented in
+[Quest awake control](docs/QUEST_AWAKE_CONTROL.md).
 
 Build and exercise the native WPF projection against the real deterministic
 Rust query result:

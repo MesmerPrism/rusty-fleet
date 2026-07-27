@@ -20,9 +20,11 @@ use fleet_contracts::{
 };
 use serde::{Deserialize, Serialize};
 
+mod awake;
 mod kiosk;
 mod packages;
 
+pub use awake::QuestAwakePreviewPlan;
 pub use kiosk::KioskShowControlsPreviewPlan;
 pub use packages::PackageInstallReleasePreviewPlan;
 
@@ -34,6 +36,7 @@ const RESULT_SCHEMA: &str = "rusty.fleet.query_result.v1";
 const MAX_SAVED_VIEWS: usize = 128;
 const MAX_KIOSK_OPERATIONS: usize = 1_000;
 const MAX_PACKAGE_OPERATIONS: usize = 1_000;
+const MAX_AWAKE_OPERATIONS: usize = 1_000;
 
 const fn initial_saved_view_revision() -> u64 {
     1
@@ -168,6 +171,8 @@ pub struct FleetHubSnapshot {
     kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
     #[serde(default)]
     package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
+    #[serde(default)]
+    awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
 }
 
 #[derive(Clone, Debug)]
@@ -181,6 +186,7 @@ pub struct FleetHub {
     saved_views: BTreeMap<String, SavedView>,
     kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
     package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
+    awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
 }
 
 impl FleetHub {
@@ -204,6 +210,7 @@ impl FleetHub {
             saved_views: BTreeMap::new(),
             kiosk_operations: BTreeMap::new(),
             package_operations: BTreeMap::new(),
+            awake_operations: BTreeMap::new(),
         }
     }
 
@@ -240,6 +247,7 @@ impl FleetHub {
             saved_views: self.saved_views.clone(),
             kiosk_operations: self.kiosk_operations.clone(),
             package_operations: self.package_operations.clone(),
+            awake_operations: self.awake_operations.clone(),
         }
     }
 
@@ -373,6 +381,21 @@ impl FleetHub {
                 "Fleet Hub snapshot package operations are invalid or exceed their limit",
             ));
         }
+        if snapshot.awake_operations.len() > MAX_AWAKE_OPERATIONS
+            || snapshot
+                .awake_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                })
+        {
+            return Err(HubError::new(
+                "snapshot_awake_operations_invalid",
+                "Fleet Hub snapshot Quest awake operations are invalid or exceed their limit",
+            ));
+        }
         Ok(Self {
             policy,
             devices: snapshot.devices,
@@ -383,6 +406,7 @@ impl FleetHub {
             saved_views: snapshot.saved_views,
             kiosk_operations: snapshot.kiosk_operations,
             package_operations: snapshot.package_operations,
+            awake_operations: snapshot.awake_operations,
         })
     }
 

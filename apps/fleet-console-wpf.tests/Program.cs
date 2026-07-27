@@ -679,6 +679,217 @@ internal static class Program
                     StringComparison.Ordinal),
                 "damaged package operation evidence did not fail closed");
 
+            operationWorkspace.SelectedQuestAwakeAction =
+                operationWorkspace.QuestAwakeActionOptions.Single(option =>
+                    option.Action == QuestAwakeActions.StartDeviceWatchdog);
+            operationWorkspace.QuestAwakeDurationMinutes = "481";
+            operationWorkspace.PreviewQuestAwakeAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationWorkspace.CurrentQuestAwakeOperation is null &&
+                operationSource.LastQuestAwakePreviewRequest is null &&
+                operationWorkspace.QuestAwakeStatusText.Contains(
+                    "1 through 480 minutes",
+                    StringComparison.Ordinal),
+                "awake-control duration above Meta's eight-hour bound was accepted");
+            operationWorkspace.QuestAwakeDurationMinutes = "480";
+            operationWorkspace.QuestAwakeWatchdogIntervalSeconds = "5";
+            operationWorkspace.PreviewQuestAwakeAsync()
+                .GetAwaiter()
+                .GetResult();
+            var awakePreview = operationWorkspace.CurrentQuestAwakeOperation ??
+                               throw new InvalidOperationException(
+                                   "awake-control preview was not projected");
+            Require(
+                operationSource.LastQuestAwakePreviewRequest is
+                {
+                    Action: QuestAwakeActions.StartDeviceWatchdog,
+                    DurationMs: QuestAwakeActions.MaximumDurationMs,
+                    WatchdogIntervalMs:
+                        QuestAwakeActions.DefaultWatchdogIntervalMs
+                } awakePreviewRequest &&
+                awakePreviewRequest.Targets.Count == 50 &&
+                packageIdentities.All(target =>
+                    awakePreviewRequest.Targets.TryGetValue(
+                        target.Key,
+                        out var identityRevision) &&
+                    identityRevision == target.Value) &&
+                operationWorkspace.IsQuestAwakeInputLocked &&
+                operationWorkspace.CanConfirmQuestAwake &&
+                operationWorkspace.QuestAwakeSummaryText.Contains(
+                    "Quest watchdog (stops on reboot)",
+                    StringComparison.Ordinal),
+                "awake-control preview did not freeze the exact action, policy, and target identities");
+
+            operationWorkspace.ConfirmQuestAwakeAsync()
+                .GetAwaiter()
+                .GetResult();
+            var appliedAwake = operationWorkspace.CurrentQuestAwakeOperation ??
+                               throw new InvalidOperationException(
+                                   "confirmed awake-control operation was not projected");
+            Require(
+                operationSource.LastQuestAwakeExecuteRequest is
+                { } awakeExecuteRequest &&
+                awakeExecuteRequest.OperationId == awakePreview.OperationId &&
+                awakeExecuteRequest.PreviewId ==
+                awakePreview.Preview.PreviewId &&
+                appliedAwake.Targets.All(target =>
+                    target.Lifecycle == "applied" &&
+                    target.Receipt is
+                    {
+                        Effective: true,
+                        DeviceWatchdogEffective: true,
+                        WindowsWatchdogEffective: false
+                    }) &&
+                operationWorkspace.QuestAwakeTargets.All(target =>
+                    target.WatchdogReadback.Contains(
+                        "stops on reboot",
+                        StringComparison.Ordinal) &&
+                    target.AccessibleName.Contains(
+                        "Power",
+                        StringComparison.OrdinalIgnoreCase)) &&
+                !operationWorkspace.CanConfirmQuestAwake &&
+                operationWorkspace.QuestAwakeConfirmationButtonText ==
+                "Confirmed",
+                "awake-control confirmation lost effective independent readbacks or allowed duplicate confirmation");
+
+            var retainedAwakeOperation =
+                operationWorkspace.CurrentQuestAwakeOperation;
+            operationSource.DamageNextQuestAwakeResponse = true;
+            operationWorkspace.RefreshQuestAwakeAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedAwakeOperation,
+                    operationWorkspace.CurrentQuestAwakeOperation) &&
+                operationWorkspace.QuestAwakeStatusText.StartsWith(
+                    "Refresh failed · prior awake-control projection retained",
+                    StringComparison.Ordinal),
+                "damaged awake-control identity evidence did not fail closed");
+            var nonStopOverrideNode = JsonNode.Parse(
+                JsonSerializer.Serialize(
+                    retainedAwakeOperation,
+                    FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "awake-control operation could not be cloned");
+            nonStopOverrideNode["targets"]![0]!["invocation"]![
+                "watchdog_generation"] = "unexpected-device-generation";
+            nonStopOverrideNode["targets"]![0]!["receipt"]![
+                "watchdog_generation"] = "unexpected-device-generation";
+            var nonStopOverride = JsonSerializer.Deserialize<QuestAwakeOperation>(
+                                      nonStopOverrideNode.ToJsonString(),
+                                      FleetJson.Options) ??
+                                  throw new InvalidOperationException(
+                                      "awake-control override damage could not be projected");
+            var nonStopOverrideRejected = false;
+            try
+            {
+                QuestAwakeProjectionValidation.ValidateOperation(
+                    nonStopOverride);
+            }
+            catch (InvalidOperationException)
+            {
+                nonStopOverrideRejected = true;
+            }
+
+            Require(
+                nonStopOverrideRejected,
+                "non-stop awake action accepted a watchdog generation outside the immutable preview");
+            Require(
+                operationWorkspace.QuestAwakeActionOptions.Any(option =>
+                    option.Action == QuestAwakeActions.StopWatchdogs &&
+                    option.Label.Contains(
+                        "settings remain",
+                        StringComparison.Ordinal)) &&
+                operationWorkspace.QuestAwakeActionOptions.Any(option =>
+                    option.Action == QuestAwakeActions.RestoreNormal) &&
+                operationWorkspace.QuestAwakeActionOptions.Any(option =>
+                    option.Action == QuestAwakeActions.StartWindowsWatchdog),
+                "awake-control modes did not keep stop, restore, and Windows watchdog actions separate");
+            var singleAwakeTarget = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal)
+            {
+                [operationFirst.DeviceId] =
+                    operationFirst.Projection.Identity.IdentityRevision
+            };
+            foreach (var action in new[]
+                     {
+                         QuestAwakeActions.StopWatchdogs,
+                         QuestAwakeActions.RestoreNormal
+                     })
+            {
+                var observedGeneration =
+                    action == QuestAwakeActions.StopWatchdogs
+                        ? "observed-device-watchdog-stop-0042"
+                        : "observed-device-watchdog-restore-0084";
+                operationSource.QuestAwakeInvocationGenerationOverride =
+                    observedGeneration;
+                var request = new QuestAwakePreviewRequest
+                {
+                    Action = action,
+                    Targets = singleAwakeTarget
+                };
+                var previewed = operationSource.PreviewQuestAwakeAsync(
+                        request,
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                var verified = operationSource.ExecuteQuestAwakeAsync(
+                        new QuestAwakeExecuteRequest
+                        {
+                            OperationId = previewed.OperationId,
+                            PreviewId = previewed.Preview.PreviewId
+                        },
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                QuestAwakeProjectionValidation.ValidateOperation(verified);
+                var verifiedTarget = verified.Targets.Single();
+                var awakeReceipt = verifiedTarget.Receipt ??
+                                   throw new InvalidOperationException(
+                                       "awake-control stop/restore receipt was absent");
+                Require(
+                    verified.Preview.WatchdogGeneration != observedGeneration &&
+                    verifiedTarget.Invocation?.WatchdogGeneration ==
+                    observedGeneration &&
+                    awakeReceipt.WatchdogGeneration == observedGeneration &&
+                    (action == QuestAwakeActions.StopWatchdogs
+                        ? awakeReceipt.SettingsLeftUnchanged &&
+                          !awakeReceipt.SettingsRestored &&
+                          !awakeReceipt.WindowsWatchdogEffective &&
+                          !awakeReceipt.DeviceWatchdogEffective
+                        : awakeReceipt.SettingsRestored &&
+                          !awakeReceipt.SettingsLeftUnchanged &&
+                          !awakeReceipt.WindowsWatchdogEffective &&
+                          !awakeReceipt.DeviceWatchdogEffective),
+                    "stop/restore did not bind the target-specific observed watchdog generation and separate receipt semantics");
+                if (action == QuestAwakeActions.RestoreNormal)
+                {
+                    operationSource.DamageNextQuestAwakeReceiptGeneration = true;
+                    var mismatched = operationSource.QuestAwakeAsync(
+                            verified.OperationId,
+                            CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    var mismatchRejected = false;
+                    try
+                    {
+                        QuestAwakeProjectionValidation.ValidateOperation(
+                            mismatched);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        mismatchRejected = true;
+                    }
+
+                    Require(
+                        mismatchRejected,
+                        "awake-control receipt generation was not bound to its exact invocation generation");
+                }
+            }
+
             var operationWindow = new MainWindow(operationWorkspace)
             {
                 ShowActivated = false,
@@ -748,6 +959,59 @@ internal static class Program
                 "Preparation accepted" &&
                 !operationWindow.ConfirmPackageInstallReleaseControl.IsEnabled,
                 "package operation controls were not visibly and accessibly bounded");
+            Require(
+                AutomationProperties.GetName(
+                    operationWindow.QuestAwakeOperationRegion) ==
+                "Headset awake controls" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestAwakeOperationRegion).Contains(
+                    "stops on reboot",
+                    StringComparison.Ordinal) &&
+                operationWindow.QuestAwakeActionControl.Items.Count == 6 &&
+                AutomationProperties.GetName(
+                    operationWindow.QuestAwakeDurationControl) ==
+                "Keep-awake duration in minutes" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestAwakeDurationControl).Contains(
+                    "480",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewQuestAwakeControl).Contains(
+                    "exact selected devices",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.ConfirmQuestAwakeControl).Contains(
+                    "immutable",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.RefreshQuestAwakeControl) ==
+                "Refresh headset awake-control results" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.DismissQuestAwakeControl).Contains(
+                    "does not stop a watchdog",
+                    StringComparison.Ordinal) &&
+                operationWindow.QuestAwakeDurationControl.IsReadOnly &&
+                operationWindow.QuestAwakeIntervalControl.IsReadOnly &&
+                !operationWindow.QuestAwakeActionControl.IsEnabled &&
+                !operationWindow.ConfirmQuestAwakeControl.IsEnabled,
+                "headset awake controls did not expose immutable-preview and safety boundaries");
+            var awakeGrid = operationWindow.QuestAwakeTargetsControl;
+            awakeGrid.BringIntoView();
+            operationRoot.UpdateLayout();
+            Require(
+                awakeGrid.Columns.Count == 5 &&
+                awakeGrid.IsReadOnly &&
+                awakeGrid.EnableRowVirtualization &&
+                awakeGrid.EnableColumnVirtualization &&
+                VirtualizingPanel.GetIsVirtualizing(awakeGrid) &&
+                VirtualizingPanel.GetVirtualizationMode(awakeGrid) ==
+                VirtualizationMode.Recycling &&
+                AutomationProperties.GetName(awakeGrid) ==
+                "Headset awake-control target results" &&
+                AutomationProperties.GetHelpText(awakeGrid).Contains(
+                    "No headset serials or private paths",
+                    StringComparison.Ordinal),
+                "awake-control target ledger lost bounded native DataGrid or privacy semantics");
             var packageGrid = operationWindow.PackageOperationTargetsControl;
             packageGrid.BringIntoView();
             operationRoot.UpdateLayout();
@@ -1404,6 +1668,19 @@ internal static class Program
                 package_target_rows_focusable = true,
                 package_install_release_fail_closed = true,
                 package_install_release_rust_fixture_aligned = true,
+                quest_awake_preview = true,
+                quest_awake_exact_action_policy_and_targets = true,
+                quest_awake_eight_hour_bound = true,
+                quest_awake_explicit_confirmation = true,
+                quest_awake_independent_readbacks = true,
+                quest_awake_watchdog_modes_separate = true,
+                quest_awake_stop_and_restore_separate = true,
+                quest_awake_stop_restore_observed_generation = true,
+                quest_awake_non_stop_preview_generation_bound = true,
+                quest_awake_receipt_invocation_generation_bound = true,
+                quest_awake_accessible = true,
+                quest_awake_private_bindings_hidden = true,
+                quest_awake_fail_closed = true,
                 batch_operations_collapsed_by_default = true,
                 minimum_window_layout = true,
                 expanded_minimum_window_layout = true,
@@ -1929,6 +2206,18 @@ internal static class Program
 
         public bool DamageNextPackageOperationResponse { get; set; }
 
+        public QuestAwakePreviewRequest? LastQuestAwakePreviewRequest { get; private set; }
+
+        public QuestAwakeExecuteRequest? LastQuestAwakeExecuteRequest { get; private set; }
+
+        public QuestAwakeOperation? LastQuestAwakeOperation { get; private set; }
+
+        public bool DamageNextQuestAwakeResponse { get; set; }
+
+        public bool DamageNextQuestAwakeReceiptGeneration { get; set; }
+
+        public string? QuestAwakeInvocationGenerationOverride { get; set; }
+
         public Task<FleetQueryResult> QueryAsync(
             FleetQuery query,
             CancellationToken cancellationToken)
@@ -2274,6 +2563,54 @@ internal static class Program
             return Task.FromResult(ReturnPackageOperation());
         }
 
+        public Task<QuestAwakeOperation> PreviewQuestAwakeAsync(
+            QuestAwakePreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastQuestAwakePreviewRequest = request;
+            LastQuestAwakeOperation = CreateQuestAwakeOperation(
+                request,
+                executed: false);
+            return Task.FromResult(ReturnQuestAwakeOperation());
+        }
+
+        public Task<QuestAwakeOperation> ExecuteQuestAwakeAsync(
+            QuestAwakeExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastQuestAwakeExecuteRequest = request;
+            if (LastQuestAwakeOperation is null ||
+                LastQuestAwakePreviewRequest is null ||
+                LastQuestAwakeOperation.OperationId != request.OperationId ||
+                LastQuestAwakeOperation.Preview.PreviewId != request.PreviewId)
+            {
+                throw new InvalidOperationException(
+                    "awake-control execute request did not match the synthetic preview");
+            }
+
+            LastQuestAwakeOperation = CreateQuestAwakeOperation(
+                LastQuestAwakePreviewRequest,
+                executed: true);
+            return Task.FromResult(ReturnQuestAwakeOperation());
+        }
+
+        public Task<QuestAwakeOperation> QuestAwakeAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastQuestAwakeOperation is null ||
+                LastQuestAwakeOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic awake-control operation not found");
+            }
+
+            return Task.FromResult(ReturnQuestAwakeOperation());
+        }
+
         private OperationLedger ReturnOperation()
         {
             var operation = LastOperation ??
@@ -2566,6 +2903,215 @@ internal static class Program
             };
         }
 
+        private QuestAwakeOperation CreateQuestAwakeOperation(
+            QuestAwakePreviewRequest request,
+            bool executed)
+        {
+            var identities = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal);
+            foreach (var target in request.Targets)
+            {
+                identities.Add(target.Key, target.Value);
+            }
+            var createdAt = Projection.AsOfMs;
+            var operationId = "awake-operation-0001";
+            var previewId = "awake-preview-0001";
+            var generation = "awake-generation-0001";
+            var invocationGeneration =
+                executed &&
+                (request.Action is
+                    QuestAwakeActions.StopWatchdogs or
+                    QuestAwakeActions.RestoreNormal) &&
+                QuestAwakeInvocationGenerationOverride is not null
+                    ? QuestAwakeInvocationGenerationOverride
+                    : generation;
+            var preflights = identities
+                .Select((identity, index) =>
+                    new QuestAwakeTargetPreflight
+                    {
+                        DeviceId = identity.Key,
+                        IdentityRevision = identity.Value,
+                        CapabilityId =
+                            "questionable-file-manager.quest-awake-provider",
+                        CapabilityEvidenceRevision = (ulong)(91 + index),
+                        CapabilityOwner = "questionable-file-manager",
+                        Support = "supported",
+                        Enablement = "enabled",
+                        Authorization = "authorized",
+                        Reachability = "reachable",
+                        Freshness = "current",
+                        ObservedAtMs = createdAt - 100,
+                        FreshUntilMs = createdAt + 30_000,
+                        EvaluatedAtMs = createdAt,
+                        Eligible = true,
+                        ReasonCode = "ready",
+                        Message = "Pinned headset awake provider is current and ready."
+                    })
+                .ToArray();
+            var targets = preflights
+                .Select((preflight, index) =>
+                {
+                    var requestId = $"fleetawake-{index + 1:D4}";
+                    var invocation = executed
+                        ? new QuestAwakeOwnerInvocation
+                        {
+                            Schema =
+                                "rusty.fleet.quest_awake_owner_invocation.v1",
+                            RequestId = requestId,
+                            OperationId = operationId,
+                            PreviewId = previewId,
+                            DeviceId = preflight.DeviceId,
+                            IdentityRevision = preflight.IdentityRevision,
+                            Action = request.Action,
+                            DurationMs = request.DurationMs,
+                            WatchdogIntervalMs = request.WatchdogIntervalMs,
+                            WatchdogGeneration = invocationGeneration,
+                            IssuedAtMs = createdAt + 100,
+                            ExpiresAtMs = createdAt + 60_000
+                        }
+                        : null;
+                    var receipt = executed
+                        ? CreateQuestAwakeReceipt(
+                            request,
+                            preflight,
+                            operationId,
+                            previewId,
+                            invocationGeneration,
+                            requestId,
+                            createdAt)
+                        : null;
+                    return new QuestAwakeTargetLedger
+                    {
+                        DeviceId = preflight.DeviceId,
+                        IdentityRevision = preflight.IdentityRevision,
+                        Preflight = preflight,
+                        Lifecycle = executed ? "applied" : "proposed",
+                        Invocation = invocation,
+                        Receipt = receipt,
+                        FailureCode = null,
+                        UpdatedAtMs = createdAt + (executed ? 300 : 10)
+                    };
+                })
+                .ToArray();
+            return new QuestAwakeOperation
+            {
+                Schema = "rusty.fleet.quest_awake_operation.v1",
+                OperationId = operationId,
+                ActionId = QuestAwakeActions.ActionId,
+                Lifecycle = executed ? "applied" : "proposed",
+                Preview = new QuestAwakePreview
+                {
+                    Schema = "rusty.fleet.quest_awake_preview.v1",
+                    PreviewId = previewId,
+                    OperationId = operationId,
+                    ActionId = QuestAwakeActions.ActionId,
+                    Action = request.Action,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    DurationMs = request.DurationMs,
+                    WatchdogIntervalMs = request.WatchdogIntervalMs,
+                    WatchdogGeneration = generation,
+                    Owner = new QuestAwakeOwnerBinding
+                    {
+                        OwnerRepoId = "questionable-file-manager",
+                        CapabilityId =
+                            "questionable-file-manager.quest-awake-provider",
+                        ProviderContract =
+                            "questionable.file_manager.fleet_awake_provider.v1",
+                        ReceiptSchema =
+                            "questionable.file_manager.quest_awake_receipt.v1",
+                        Transport = "pinned_local_subprocess",
+                        ApplicationProof =
+                            "fresh_effective_power_and_watchdog_readback"
+                    },
+                    Targets = preflights
+                },
+                ConfirmedAtMs = executed ? createdAt + 50 : null,
+                Targets = targets,
+                UpdatedAtMs = createdAt + (executed ? 300 : 10)
+            };
+        }
+
+        private static QuestAwakeOwnerReceipt CreateQuestAwakeReceipt(
+            QuestAwakePreviewRequest request,
+            QuestAwakeTargetPreflight preflight,
+            string operationId,
+            string previewId,
+            string generation,
+            string requestId,
+            long createdAt)
+        {
+            var keepAwake = request.Action is
+                QuestAwakeActions.ApplyBounded or
+                QuestAwakeActions.StartWindowsWatchdog or
+                QuestAwakeActions.StartDeviceWatchdog;
+            var windows =
+                request.Action == QuestAwakeActions.StartWindowsWatchdog;
+            var device =
+                request.Action == QuestAwakeActions.StartDeviceWatchdog;
+            var settingsLeft =
+                request.Action == QuestAwakeActions.StopWatchdogs;
+            var restored =
+                request.Action == QuestAwakeActions.RestoreNormal;
+            return new QuestAwakeOwnerReceipt
+            {
+                Schema = "questionable.file_manager.quest_awake_receipt.v1",
+                RequestId = requestId,
+                OperationId = operationId,
+                PreviewId = previewId,
+                DeviceId = preflight.DeviceId,
+                IdentityRevision = preflight.IdentityRevision,
+                Action = request.Action,
+                WatchdogGeneration = generation,
+                RequestedDurationMs = request.DurationMs,
+                RequestedWatchdogIntervalMs = request.WatchdogIntervalMs,
+                StayOnEffective = keepAwake,
+                ProximityHoldEffective = keepAwake,
+                WakeEffective = keepAwake,
+                WindowsWatchdogEffective = windows,
+                DeviceWatchdogEffective = device,
+                SettingsRestored = restored,
+                Effective = true,
+                SettingsLeftUnchanged = settingsLeft,
+                Outcome = request.Action == QuestAwakeActions.Status
+                    ? "Current awake state read"
+                    : "Requested awake state verified",
+                RepairCount = keepAwake ? 1u : 0u,
+                Power = new QuestAwakePowerReadback
+                {
+                    Wakefulness = keepAwake ? "awake" : "asleep",
+                    DisplayState = keepAwake ? "on" : "off",
+                    StayOn = keepAwake,
+                    AutoSleepDisabled = keepAwake,
+                    ProximityState = keepAwake ? "close" : "open",
+                    ProximityHoldDurationMs = keepAwake
+                        ? request.DurationMs
+                        : null,
+                    ProximityHoldRemainingMs = keepAwake
+                        ? request.DurationMs - 1_000
+                        : null,
+                    CapturedAtMs = createdAt + 300
+                },
+                DeviceWatchdog = new QuestAwakeWatchdogReadback
+                {
+                    ReportedActive = device,
+                    Fresh = device,
+                    Generation = device ? generation : string.Empty,
+                    BootIdSha256 = new string('b', 64),
+                    IntervalMs = device ? request.WatchdogIntervalMs : 0,
+                    LastPollMs = device ? createdAt + 250 : 0,
+                    ProximityRepairCount = device ? 1u : 0u,
+                    StayOnRepairCount = 0,
+                    WakeRepairCount = 0,
+                    LastAction = device ? "proximity repaired" : "inactive",
+                    LastError = string.Empty
+                },
+                EvidenceSha256 = new string('a', 64),
+                ObservedAtMs = createdAt + 300
+            };
+        }
+
         private PackageInstallReleaseOperation ReturnPackageOperation()
         {
             var operation = LastPackageOperation ??
@@ -2604,6 +3150,58 @@ internal static class Program
                 MaxParallelism = operation.MaxParallelism,
                 CleanupRequired = operation.CleanupRequired,
                 Targets = targets
+            };
+        }
+
+        private QuestAwakeOperation ReturnQuestAwakeOperation()
+        {
+            var operation = LastQuestAwakeOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic awake-control operation was not created");
+            if (DamageNextQuestAwakeReceiptGeneration)
+            {
+                DamageNextQuestAwakeReceiptGeneration = false;
+                var damaged = JsonNode.Parse(
+                    JsonSerializer.Serialize(operation, FleetJson.Options)) ??
+                    throw new InvalidOperationException(
+                        "synthetic awake-control operation could not be cloned");
+                damaged["targets"]![0]!["receipt"]!["watchdog_generation"] =
+                    "mismatched-observed-generation";
+                return JsonSerializer.Deserialize<QuestAwakeOperation>(
+                           damaged.ToJsonString(),
+                           FleetJson.Options) ??
+                       throw new InvalidOperationException(
+                           "damaged awake-control operation could not be projected");
+            }
+            if (!DamageNextQuestAwakeResponse)
+            {
+                return operation;
+            }
+
+            DamageNextQuestAwakeResponse = false;
+            var targets = operation.Targets.ToArray();
+            var first = targets[0];
+            targets[0] = new QuestAwakeTargetLedger
+            {
+                DeviceId = first.DeviceId,
+                IdentityRevision = first.IdentityRevision + 1,
+                Preflight = first.Preflight,
+                Lifecycle = first.Lifecycle,
+                Invocation = first.Invocation,
+                Receipt = first.Receipt,
+                FailureCode = first.FailureCode,
+                UpdatedAtMs = first.UpdatedAtMs
+            };
+            return new QuestAwakeOperation
+            {
+                Schema = operation.Schema,
+                OperationId = operation.OperationId,
+                ActionId = operation.ActionId,
+                Lifecycle = operation.Lifecycle,
+                Preview = operation.Preview,
+                ConfirmedAtMs = operation.ConfirmedAtMs,
+                Targets = targets,
+                UpdatedAtMs = operation.UpdatedAtMs
             };
         }
 

@@ -294,6 +294,23 @@ after a neutral contract and second-consumer/conformance gate.
 Fleet Hub owns selection, fan-out, scheduling, and aggregation. File Manager
 owns individual file-operation semantics and device evidence.
 
+### Quest awake-control adapter
+
+The first shared ADB-backed utility is `quest.awake-control`. Fleet freezes the
+exact device identity, action, bounded duration, watchdog interval, and
+generation; Manifold authorizes that typed command; and a pinned
+QuestIonAble File Manager provider owns exact-serial ADB effects and readback.
+Private configuration is the only device-ID-to-serial authority. Without it,
+the capability is absent and inert while normal fleet monitoring continues.
+
+The bounded Meta proximity hold is capped at eight hours. Windows and on-device
+watchdogs are explicit modes, and the latter truthfully ends on reboot.
+Stopping watchdogs deliberately leaves settings unchanged; restoring normal
+power behavior is a separate action. Fleet admits Applied only from exact,
+fresh, action-specific readbacks and publishes neither serials, paths, raw
+commands, nor raw boot IDs. See
+[Quest Awake Control](QUEST_AWAKE_CONTROL.md).
+
 ## Identity and security
 
 - Enrollment produces a stable device identity and revocable operator grant.

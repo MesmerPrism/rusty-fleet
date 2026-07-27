@@ -4,6 +4,7 @@
 //! Versioned source-only contracts shared by the Hub, simulator, CLI, and
 //! future operator projections.
 
+mod awake;
 mod capability;
 mod checkin;
 mod command;
@@ -15,6 +16,17 @@ mod projection;
 mod query;
 mod stream;
 
+pub use awake::{
+    QUEST_AWAKE_ACTION_ID, QUEST_AWAKE_CAPABILITY_ID, QUEST_AWAKE_DEFAULT_WATCHDOG_INTERVAL_MS,
+    QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA, QUEST_AWAKE_MAX_DURATION_MS,
+    QUEST_AWAKE_MAX_WATCHDOG_INTERVAL_MS, QUEST_AWAKE_MIN_DURATION_MS,
+    QUEST_AWAKE_MIN_WATCHDOG_INTERVAL_MS, QUEST_AWAKE_OPERATION_SCHEMA, QUEST_AWAKE_OWNER,
+    QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA, QUEST_AWAKE_PROVIDER_CONTRACT, QUEST_AWAKE_RECEIPT_SCHEMA,
+    QuestAwakeAction, QuestAwakeExecuteRequest, QuestAwakeOperation, QuestAwakeOwnerBinding,
+    QuestAwakeOwnerInvocation, QuestAwakeOwnerReceipt, QuestAwakePowerReadback, QuestAwakePreview,
+    QuestAwakePreviewRequest, QuestAwakeTargetLedger, QuestAwakeTargetPreflight,
+    QuestAwakeWatchdogReadback,
+};
 pub use capability::{
     AuthorizationState, CapabilitySnapshot, CapabilityState, EnablementState, FreshnessState,
     ReachabilityState, SupportState,

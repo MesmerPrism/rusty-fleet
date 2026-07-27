@@ -79,6 +79,24 @@ public partial class MainWindow : Window
 
     public DataGrid PackageOperationTargetsControl => PackageOperationTargetsGrid;
 
+    public FrameworkElement QuestAwakeOperationRegion => QuestAwakeOperationPane;
+
+    public ComboBox QuestAwakeActionControl => QuestAwakeActionBox;
+
+    public TextBox QuestAwakeDurationControl => QuestAwakeDurationBox;
+
+    public TextBox QuestAwakeIntervalControl => QuestAwakeIntervalBox;
+
+    public Button PreviewQuestAwakeControl => PreviewQuestAwakeButton;
+
+    public Button ConfirmQuestAwakeControl => ConfirmQuestAwakeButton;
+
+    public Button RefreshQuestAwakeControl => RefreshQuestAwakeButton;
+
+    public Button DismissQuestAwakeControl => DismissQuestAwakeButton;
+
+    public DataGrid QuestAwakeTargetsControl => QuestAwakeTargetsGrid;
+
     public FrameworkElement InspectorRegion => InspectorPane;
 
     public FrameworkElement FullDeviceDetailRegion => FullDetailRegion;

@@ -61,6 +61,18 @@ public interface IFleetDataSource
     Task<PackageInstallReleaseOperation> PackageInstallReleaseAsync(
         string operationId,
         CancellationToken cancellationToken);
+
+    Task<QuestAwakeOperation> PreviewQuestAwakeAsync(
+        QuestAwakePreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<QuestAwakeOperation> ExecuteQuestAwakeAsync(
+        QuestAwakeExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<QuestAwakeOperation> QuestAwakeAsync(
+        string operationId,
+        CancellationToken cancellationToken);
 }
 
 public sealed class FleetApiClient : IFleetDataSource, IDisposable
@@ -258,6 +270,42 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
         return await ReadAsync<PackageInstallReleaseOperation>(
             response,
             cancellationToken);
+    }
+
+    public async Task<QuestAwakeOperation> PreviewQuestAwakeAsync(
+        QuestAwakePreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/quest-awake/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<QuestAwakeOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestAwakeOperation> ExecuteQuestAwakeAsync(
+        QuestAwakeExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _http.PostAsJsonAsync(
+            $"/fleet/v1/quest-awake/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<QuestAwakeOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestAwakeOperation> QuestAwakeAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/quest-awake/{encoded}",
+            cancellationToken);
+        return await ReadAsync<QuestAwakeOperation>(response, cancellationToken);
     }
 
     public void Dispose() => _http.Dispose();

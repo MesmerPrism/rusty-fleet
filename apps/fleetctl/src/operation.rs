@@ -58,6 +58,33 @@ pub trait FleetOperationClient {
         ))
     }
 
+    fn preview_quest_awake(
+        &mut self,
+        _request: &fleet_contracts::QuestAwakePreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_awake_client_required",
+            "the injected Fleet client does not support Quest awake operations",
+        ))
+    }
+
+    fn execute_quest_awake(
+        &mut self,
+        _request: &fleet_contracts::QuestAwakeExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_awake_client_required",
+            "the injected Fleet client does not support Quest awake operations",
+        ))
+    }
+
+    fn get_quest_awake(&mut self, _operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_awake_client_required",
+            "the injected Fleet client does not support Quest awake operations",
+        ))
+    }
+
     fn claim_package_updater(
         &mut self,
         _request: &fleet_contracts::PackageUpdaterClaimRequest,
@@ -111,6 +138,9 @@ pub fn is_operation_command(command: &str) -> bool {
             | "package-owner-offer"
             | "package-owner-ack"
             | "package-owner-receipt"
+            | "awake-preview"
+            | "awake-execute"
+            | "awake-get"
     )
 }
 

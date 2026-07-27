@@ -44,6 +44,11 @@ Quick is safe during normal editing and checks:
   offer selection, exact active/acknowledged capacity, stale-offer no-mutation,
   bounded claim scheduling, exact claim/invocation digests, strict
   acknowledgement/effective-receipt admission, and CLI/API projection parity;
+- Quest awake valid/damaged contracts, exact action/duration/interval/
+  generation bindings, eight-hour cap, distinct stop-versus-restore effects,
+  receipt-gated power/watchdog readbacks, pinned-provider response binding,
+  serial/boot-ID redaction, inert absent-provider behavior, and CLI/API
+  projection parity;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
   across off-screen 10/50/100-row layout windows cut from deterministic
   50/250-device Rust projections, with the 50-device source projection as the
@@ -165,6 +170,12 @@ tiers exercise preview, confirmation, status, restart, disabled ingress,
 synthetic authenticated claims, replay/saturation, and synthetic owner evidence
 only. They do not contact the updater or a headset; neither `dispatch_ready`
 nor an owner claim is device evidence.
+
+Quest awake commands use the same explicit loopback Hub and are documented in
+[Quest Awake Control](QUEST_AWAKE_CONTROL.md). Repository tiers use a fake
+provider transport and synthetic readbacks only. They do not contact ADB,
+Meta tooling, or a headset, and they do not prove live watchdog persistence or
+restoration.
 
 For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
 surface separately:

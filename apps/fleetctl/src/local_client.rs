@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use fleet_contracts::{
     AuthenticatedPackageUpdaterAcknowledgement, AuthenticatedPackageUpdaterReceipt,
     OperationExecuteRequest, OperationPreviewRequest, PackageInstallReleaseExecuteRequest,
-    PackageInstallReleasePreviewRequest, PackageUpdaterClaimRequest,
+    PackageInstallReleasePreviewRequest, PackageUpdaterClaimRequest, QuestAwakeExecuteRequest,
+    QuestAwakePreviewRequest,
 };
 
 use crate::{CliFailure, FleetOperationClient};
@@ -194,6 +195,46 @@ impl FleetOperationClient for LocalFleetOperationClient {
             "GET",
             &format!(
                 "/fleet/v1/package-install-releases/{}",
+                encode_path_segment(operation_id)
+            ),
+            None,
+        )
+    }
+
+    fn preview_quest_awake(
+        &mut self,
+        request: &QuestAwakePreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            "/fleet/v1/quest-awake/preview",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn execute_quest_awake(
+        &mut self,
+        request: &QuestAwakeExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            &format!(
+                "/fleet/v1/quest-awake/{}/execute",
+                encode_path_segment(&request.operation_id)
+            ),
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn get_quest_awake(&mut self, operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/quest-awake/{}",
                 encode_path_segment(operation_id)
             ),
             None,

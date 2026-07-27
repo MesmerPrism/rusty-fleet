@@ -289,7 +289,7 @@
                       MaxHeight="180"
                       Margin="0,0,0,8"
                       AutomationProperties.Name="Batch operations"
-                      AutomationProperties.HelpText="Expands the bounded Kiosk controls and package preparation workflows.">
+                      AutomationProperties.HelpText="Expands Kiosk controls, headset awake controls, and package preparation workflows.">
                 <ScrollViewer x:Name="BatchOperationsScrollViewer"
                               MaxHeight="140"
                               VerticalScrollBarVisibility="Auto"
@@ -391,6 +391,201 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="QuestAwakeOperationPane"
+                            Margin="0,8,0,0"
+                            Padding="6"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Headset awake controls"
+                            AutomationProperties.HelpText="Preview exact selected identities, review per-device eligibility, then explicitly confirm. Meta keep-awake is bounded to eight hours. The Quest watchdog stops on reboot. Stopping watchdogs leaves awake settings unchanged; Restore normal is a separate action.">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding QuestAwakeInputLockText}"
+                                           FontStyle="Italic"
+                                           Opacity="0.75"
+                                           AutomationProperties.Name="{Binding QuestAwakeInputLockText}" />
+                                <TextBlock Text="Headset awake controls"
+                                           FontWeight="SemiBold" />
+                            </DockPanel>
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="The Meta option lasts up to 8 hours. The Quest watchdog stops when the headset reboots. Stop watchdogs leaves current awake settings in place; Restore normal changes them back."
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Awake control behavior: Meta keep-awake lasts up to eight hours. Quest watchdog stops on reboot. Stop watchdogs leaves settings in place. Restore normal changes them back." />
+                            <Grid Margin="0,6,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="80" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="70" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Action"
+                                           Margin="0,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <ComboBox x:Name="QuestAwakeActionBox"
+                                          Grid.Column="1"
+                                          ItemsSource="{Binding QuestAwakeActionOptions}"
+                                          SelectedItem="{Binding SelectedQuestAwakeAction}"
+                                          DisplayMemberPath="Label"
+                                          IsEnabled="{Binding IsQuestAwakeInputUnlocked}"
+                                          AutomationProperties.Name="Headset awake-control action"
+                                          AutomationProperties.HelpText="{Binding QuestAwakeActionHelpText}" />
+                                <TextBlock Grid.Column="2"
+                                           Text="Duration (min)"
+                                           Margin="12,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <TextBox x:Name="QuestAwakeDurationBox"
+                                         Grid.Column="3"
+                                         Text="{Binding QuestAwakeDurationMinutes, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsQuestAwakeInputLocked}"
+                                         AutomationProperties.Name="Keep-awake duration in minutes"
+                                         AutomationProperties.HelpText="Enter a whole number from 1 through 480 minutes. Eight hours is the maximum." />
+                                <TextBlock Grid.Column="4"
+                                           Text="Check every (sec)"
+                                           Margin="12,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <TextBox x:Name="QuestAwakeIntervalBox"
+                                         Grid.Column="5"
+                                         Text="{Binding QuestAwakeWatchdogIntervalSeconds, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsQuestAwakeInputLocked}"
+                                         AutomationProperties.Name="Watchdog check interval in seconds"
+                                         AutomationProperties.HelpText="Enter a whole number from 1 through 60 seconds." />
+                                <TextBlock Grid.Row="1"
+                                           Grid.Column="1"
+                                           Grid.ColumnSpan="5"
+                                           Margin="0,4,0,0"
+                                           Text="{Binding QuestAwakeActionHelpText}"
+                                           TextWrapping="Wrap"
+                                           Opacity="0.8"
+                                           AutomationProperties.Name="{Binding QuestAwakeActionHelpText}" />
+                            </Grid>
+                            <Grid Margin="0,6,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="{Binding QuestAwakeSummaryText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="{Binding QuestAwakeSummaryText}" />
+                                <WrapPanel Grid.Row="1"
+                                           Margin="0,4,0,0"
+                                           HorizontalAlignment="Right">
+                                    <Button x:Name="PreviewQuestAwakeButton"
+                                            Content="Preview awake controls"
+                                            Command="{Binding PreviewQuestAwakeCommand}"
+                                            AutomationProperties.Name="Preview awake controls for exact selected devices" />
+                                    <Button x:Name="ConfirmQuestAwakeButton"
+                                            Content="{Binding QuestAwakeConfirmationButtonText}"
+                                            Command="{Binding ConfirmQuestAwakeCommand}"
+                                            AutomationProperties.Name="Confirm the exact immutable headset awake-control preview"
+                                            AutomationProperties.HelpText="Runs only the displayed action for the exact eligible device identities in the immutable preview." />
+                                    <Button x:Name="RefreshQuestAwakeButton"
+                                            Content="Refresh results"
+                                            Command="{Binding RefreshQuestAwakeCommand}"
+                                            AutomationProperties.Name="Refresh headset awake-control results" />
+                                    <Button x:Name="DismissQuestAwakeButton"
+                                            Content="Close view"
+                                            Command="{Binding DismissQuestAwakeCommand}"
+                                            AutomationProperties.Name="Close headset awake-control view"
+                                            AutomationProperties.HelpText="Clears only this Console view. It does not stop a watchdog or restore settings." />
+                                </WrapPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding QuestAwakeStatusText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding QuestAwakeStatusText}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <DataGrid x:Name="QuestAwakeTargetsGrid"
+                                      ItemsSource="{Binding QuestAwakeTargets}"
+                                      Margin="0,6,0,0"
+                                      MaxHeight="180"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      CanUserReorderColumns="False"
+                                      CanUserResizeColumns="True"
+                                      CanUserSortColumns="False"
+                                      HeadersVisibility="Column"
+                                      GridLinesVisibility="Horizontal"
+                                      SelectionMode="Single"
+                                      SelectionUnit="FullRow"
+                                      IsReadOnly="True"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      ScrollViewer.CanContentScroll="True"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                      AutomationProperties.Name="Headset awake-control target results"
+                                      AutomationProperties.HelpText="Read-only per-target power, watchdog, and effective-result readbacks. No headset serials or private paths are shown.">
+                                <DataGrid.Style>
+                                    <Style TargetType="{x:Type DataGrid}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentQuestAwakeOperation}"
+                                                         Value="{x:Null}">
+                                                <Setter Property="Visibility"
+                                                        Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.Style>
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="{x:Type DataGridRow}">
+                                        <Setter Property="AutomationProperties.Name"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="AutomationProperties.HelpText"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="Focusable"
+                                                Value="True" />
+                                        <Setter Property="MinHeight"
+                                                Value="44" />
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="Device"
+                                                            Width="180">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding DeviceId}"
+                                                               FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding IdentityRevision, StringFormat={}Identity revision {0}}"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Eligibility / lifecycle"
+                                                            Width="145">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding Eligibility}" />
+                                                    <TextBlock Text="{Binding Lifecycle}"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Power readback"
+                                                        Binding="{Binding PowerReadback}"
+                                                        Width="2*" />
+                                    <DataGridTextColumn Header="Watchdog readback"
+                                                        Binding="{Binding WatchdogReadback}"
+                                                        Width="2*" />
+                                    <DataGridTextColumn Header="Result"
+                                                        Binding="{Binding Result}"
+                                                        Width="2*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
                         </StackPanel>
                     </Border>
                     <Border x:Name="PackageOperationPane"

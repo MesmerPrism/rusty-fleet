@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path as FilePath, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -27,23 +27,29 @@ use fleet_contracts::{
     PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_UPDATER_CLAIM_SCHEMA,
     PackageInstallReleaseExecuteRequest, PackageInstallReleasePreviewRequest,
     PackageReleaseReference, PackageUpdaterClaim, PackageUpdaterClaimRequest, PackageUpdaterOffer,
+    QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA, QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA, QuestAwakeAction,
+    QuestAwakeExecuteRequest, QuestAwakeOwnerInvocation, QuestAwakePreviewRequest,
     SavedViewMutationRequest, SignedFleetCheckIn, ValidateContract,
 };
 use fleet_hub::{
     FleetApi, FleetHub, FleetHubSnapshot, HubPolicy, KioskShowControlsPreviewPlan,
-    PackageInstallReleasePreviewPlan,
+    PackageInstallReleasePreviewPlan, QuestAwakePreviewPlan,
 };
 use fleet_kiosk_adapter::{
     AdapterError, FleetKioskAdapter, HttpMethod, KioskAdapterLimits, KioskHttpRequest,
     KioskHttpResponse, KioskShowControlsRequest, KioskTransport, RawOwnerReceiptEvidence,
     TransportRequestIdSource, sha256_hex, validate_kiosk_endpoint,
 };
+use fleet_manifold_adapter::QuestAwakeCommandAuthorization;
 use fleet_manifold_adapter::{
     FleetManifoldAdapter, FleetManifoldAdapterSnapshot, KioskShowControlsCommandAuthorization,
     PackageInstallReleaseCommandAuthorization, kiosk_manifold_request_id,
-    package_manifold_request_id,
+    package_manifold_request_id, quest_awake_manifold_request_id,
 };
 use fleet_package_updater_adapter::{PackageUpdaterAdapterLimits, PackageUpdaterOwnerAdapter};
+use fleet_quest_awake_adapter::{
+    QuestAwakeOwnerAdapter, QuestAwakePinnedArtifact, QuestAwakeProviderConfig,
+};
 use rusty_manifold_model::{DottedId, SchemaId};
 use rusty_manifold_peer::{
     ManifoldPeerCredentialRecord, ManifoldPeerCredentialStatus, ManifoldPeerEnrollmentAction,
@@ -51,7 +57,7 @@ use rusty_manifold_peer::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tower::limit::GlobalConcurrencyLimitLayer;
 
@@ -60,6 +66,7 @@ const HEALTH_SCHEMA: &str = "rusty.fleet.local_hub_health.v1";
 const ERROR_SCHEMA: &str = "rusty.fleet.local_api_error.v1";
 const STATE_SCHEMA: &str = "rusty.fleet.local_hub_durable_state.v1";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CONCURRENT_AWAKE_PROVIDER_CALLS: usize = 8;
 const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHECKIN_BYTES: usize = 256 * 1024;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
@@ -76,9 +83,13 @@ const DEFAULT_OPERATION_ATTEMPTS: u8 = 3;
 const PACKAGE_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
 const DEFAULT_PACKAGE_OPERATION_PARALLELISM: u16 = 8;
 const PACKAGE_OWNER_CLAIM_LIFETIME_MS: i64 = 60_000;
+const AWAKE_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
+const AWAKE_WATCHDOG_AUTHORIZATION_LIFETIME_MS: u64 = 15 * 60_000;
+const AWAKE_WATCHDOG_AUTHORIZATION_RENEWAL_MARGIN_MS: u64 = 30_000;
 
 static OPERATION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TRANSPORT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static AWAKE_AUTHORIZATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TRANSPORT_BOOT_NAMESPACE: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +146,64 @@ pub struct ConfiguredPackageUpdaterOwner {
     pub bearer_token: String,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredQuestAwakeTarget {
+    pub device_id: String,
+    pub serial: String,
+}
+
+impl std::fmt::Debug for ConfiguredQuestAwakeTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredQuestAwakeTarget")
+            .field("device_id", &self.device_id)
+            .field("serial", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredQuestAwakeProvider {
+    pub executable_path: PathBuf,
+    pub executable_sha256: String,
+    pub adb_executable_path: PathBuf,
+    pub adb_executable_sha256: String,
+    pub adb_support_artifacts: Vec<ConfiguredQuestAwakePinnedArtifact>,
+    pub private_stage_root: PathBuf,
+    pub targets: Vec<ConfiguredQuestAwakeTarget>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredQuestAwakePinnedArtifact {
+    pub source_path: PathBuf,
+    pub sha256: String,
+}
+
+impl std::fmt::Debug for ConfiguredQuestAwakePinnedArtifact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredQuestAwakePinnedArtifact")
+            .field("source_path", &"[private]")
+            .field("sha256", &self.sha256)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ConfiguredQuestAwakeProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredQuestAwakeProvider")
+            .field("executable_path", &"[private]")
+            .field("executable_sha256", &self.executable_sha256)
+            .field("adb_executable_path", &"[private]")
+            .field("adb_executable_sha256", &self.adb_executable_sha256)
+            .field("adb_support_artifacts", &self.adb_support_artifacts)
+            .field("private_stage_root", &"[private]")
+            .field("targets", &self.targets)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for ConfiguredPackageUpdaterOwner {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -171,6 +240,8 @@ pub struct LocalHubConfig {
     #[serde(default)]
     pub package_updater_owner: Option<ConfiguredPackageUpdaterOwner>,
     #[serde(default)]
+    pub quest_awake_provider: Option<ConfiguredQuestAwakeProvider>,
+    #[serde(default)]
     pub hub_policy: LocalHubPolicy,
 }
 
@@ -190,6 +261,9 @@ impl LocalHubConfig {
         }
         if self.package_updater_owner.is_some() && !bind.ip().is_loopback() {
             return Err("package updater owner ingress requires a loopback bind".to_owned());
+        }
+        if self.quest_awake_provider.is_some() && !bind.ip().is_loopback() {
+            return Err("Quest awake provider requires a loopback Hub bind".to_owned());
         }
         if !self.state_directory.is_absolute() {
             return Err("state_directory must be an absolute private path".to_owned());
@@ -236,6 +310,51 @@ impl LocalHubConfig {
                     .to_owned(),
             );
         }
+        if let Some(provider) = &self.quest_awake_provider {
+            QuestAwakeProviderConfig {
+                executable_path: provider.executable_path.clone(),
+                executable_sha256: provider.executable_sha256.clone(),
+                adb_executable_path: provider.adb_executable_path.clone(),
+                adb_executable_sha256: provider.adb_executable_sha256.clone(),
+                adb_support_artifacts: provider
+                    .adb_support_artifacts
+                    .iter()
+                    .map(|artifact| QuestAwakePinnedArtifact {
+                        source_path: artifact.source_path.clone(),
+                        sha256: artifact.sha256.clone(),
+                    })
+                    .collect(),
+                private_stage_root: provider.private_stage_root.clone(),
+            }
+            .verify_artifacts()
+            .map_err(|error| format!("invalid Quest awake provider: {error}"))?;
+            if provider.targets.is_empty() || provider.targets.len() > 10_000 {
+                return Err(
+                    "Quest awake provider requires 1 through 10,000 exact target bindings"
+                        .to_owned(),
+                );
+            }
+            let mut devices = BTreeSet::new();
+            let mut serials = BTreeSet::new();
+            for target in &provider.targets {
+                if target.device_id.is_empty()
+                    || target.device_id.len() > 256
+                    || target.serial.is_empty()
+                    || target.serial.len() > 256
+                    || target
+                        .serial
+                        .bytes()
+                        .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+                    || !devices.insert(target.device_id.clone())
+                    || !serials.insert(target.serial.clone())
+                {
+                    return Err(
+                        "Quest awake target bindings require unique bounded device IDs and exact serials"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
         if self.hub_policy.stale_after_ms <= 0
             || self.hub_policy.offline_after_ms <= self.hub_policy.stale_after_ms
             || self.hub_policy.history_limit_per_device == 0
@@ -258,6 +377,19 @@ struct RuntimeState {
     inflight_kiosk_targets: BTreeSet<(String, String)>,
     package_updater_adapter: PackageUpdaterOwnerAdapter,
     package_updater_owner: Option<ConfiguredPackageUpdaterOwner>,
+    quest_awake_provider: Option<ConfiguredQuestAwakeProvider>,
+    quest_awake_adapter: QuestAwakeOwnerAdapter,
+    inflight_awake_targets: BTreeSet<(String, String)>,
+    windows_awake_watchdogs: BTreeMap<String, WindowsAwakeWatchdogControl>,
+    awake_provider_slots: Arc<Semaphore>,
+    awake_device_slots: BTreeMap<String, Arc<Semaphore>>,
+}
+
+#[derive(Clone)]
+struct WindowsAwakeWatchdogControl {
+    generation: String,
+    cancel: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -642,6 +774,22 @@ impl LocalHubState {
                 )
                 .map_err(|error| format!("invalid package updater adapter limits: {error}"))?,
                 package_updater_owner: config.package_updater_owner.clone(),
+                quest_awake_provider: config.quest_awake_provider.clone(),
+                quest_awake_adapter: QuestAwakeOwnerAdapter::default(),
+                inflight_awake_targets: BTreeSet::new(),
+                windows_awake_watchdogs: BTreeMap::new(),
+                awake_provider_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_AWAKE_PROVIDER_CALLS)),
+                awake_device_slots: config
+                    .quest_awake_provider
+                    .as_ref()
+                    .map(|provider| {
+                        provider
+                            .targets
+                            .iter()
+                            .map(|target| (target.device_id.clone(), Arc::new(Semaphore::new(1))))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })),
         })
     }
@@ -721,6 +869,31 @@ impl From<StrictPackageInstallReleasePreviewRequest> for PackageInstallReleasePr
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictQuestAwakePreviewRequest {
+    schema: String,
+    action_id: String,
+    action: QuestAwakeAction,
+    duration_ms: u32,
+    watchdog_interval_ms: u32,
+    #[serde(deserialize_with = "deserialize_unique_targets")]
+    targets: BTreeMap<String, u64>,
+}
+
+impl From<StrictQuestAwakePreviewRequest> for QuestAwakePreviewRequest {
+    fn from(value: StrictQuestAwakePreviewRequest) -> Self {
+        Self {
+            schema: value.schema,
+            action_id: value.action_id,
+            action: value.action,
+            duration_ms: value.duration_ms,
+            watchdog_interval_ms: value.watchdog_interval_ms,
+            targets: value.targets,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct OwnerWork {
     request: KioskShowControlsRequest,
@@ -773,6 +946,15 @@ pub fn router(state: LocalHubState) -> Router {
             "/fleet/v1/package-install-releases/{operation_id}",
             get(package_install_release_status),
         )
+        .route("/fleet/v1/quest-awake/preview", post(preview_quest_awake))
+        .route(
+            "/fleet/v1/quest-awake/{operation_id}/execute",
+            post(execute_quest_awake),
+        )
+        .route(
+            "/fleet/v1/quest-awake/{operation_id}",
+            get(quest_awake_status),
+        )
         .route("/fleet/v1/saved-views", get(saved_views))
         .route(
             "/fleet/v1/saved-views/{view_id}",
@@ -791,6 +973,7 @@ pub async fn serve(config: LocalHubConfig) -> Result<(), String> {
     let bind = config.validate()?;
     let state = LocalHubState::from_config(&config, unix_time_ms()?)?;
     schedule_recovered_owner_work(state.clone()).await?;
+    schedule_recovered_awake_work(state.clone()).await?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|error| format!("failed to bind {bind}: {error}"))?;
@@ -2003,6 +2186,225 @@ async fn package_install_release_status(
     }
 }
 
+#[derive(Clone)]
+struct AwakeOwnerWork {
+    invocation: QuestAwakeOwnerInvocation,
+    serial: String,
+    provider: QuestAwakeProviderConfig,
+    authorization_expires_at_ms: u64,
+}
+
+async fn preview_quest_awake(State(state): State<LocalHubState>, request: Request) -> Response {
+    let bytes = match strict_json_body(request, MAX_OPERATION_BYTES, "Quest awake previews").await {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let request = match serde_json::from_slice::<StrictQuestAwakePreviewRequest>(&bytes) {
+        Ok(value) => QuestAwakePreviewRequest::from(value),
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_awake_preview_json",
+                format!("Quest awake preview is not valid strict JSON: {error}"),
+            );
+        }
+    };
+    if request.schema != QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_awake_preview",
+            "Quest awake preview schema is not supported",
+        );
+    }
+    if let Err(failures) = request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_awake_preview",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let Some(provider) = runtime.quest_awake_provider.as_ref() else {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "awake_provider_unavailable",
+            "Quest awake provider is disabled until private exact-target configuration is supplied",
+        );
+    };
+    let provider_ready_devices = provider
+        .targets
+        .iter()
+        .map(|target| target.device_id.clone())
+        .collect::<BTreeSet<_>>();
+    if let Some(existing) = runtime
+        .hub
+        .quest_awake_operations()
+        .into_iter()
+        .find(|operation| {
+            operation.preview.fleet_revision == runtime.hub.result_revision()
+                && operation.preview.expires_at_ms >= now_ms
+                && operation.preview.action == request.action
+                && operation.preview.duration_ms == request.duration_ms
+                && operation.preview.watchdog_interval_ms == request.watchdog_interval_ms
+                && operation
+                    .preview
+                    .targets
+                    .iter()
+                    .map(|target| (target.device_id.clone(), target.identity_revision))
+                    .collect::<BTreeMap<_, _>>()
+                    == request.targets
+        })
+    {
+        return Json(existing).into_response();
+    }
+    let expires_at_ms = match now_ms.checked_add(AWAKE_OPERATION_PREVIEW_LIFETIME_MS) {
+        Some(value) => value,
+        None => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "Quest awake preview expiry overflowed",
+            );
+        }
+    };
+    let (operation_id, preview_id, watchdog_generation) = awake_operation_ids(&request, now_ms);
+    let mut candidate_hub = runtime.hub.clone();
+    let operation = match candidate_hub.preview_quest_awake(QuestAwakePreviewPlan {
+        operation_id,
+        preview_id,
+        watchdog_generation,
+        request,
+        created_at_ms: now_ms,
+        expires_at_ms,
+        provider_ready_devices,
+    }) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(operation).into_response()
+}
+
+async fn execute_quest_awake(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes = match strict_json_body(request, MAX_OPERATION_BYTES, "Quest awake execution").await
+    {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let execute = match serde_json::from_slice::<QuestAwakeExecuteRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_awake_execute_json",
+                format!("Quest awake execution is not valid JSON: {error}"),
+            );
+        }
+    };
+    if execute.schema != QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA || execute.operation_id != operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "awake_operation_identity_mismatch",
+            "Quest awake operation path, schema, and payload identity must match",
+        );
+    }
+    if let Err(failures) = execute.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_awake_execute",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    if runtime.quest_awake_provider.is_none() {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "awake_provider_unavailable",
+            "Quest awake provider is disabled until private exact-target configuration is supplied",
+        );
+    }
+    let existing = match runtime.hub.quest_awake_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    if existing.preview.preview_id != execute.preview_id {
+        return api_error(
+            StatusCode::CONFLICT,
+            "awake_preview_conflict",
+            "execute request does not bind the immutable Quest awake preview",
+        );
+    }
+    if existing.lifecycle != CommandLifecycle::Proposed {
+        return Json(existing).into_response();
+    }
+    let mut candidate_hub = runtime.hub.clone();
+    let operation =
+        match candidate_hub.confirm_quest_awake(&operation_id, &execute.preview_id, now_ms) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    drop(runtime);
+    schedule_pending_awake_work(state.clone(), &operation_id).await;
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.quest_awake_operation(&operation_id) {
+        Ok(updated) => Json(updated).into_response(),
+        Err(_) => Json(operation).into_response(),
+    }
+}
+
+async fn quest_awake_status(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.quest_awake_operation(&operation_id) {
+        Ok(operation) => Json(operation).into_response(),
+        Err(error) => hub_operation_error(error),
+    }
+}
+
 async fn summary(State(state): State<LocalHubState>) -> Response {
     let now_ms = match unix_time_ms() {
         Ok(value) => value,
@@ -2288,6 +2690,24 @@ fn package_operation_ids(
     )
 }
 
+fn awake_operation_ids(
+    request: &QuestAwakePreviewRequest,
+    now_ms: i64,
+) -> (String, String, String) {
+    let sequence = OPERATION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-awake.operation.v1\0");
+    digest.update(serde_json::to_vec(request).unwrap_or_default());
+    digest.update(now_ms.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    let suffix = hex::encode(digest.finalize());
+    (
+        format!("awake-operation-{}", &suffix[..24]),
+        format!("awake-preview-{}", &suffix[24..48]),
+        format!("awake-generation-{}", &suffix[48..64]),
+    )
+}
+
 fn package_owner_action_request_id(operation_id: &str, device_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"rusty.fleet.package.owner-action.v1\0");
@@ -2295,6 +2715,15 @@ fn package_owner_action_request_id(operation_id: &str, device_id: &str) -> Strin
     digest.update([0]);
     digest.update(device_id.as_bytes());
     format!("fleetpkg-{}", &hex::encode(digest.finalize())[..32])
+}
+
+fn awake_owner_action_request_id(operation_id: &str, device_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-awake.owner-action.v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(device_id.as_bytes());
+    format!("fleetawake-{}", &hex::encode(digest.finalize())[..32])
 }
 
 fn owner_action_request_id(operation_id: &str, device_id: &str, attempt: u8) -> String {
@@ -2333,6 +2762,9 @@ fn hub_operation_error(error: fleet_hub::HubError) -> Response {
         "package_operation_not_found" | "package_target_not_found" => {
             (StatusCode::NOT_FOUND, "operation_not_found")
         }
+        "awake_operation_not_found" | "awake_target_not_found" => {
+            (StatusCode::NOT_FOUND, "operation_not_found")
+        }
         "kiosk_preview_mismatch"
         | "kiosk_operation_id_conflict"
         | "kiosk_preview_expired"
@@ -2342,10 +2774,588 @@ fn hub_operation_error(error: fleet_hub::HubError) -> Response {
         | "package_operation_id_conflict"
         | "package_preview_expired"
         | "package_target_changed_since_preview"
-        | "package_target_identity_changed" => (StatusCode::CONFLICT, "operation_conflict"),
+        | "package_target_identity_changed"
+        | "awake_preview_conflict"
+        | "awake_operation_id_conflict"
+        | "awake_preview_expired"
+        | "awake_target_identity_changed"
+        | "awake_capability_changed" => (StatusCode::CONFLICT, "operation_conflict"),
         _ => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation"),
     };
     api_error(status, code, error.to_string())
+}
+
+async fn schedule_pending_awake_work(state: LocalHubState, operation_id: &str) {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let now_unsigned = match u64::try_from(now_ms) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let mut runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.quest_awake_operation(operation_id) {
+        Ok(operation) => operation,
+        Err(_) => return,
+    };
+    let pending = operation
+        .targets
+        .iter()
+        .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+        .map(|target| (target.device_id.clone(), target.identity_revision))
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return;
+    }
+    let slots = 8usize.saturating_sub(
+        runtime
+            .inflight_awake_targets
+            .iter()
+            .filter(|(candidate_operation, _)| candidate_operation == operation_id)
+            .count(),
+    );
+    if slots == 0 {
+        return;
+    }
+    let Some(configured) = runtime.quest_awake_provider.clone() else {
+        return;
+    };
+    let provider = QuestAwakeProviderConfig {
+        executable_path: configured.executable_path.clone(),
+        executable_sha256: configured.executable_sha256.clone(),
+        adb_executable_path: configured.adb_executable_path.clone(),
+        adb_executable_sha256: configured.adb_executable_sha256.clone(),
+        adb_support_artifacts: configured
+            .adb_support_artifacts
+            .iter()
+            .map(|artifact| QuestAwakePinnedArtifact {
+                source_path: artifact.source_path.clone(),
+                sha256: artifact.sha256.clone(),
+            })
+            .collect(),
+        private_stage_root: configured.private_stage_root.clone(),
+    };
+    let serials = configured
+        .targets
+        .into_iter()
+        .map(|target| (target.device_id, target.serial))
+        .collect::<BTreeMap<_, _>>();
+    let expires_unsigned = match u64::try_from(operation.preview.expires_at_ms) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let mut candidate_hub = runtime.hub.clone();
+    let mut candidate_adapter = runtime.adapter.clone();
+    let mut work = Vec::new();
+    let mut controls = Vec::new();
+    for (device_id, identity_revision) in pending.into_iter().take(slots) {
+        let Some(serial) = serials.get(&device_id).cloned() else {
+            let _ = candidate_hub.fail_quest_awake_target(
+                operation_id,
+                &device_id,
+                "provider_target_unconfigured".to_owned(),
+                now_ms,
+            );
+            continue;
+        };
+        let active_windows_watchdog = runtime
+            .windows_awake_watchdogs
+            .get(&device_id)
+            .is_some_and(|control| !control.cancel.load(Ordering::Acquire));
+        let device_has_inflight_awake_work = runtime
+            .inflight_awake_targets
+            .iter()
+            .any(|(_, candidate_device)| candidate_device == &device_id);
+        let may_supersede_windows_watchdog = matches!(
+            operation.preview.action,
+            QuestAwakeAction::StopWatchdogs | QuestAwakeAction::RestoreNormal
+        ) && active_windows_watchdog;
+        if (active_windows_watchdog
+            && !matches!(
+                operation.preview.action,
+                QuestAwakeAction::StopWatchdogs | QuestAwakeAction::RestoreNormal
+            ))
+            || (device_has_inflight_awake_work && !may_supersede_windows_watchdog)
+        {
+            let _ = candidate_hub.fail_quest_awake_target(
+                operation_id,
+                &device_id,
+                "awake_control_conflict".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        let owner_action_request_id = awake_owner_action_request_id(operation_id, &device_id);
+        let (watchdog_generation, watchdog_generation_override) = if matches!(
+            operation.preview.action,
+            QuestAwakeAction::StopWatchdogs | QuestAwakeAction::RestoreNormal
+        ) {
+            let generation = latest_reported_device_watchdog_generation(&runtime.hub, &device_id)
+                .unwrap_or_else(|| "no-known-device-watchdog".to_owned());
+            (generation.clone(), Some(generation))
+        } else {
+            (operation.preview.watchdog_generation.clone(), None)
+        };
+        let manifold_request_id =
+            quest_awake_manifold_request_id(operation_id, &device_id, &owner_action_request_id);
+        if candidate_adapter
+            .authorize_quest_awake(
+                &QuestAwakeCommandAuthorization {
+                    manifold_request_id,
+                    owner_action_request_id: owner_action_request_id.clone(),
+                    requester_id: "operator.fleet.local".to_owned(),
+                    operation_id: operation_id.to_owned(),
+                    preview_id: operation.preview.preview_id.clone(),
+                    device_id: device_id.clone(),
+                    identity_revision,
+                    action: operation.preview.action,
+                    duration_ms: operation.preview.duration_ms,
+                    watchdog_interval_ms: operation.preview.watchdog_interval_ms,
+                    watchdog_generation,
+                    issued_at_ms: now_unsigned,
+                    expires_at_ms: expires_unsigned,
+                },
+                now_unsigned,
+            )
+            .is_err()
+        {
+            let _ = candidate_hub.fail_quest_awake_target(
+                operation_id,
+                &device_id,
+                "manifold_command_rejected".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        let updated = match candidate_hub.prepare_quest_awake_invocation_with_watchdog_generation(
+            operation_id,
+            &device_id,
+            owner_action_request_id,
+            watchdog_generation_override,
+            now_ms,
+        ) {
+            Ok(updated) => updated,
+            Err(_) => continue,
+        };
+        let invocation = match updated
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+            .and_then(|target| target.invocation.clone())
+        {
+            Some(invocation) => invocation,
+            None => continue,
+        };
+        if candidate_hub
+            .mark_quest_awake_dispatched(operation_id, &device_id, now_ms)
+            .is_err()
+        {
+            continue;
+        }
+        if operation.preview.action == QuestAwakeAction::StartWindowsWatchdog {
+            let control = WindowsAwakeWatchdogControl {
+                generation: operation.preview.watchdog_generation.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                running: Arc::new(AtomicBool::new(true)),
+            };
+            controls.push((device_id.clone(), control));
+        }
+        work.push(AwakeOwnerWork {
+            invocation,
+            serial,
+            provider: provider.clone(),
+            authorization_expires_at_ms: expires_unsigned,
+        });
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        inflight_awake_targets,
+        windows_awake_watchdogs,
+        ..
+    } = &mut *runtime;
+    if state_store
+        .persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+        .is_err()
+    {
+        return;
+    }
+    *hub = candidate_hub;
+    *adapter = candidate_adapter;
+    for item in &work {
+        inflight_awake_targets.insert((
+            item.invocation.operation_id.clone(),
+            item.invocation.device_id.clone(),
+        ));
+    }
+    for (device_id, control) in &controls {
+        windows_awake_watchdogs.insert(device_id.clone(), control.clone());
+    }
+    drop(runtime);
+    for item in work {
+        if item.invocation.action == QuestAwakeAction::StartWindowsWatchdog {
+            spawn_windows_awake_watchdog(state.clone(), item);
+        } else {
+            spawn_awake_owner_work(state.clone(), item);
+        }
+    }
+}
+
+fn latest_reported_device_watchdog_generation(hub: &FleetHub, device_id: &str) -> Option<String> {
+    hub.quest_awake_operations()
+        .into_iter()
+        .flat_map(|operation| operation.targets)
+        .filter(|target| target.device_id == device_id)
+        .filter_map(|target| target.receipt)
+        .filter(|receipt| {
+            receipt.device_watchdog.reported_active
+                && !receipt.device_watchdog.generation.is_empty()
+        })
+        .max_by_key(|receipt| receipt.observed_at_ms)
+        .map(|receipt| receipt.device_watchdog.generation)
+}
+
+fn spawn_awake_owner_work(state: LocalHubState, work: AwakeOwnerWork) {
+    tokio::spawn(async move {
+        let operation_id = work.invocation.operation_id.clone();
+        let device_id = work.invocation.device_id.clone();
+        if matches!(
+            work.invocation.action,
+            QuestAwakeAction::StopWatchdogs | QuestAwakeAction::RestoreNormal
+        ) && !stop_windows_awake_watchdog(&state, &device_id).await
+        {
+            commit_awake_owner_result(
+                &state,
+                &work,
+                Err("Windows awake watchdog did not stop before the safety deadline".to_owned()),
+            )
+            .await;
+            let mut runtime = state.runtime.lock().await;
+            runtime
+                .inflight_awake_targets
+                .remove(&(operation_id.clone(), device_id));
+            drop(runtime);
+            schedule_pending_awake_work(state.clone(), &operation_id).await;
+            return;
+        }
+        let adapter = {
+            let runtime = state.runtime.lock().await;
+            runtime.quest_awake_adapter.clone()
+        };
+        let result = match acquire_awake_provider_slots(&state, &work.invocation.device_id).await {
+            Ok(_permits) => {
+                let invocation = work.invocation.clone();
+                let serial = work.serial.clone();
+                let provider = work.provider.clone();
+                tokio::task::spawn_blocking(move || {
+                    adapter.invoke(&provider, &invocation, &serial, false)
+                })
+                .await
+                .map_err(|error| format!("Quest awake provider worker could not join: {error}"))
+                .and_then(|result| result.map_err(|error| error.to_string()))
+            }
+            Err(error) => Err(error),
+        };
+        commit_awake_owner_result(&state, &work, result).await;
+        let mut runtime = state.runtime.lock().await;
+        runtime
+            .inflight_awake_targets
+            .remove(&(operation_id.clone(), device_id));
+        drop(runtime);
+        schedule_pending_awake_work(state.clone(), &operation_id).await;
+    });
+}
+
+fn spawn_windows_awake_watchdog(state: LocalHubState, work: AwakeOwnerWork) {
+    tokio::spawn(async move {
+        let operation_id = work.invocation.operation_id.clone();
+        let device_id = work.invocation.device_id.clone();
+        let generation = work.invocation.watchdog_generation.clone();
+        let control = {
+            let runtime = state.runtime.lock().await;
+            runtime.windows_awake_watchdogs.get(&device_id).cloned()
+        };
+        let Some(control) = control else {
+            return;
+        };
+        let mut consecutive_failures = 0u8;
+        let mut authorization_expires_at_ms = work.authorization_expires_at_ms;
+        loop {
+            if control.cancel.load(Ordering::Acquire) {
+                break;
+            }
+            let now_ms = match unix_time_ms().and_then(|value| {
+                u64::try_from(value).map_err(|_| "current time is negative".to_owned())
+            }) {
+                Ok(value) => value,
+                Err(error) => {
+                    commit_awake_owner_result(&state, &work, Err(error)).await;
+                    break;
+                }
+            };
+            if authorization_expires_at_ms
+                <= now_ms.saturating_add(AWAKE_WATCHDOG_AUTHORIZATION_RENEWAL_MARGIN_MS)
+            {
+                match renew_windows_awake_authorization(&state, &work, now_ms).await {
+                    Ok(expires_at_ms) => authorization_expires_at_ms = expires_at_ms,
+                    Err(error) => {
+                        commit_awake_owner_result(&state, &work, Err(error)).await;
+                        break;
+                    }
+                }
+            }
+            let adapter = {
+                let runtime = state.runtime.lock().await;
+                runtime.quest_awake_adapter.clone()
+            };
+            let Some(_permits) = acquire_awake_provider_slots_until_cancelled(
+                &state,
+                &work.invocation.device_id,
+                &control.cancel,
+            )
+            .await
+            else {
+                break;
+            };
+            let invocation = work.invocation.clone();
+            let serial = work.serial.clone();
+            let provider = work.provider.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                adapter.invoke(&provider, &invocation, &serial, true)
+            })
+            .await
+            .map_err(|error| format!("Windows awake watchdog worker could not join: {error}"))
+            .and_then(|result| result.map_err(|error| error.to_string()));
+            drop(_permits);
+            if result.is_ok() {
+                consecutive_failures = 0;
+                commit_awake_owner_result(&state, &work, result).await;
+            } else {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                if consecutive_failures >= 3 {
+                    commit_awake_owner_result(&state, &work, result).await;
+                }
+            }
+            if consecutive_failures >= 3 {
+                break;
+            }
+            let interval = Duration::from_millis(u64::from(work.invocation.watchdog_interval_ms));
+            let mut elapsed = Duration::ZERO;
+            while elapsed < interval && !control.cancel.load(Ordering::Acquire) {
+                let step = (interval - elapsed).min(Duration::from_millis(100));
+                tokio::time::sleep(step).await;
+                elapsed += step;
+            }
+        }
+        control.running.store(false, Ordering::Release);
+        let mut runtime = state.runtime.lock().await;
+        if runtime
+            .windows_awake_watchdogs
+            .get(&device_id)
+            .is_some_and(|current| current.generation == generation)
+        {
+            runtime.windows_awake_watchdogs.remove(&device_id);
+        }
+        runtime
+            .inflight_awake_targets
+            .remove(&(operation_id, device_id));
+    });
+}
+
+async fn commit_awake_owner_result(
+    state: &LocalHubState,
+    work: &AwakeOwnerWork,
+    result: Result<fleet_contracts::QuestAwakeOwnerReceipt, String>,
+) {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let mut runtime = state.runtime.lock().await;
+    let mut candidate_hub = runtime.hub.clone();
+    let transition = match result {
+        Ok(receipt) => candidate_hub.apply_quest_awake_receipt(receipt, now_ms),
+        Err(error) => candidate_hub.fail_quest_awake_target(
+            &work.invocation.operation_id,
+            &work.invocation.device_id,
+            format!("provider_failed_{}", short_error_digest(&error)),
+            now_ms,
+        ),
+    };
+    if transition.is_err() {
+        return;
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if state_store
+        .persist(&candidate_hub, adapter, owner_receipts, now_ms)
+        .is_ok()
+    {
+        *hub = candidate_hub;
+    }
+}
+
+async fn renew_windows_awake_authorization(
+    state: &LocalHubState,
+    work: &AwakeOwnerWork,
+    now_ms: u64,
+) -> Result<u64, String> {
+    let expires_at_ms = now_ms
+        .checked_add(AWAKE_WATCHDOG_AUTHORIZATION_LIFETIME_MS)
+        .ok_or_else(|| "Windows awake authorization expiry overflowed".to_owned())?;
+    let sequence = AWAKE_AUTHORIZATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let owner_action_request_id =
+        awake_authorization_renewal_id(&work.invocation, now_ms, sequence);
+    let manifold_request_id = quest_awake_manifold_request_id(
+        &work.invocation.operation_id,
+        &work.invocation.device_id,
+        &owner_action_request_id,
+    );
+    let mut runtime = state.runtime.lock().await;
+    let mut candidate_adapter = runtime.adapter.clone();
+    candidate_adapter.authorize_quest_awake(
+        &QuestAwakeCommandAuthorization {
+            manifold_request_id,
+            owner_action_request_id,
+            requester_id: "operator.fleet.local".to_owned(),
+            operation_id: work.invocation.operation_id.clone(),
+            preview_id: work.invocation.preview_id.clone(),
+            device_id: work.invocation.device_id.clone(),
+            identity_revision: work.invocation.identity_revision,
+            action: work.invocation.action,
+            duration_ms: work.invocation.duration_ms,
+            watchdog_interval_ms: work.invocation.watchdog_interval_ms,
+            watchdog_generation: work.invocation.watchdog_generation.clone(),
+            issued_at_ms: now_ms,
+            expires_at_ms,
+        },
+        now_ms,
+    )?;
+    let candidate_hub = runtime.hub.clone();
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    state_store
+        .persist(
+            &candidate_hub,
+            &candidate_adapter,
+            owner_receipts,
+            i64::try_from(now_ms)
+                .map_err(|_| "Windows awake authorization time is not representable".to_owned())?,
+        )
+        .map_err(|error| format!("cannot persist renewed Windows awake authorization: {error}"))?;
+    *adapter = candidate_adapter;
+    Ok(expires_at_ms)
+}
+
+fn awake_authorization_renewal_id(
+    invocation: &QuestAwakeOwnerInvocation,
+    now_ms: u64,
+    sequence: u64,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-awake.authorization-renewal.v1\0");
+    for value in [
+        invocation.request_id.as_bytes(),
+        invocation.watchdog_generation.as_bytes(),
+        &now_ms.to_be_bytes(),
+        &sequence.to_be_bytes(),
+    ] {
+        digest.update(value);
+        digest.update([0]);
+    }
+    format!(
+        "awake-authorization-renewal-{}",
+        &hex::encode(digest.finalize())[..32]
+    )
+}
+
+async fn stop_windows_awake_watchdog(state: &LocalHubState, device_id: &str) -> bool {
+    let control = {
+        let runtime = state.runtime.lock().await;
+        runtime.windows_awake_watchdogs.get(device_id).cloned()
+    };
+    let Some(control) = control else {
+        return true;
+    };
+    control.cancel.store(true, Ordering::Release);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
+    while control.running.load(Ordering::Acquire) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    !control.running.load(Ordering::Acquire)
+}
+
+async fn acquire_awake_provider_slots(
+    state: &LocalHubState,
+    device_id: &str,
+) -> Result<(OwnedSemaphorePermit, OwnedSemaphorePermit), String> {
+    let (device_slot, provider_slots) = {
+        let runtime = state.runtime.lock().await;
+        let device_slot = runtime
+            .awake_device_slots
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| "Quest awake target has no configured device gate".to_owned())?;
+        (device_slot, Arc::clone(&runtime.awake_provider_slots))
+    };
+    let device_permit = device_slot
+        .acquire_owned()
+        .await
+        .map_err(|_| "Quest awake device gate is closed".to_owned())?;
+    let provider_permit = provider_slots
+        .acquire_owned()
+        .await
+        .map_err(|_| "Quest awake provider concurrency gate is closed".to_owned())?;
+    Ok((device_permit, provider_permit))
+}
+
+async fn acquire_awake_provider_slots_until_cancelled(
+    state: &LocalHubState,
+    device_id: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
+    let (device_slot, provider_slots) = {
+        let runtime = state.runtime.lock().await;
+        (
+            runtime.awake_device_slots.get(device_id)?.clone(),
+            Arc::clone(&runtime.awake_provider_slots),
+        )
+    };
+    let device_permit = acquire_slot_until_cancelled(device_slot, cancel).await?;
+    let provider_permit = acquire_slot_until_cancelled(provider_slots, cancel).await?;
+    Some((device_permit, provider_permit))
+}
+
+async fn acquire_slot_until_cancelled(
+    slot: Arc<Semaphore>,
+    cancel: &Arc<AtomicBool>,
+) -> Option<OwnedSemaphorePermit> {
+    tokio::select! {
+        permit = slot.acquire_owned() => permit.ok(),
+        () = wait_for_awake_cancellation(cancel) => None,
+    }
+}
+
+async fn wait_for_awake_cancellation(cancel: &Arc<AtomicBool>) {
+    while !cancel.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn short_error_digest(value: &str) -> String {
+    hex::encode(Sha256::digest(value.as_bytes()))[..16].to_owned()
 }
 
 fn spawn_owner_work(state: LocalHubState, work: OwnerWork) {
@@ -2745,6 +3755,190 @@ async fn schedule_recovered_owner_work(state: LocalHubState) -> Result<(), Strin
     Ok(())
 }
 
+async fn schedule_recovered_awake_work(state: LocalHubState) -> Result<(), String> {
+    let now_ms = unix_time_ms()?;
+    let mut runtime = state.runtime.lock().await;
+    let operations = runtime.hub.quest_awake_operations();
+    let recoverable_exists = operations.iter().any(|operation| {
+        operation.confirmed_at_ms.is_some()
+            && operation.targets.iter().any(|target| {
+                matches!(
+                    target.lifecycle,
+                    CommandLifecycle::Accepted
+                        | CommandLifecycle::Dispatched
+                        | CommandLifecycle::Running
+                ) || (operation.preview.action == QuestAwakeAction::StartWindowsWatchdog
+                    && target.lifecycle == CommandLifecycle::Applied
+                    && target
+                        .receipt
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.effective))
+            })
+    });
+    if !recoverable_exists {
+        return Ok(());
+    }
+    let configured = runtime.quest_awake_provider.clone().ok_or_else(|| {
+        "recovered Quest awake work requires private provider configuration".to_owned()
+    })?;
+    let provider = QuestAwakeProviderConfig {
+        executable_path: configured.executable_path,
+        executable_sha256: configured.executable_sha256,
+        adb_executable_path: configured.adb_executable_path,
+        adb_executable_sha256: configured.adb_executable_sha256,
+        adb_support_artifacts: configured
+            .adb_support_artifacts
+            .into_iter()
+            .map(|artifact| QuestAwakePinnedArtifact {
+                source_path: artifact.source_path,
+                sha256: artifact.sha256,
+            })
+            .collect(),
+        private_stage_root: configured.private_stage_root,
+    };
+    let serials = configured
+        .targets
+        .into_iter()
+        .map(|target| (target.device_id, target.serial))
+        .collect::<BTreeMap<_, _>>();
+    let mut latest_mutating_intent = BTreeMap::<String, (i64, String)>::new();
+    for operation in &operations {
+        let Some(confirmed_at_ms) = operation.confirmed_at_ms else {
+            continue;
+        };
+        if operation.preview.action == QuestAwakeAction::Status {
+            continue;
+        }
+        for target in operation
+            .targets
+            .iter()
+            .filter(|target| target.preflight.eligible)
+        {
+            let candidate = (confirmed_at_ms, operation.operation_id.clone());
+            if latest_mutating_intent
+                .get(&target.device_id)
+                .is_none_or(|current| current < &candidate)
+            {
+                latest_mutating_intent.insert(target.device_id.clone(), candidate);
+            }
+        }
+    }
+    let mut candidate_hub = runtime.hub.clone();
+    let mut pending_operation_ids = BTreeSet::new();
+    let mut work = Vec::<(bool, AwakeOwnerWork)>::new();
+    for operation in &operations {
+        if operation.confirmed_at_ms.is_none() {
+            continue;
+        }
+        for target in operation
+            .targets
+            .iter()
+            .filter(|target| target.preflight.eligible)
+        {
+            let active_windows_receipt = operation.preview.action
+                == QuestAwakeAction::StartWindowsWatchdog
+                && target.lifecycle == CommandLifecycle::Applied
+                && target
+                    .receipt
+                    .as_ref()
+                    .is_some_and(|receipt| receipt.effective);
+            let nonterminal = matches!(
+                target.lifecycle,
+                CommandLifecycle::Accepted
+                    | CommandLifecycle::Dispatched
+                    | CommandLifecycle::Running
+            );
+            if !nonterminal && !active_windows_receipt {
+                continue;
+            }
+            let is_latest = operation.preview.action == QuestAwakeAction::Status
+                || latest_mutating_intent
+                    .get(&target.device_id)
+                    .is_some_and(|(_, operation_id)| operation_id == &operation.operation_id);
+            if !is_latest {
+                if nonterminal {
+                    candidate_hub
+                        .fail_quest_awake_target(
+                            &operation.operation_id,
+                            &target.device_id,
+                            "superseded_during_recovery".to_owned(),
+                            now_ms,
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                continue;
+            }
+            let serial = serials.get(&target.device_id).cloned().ok_or_else(|| {
+                format!(
+                    "recovered Quest awake target {} lacks exact serial configuration",
+                    target.device_id
+                )
+            })?;
+            if target.lifecycle == CommandLifecycle::Accepted {
+                pending_operation_ids.insert(operation.operation_id.clone());
+                continue;
+            }
+            let invocation = target.invocation.clone().ok_or_else(|| {
+                format!(
+                    "recovered Quest awake target {} lacks its exact durable invocation",
+                    target.device_id
+                )
+            })?;
+            work.push((
+                operation.preview.action == QuestAwakeAction::StartWindowsWatchdog,
+                AwakeOwnerWork {
+                    invocation,
+                    serial,
+                    provider: provider.clone(),
+                    authorization_expires_at_ms: 0,
+                },
+            ));
+        }
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        inflight_awake_targets,
+        windows_awake_watchdogs,
+        ..
+    } = &mut *runtime;
+    state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms)?;
+    *hub = candidate_hub;
+    for (is_windows_watchdog, item) in &work {
+        let key = (
+            item.invocation.operation_id.clone(),
+            item.invocation.device_id.clone(),
+        );
+        if !inflight_awake_targets.insert(key) {
+            continue;
+        }
+        if *is_windows_watchdog {
+            windows_awake_watchdogs.insert(
+                item.invocation.device_id.clone(),
+                WindowsAwakeWatchdogControl {
+                    generation: item.invocation.watchdog_generation.clone(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    running: Arc::new(AtomicBool::new(true)),
+                },
+            );
+        }
+    }
+    drop(runtime);
+    for (is_windows_watchdog, item) in work {
+        if is_windows_watchdog {
+            spawn_windows_awake_watchdog(state.clone(), item);
+        } else {
+            spawn_awake_owner_work(state.clone(), item);
+        }
+    }
+    for operation_id in pending_operation_ids {
+        schedule_pending_awake_work(state.clone(), &operation_id).await;
+    }
+    Ok(())
+}
+
 struct AtomicTransportRequestIds;
 
 impl TransportRequestIdSource for AtomicTransportRequestIds {
@@ -3136,9 +4330,10 @@ mod tests {
 
     use super::{
         ConfiguredEnrollment, ConfiguredKioskDirectOperator, ConfiguredPackageUpdaterOwner,
-        IngressRateLimiter, LocalHubConfig, LocalHubState, MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW,
-        RuntimeState, router, schedule_recovered_owner_work, state_slot_path, transport_request_id,
-        unix_time_ms,
+        ConfiguredQuestAwakePinnedArtifact, ConfiguredQuestAwakeProvider,
+        ConfiguredQuestAwakeTarget, IngressRateLimiter, LocalHubConfig, LocalHubState,
+        MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, RuntimeState, router,
+        schedule_recovered_owner_work, state_slot_path, transport_request_id, unix_time_ms,
     };
 
     static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -3279,6 +4474,68 @@ mod tests {
             .expect("request");
         let response = app.oneshot(oversize).await.expect("oversize response");
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn quest_awake_routes_are_strict_and_inert_without_private_provider() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let (config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let app = router(LocalHubState::from_config(&config, now_ms).expect("valid config"));
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let identity_revision = signed.claims.observation.identity.identity_revision;
+        let accepted = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let request = serde_json::json!({
+            "schema": "rusty.fleet.quest_awake_preview_request.v1",
+            "action_id": "quest.awake-control",
+            "action": "apply_bounded",
+            "duration_ms": 28_800_000,
+            "watchdog_interval_ms": 5_000,
+            "targets": {"device.quest.1": identity_revision}
+        });
+        let unavailable = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/quest-awake/preview",
+                serde_json::to_vec(&request).expect("awake preview JSON"),
+            ))
+            .await
+            .expect("awake preview response");
+        assert_eq!(unavailable.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let mut oversized_duration = request.clone();
+        oversized_duration["duration_ms"] = serde_json::json!(28_800_001);
+        let rejected = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/quest-awake/preview",
+                serde_json::to_vec(&oversized_duration).expect("oversized preview JSON"),
+            ))
+            .await
+            .expect("oversized preview response");
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let mut unknown_field = request;
+        unknown_field["serial"] = serde_json::json!("must-not-cross-public-api");
+        let rejected = app
+            .oneshot(json_request(
+                "/fleet/v1/quest-awake/preview",
+                serde_json::to_vec(&unknown_field).expect("unknown-field preview JSON"),
+            ))
+            .await
+            .expect("strict preview response");
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
@@ -4041,6 +5298,60 @@ mod tests {
         assert!(!debug.contains(&owner.bearer_token));
     }
 
+    #[test]
+    fn quest_awake_private_artifacts_are_pinned_and_debug_redacted() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let (mut config, _) = config(&signing_key, now_ms);
+        let artifact_root = test_state_directory();
+        fs::create_dir_all(&artifact_root).expect("create private artifact root");
+        let provider = artifact_root.join("questionable-file-manager-awake-provider.exe");
+        let adb = artifact_root.join("adb.exe");
+        let adb_win_api = artifact_root.join("AdbWinApi.dll");
+        let adb_win_usb_api = artifact_root.join("AdbWinUsbApi.dll");
+        fs::write(&provider, b"provider-test-artifact").expect("write provider");
+        fs::write(&adb, b"adb-test-artifact").expect("write adb");
+        fs::write(&adb_win_api, b"adb-win-api-test-artifact").expect("write ADB API DLL");
+        fs::write(&adb_win_usb_api, b"adb-win-usb-api-test-artifact")
+            .expect("write ADB USB API DLL");
+        config.quest_awake_provider = Some(ConfiguredQuestAwakeProvider {
+            executable_path: provider.clone(),
+            executable_sha256: hex::encode(Sha256::digest(b"provider-test-artifact")),
+            adb_executable_path: adb.clone(),
+            adb_executable_sha256: hex::encode(Sha256::digest(b"adb-test-artifact")),
+            adb_support_artifacts: vec![
+                ConfiguredQuestAwakePinnedArtifact {
+                    source_path: adb_win_api.clone(),
+                    sha256: hex::encode(Sha256::digest(b"adb-win-api-test-artifact")),
+                },
+                ConfiguredQuestAwakePinnedArtifact {
+                    source_path: adb_win_usb_api.clone(),
+                    sha256: hex::encode(Sha256::digest(b"adb-win-usb-api-test-artifact")),
+                },
+            ],
+            private_stage_root: artifact_root.join("stage"),
+            targets: vec![ConfiguredQuestAwakeTarget {
+                device_id: "device.quest.1".to_owned(),
+                serial: "private-serial-123".to_owned(),
+            }],
+        });
+        config.validate().expect("valid pinned awake provider");
+        let debug = format!("{:?}", config.quest_awake_provider);
+        assert!(!debug.contains("private-serial-123"));
+        assert!(!debug.contains(provider.to_string_lossy().as_ref()));
+        assert!(!debug.contains(adb.to_string_lossy().as_ref()));
+        assert!(!debug.contains(adb_win_api.to_string_lossy().as_ref()));
+        assert!(!debug.contains(adb_win_usb_api.to_string_lossy().as_ref()));
+
+        config
+            .quest_awake_provider
+            .as_mut()
+            .expect("provider")
+            .executable_sha256 = "0".repeat(64);
+        assert!(config.validate().is_err());
+        fs::remove_dir_all(artifact_root).expect("remove artifact root");
+    }
+
     fn config(signing_key: &SigningKey, now_ms: i64) -> (LocalHubConfig, DottedId) {
         let public_key = signing_key.verifying_key().to_bytes();
         let digest = hex::encode(Sha256::digest(public_key));
@@ -4075,6 +5386,7 @@ mod tests {
                 }],
                 kiosk_direct_operators: Vec::new(),
                 package_updater_owner: None,
+                quest_awake_provider: None,
                 hub_policy: Default::default(),
             },
             key_id,

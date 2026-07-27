@@ -6,6 +6,7 @@ members = [
     "crates/fleet-hub",
     "crates/fleet-kiosk-adapter",
     "crates/fleet-package-updater-adapter",
+    "crates/fleet-quest-awake-adapter",
     "crates/fleet-manifold-adapter",
     "crates/fleet-simulator",
 ]

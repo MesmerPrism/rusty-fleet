@@ -13,6 +13,9 @@ Milestone 0 defines versioned Rusty Fleet product contracts here:
 - the Fleet-owned `packages.install-release` immutable signed-release preview,
   per-target preparation ledger, pinned attended-updater owner contract, and
   explicit owner-evidence fields.
+- the Fleet-owned `quest.awake-control` preview, exact policy/generation
+  ledger, pinned File Manager provider binding, and independent power,
+  watchdog, stop, and restore readbacks.
 
 Rust validation remains normative for cross-field invariants that JSON Schema
 cannot express clearly, including identity/source-epoch/revision transitions,
@@ -38,6 +41,12 @@ The operation keeps at most 16 full prior claims as readable evidence and
 separately retains up to 64 consumed claim/request identity pairs as
 non-truncating replay authority. Exhausting that authority fails the target
 closed.
+
+The Quest awake operation schema caps bounded Meta holds at eight hours and
+watchdog polling at one through sixty seconds. Rust validation additionally
+binds every invocation and receipt to the immutable action, duration,
+interval, identity, request, and generation, and derives Applied only from the
+action-specific readback gates. It contains no ADB serial or private path.
 
 Do not copy Manifold, Quest, Kiosk, File Manager, or LSL owner schemas into
 this directory. Reference owner-issued artifacts or wrap them with a separately

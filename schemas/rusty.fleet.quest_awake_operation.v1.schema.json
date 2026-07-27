@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.quest_awake_operation.v1.schema.json",
+  "title": "Rusty Fleet Quest awake-control operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operation_id", "action_id", "lifecycle", "preview", "confirmed_at_ms", "targets", "updated_at_ms"],
+  "properties": {
+    "schema": {"const": "rusty.fleet.quest_awake_operation.v1"},
+    "operation_id": {"$ref": "#/$defs/portableId"},
+    "action_id": {"const": "quest.awake-control"},
+    "lifecycle": {"$ref": "#/$defs/lifecycle"},
+    "preview": {"$ref": "#/$defs/preview"},
+    "confirmed_at_ms": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/targetLedger"}
+    },
+    "updated_at_ms": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "portableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "nonempty": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "action": {
+      "enum": ["status", "apply_bounded", "start_windows_watchdog", "start_device_watchdog", "stop_watchdogs", "restore_normal"]
+    },
+    "lifecycle": {
+      "enum": ["proposed", "accepted", "rejected", "dispatched", "running", "applied", "failed", "expired", "cancellation_requested", "cancelled"]
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner_repo_id", "capability_id", "provider_contract", "receipt_schema", "transport", "application_proof"],
+      "properties": {
+        "owner_repo_id": {"const": "questionable-file-manager"},
+        "capability_id": {"const": "questionable-file-manager.quest-awake-provider"},
+        "provider_contract": {"const": "questionable.file_manager.fleet_awake_provider.v1"},
+        "receipt_schema": {"const": "questionable.file_manager.quest_awake_receipt.v1"},
+        "transport": {"const": "pinned_local_subprocess"},
+        "application_proof": {"const": "fresh_effective_power_and_watchdog_readback"}
+      }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "identity_revision", "capability_id", "capability_evidence_revision", "capability_owner", "support", "enablement", "authorization", "reachability", "freshness", "observed_at_ms", "fresh_until_ms", "evaluated_at_ms", "eligible", "reason_code", "message"],
+      "properties": {
+        "device_id": {"$ref": "#/$defs/portableId"},
+        "identity_revision": {"type": "integer", "minimum": 1},
+        "capability_id": {"const": "questionable-file-manager.quest-awake-provider"},
+        "capability_evidence_revision": {"type": "integer", "minimum": 1},
+        "capability_owner": {"const": "questionable-file-manager"},
+        "support": {"enum": ["supported", "unsupported", "unknown"]},
+        "enablement": {"enum": ["enabled", "disabled", "unknown"]},
+        "authorization": {"enum": ["authorized", "unauthorized", "restricted", "unknown"]},
+        "reachability": {"enum": ["reachable", "disconnected", "unavailable", "unknown"]},
+        "freshness": {"enum": ["current", "stale", "unknown"]},
+        "observed_at_ms": {"type": "integer", "minimum": 0},
+        "fresh_until_ms": {"type": "integer", "minimum": 0},
+        "evaluated_at_ms": {"type": "integer", "minimum": 0},
+        "eligible": {"type": "boolean"},
+        "reason_code": {"$ref": "#/$defs/portableId"},
+        "message": {"$ref": "#/$defs/nonempty"}
+      }
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "preview_id", "operation_id", "action_id", "action", "created_at_ms", "expires_at_ms", "fleet_revision", "duration_ms", "watchdog_interval_ms", "watchdog_generation", "owner", "targets"],
+      "properties": {
+        "schema": {"const": "rusty.fleet.quest_awake_preview.v1"},
+        "preview_id": {"$ref": "#/$defs/portableId"},
+        "operation_id": {"$ref": "#/$defs/portableId"},
+        "action_id": {"const": "quest.awake-control"},
+        "action": {"$ref": "#/$defs/action"},
+        "created_at_ms": {"type": "integer", "minimum": 0},
+        "expires_at_ms": {"type": "integer", "minimum": 0},
+        "fleet_revision": {"type": "integer", "minimum": 1},
+        "duration_ms": {"type": "integer", "minimum": 60000, "maximum": 28800000},
+        "watchdog_interval_ms": {"type": "integer", "minimum": 1000, "maximum": 60000},
+        "watchdog_generation": {"$ref": "#/$defs/portableId"},
+        "owner": {"$ref": "#/$defs/owner"},
+        "targets": {"type": "array", "minItems": 1, "maxItems": 10000, "items": {"$ref": "#/$defs/preflight"}}
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "request_id", "operation_id", "preview_id", "device_id", "identity_revision", "action", "duration_ms", "watchdog_interval_ms", "watchdog_generation", "issued_at_ms", "expires_at_ms"],
+      "properties": {
+        "schema": {"const": "rusty.fleet.quest_awake_owner_invocation.v1"},
+        "request_id": {"$ref": "#/$defs/portableId"},
+        "operation_id": {"$ref": "#/$defs/portableId"},
+        "preview_id": {"$ref": "#/$defs/portableId"},
+        "device_id": {"$ref": "#/$defs/portableId"},
+        "identity_revision": {"type": "integer", "minimum": 1},
+        "action": {"$ref": "#/$defs/action"},
+        "duration_ms": {"type": "integer", "minimum": 60000, "maximum": 28800000},
+        "watchdog_interval_ms": {"type": "integer", "minimum": 1000, "maximum": 60000},
+        "watchdog_generation": {"$ref": "#/$defs/portableId"},
+        "issued_at_ms": {"type": "integer", "minimum": 0},
+        "expires_at_ms": {"type": "integer", "minimum": 0}
+      }
+    },
+    "powerReadback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wakefulness", "display_state", "stay_on", "auto_sleep_disabled", "proximity_state", "proximity_hold_duration_ms", "proximity_hold_remaining_ms", "captured_at_ms"],
+      "properties": {
+        "wakefulness": {"type": "string", "maxLength": 128},
+        "display_state": {"type": "string", "maxLength": 128},
+        "stay_on": {"type": "boolean"},
+        "auto_sleep_disabled": {"oneOf": [{"type": "boolean"}, {"type": "null"}]},
+        "proximity_state": {"type": "string", "maxLength": 128},
+        "proximity_hold_duration_ms": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "proximity_hold_remaining_ms": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "captured_at_ms": {"type": "integer", "minimum": 0}
+      }
+    },
+    "watchdogReadback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reported_active", "fresh", "generation", "boot_id_sha256", "interval_ms", "last_poll_ms", "proximity_repair_count", "stay_on_repair_count", "wake_repair_count", "last_action", "last_error"],
+      "properties": {
+        "reported_active": {"type": "boolean"},
+        "fresh": {"type": "boolean"},
+        "generation": {"type": "string", "maxLength": 256},
+        "boot_id_sha256": {"$ref": "#/$defs/sha256"},
+        "interval_ms": {"type": "integer", "minimum": 0, "maximum": 60000},
+        "last_poll_ms": {"type": "integer", "minimum": 0},
+        "proximity_repair_count": {"type": "integer", "minimum": 0},
+        "stay_on_repair_count": {"type": "integer", "minimum": 0},
+        "wake_repair_count": {"type": "integer", "minimum": 0},
+        "last_action": {"type": "string", "maxLength": 256},
+        "last_error": {"type": "string", "maxLength": 512}
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "request_id", "operation_id", "preview_id", "device_id", "identity_revision", "action", "watchdog_generation", "requested_duration_ms", "requested_watchdog_interval_ms", "stay_on_effective", "proximity_hold_effective", "wake_effective", "windows_watchdog_effective", "device_watchdog_effective", "settings_restored", "effective", "settings_left_unchanged", "outcome", "repair_count", "power", "device_watchdog", "evidence_sha256", "observed_at_ms"],
+      "properties": {
+        "schema": {"const": "questionable.file_manager.quest_awake_receipt.v1"},
+        "request_id": {"$ref": "#/$defs/portableId"},
+        "operation_id": {"$ref": "#/$defs/portableId"},
+        "preview_id": {"$ref": "#/$defs/portableId"},
+        "device_id": {"$ref": "#/$defs/portableId"},
+        "identity_revision": {"type": "integer", "minimum": 1},
+        "action": {"$ref": "#/$defs/action"},
+        "watchdog_generation": {"$ref": "#/$defs/portableId"},
+        "requested_duration_ms": {"type": "integer", "minimum": 60000, "maximum": 28800000},
+        "requested_watchdog_interval_ms": {"type": "integer", "minimum": 1000, "maximum": 60000},
+        "stay_on_effective": {"type": "boolean"},
+        "proximity_hold_effective": {"type": "boolean"},
+        "wake_effective": {"type": "boolean"},
+        "windows_watchdog_effective": {"type": "boolean"},
+        "device_watchdog_effective": {"type": "boolean"},
+        "settings_restored": {"type": "boolean"},
+        "effective": {"type": "boolean"},
+        "settings_left_unchanged": {"type": "boolean"},
+        "outcome": {"type": "string", "maxLength": 256},
+        "repair_count": {"type": "integer", "minimum": 0},
+        "power": {"$ref": "#/$defs/powerReadback"},
+        "device_watchdog": {"$ref": "#/$defs/watchdogReadback"},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "observed_at_ms": {"type": "integer", "minimum": 0}
+      }
+    },
+    "targetLedger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "identity_revision", "preflight", "lifecycle", "invocation", "receipt", "failure_code", "updated_at_ms"],
+      "properties": {
+        "device_id": {"$ref": "#/$defs/portableId"},
+        "identity_revision": {"type": "integer", "minimum": 1},
+        "preflight": {"$ref": "#/$defs/preflight"},
+        "lifecycle": {"$ref": "#/$defs/lifecycle"},
+        "invocation": {"oneOf": [{"$ref": "#/$defs/invocation"}, {"type": "null"}]},
+        "receipt": {"oneOf": [{"$ref": "#/$defs/receipt"}, {"type": "null"}]},
+        "failure_code": {"oneOf": [{"$ref": "#/$defs/portableId"}, {"type": "null"}]},
+        "updated_at_ms": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}
