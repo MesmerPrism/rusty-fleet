@@ -1,5 +1,13 @@
 # Architecture
 
+The local composition includes a fail-closed, metadata-only provider catalog.
+It consumes no descriptor-derived invocation data and shares one revisioned
+snapshot across API, CLI, and WPF projections. Provider/operator routes remain
+on the loopback listener. An optional independently bounded LAN listener mounts
+only the authenticated signed-check-in route while sharing the canonical Hub,
+Manifold admission, replay, and durable state. See
+[Provider Capability Catalog](PROVIDER_CAPABILITY_CATALOG.md).
+
 ## Decision
 
 Rusty Fleet is a dedicated Hostess/operator product. It is not a mode inside

@@ -144,6 +144,19 @@ impl LocalFleetOperationClient {
 }
 
 impl FleetOperationClient for LocalFleetOperationClient {
+    fn get_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        self.request("GET", "/fleet/v1/provider-catalog", None)
+    }
+
+    fn refresh_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_timeout(
+            "POST",
+            "/fleet/v1/provider-catalog/refresh",
+            None,
+            Duration::from_secs(8),
+        )
+    }
+
     fn preview_operation(
         &mut self,
         request: &OperationPreviewRequest,

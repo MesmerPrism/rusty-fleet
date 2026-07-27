@@ -4,5 +4,9 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>RustyFleet.FleetConsole</AssemblyName>
     <RootNamespace>RustyFleet.FleetConsole</RootNamespace>
+    <ApplicationIcon>Assets\rusty-fleet.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\rusty-fleet.ico" />
+  </ItemGroup>
 </Project>

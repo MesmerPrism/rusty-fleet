@@ -55,6 +55,10 @@ use fleet_manifold_adapter::{
     windows_hotspot_manifold_request_id,
 };
 use fleet_package_updater_adapter::{PackageUpdaterAdapterLimits, PackageUpdaterOwnerAdapter};
+use fleet_provider_catalog::{
+    CATALOG_SCHEMA, CONTRACT_SOURCE_COMMIT, CatalogState, ProviderCatalog, ProviderCatalogConfig,
+    ProviderCatalogEntry, ProviderCatalogProjection,
+};
 use fleet_quest_awake_adapter::{
     QuestAwakeOwnerAdapter, QuestAwakePinnedArtifact, QuestAwakeProviderConfig,
 };
@@ -69,7 +73,7 @@ use rusty_manifold_peer::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot, watch};
 use tokio::time::timeout;
 use tower::limit::GlobalConcurrencyLimitLayer;
 
@@ -86,6 +90,7 @@ const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SAVED_VIEW_BYTES: usize = 128 * 1024;
 const MAX_OPERATION_BYTES: usize = 128 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 64;
+const MAX_CONCURRENT_CHECKIN_LISTENER_REQUESTS: usize = 16;
 const RATE_WINDOW_MS: i64 = 10_000;
 const MAX_GLOBAL_CHECKINS_PER_WINDOW: usize = 4_096;
 const MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW: usize = 8;
@@ -284,6 +289,10 @@ pub struct LocalHubConfig {
     pub bind: String,
     #[serde(default)]
     pub allow_non_loopback: bool,
+    #[serde(default)]
+    pub checkin_bind: Option<String>,
+    #[serde(default)]
+    pub allow_non_loopback_checkin: bool,
     pub state_directory: PathBuf,
     pub trusted_operator_ids: Vec<DottedId>,
     #[serde(default)]
@@ -298,6 +307,8 @@ pub struct LocalHubConfig {
     pub quest_connectivity_provider: Option<ConfiguredQuestConnectivityProvider>,
     #[serde(default)]
     pub windows_hotspot_provider: Option<ConfiguredWindowsHotspotProvider>,
+    #[serde(default)]
+    pub provider_catalog: Vec<ProviderCatalogConfig>,
     #[serde(default)]
     pub hub_policy: LocalHubPolicy,
 }
@@ -327,6 +338,31 @@ impl LocalHubConfig {
         }
         if self.windows_hotspot_provider.is_some() && !bind.ip().is_loopback() {
             return Err("Windows hotspot provider requires a loopback Hub bind".to_owned());
+        }
+        if let Some(checkin_bind) = self.checkin_socket()? {
+            if checkin_bind == bind {
+                return Err("checkin_bind must not collide with the operator/API bind".to_owned());
+            }
+            if !checkin_bind.ip().is_loopback() && !self.allow_non_loopback_checkin {
+                return Err(
+                    "non-loopback checkin_bind requires explicit allow_non_loopback_checkin=true"
+                        .to_owned(),
+                );
+            }
+            if checkin_bind.ip().is_loopback()
+                || checkin_bind.ip().is_unspecified()
+                || checkin_bind.ip().is_multicast()
+                || checkin_bind.ip().to_string() == "255.255.255.255"
+            {
+                return Err(
+                    "checkin_bind requires one exact non-loopback unicast interface IP".to_owned(),
+                );
+            }
+        } else if self.allow_non_loopback_checkin {
+            return Err("allow_non_loopback_checkin requires an explicit checkin_bind".to_owned());
+        }
+        if !self.provider_catalog.is_empty() && !bind.ip().is_loopback() {
+            return Err("provider catalog requires a loopback Hub bind".to_owned());
         }
         if !self.state_directory.is_absolute() {
             return Err("state_directory must be an absolute private path".to_owned());
@@ -453,6 +489,24 @@ impl LocalHubConfig {
             .verify_artifact()
             .map_err(|error| format!("invalid Windows hotspot provider: {error}"))?;
         }
+        if self.provider_catalog.len() > 8 {
+            return Err("provider catalog accepts at most 8 configured slots".to_owned());
+        }
+        let mut catalog_ids = BTreeSet::new();
+        let mut provider_ids = BTreeSet::new();
+        for provider in &self.provider_catalog {
+            provider
+                .validate()
+                .map_err(|error| format!("invalid provider catalog entry: {}", error.code))?;
+            if !catalog_ids.insert(&provider.catalog_id)
+                || !provider_ids.insert(&provider.expected_provider_id)
+            {
+                return Err(
+                    "provider catalog slot and expected provider identities must be unique"
+                        .to_owned(),
+                );
+            }
+        }
         if self.hub_policy.stale_after_ms <= 0
             || self.hub_policy.offline_after_ms <= self.hub_policy.stale_after_ms
             || self.hub_policy.history_limit_per_device == 0
@@ -462,6 +516,17 @@ impl LocalHubConfig {
             return Err("hub policy limits must be positive and freshness ordered".to_owned());
         }
         Ok(bind)
+    }
+
+    fn checkin_socket(&self) -> Result<Option<SocketAddr>, String> {
+        self.checkin_bind
+            .as_ref()
+            .map(|value| {
+                value
+                    .parse::<SocketAddr>()
+                    .map_err(|error| format!("checkin_bind must be an IP socket address: {error}"))
+            })
+            .transpose()
     }
 }
 
@@ -488,6 +553,10 @@ struct RuntimeState {
     connectivity_device_slots: BTreeMap<String, Arc<Semaphore>>,
     windows_hotspot_provider: Option<ConfiguredWindowsHotspotProvider>,
     inflight_windows_hotspot_operations: BTreeSet<String>,
+    provider_catalog_configs: Vec<ProviderCatalogConfig>,
+    provider_catalog_snapshot: ProviderCatalogProjection,
+    provider_catalog_refresh_inflight: bool,
+    provider_catalog_last_refresh_ms: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -914,6 +983,12 @@ impl LocalHubState {
                     .unwrap_or_default(),
                 windows_hotspot_provider: config.windows_hotspot_provider.clone(),
                 inflight_windows_hotspot_operations: BTreeSet::new(),
+                provider_catalog_configs: config.provider_catalog.clone(),
+                provider_catalog_snapshot: initial_provider_catalog_snapshot(
+                    &config.provider_catalog,
+                ),
+                provider_catalog_refresh_inflight: false,
+                provider_catalog_last_refresh_ms: None,
             })),
         })
     }
@@ -1054,6 +1129,11 @@ fn default_watch_limit() -> usize {
 pub fn router(state: LocalHubState) -> Router {
     Router::new()
         .route("/fleet/v1/health", get(health))
+        .route("/fleet/v1/provider-catalog", get(provider_catalog))
+        .route(
+            "/fleet/v1/provider-catalog/refresh",
+            post(refresh_provider_catalog),
+        )
         .route("/fleet/v1/checkins", post(checkin))
         .route("/fleet/v1/query", post(query_devices))
         .route("/fleet/v1/summary", get(summary))
@@ -1138,8 +1218,20 @@ pub fn router(state: LocalHubState) -> Router {
         .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
 }
 
+/// Check-in-only ingress for enrolled devices on an explicitly opted-in
+/// listener. No operator, owner, catalog, query, or operation route is mounted.
+pub fn checkin_router(state: LocalHubState) -> Router {
+    Router::new()
+        .route("/fleet/v1/checkins", post(checkin))
+        .with_state(state)
+        .layer(GlobalConcurrencyLimitLayer::new(
+            MAX_CONCURRENT_CHECKIN_LISTENER_REQUESTS,
+        ))
+}
+
 pub async fn serve(config: LocalHubConfig) -> Result<(), String> {
     let bind = config.validate()?;
+    let checkin_bind = config.checkin_socket()?;
     let state = LocalHubState::from_config(&config, unix_time_ms()?)?;
     schedule_recovered_owner_work(state.clone()).await?;
     schedule_recovered_awake_work(state.clone()).await?;
@@ -1148,10 +1240,41 @@ pub async fn serve(config: LocalHubConfig) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|error| format!("failed to bind {bind}: {error}"))?;
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown_signal())
+    let Some(checkin_bind) = checkin_bind else {
+        return axum::serve(listener, router(state))
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .map_err(|error| format!("local Hub server failed: {error}"));
+    };
+    let checkin_listener = tokio::net::TcpListener::bind(checkin_bind)
         .await
-        .map_err(|error| format!("local Hub server failed: {error}"))
+        .map_err(|error| format!("failed to bind check-in listener {checkin_bind}: {error}"))?;
+    let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_sender.send(true);
+    });
+    let mut operator_shutdown = shutdown_receiver.clone();
+    let mut checkin_shutdown = shutdown_receiver;
+    let operator =
+        axum::serve(listener, router(state.clone())).with_graceful_shutdown(async move {
+            while !*operator_shutdown.borrow() {
+                if operator_shutdown.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    let checkins =
+        axum::serve(checkin_listener, checkin_router(state)).with_graceful_shutdown(async move {
+            while !*checkin_shutdown.borrow() {
+                if checkin_shutdown.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    tokio::try_join!(operator, checkins)
+        .map(|_| ())
+        .map_err(|error| format!("local Hub listener failed: {error}"))
 }
 
 pub fn load_config(path: &std::path::Path) -> Result<LocalHubConfig, String> {
@@ -1191,6 +1314,121 @@ async fn health(State(state): State<LocalHubState>) -> Response {
         },
     })
     .into_response()
+}
+
+async fn provider_catalog(State(state): State<LocalHubState>) -> Response {
+    let runtime = state.runtime.lock().await;
+    (
+        StatusCode::OK,
+        Json(runtime.provider_catalog_snapshot.clone()),
+    )
+        .into_response()
+}
+
+async fn refresh_provider_catalog(State(state): State<LocalHubState>) -> Response {
+    let started_at_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let configs = {
+        let mut runtime = state.runtime.lock().await;
+        if runtime.provider_catalog_refresh_inflight {
+            return api_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "provider_catalog_refresh_saturated",
+                "one bounded provider catalog refresh is already running",
+            );
+        }
+        if runtime
+            .provider_catalog_last_refresh_ms
+            .is_some_and(|last| started_at_ms <= last)
+        {
+            runtime.provider_catalog_snapshot = failed_provider_catalog_snapshot(
+                &runtime.provider_catalog_configs,
+                runtime.provider_catalog_snapshot.revision.saturating_add(1),
+                "provider-catalog-clock-rollback",
+            );
+            return api_error(
+                StatusCode::CONFLICT,
+                "provider_catalog_clock_rollback",
+                "provider catalog refresh rejected a non-advancing host clock",
+            );
+        }
+        runtime.provider_catalog_refresh_inflight = true;
+        runtime.provider_catalog_snapshot = failed_provider_catalog_snapshot(
+            &runtime.provider_catalog_configs,
+            runtime.provider_catalog_snapshot.revision.saturating_add(1),
+            "provider-catalog-refresh-in-progress",
+        );
+        runtime.provider_catalog_configs.clone()
+    };
+    let result =
+        tokio::task::spawn_blocking(move || ProviderCatalog::default().inspect_all(&configs)).await;
+    let completed_at_ms = unix_time_ms().ok();
+    let mut runtime = state.runtime.lock().await;
+    runtime.provider_catalog_refresh_inflight = false;
+    match result {
+        Ok(mut projection) if completed_at_ms.is_some_and(|value| value >= started_at_ms) => {
+            let completed_at_ms = completed_at_ms.unwrap_or(started_at_ms);
+            projection.revision = runtime.provider_catalog_snapshot.revision.saturating_add(1);
+            projection.refreshed_at_ms = Some(completed_at_ms);
+            runtime.provider_catalog_last_refresh_ms = Some(completed_at_ms);
+            runtime.provider_catalog_snapshot = projection.clone();
+            (StatusCode::OK, Json(projection)).into_response()
+        }
+        _ => {
+            runtime.provider_catalog_snapshot = failed_provider_catalog_snapshot(
+                &runtime.provider_catalog_configs,
+                runtime.provider_catalog_snapshot.revision.saturating_add(1),
+                "provider-catalog-refresh-failed",
+            );
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "provider_catalog_task_failed",
+                "provider catalog refresh did not complete",
+            )
+        }
+    }
+}
+
+fn initial_provider_catalog_snapshot(
+    configs: &[ProviderCatalogConfig],
+) -> ProviderCatalogProjection {
+    failed_provider_catalog_snapshot(configs, 1, "provider-catalog-not-refreshed")
+}
+
+fn failed_provider_catalog_snapshot(
+    configs: &[ProviderCatalogConfig],
+    revision: u64,
+    configured_reason: &str,
+) -> ProviderCatalogProjection {
+    ProviderCatalogProjection {
+        schema: CATALOG_SCHEMA,
+        contract_source_commit: CONTRACT_SOURCE_COMMIT,
+        entries: configs
+            .iter()
+            .map(|config| ProviderCatalogEntry {
+                catalog_id: config.catalog_id.clone(),
+                state: if config.executable_path.is_none() && config.executable_sha256.is_none() {
+                    CatalogState::Unconfigured
+                } else {
+                    CatalogState::Unavailable
+                },
+                reason: if config.executable_path.is_none() && config.executable_sha256.is_none() {
+                    "provider-not-configured".to_owned()
+                } else {
+                    configured_reason.to_owned()
+                },
+                descriptor: None,
+                metadata_only: true,
+                authorizes_execution: false,
+            })
+            .collect(),
+        metadata_only: true,
+        authorizes_execution: false,
+        revision,
+        refreshed_at_ms: None,
+    }
 }
 
 async fn checkin(State(state): State<LocalHubState>, request: Request) -> Response {
@@ -5652,6 +5890,10 @@ mod tests {
         SignedFleetCheckIn, SupportState,
     };
     use fleet_hub::{FleetHub, HubPolicy, ObservationDecision, QuestWifiAdbPreviewPlan};
+    use fleet_provider_catalog::{
+        ActionKind, AuthenticationRequirement, ExpectedAction, ExpectedCapability,
+        ProviderCatalogConfig,
+    };
     use fleet_quest_connectivity_adapter::QuestConnectivityProviderConfig;
     use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
     use rusty_manifold_model::{DottedId, Revision, SchemaId};
@@ -5665,18 +5907,186 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        ConfiguredEnrollment, ConfiguredKioskDirectOperator, ConfiguredPackageUpdaterOwner,
-        ConfiguredQuestAwakePinnedArtifact, ConfiguredQuestAwakeProvider,
-        ConfiguredQuestAwakeTarget, ConnectivityOwnerWorkFailure, FleetManifoldAdapter,
-        IngressRateLimiter, LocalHubConfig, LocalHubState, MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW,
-        MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS, RuntimeState, connectivity_dispatch_slots,
-        connectivity_invocation_expired, prepare_pending_connectivity_batch, router,
-        schedule_recovered_owner_work, settle_connectivity_owner_result,
-        spawn_windows_hotspot_owner_work_with_clock, state_slot_path, transport_request_id,
-        unix_time_ms,
+        CatalogState, ConfiguredEnrollment, ConfiguredKioskDirectOperator,
+        ConfiguredPackageUpdaterOwner, ConfiguredQuestAwakePinnedArtifact,
+        ConfiguredQuestAwakeProvider, ConfiguredQuestAwakeTarget, ConnectivityOwnerWorkFailure,
+        FleetManifoldAdapter, IngressRateLimiter, LocalHubConfig, LocalHubState,
+        MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS,
+        RuntimeState, checkin_router, connectivity_dispatch_slots, connectivity_invocation_expired,
+        prepare_pending_connectivity_batch, router, schedule_recovered_owner_work,
+        settle_connectivity_owner_result, spawn_windows_hotspot_owner_work_with_clock,
+        state_slot_path, transport_request_id, unix_time_ms,
     };
 
     static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    #[tokio::test]
+    async fn checkin_listener_mounts_only_authenticated_checkin_ingress() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[19_u8; 32]);
+        let (mut config, key_id) = config(&signing_key, now_ms);
+        config.checkin_bind = Some("192.0.2.10:18742".to_owned());
+        assert!(config.validate().is_err());
+        config.allow_non_loopback_checkin = true;
+        assert!(config.validate().is_ok());
+        config.checkin_bind = Some(config.bind.clone());
+        assert!(config.validate().is_err());
+        config.checkin_bind = Some("192.0.2.10:18742".to_owned());
+
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("valid dual ingress");
+        let app = checkin_router(state);
+        for (method, path, expected) in [
+            ("GET", "/fleet/v1/health", StatusCode::NOT_FOUND),
+            ("GET", "/fleet/v1/provider-catalog", StatusCode::NOT_FOUND),
+            (
+                "POST",
+                "/fleet/v1/provider-catalog/refresh",
+                StatusCode::NOT_FOUND,
+            ),
+            ("POST", "/fleet/v1/query", StatusCode::NOT_FOUND),
+            (
+                "POST",
+                "/fleet/v1/operations/preview",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "GET",
+                "/fleet/v1/package-updater/offers",
+                StatusCode::NOT_FOUND,
+            ),
+            ("POST", "/fleet/v1/checkins/", StatusCode::NOT_FOUND),
+            ("POST", "/Fleet/v1/checkins", StatusCode::NOT_FOUND),
+            ("POST", "/fleet/v1/%63heckins", StatusCode::NOT_FOUND),
+            (
+                "OPTIONS",
+                "/fleet/v1/checkins",
+                StatusCode::METHOD_NOT_ALLOWED,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(json_method_request(method, path, Vec::new()))
+                .await
+                .expect("isolated route response");
+            assert_eq!(response.status(), expected, "{method} {path}");
+        }
+        let wrong_method = app
+            .clone()
+            .oneshot(json_method_request("GET", "/fleet/v1/checkins", Vec::new()))
+            .await
+            .expect("method response");
+        assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let accepted = app
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+        fs::remove_dir_all(state_directory).expect("remove state directory");
+    }
+
+    #[tokio::test]
+    async fn provider_catalog_reads_snapshot_and_refreshes_without_retaining_prior_metadata() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[20_u8; 32]);
+        let (mut config, _) = config(&signing_key, now_ms);
+        config.provider_catalog = vec![ProviderCatalogConfig {
+            catalog_id: "quest-connectivity".to_owned(),
+            executable_path: None,
+            executable_sha256: None,
+            expected_provider_id: "questionable-file-manager.quest-connectivity-provider"
+                .to_owned(),
+            expected_provider_version: "1.0.0".to_owned(),
+            expected_capabilities: vec![ExpectedCapability {
+                id: "questionable-file-manager.quest-connectivity.wireless-adb".to_owned(),
+                contract_versions: vec![
+                    "questionable.file_manager.quest_connectivity.provider_request.v1".to_owned(),
+                ],
+                actions: vec![ExpectedAction {
+                    id: "request_wireless_adb".to_owned(),
+                    kind: ActionKind::Effect,
+                    authentication_requirements: vec![
+                        AuthenticationRequirement::ProcessAccessControl,
+                        AuthenticationRequirement::CallerAuthorityExternal,
+                        AuthenticationRequirement::ExactTargetBinding,
+                    ],
+                }],
+                effect_owner: "rusty-kiosk.wireless-adb".to_owned(),
+                receipt_schema: "questionable.file_manager.quest_connectivity.provider_receipt.v1"
+                    .to_owned(),
+            }],
+        }];
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("catalog config");
+        let app = router(state.clone());
+        let snapshot = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/fleet/v1/provider-catalog")
+                    .body(Body::empty())
+                    .expect("snapshot request"),
+            )
+            .await
+            .expect("snapshot response");
+        assert_eq!(snapshot.status(), StatusCode::OK);
+        let snapshot_json: Value = serde_json::from_slice(
+            &to_bytes(snapshot.into_body(), 64 * 1024)
+                .await
+                .expect("snapshot body"),
+        )
+        .expect("snapshot JSON");
+        assert_eq!(snapshot_json["revision"], 1);
+        assert_eq!(snapshot_json["entries"][0]["state"], "unconfigured");
+        assert!(snapshot_json["entries"][0].get("descriptor").is_none());
+
+        let refreshed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/fleet/v1/provider-catalog/refresh")
+                    .body(Body::empty())
+                    .expect("refresh request"),
+            )
+            .await
+            .expect("refresh response");
+        assert_eq!(refreshed.status(), StatusCode::OK);
+        let refreshed_json: Value = serde_json::from_slice(
+            &to_bytes(refreshed.into_body(), 64 * 1024)
+                .await
+                .expect("refresh body"),
+        )
+        .expect("refresh JSON");
+        assert_eq!(refreshed_json["revision"], 3);
+        assert_eq!(refreshed_json["entries"][0]["state"], "unconfigured");
+        assert_eq!(refreshed_json["authorizes_execution"], false);
+        assert_eq!(refreshed_json["metadata_only"], true);
+
+        state.runtime.lock().await.provider_catalog_last_refresh_ms = Some(i64::MAX);
+        let rollback = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/fleet/v1/provider-catalog/refresh")
+                    .body(Body::empty())
+                    .expect("rollback request"),
+            )
+            .await
+            .expect("rollback response");
+        assert_eq!(rollback.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            state.runtime.lock().await.provider_catalog_snapshot.entries[0].state,
+            CatalogState::Unconfigured
+        );
+        fs::remove_dir_all(state_directory).expect("remove state directory");
+    }
 
     #[tokio::test]
     async fn signed_checkin_query_and_replay_share_one_authority() {
@@ -7159,6 +7569,8 @@ mod tests {
                 schema: "rusty.fleet.local_hub_config.v1".to_owned(),
                 bind: "127.0.0.1:8741".to_owned(),
                 allow_non_loopback: false,
+                checkin_bind: None,
+                allow_non_loopback_checkin: false,
                 state_directory: test_state_directory(),
                 trusted_operator_ids: vec![operator_id.clone()],
                 enrollments: vec![ConfiguredEnrollment {
@@ -7185,6 +7597,7 @@ mod tests {
                 quest_awake_provider: None,
                 quest_connectivity_provider: None,
                 windows_hotspot_provider: None,
+                provider_catalog: Vec::new(),
                 hub_policy: Default::default(),
             },
             key_id,

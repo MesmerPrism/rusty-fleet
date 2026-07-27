@@ -3,6 +3,7 @@
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using System.Windows.Data;
@@ -106,6 +107,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private string _questWifiAdbSummaryText = "No Quest connectivity preview";
     private string _questWifiAdbStatusText =
         "Choose a modern or classic action, select exact devices, then preview";
+    private string _providerCatalogStatusText =
+        "Provider metadata not refreshed";
 
     public FleetWorkspaceViewModel(Func<Uri, IFleetDataSource> sourceFactory)
     {
@@ -114,6 +117,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         ConnectCommand = new AsyncCommand(ConnectAsync, () => !IsBusy);
         SynchronizeUpdatesCommand = new AsyncCommand(
             SynchronizeUpdatesAsync,
+            () => !IsBusy && _source is not null);
+        RefreshProviderCatalogCommand = new AsyncCommand(
+            RefreshProviderCatalogAsync,
             () => !IsBusy && _source is not null);
         ApplySearchCommand = new AsyncCommand(ApplyScopeAsync, () => !IsBusy && _source is not null);
         ClearSearchCommand = new AsyncCommand(ClearSearchAsync, () => !IsBusy);
@@ -238,6 +244,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
     public ObservableCollection<QuestWifiAdbTargetViewModel> QuestWifiAdbTargets { get; } = [];
 
+    public ObservableCollection<ProviderCatalogEntry> ProviderCatalogEntries { get; } = [];
+
     public ICollectionView RowsView { get; }
 
     public IReadOnlyList<string> FreshnessOptions { get; } =
@@ -349,6 +357,14 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public AsyncCommand ConnectCommand { get; }
 
     public AsyncCommand SynchronizeUpdatesCommand { get; }
+
+    public AsyncCommand RefreshProviderCatalogCommand { get; }
+
+    public string ProviderCatalogStatusText
+    {
+        get => _providerCatalogStatusText;
+        private set => SetProperty(ref _providerCatalogStatusText, value);
+    }
 
     public AsyncCommand ApplySearchCommand { get; }
 
@@ -914,6 +930,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             {
                 ConnectCommand.RaiseCanExecuteChanged();
                 SynchronizeUpdatesCommand.RaiseCanExecuteChanged();
+                RefreshProviderCatalogCommand.RaiseCanExecuteChanged();
                 ApplySearchCommand.RaiseCanExecuteChanged();
                 ClearSearchCommand.RaiseCanExecuteChanged();
                 ApplyQueuedOrderingChangesCommand.RaiseCanExecuteChanged();
@@ -1980,6 +1997,46 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 : $"Connected · {accepted:N0} accepted / {rejected:N0} rejected Hub " +
                   $"events consumed · event {_watchSequence:N0}" +
                   (HasQueuedOrderingChanges ? " · ordering changes await application" : string.Empty);
+    }
+
+    public async Task RefreshProviderCatalogAsync()
+    {
+        if (_source is null)
+        {
+            ProviderCatalogStatusText = "Not connected to a Fleet Hub";
+            return;
+        }
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        IsBusy = true;
+        ProviderCatalogStatusText = "Refreshing inert provider metadata";
+        try
+        {
+            var projection = await _source.ProviderCatalogAsync(cancellation.Token);
+            ProviderCatalogProjectionValidation.Validate(projection);
+            ProviderCatalogEntries.Clear();
+            foreach (var entry in projection.Entries.OrderBy(
+                         item => item.CatalogId,
+                         StringComparer.Ordinal))
+            {
+                ProviderCatalogEntries.Add(entry);
+            }
+            ProviderCatalogStatusText =
+                $"{ProviderCatalogEntries.Count:N0} provider slots · metadata only · " +
+                "does not authorize execution";
+        }
+        catch (Exception error) when (
+            error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException or InvalidDataException or NotSupportedException)
+        {
+            ProviderCatalogEntries.Clear();
+            ProviderCatalogStatusText =
+                $"Provider refresh failed · no prior descriptor retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     public Task ApplyScopeAsync() => LoadScopeAsync(

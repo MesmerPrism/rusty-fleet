@@ -24,6 +24,8 @@ struct MockOperationClient {
     previews: Vec<OperationPreviewRequest>,
     executions: Vec<OperationExecuteRequest>,
     lookups: Vec<String>,
+    catalog_reads: usize,
+    catalog_refreshes: usize,
 }
 
 impl MockOperationClient {
@@ -36,6 +38,16 @@ impl MockOperationClient {
 }
 
 impl FleetOperationClient for MockOperationClient {
+    fn get_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        self.catalog_reads += 1;
+        Ok(self.response.clone())
+    }
+
+    fn refresh_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        self.catalog_refreshes += 1;
+        Ok(self.response.clone())
+    }
+
     fn preview_operation(
         &mut self,
         request: &OperationPreviewRequest,
@@ -56,6 +68,40 @@ impl FleetOperationClient for MockOperationClient {
         self.lookups.push(operation_id.to_owned());
         Ok(self.response.clone())
     }
+}
+
+#[test]
+fn provider_catalog_status_and_refresh_share_exact_cli_projection() {
+    let expected = serde_json::json!({
+        "schema": "rusty.fleet.provider_catalog.v1",
+        "contract_source_commit": "fc476166f9c05f941dff7e9183f5c893426c05ca",
+        "entries": [],
+        "metadata_only": true,
+        "authorizes_execution": false,
+        "revision": 1
+    });
+    let mut client = MockOperationClient::returning(expected.clone());
+    assert_eq!(
+        execute_with_operation_client(vec!["provider-catalog".to_owned()], &mut client,)
+            .expect("catalog status"),
+        expected
+    );
+    assert_eq!(
+        execute_with_operation_client(vec!["provider-catalog-refresh".to_owned()], &mut client,)
+            .expect("catalog refresh"),
+        expected
+    );
+    assert_eq!(client.catalog_reads, 1);
+    assert_eq!(client.catalog_refreshes, 1);
+    assert_eq!(
+        execute_with_operation_client(
+            vec!["provider-catalog".to_owned(), "extra".to_owned()],
+            &mut client,
+        )
+        .expect_err("extra argument")
+        .code,
+        "unexpected_arguments"
+    );
 }
 
 fn preview_arguments() -> Vec<String> {

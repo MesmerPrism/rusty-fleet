@@ -232,6 +232,8 @@ function Test-RequiredFiles {
         "apps/fleet-console-wpf/ViewModels/DeviceViewModels.cs",
         "apps/fleet-console-wpf/ViewModels/FleetWorkspaceViewModel.cs",
         "apps/fleet-console-wpf/ViewModels/OperationViewModels.cs",
+        "apps/fleet-console-wpf/Assets/rusty-fleet.ico",
+        "assets/branding/rusty-fleet.svg",
         "apps/fleet-console-wpf.tests/RustyFleet.FleetConsole.Tests.csproj",
         "apps/fleet-console-wpf.tests/Program.cs",
         "crates/fleet-contracts/Cargo.toml",
@@ -248,6 +250,8 @@ function Test-RequiredFiles {
         "crates/fleet-manifold-adapter/src/lib.rs",
         "crates/fleet-package-updater-adapter/Cargo.toml",
         "crates/fleet-package-updater-adapter/src/lib.rs",
+        "crates/fleet-provider-catalog/Cargo.toml",
+        "crates/fleet-provider-catalog/src/lib.rs",
         "crates/fleet-quest-awake-adapter/Cargo.toml",
         "crates/fleet-quest-awake-adapter/src/lib.rs",
         "crates/fleet-simulator/Cargo.toml",
@@ -288,6 +292,8 @@ function Test-RequiredFiles {
         "docs/WORKFLOW.md",
         "docs/VALIDATION.md",
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
+        "docs/PROVIDER_CAPABILITY_CATALOG.md",
+        "tools/New-FleetIcon.ps1",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
         "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
         "docs/decisions/0005-m1-checkin-authority.md",
@@ -420,6 +426,7 @@ function Test-SourceImplementation {
         "crates/fleet-contracts",
         "crates/fleet-hub",
         "crates/fleet-manifold-adapter",
+        "crates/fleet-provider-catalog",
         "crates/fleet-simulator"
     )) {
         Assert-True -Condition ($workspace.Contains("`"$member`"")) `
@@ -458,6 +465,11 @@ function Test-SourceImplementation {
 
     Invoke-Cargo -Arguments @("fmt", "--all", "--", "--check")
     Invoke-Cargo -Arguments @("test", "--workspace", "--locked")
+    & pwsh -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $repoRoot "tools/New-FleetIcon.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fleet icon provenance validation failed."
+    }
 }
 
 function Test-PlanningInvariants {

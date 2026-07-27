@@ -30,6 +30,7 @@ internal static class Program
         {
             var repoRoot = ReadRepoRoot(arguments);
             WindowsHotspotContractTests.Run();
+            ProviderCatalogContractTests.Run();
             var kioskOperationFixture = JsonSerializer.Deserialize<OperationLedger>(
                 File.ReadAllText(
                     Path.Combine(

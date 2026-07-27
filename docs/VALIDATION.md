@@ -1,5 +1,13 @@
 # Validation
 
+Provider-catalog source tests cover exact contract/version/action/owner/receipt
+bindings, RFC3339 offsets and leap seconds, duplicate IDs, freshness drift,
+stale/future observations, executable vocabulary, artifact swaps, oversized
+and multiple-document output, path-free projections, snapshot invalidation,
+clock rollback, and check-in-listener route isolation. Generic repository
+tiers use only unconfigured/fake transports and never launch a configured live
+provider. The deterministic icon provenance check runs in Quick.
+
 ## Goal
 
 Validation should prove the boundary changed by the current work while avoiding

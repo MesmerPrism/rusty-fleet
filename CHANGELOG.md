@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Added a fail-closed, revisioned provider capability catalog with shared local
+  API, `fleetctl`, and WPF projections over exact hash-pinned
+  `--describe-json` owner metadata.
+- Added an optional independently bounded check-in-only LAN listener while
+  keeping local provider/operator routes on loopback.
+- Added a canonical generic Fleet SVG and deterministic multi-size Windows
+  application icon.
+
 All notable changes to Rusty Fleet will be documented here.
 
 The project follows Semantic Versioning once runtime releases begin.

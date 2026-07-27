@@ -1,5 +1,13 @@
 # Milestone 1 Local Monitoring Runtime
 
+When enrolled devices must check in from the private LAN while local execution
+providers keep the operator surface loopback-only, configure the optional
+split check-in listener described in
+[Provider Capability Catalog](PROVIDER_CAPABILITY_CATALOG.md). It exposes only
+authenticated bounded `POST /fleet/v1/checkins`, shares the same canonical
+durable Hub state, and remains disabled unless an exact non-loopback unicast
+bind and its explicit opt-in are both present.
+
 ## Scope
 
 `fleet-hub-local` is the first runnable Rusty Fleet ingress. It accepts

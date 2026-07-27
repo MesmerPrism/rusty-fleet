@@ -229,6 +229,7 @@ dependencies = [
  "fleet-kiosk-adapter",
  "fleet-manifold-adapter",
  "fleet-package-updater-adapter",
+ "fleet-provider-catalog",
  "fleet-quest-awake-adapter",
  "fleet-quest-connectivity-adapter",
  "fleet-simulator",
@@ -277,6 +278,16 @@ name = "fleet-package-updater-adapter"
 version = "0.1.0"
 dependencies = [
  "fleet-contracts",
+]
+
+[[package]]
+name = "fleet-provider-catalog"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

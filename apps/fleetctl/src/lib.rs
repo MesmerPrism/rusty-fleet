@@ -100,6 +100,8 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 "m1-lifecycle",
                 "operator-fixture mixed-freshness [count]",
                 "saved-view-roundtrip [count]",
+                "provider-catalog",
+                "provider-catalog-refresh",
                 "operation-preview kiosk.show-controls DEVICE@IDENTITY_REVISION...",
                 "operation-execute OPERATION_ID PREVIEW_ID",
                 "operation-get OPERATION_ID",
@@ -201,7 +203,20 @@ pub fn execute_with_operation_client<C: FleetOperationClient + ?Sized>(
     client: &mut C,
 ) -> Result<serde_json::Value, CliFailure> {
     let command = arguments.first().map_or("help", String::as_str);
-    if quest_awake_operation::is_quest_awake_operation_command(command) {
+    if matches!(command, "provider-catalog" | "provider-catalog-refresh") {
+        if arguments.len() != 1 {
+            Err(CliFailure::new(
+                "unexpected_arguments",
+                "provider-catalog accepts no arguments",
+            ))
+        } else {
+            if command == "provider-catalog" {
+                client.get_provider_catalog()
+            } else {
+                client.refresh_provider_catalog()
+            }
+        }
+    } else if quest_awake_operation::is_quest_awake_operation_command(command) {
         quest_awake_operation::execute_quest_awake_operation_command(&arguments, client)
     } else if quest_wifi_adb_operation::is_quest_wifi_adb_operation_command(command) {
         quest_wifi_adb_operation::execute_quest_wifi_adb_operation_command(&arguments, client)

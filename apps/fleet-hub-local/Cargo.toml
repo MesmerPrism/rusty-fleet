@@ -14,6 +14,7 @@ fleet-hub = { path = "../../crates/fleet-hub" }
 fleet-kiosk-adapter = { path = "../../crates/fleet-kiosk-adapter" }
 fleet-manifold-adapter = { path = "../../crates/fleet-manifold-adapter" }
 fleet-package-updater-adapter = { path = "../../crates/fleet-package-updater-adapter" }
+fleet-provider-catalog = { path = "../../crates/fleet-provider-catalog" }
 fleet-quest-awake-adapter = { path = "../../crates/fleet-quest-awake-adapter" }
 fleet-quest-connectivity-adapter = { path = "../../crates/fleet-quest-connectivity-adapter" }
 fleet-windows-hotspot-adapter = { path = "../../crates/fleet-windows-hotspot-adapter" }

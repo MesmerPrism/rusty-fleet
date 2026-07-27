@@ -255,6 +255,12 @@ Quest Wi-Fi ADB commands use that same loopback Hub and are documented in
 Windows host-hotspot commands and Console behavior use that same loopback Hub
 and are documented in
 [Windows Mobile Hotspot control](docs/WINDOWS_HOTSPOT_CONTROL.md).
+Inert owner-provider metadata uses an explicit fail-closed refresh and a
+Hub-owned snapshot shared by the local API, `fleetctl`, and Console; see the
+[provider capability catalog](docs/PROVIDER_CAPABILITY_CATALOG.md). That guide
+also documents the optional check-in-only LAN listener which lets enrolled
+Fleet Agents report signed evidence while all provider/operator routes remain
+loopback-only.
 
 Build and exercise the native WPF projection against the real deterministic
 Rust query result:

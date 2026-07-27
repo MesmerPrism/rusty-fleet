@@ -10,6 +10,11 @@ namespace RustyFleet.FleetConsole.Services;
 
 public interface IFleetDataSource
 {
+    Task<ProviderCatalogProjection> ProviderCatalogAsync(
+        CancellationToken cancellationToken) =>
+        Task.FromException<ProviderCatalogProjection>(
+            new NotSupportedException("This data source does not project provider metadata."));
+
     Task<FleetQueryResult> QueryAsync(FleetQuery query, CancellationToken cancellationToken);
 
     Task<FleetSummaryProjection> SummaryAsync(CancellationToken cancellationToken);
@@ -129,6 +134,20 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             Timeout = TimeSpan.FromSeconds(45),
             MaxResponseContentBufferSize = MaxResponseBytes
         };
+    }
+
+    public async Task<ProviderCatalogProjection> ProviderCatalogAsync(
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsync(
+            "/fleet/v1/provider-catalog/refresh",
+            content: null,
+            cancellationToken);
+        var projection = await ReadAsync<ProviderCatalogProjection>(
+            response,
+            cancellationToken);
+        ProviderCatalogProjectionValidation.Validate(projection);
+        return projection;
     }
 
     public async Task<FleetQueryResult> QueryAsync(

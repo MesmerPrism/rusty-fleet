@@ -16,6 +16,20 @@ use crate::CliFailure;
 /// Responses remain raw JSON until this crate has decoded and validated the
 /// complete Kiosk show-controls operation contract.
 pub trait FleetOperationClient {
+    fn get_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "provider_catalog_client_required",
+            "the injected Fleet client does not support provider catalog metadata",
+        ))
+    }
+
+    fn refresh_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "provider_catalog_client_required",
+            "the injected Fleet client does not support provider catalog refresh",
+        ))
+    }
+
     fn preview_operation(
         &mut self,
         request: &OperationPreviewRequest,
@@ -185,7 +199,9 @@ pub trait FleetOperationClient {
 pub fn is_operation_command(command: &str) -> bool {
     matches!(
         command,
-        "operation-preview"
+        "provider-catalog"
+            | "provider-catalog-refresh"
+            | "operation-preview"
             | "operation-execute"
             | "operation-get"
             | "package-preview"
