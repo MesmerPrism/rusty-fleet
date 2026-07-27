@@ -73,6 +73,18 @@ public interface IFleetDataSource
     Task<QuestAwakeOperation> QuestAwakeAsync(
         string operationId,
         CancellationToken cancellationToken);
+
+    Task<QuestWifiAdbOperation> PreviewQuestWifiAdbAsync(
+        QuestWifiAdbPreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<QuestWifiAdbOperation> ExecuteQuestWifiAdbAsync(
+        QuestWifiAdbExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<QuestWifiAdbOperation> QuestWifiAdbAsync(
+        string operationId,
+        CancellationToken cancellationToken);
 }
 
 public sealed class FleetApiClient : IFleetDataSource, IDisposable
@@ -306,6 +318,42 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             $"/fleet/v1/quest-awake/{encoded}",
             cancellationToken);
         return await ReadAsync<QuestAwakeOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestWifiAdbOperation> PreviewQuestWifiAdbAsync(
+        QuestWifiAdbPreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/quest-wifi-adb/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<QuestWifiAdbOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestWifiAdbOperation> ExecuteQuestWifiAdbAsync(
+        QuestWifiAdbExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _http.PostAsJsonAsync(
+            $"/fleet/v1/quest-wifi-adb/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<QuestWifiAdbOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestWifiAdbOperation> QuestWifiAdbAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/quest-wifi-adb/{encoded}",
+            cancellationToken);
+        return await ReadAsync<QuestWifiAdbOperation>(response, cancellationToken);
     }
 
     public void Dispose() => _http.Dispose();

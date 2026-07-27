@@ -67,6 +67,16 @@ artifacts plus private exact-device bindings, and public receipts contain no
 serials or paths. See
 [Quest awake control](docs/QUEST_AWAKE_CONTROL.md).
 
+The additive Quest Wi-Fi ADB stack exposes Kiosk-backed modern wireless
+debugging requests, after-boot request policy, explicit disable, and a
+separate classic USB `tcpip` action through a pinned QuestIonAble File Manager
+provider. Fleet and Manifold retain policy and command authority; private
+serial, endpoint, and pairing resolution stays in File Manager. Termux
+usability is projected only from an enrolled signed check-in carrying fresh
+exact `uid=2000(shell)` capability evidence, never from the provider receipt
+or a caller-submitted proof. See
+[Quest Wi-Fi ADB control](docs/QUEST_WIFI_ADB_CONTROL.md).
+
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
 conditions, visible query/selection scope, and per-device operation evidence.
@@ -116,6 +126,9 @@ The current implementation is split into:
 - `fleet-quest-awake-adapter`: pinned local File Manager provider execution,
   exact invocation/receipt validation, and public readback projection without
   serial or path disclosure;
+- `fleet-quest-connectivity-adapter`: pinned local File Manager connectivity
+  provider execution and strict sanitized receipt binding, with no private
+  target details or Termux authority;
 - `fleet-hub-local`: explicit bounded HTTP check-in ingress plus health,
   query, summary, inspect, detail, watch, saved-view, and operation projections
   over the same Hub and fully validated two-slot durable envelope;
@@ -222,6 +235,8 @@ Package commands use that same loopback Hub and are documented in the
 [package checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
 Quest awake commands use that same loopback Hub and are documented in
 [Quest awake control](docs/QUEST_AWAKE_CONTROL.md).
+Quest Wi-Fi ADB commands use that same loopback Hub and are documented in
+[Quest Wi-Fi ADB control](docs/QUEST_WIFI_ADB_CONTROL.md).
 
 Build and exercise the native WPF projection against the real deterministic
 Rust query result:

@@ -97,6 +97,27 @@ public partial class MainWindow : Window
 
     public DataGrid QuestAwakeTargetsControl => QuestAwakeTargetsGrid;
 
+    public FrameworkElement QuestWifiAdbOperationRegion => QuestWifiAdbOperationPane;
+
+    public RadioButton QuestWifiAdbModernRouteControl =>
+        QuestWifiAdbModernRouteButton;
+
+    public ComboBox QuestWifiAdbModernActionControl =>
+        QuestWifiAdbModernActionBox;
+
+    public RadioButton QuestWifiAdbClassicRouteControl =>
+        QuestWifiAdbClassicRouteButton;
+
+    public Button PreviewQuestWifiAdbControl => PreviewQuestWifiAdbButton;
+
+    public Button ConfirmQuestWifiAdbControl => ConfirmQuestWifiAdbButton;
+
+    public Button RefreshQuestWifiAdbControl => RefreshQuestWifiAdbButton;
+
+    public Button DismissQuestWifiAdbControl => DismissQuestWifiAdbButton;
+
+    public DataGrid QuestWifiAdbTargetsControl => QuestWifiAdbTargetsGrid;
+
     public FrameworkElement InspectorRegion => InspectorPane;
 
     public FrameworkElement FullDeviceDetailRegion => FullDetailRegion;

@@ -311,6 +311,22 @@ fresh, action-specific readbacks and publishes neither serials, paths, raw
 commands, nor raw boot IDs. See
 [Quest Awake Control](QUEST_AWAKE_CONTROL.md).
 
+### Quest Wi-Fi ADB adapter
+
+`quest.wifi-adb-control` composes Fleet policy and scheduling, Manifold typed
+command authority, a pinned File Manager provider, Kiosk's supported
+same-signer setting helper, and a separate USB-only classic `tcpip` route.
+File Manager privately resolves serial, endpoint, and pairing material by
+Fleet device ID; none crosses the Fleet contract.
+
+Provider delivery, Kiosk setting application, protected wearer prompt state,
+listener discovery, and Termux loopback shell proof remain independent. File
+Manager cannot assert Termux usability. Only a fresh modern-TLS capability
+fact carried by an enrolled Ed25519-signed Fleet check-in can be reconciled to
+an operation, and newer unavailable evidence, a disable receipt, expiry, or
+source-epoch change clears usability. No caller-facing proof ingress exists.
+See [Quest Wi-Fi ADB Control](QUEST_WIFI_ADB_CONTROL.md).
+
 ## Identity and security
 
 - Enrollment produces a stable device identity and revocable operator grant.

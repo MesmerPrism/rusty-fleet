@@ -85,6 +85,33 @@ pub trait FleetOperationClient {
         ))
     }
 
+    fn preview_quest_wifi_adb(
+        &mut self,
+        _request: &fleet_contracts::QuestWifiAdbPreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_wifi_adb_client_required",
+            "the injected Fleet client does not support Quest Wi-Fi ADB operations",
+        ))
+    }
+
+    fn execute_quest_wifi_adb(
+        &mut self,
+        _request: &fleet_contracts::QuestWifiAdbExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_wifi_adb_client_required",
+            "the injected Fleet client does not support Quest Wi-Fi ADB operations",
+        ))
+    }
+
+    fn get_quest_wifi_adb(&mut self, _operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_wifi_adb_client_required",
+            "the injected Fleet client does not support Quest Wi-Fi ADB operations",
+        ))
+    }
+
     fn claim_package_updater(
         &mut self,
         _request: &fleet_contracts::PackageUpdaterClaimRequest,
@@ -141,6 +168,9 @@ pub fn is_operation_command(command: &str) -> bool {
             | "awake-preview"
             | "awake-execute"
             | "awake-get"
+            | "wifi-adb-preview"
+            | "wifi-adb-execute"
+            | "wifi-adb-get"
     )
 }
 

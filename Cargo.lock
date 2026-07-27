@@ -230,6 +230,7 @@ dependencies = [
  "fleet-manifold-adapter",
  "fleet-package-updater-adapter",
  "fleet-quest-awake-adapter",
+ "fleet-quest-connectivity-adapter",
  "fleet-simulator",
  "hex",
  "rusty-manifold-model",
@@ -279,6 +280,17 @@ dependencies = [
 
 [[package]]
 name = "fleet-quest-awake-adapter"
+version = "0.1.0"
+dependencies = [
+ "fleet-contracts",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "fleet-quest-connectivity-adapter"
 version = "0.1.0"
 dependencies = [
  "fleet-contracts",

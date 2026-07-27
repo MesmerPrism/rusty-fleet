@@ -23,10 +23,12 @@ use serde::{Deserialize, Serialize};
 mod awake;
 mod kiosk;
 mod packages;
+mod wifi_adb;
 
 pub use awake::QuestAwakePreviewPlan;
 pub use kiosk::KioskShowControlsPreviewPlan;
 pub use packages::PackageInstallReleasePreviewPlan;
+pub use wifi_adb::QuestWifiAdbPreviewPlan;
 
 const ROW_SCHEMA: &str = "rusty.fleet.device_row.v1";
 const INSPECTOR_SCHEMA: &str = "rusty.fleet.device_inspector.v1";
@@ -37,6 +39,7 @@ const MAX_SAVED_VIEWS: usize = 128;
 const MAX_KIOSK_OPERATIONS: usize = 1_000;
 const MAX_PACKAGE_OPERATIONS: usize = 1_000;
 const MAX_AWAKE_OPERATIONS: usize = 1_000;
+const MAX_WIFI_ADB_OPERATIONS: usize = 1_000;
 
 const fn initial_saved_view_revision() -> u64 {
     1
@@ -173,6 +176,8 @@ pub struct FleetHubSnapshot {
     package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
     #[serde(default)]
     awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
+    #[serde(default)]
+    wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
 }
 
 #[derive(Clone, Debug)]
@@ -187,6 +192,7 @@ pub struct FleetHub {
     kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
     package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
     awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
+    wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
 }
 
 impl FleetHub {
@@ -211,6 +217,7 @@ impl FleetHub {
             kiosk_operations: BTreeMap::new(),
             package_operations: BTreeMap::new(),
             awake_operations: BTreeMap::new(),
+            wifi_adb_operations: BTreeMap::new(),
         }
     }
 
@@ -235,6 +242,17 @@ impl FleetHub {
     }
 
     #[must_use]
+    pub fn device_source_lineage(&self, device_id: &str) -> Option<(&str, u64, u64)> {
+        self.devices.get(device_id).map(|record| {
+            (
+                record.observation.source_epoch.as_str(),
+                record.observation.source_revision,
+                record.observation.identity.identity_revision,
+            )
+        })
+    }
+
+    #[must_use]
     pub fn snapshot(&self) -> FleetHubSnapshot {
         FleetHubSnapshot {
             schema: "rusty.fleet.hub_snapshot.v1".to_owned(),
@@ -248,6 +266,7 @@ impl FleetHub {
             kiosk_operations: self.kiosk_operations.clone(),
             package_operations: self.package_operations.clone(),
             awake_operations: self.awake_operations.clone(),
+            wifi_adb_operations: self.wifi_adb_operations.clone(),
         }
     }
 
@@ -396,6 +415,21 @@ impl FleetHub {
                 "Fleet Hub snapshot Quest awake operations are invalid or exceed their limit",
             ));
         }
+        if snapshot.wifi_adb_operations.len() > MAX_WIFI_ADB_OPERATIONS
+            || snapshot
+                .wifi_adb_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                })
+        {
+            return Err(HubError::new(
+                "snapshot_wifi_adb_operations_invalid",
+                "Fleet Hub snapshot Quest Wi-Fi ADB operations are invalid or exceed their limit",
+            ));
+        }
         Ok(Self {
             policy,
             devices: snapshot.devices,
@@ -407,6 +441,7 @@ impl FleetHub {
             kiosk_operations: snapshot.kiosk_operations,
             package_operations: snapshot.package_operations,
             awake_operations: snapshot.awake_operations,
+            wifi_adb_operations: snapshot.wifi_adb_operations,
         })
     }
 

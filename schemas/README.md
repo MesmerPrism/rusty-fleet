@@ -16,6 +16,9 @@ Milestone 0 defines versioned Rusty Fleet product contracts here:
 - the Fleet-owned `quest.awake-control` preview, exact policy/generation
   ledger, pinned File Manager provider binding, and independent power,
   watchdog, stop, and restore readbacks.
+- the Fleet-owned `quest.wifi-adb-control` preview and per-target ledger,
+  strict File Manager receipt binding, separate modern/classic routes, and
+  independently signed Termux capability evidence.
 
 Rust validation remains normative for cross-field invariants that JSON Schema
 cannot express clearly, including identity/source-epoch/revision transitions,
@@ -47,6 +50,12 @@ watchdog polling at one through sixty seconds. Rust validation additionally
 binds every invocation and receipt to the immutable action, duration,
 interval, identity, request, and generation, and derives Applied only from the
 action-specific readback gates. It contains no ADB serial or private path.
+
+The Quest Wi-Fi ADB operation schema keeps provider delivery, Kiosk setting,
+wearer prompt, listener, and signed Termux capability evidence independent.
+Only the enrolled check-in authority may project fresh exact
+`uid=2000(shell)` evidence as usable; the provider receipt contains no Termux
+proof fields and no private target details.
 
 Do not copy Manifold, Quest, Kiosk, File Manager, or LSL owner schemas into
 this directory. Reference owner-issued artifacts or wrap them with a separately

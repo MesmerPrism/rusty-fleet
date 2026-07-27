@@ -7,11 +7,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use fleet_contracts::{
-    ConditionFamily, ConditionState, PACKAGES_INSTALL_RELEASE_ACTION_ID, PackageReleaseReference,
-    QUEST_AWAKE_ACTION_ID, QuestAwakeAction, Sensitivity, SignedFleetCheckIn, StatusCondition,
-    StatusSource, ValidateContract,
+    AuthorizationState, ConditionFamily, ConditionState, EnablementState, FreshnessState,
+    PACKAGES_INSTALL_RELEASE_ACTION_ID, PackageReleaseReference, QUEST_AWAKE_ACTION_ID,
+    QUEST_WIFI_ADB_ACTION_ID, QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID,
+    QUEST_WIFI_ADB_TERMUX_PROOF_OWNER, QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA, QuestAwakeAction,
+    QuestWifiAdbAction, QuestWifiAdbOperation, QuestWifiAdbRouteMode, QuestWifiAdbTermuxProof,
+    ReachabilityState, Sensitivity, SignedFleetCheckIn, StatusCondition, StatusSource,
+    SupportState, TERMUX_ADB_SHELL_IDENTITY, ValidateContract,
 };
-use fleet_hub::{FleetHub, ObservationDecision};
+use fleet_hub::{FleetApi, FleetHub, ObservationDecision};
 use rusty_manifold_model::{DottedId, Revision};
 use rusty_manifold_peer::{
     ManifoldAcceptedPeerState, ManifoldPeerApplicationReceipt, ManifoldPeerCredentialStatus,
@@ -37,11 +41,15 @@ const PACKAGES_INSTALL_RELEASE_PARAMS_TYPE_ID: &str =
     "rusty.fleet.packages.install-release.params.v1";
 const QUEST_AWAKE_COMMAND_ID: &str = QUEST_AWAKE_ACTION_ID;
 const QUEST_AWAKE_PARAMS_TYPE_ID: &str = "rusty.fleet.quest.awake-control.params.v1";
+const QUEST_WIFI_ADB_COMMAND_ID: &str = QUEST_WIFI_ADB_ACTION_ID;
+const QUEST_WIFI_ADB_PARAMS_TYPE_ID: &str = "rusty.fleet.quest.wifi-adb-control.params.v1";
 const FLEET_MANIFOLD_SNAPSHOT_V1_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v1";
-const FLEET_MANIFOLD_SNAPSHOT_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v2";
+const FLEET_MANIFOLD_SNAPSHOT_V2_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v2";
+const FLEET_MANIFOLD_SNAPSHOT_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v3";
 const MAX_KIOSK_COMMAND_LIFETIME_MS: u64 = 90_000;
 const MAX_PACKAGE_COMMAND_LIFETIME_MS: u64 = 15 * 60_000;
 const MAX_QUEST_AWAKE_COMMAND_LIFETIME_MS: u64 = 15 * 60_000;
+const MAX_QUEST_WIFI_ADB_COMMAND_LIFETIME_MS: u64 = 15 * 60_000;
 
 #[must_use]
 pub fn kiosk_manifold_request_id(
@@ -91,6 +99,24 @@ pub fn quest_awake_manifold_request_id(
     )
 }
 
+#[must_use]
+pub fn quest_wifi_adb_manifold_request_id(
+    operation_id: &str,
+    device_id: &str,
+    owner_action_request_id: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-wifi-adb.manifold-request.v1\0");
+    for value in [operation_id, device_id, owner_action_request_id] {
+        digest.update(value.as_bytes());
+        digest.update([0]);
+    }
+    format!(
+        "request.fleet.quest-wifi-adb.{}",
+        hex::encode(digest.finalize())
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckInRejectionReason {
@@ -125,6 +151,16 @@ pub struct FleetManifoldAdapterSnapshot {
     seen_checkins: BTreeMap<String, i64>,
     #[serde(default)]
     runtime_host: Option<ManifoldRuntimeHostSnapshot>,
+    #[serde(default)]
+    termux_proofs: BTreeMap<String, AdmittedQuestWifiAdbTermuxProof>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct AdmittedQuestWifiAdbTermuxProof {
+    proof: QuestWifiAdbTermuxProof,
+    checkin_id: String,
+    checkin_expires_at_ms: i64,
+    accepted_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +230,27 @@ pub struct QuestAwakeAuthorityReceipt {
     pub application: ManifoldRuntimeApplicationReceipt,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestWifiAdbCommandAuthorization {
+    pub manifold_request_id: String,
+    pub owner_action_request_id: String,
+    pub requester_id: String,
+    pub operation_id: String,
+    pub preview_id: String,
+    pub device_id: String,
+    pub identity_revision: u64,
+    pub action: QuestWifiAdbAction,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestWifiAdbAuthorityReceipt {
+    pub request: ManifoldRuntimeCommandRequest,
+    pub dispatch: ManifoldRuntimeDispatchReceipt,
+    pub application: ManifoldRuntimeApplicationReceipt,
+}
+
 #[derive(Serialize)]
 struct KioskShowControlsTypedParams<'a> {
     schema: &'static str,
@@ -231,6 +288,29 @@ struct QuestAwakeTypedParams<'a> {
     watchdog_generation: &'a str,
 }
 
+#[derive(Serialize)]
+struct QuestWifiAdbTypedParams<'a> {
+    schema: &'static str,
+    operation_id: &'a str,
+    preview_id: &'a str,
+    action_id: &'static str,
+    device_id: &'a str,
+    identity_revision: u64,
+    action: QuestWifiAdbAction,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoopbackAdbCapabilityExtensions {
+    proof_schema: String,
+    state: String,
+    route_mode: String,
+    discovery_mode: String,
+    listener_discovered: bool,
+    shell_uid: String,
+    owner_evidence_sha256: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct FleetManifoldAdapter {
     enrollment: ManifoldPeerEnrollmentState,
@@ -238,6 +318,7 @@ pub struct FleetManifoldAdapter {
     trusted_operator_ids: Vec<DottedId>,
     seen_checkins: BTreeMap<String, i64>,
     runtime_host: ManifoldRuntimeHost,
+    termux_proofs: BTreeMap<String, AdmittedQuestWifiAdbTermuxProof>,
 }
 
 impl FleetManifoldAdapter {
@@ -255,6 +336,11 @@ impl FleetManifoldAdapter {
                 },
                 ManifoldRuntimeCommandDescriptor {
                     command_id: DottedId::new(QUEST_AWAKE_COMMAND_ID).expect("static command id"),
+                    required_lease_scope: None,
+                },
+                ManifoldRuntimeCommandDescriptor {
+                    command_id: DottedId::new(QUEST_WIFI_ADB_COMMAND_ID)
+                        .expect("static command id"),
                     required_lease_scope: None,
                 },
                 ManifoldRuntimeCommandDescriptor {
@@ -280,6 +366,7 @@ impl FleetManifoldAdapter {
             trusted_operator_ids,
             seen_checkins: BTreeMap::new(),
             runtime_host,
+            termux_proofs: BTreeMap::new(),
         }
     }
 
@@ -309,6 +396,7 @@ impl FleetManifoldAdapter {
             accepted_peers: self.accepted_peers.clone(),
             seen_checkins: self.seen_checkins.clone(),
             runtime_host: Some(self.runtime_host.snapshot().clone()),
+            termux_proofs: self.termux_proofs.clone(),
         }
     }
 
@@ -318,17 +406,33 @@ impl FleetManifoldAdapter {
         now_ms: i64,
     ) -> Result<(), String> {
         if snapshot.schema != FLEET_MANIFOLD_SNAPSHOT_V1_SCHEMA
+            && snapshot.schema != FLEET_MANIFOLD_SNAPSHOT_V2_SCHEMA
             && snapshot.schema != FLEET_MANIFOLD_SNAPSHOT_SCHEMA
         {
             return Err("Fleet Manifold adapter snapshot schema is not supported".to_owned());
         }
-        if snapshot.schema == FLEET_MANIFOLD_SNAPSHOT_SCHEMA && snapshot.runtime_host.is_none() {
+        if snapshot.schema != FLEET_MANIFOLD_SNAPSHOT_V1_SCHEMA && snapshot.runtime_host.is_none() {
             return Err("Fleet Manifold adapter v2 snapshot omitted runtime authority".to_owned());
         }
+        snapshot.termux_proofs.retain(|_, admitted| {
+            admitted.checkin_expires_at_ms > now_ms && admitted.proof.fresh_until_ms > now_ms
+        });
         if snapshot.seen_checkins.len() > MAX_SEEN_CHECKINS
             || snapshot.accepted_peers.applied_proposal_ids.len() > MAX_SEEN_CHECKINS
+            || snapshot.termux_proofs.len() > MAX_SEEN_CHECKINS
         {
             return Err("Fleet Manifold adapter snapshot exceeds evidence limits".to_owned());
+        }
+        if snapshot.termux_proofs.iter().any(|(proof_id, admitted)| {
+            proof_id != &admitted.proof.proof_id
+                || admitted.proof.validate().is_err()
+                || admitted.checkin_id.is_empty()
+                || admitted.checkin_expires_at_ms <= admitted.proof.observed_at_ms
+                || admitted.accepted_at_ms < 0
+        }) {
+            return Err(
+                "Fleet Manifold adapter snapshot contains invalid Termux proofs".to_owned(),
+            );
         }
         let peer_ids: BTreeSet<_> = snapshot
             .accepted_peers
@@ -386,7 +490,90 @@ impl FleetManifoldAdapter {
         self.accepted_peers = snapshot.accepted_peers;
         self.seen_checkins = snapshot.seen_checkins;
         self.runtime_host = restored_runtime_host;
+        self.termux_proofs = snapshot.termux_proofs;
         Ok(())
+    }
+
+    /// Projects only Termux proof already admitted inside an enrolled,
+    /// Ed25519-signed check-in. The Hub itself exposes no shape-only proof
+    /// mutation route.
+    pub fn quest_wifi_adb_operation(
+        &self,
+        hub: &FleetHub,
+        operation_id: &str,
+        now_ms: i64,
+    ) -> Result<QuestWifiAdbOperation, String> {
+        let mut operation = hub
+            .quest_wifi_adb_operation(operation_id)
+            .map_err(|error| error.to_string())?;
+        for target in &mut operation.targets {
+            let current = hub
+                .inspect(&target.device_id, now_ms)
+                .map_err(|error| error.to_string())?;
+            let proof = self
+                .termux_proofs
+                .values()
+                .filter(|admitted| {
+                    admitted.proof.device_id == target.device_id
+                        && admitted.proof.identity_revision == target.identity_revision
+                        && admitted.proof.source_epoch == current.row.source_epoch
+                        && hub.device_source_lineage(&target.device_id).is_some_and(
+                            |(_, source_revision, identity_revision)| {
+                                admitted.proof.source_revision == source_revision
+                                    && admitted.proof.identity_revision == identity_revision
+                            },
+                        )
+                })
+                .max_by_key(|admitted| {
+                    (
+                        admitted.proof.source_revision,
+                        admitted.proof.observed_at_ms,
+                    )
+                });
+            if let Some(admitted) = proof {
+                let proof = &admitted.proof;
+                target.termux_proof = Some(proof.clone());
+                let receipt_matches = target.receipt.as_ref().is_some_and(|receipt| {
+                    receipt.effect_applied
+                        && receipt.route_mode == QuestWifiAdbRouteMode::ModernTls
+                        // The device proof and File Manager receipt have
+                        // different clock authorities. Order them only by
+                        // their trusted Hub admission times and fail closed
+                        // on a same-millisecond tie.
+                        && admitted.accepted_at_ms > target.updated_at_ms
+                });
+                let disabled_after_proof =
+                    hub.quest_wifi_adb_operations().iter().any(|candidate| {
+                        candidate.preview.action == QuestWifiAdbAction::DisableWirelessAdb
+                            && candidate.targets.iter().any(|candidate_target| {
+                                candidate_target.device_id == target.device_id
+                                    && candidate_target.receipt.as_ref().is_some_and(|receipt| {
+                                        receipt.effect_applied
+                                            && candidate_target.updated_at_ms
+                                                >= admitted.accepted_at_ms
+                                    })
+                            })
+                    });
+                target.termux_usable = proof.available
+                    && proof.fresh_until_ms > now_ms
+                    && receipt_matches
+                    && operation.preview.action != QuestWifiAdbAction::DisableWirelessAdb
+                    && !disabled_after_proof;
+                target.updated_at_ms = target.updated_at_ms.max(admitted.accepted_at_ms);
+                operation.updated_at_ms = operation.updated_at_ms.max(admitted.accepted_at_ms);
+            }
+        }
+        operation.validate().map_err(|failures| {
+            format!(
+                "admitted Termux proof projection is invalid: {}",
+                failures
+                    .iter()
+                    .map(|failure| format!("{}:{}", failure.path, failure.code))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        })?;
+        Ok(operation)
     }
 
     #[must_use]
@@ -738,6 +925,108 @@ impl FleetManifoldAdapter {
         })
     }
 
+    pub fn authorize_quest_wifi_adb(
+        &mut self,
+        authorization: &QuestWifiAdbCommandAuthorization,
+        now_ms: u64,
+    ) -> Result<QuestWifiAdbAuthorityReceipt, String> {
+        if authorization.operation_id.is_empty()
+            || authorization.operation_id.len() > 256
+            || authorization.preview_id.is_empty()
+            || authorization.preview_id.len() > 256
+            || authorization.device_id.is_empty()
+            || authorization.device_id.len() > 256
+            || authorization.identity_revision == 0
+            || authorization.issued_at_ms > now_ms
+            || now_ms >= authorization.expires_at_ms
+            || authorization.expires_at_ms <= authorization.issued_at_ms
+            || authorization
+                .expires_at_ms
+                .checked_sub(authorization.issued_at_ms)
+                .is_none_or(|lifetime| lifetime > MAX_QUEST_WIFI_ADB_COMMAND_LIFETIME_MS)
+        {
+            return Err("Fleet Quest Wi-Fi ADB authorization is invalid or expired".to_owned());
+        }
+        if authorization.owner_action_request_id.is_empty()
+            || authorization.manifold_request_id
+                != quest_wifi_adb_manifold_request_id(
+                    &authorization.operation_id,
+                    &authorization.device_id,
+                    &authorization.owner_action_request_id,
+                )
+        {
+            return Err(
+                "Fleet Quest Wi-Fi ADB Manifold request identity does not bind the owner action"
+                    .to_owned(),
+            );
+        }
+        if self.runtime_host.snapshot().authority_revision.get() == u64::MAX {
+            return Err("Fleet runtime authority reached its terminal revision".to_owned());
+        }
+        let params = QuestWifiAdbTypedParams {
+            schema: "rusty.fleet.quest_wifi_adb_params.v1",
+            operation_id: &authorization.operation_id,
+            preview_id: &authorization.preview_id,
+            action_id: QUEST_WIFI_ADB_COMMAND_ID,
+            device_id: &authorization.device_id,
+            identity_revision: authorization.identity_revision,
+            action: authorization.action,
+        };
+        let canonical_params = serde_jcs::to_vec(&params).map_err(|error| {
+            format!("Fleet Quest Wi-Fi ADB parameters are not canonicalizable: {error}")
+        })?;
+        if canonical_params.is_empty() || canonical_params.len() > 8_192 {
+            return Err(
+                "Fleet Quest Wi-Fi ADB parameters exceed the Manifold command bound".to_owned(),
+            );
+        }
+        let canonical_size_bytes = u32::try_from(canonical_params.len())
+            .map_err(|_| "Fleet Quest Wi-Fi ADB parameter size is not representable".to_owned())?;
+        let request = ManifoldRuntimeCommandRequest {
+            schema_id: schema_id(HOST_COMMAND_REQUEST_SCHEMA),
+            request_id: DottedId::new(authorization.manifold_request_id.clone())
+                .map_err(|error| format!("invalid Manifold request ID: {error}"))?,
+            expected_authority_revision: self.runtime_host.snapshot().authority_revision,
+            requester_id: DottedId::new(authorization.requester_id.clone())
+                .map_err(|error| format!("invalid Manifold requester ID: {error}"))?,
+            command_id: DottedId::new(QUEST_WIFI_ADB_COMMAND_ID).expect("static command id"),
+            lease_id: None,
+            params_digest: Some(ManifoldRuntimeTypedParamsDigest {
+                schema_id: schema_id(HOST_TYPED_PARAMS_DIGEST_SCHEMA),
+                params_type_id: DottedId::new(QUEST_WIFI_ADB_PARAMS_TYPE_ID)
+                    .expect("static params type id"),
+                canonical_sha256: format!(
+                    "sha256:{}",
+                    hex::encode(Sha256::digest(&canonical_params))
+                ),
+                canonical_size_bytes,
+            }),
+            issued_at_ms: authorization.issued_at_ms,
+            expires_at_ms: authorization.expires_at_ms,
+        };
+        let dispatch = self.runtime_host.review_command(&request, now_ms);
+        if dispatch.outcome != ManifoldRuntimeDispatchOutcome::Ready {
+            return Err(format!(
+                "Manifold rejected Fleet Quest Wi-Fi ADB dispatch review: {:?}",
+                dispatch.rejection_reason
+            ));
+        }
+        let application = self
+            .runtime_host
+            .apply_dispatch(&request, &dispatch, now_ms);
+        if !application.applied {
+            return Err(format!(
+                "Manifold rejected Fleet Quest Wi-Fi ADB dispatch application: {:?}",
+                application.rejection_reason
+            ));
+        }
+        Ok(QuestWifiAdbAuthorityReceipt {
+            request,
+            dispatch,
+            application,
+        })
+    }
+
     pub fn apply_enrollment(
         &mut self,
         request: &ManifoldPeerEnrollmentRequest,
@@ -822,6 +1111,15 @@ impl FleetManifoldAdapter {
         if !verify_signature(credential.public_key_hex.as_str(), &signed) {
             return rejected(checkin_id, CheckInRejectionReason::SignatureInvalid);
         }
+        let candidate_termux_proof = match signed_termux_proof_from_capability(&signed, &proposal) {
+            Ok(proof) => proof,
+            Err(()) => {
+                return rejected(
+                    checkin_id,
+                    CheckInRejectionReason::AuthorityEvidenceMismatch,
+                );
+            }
+        };
         let Some(public_key_sha256) = credential.public_key_sha256.strip_prefix("sha256:") else {
             return rejected(checkin_id, CheckInRejectionReason::ContractInvalid);
         };
@@ -837,6 +1135,10 @@ impl FleetManifoldAdapter {
         // Fleet admission is previewed against a clone so neither authority
         // advances when the other side rejects this envelope.
         let mut candidate_hub = hub.clone();
+        let mut candidate_termux_proofs = self.termux_proofs.clone();
+        candidate_termux_proofs.retain(|_, admitted| {
+            admitted.checkin_expires_at_ms > now_ms && admitted.proof.fresh_until_ms > now_ms
+        });
         let mut accepted_observation = signed.claims.observation.clone();
         accepted_observation.received_time_ms = now_ms;
         accepted_observation.conditions.push(StatusCondition {
@@ -871,6 +1173,42 @@ impl FleetManifoldAdapter {
                 manifold_application: None,
                 fleet_decision: Some(fleet_decision),
             };
+        }
+        if let Some(proof) = candidate_termux_proof {
+            if validate_signed_termux_proof(
+                &candidate_hub,
+                &signed,
+                &proof,
+                now_ms,
+                &candidate_termux_proofs,
+            )
+            .is_err()
+            {
+                return rejected(
+                    checkin_id,
+                    CheckInRejectionReason::AuthorityEvidenceMismatch,
+                );
+            }
+            candidate_termux_proofs
+                .retain(|_, admitted| admitted.proof.device_id != proof.device_id);
+            if candidate_termux_proofs.len() >= MAX_SEEN_CHECKINS {
+                return rejected(checkin_id, CheckInRejectionReason::EvidenceLimitExceeded);
+            }
+            candidate_termux_proofs.insert(
+                proof.proof_id.clone(),
+                AdmittedQuestWifiAdbTermuxProof {
+                    proof,
+                    checkin_id: checkin_id.clone(),
+                    checkin_expires_at_ms: signed.claims.expires_at_ms,
+                    accepted_at_ms: now_ms,
+                },
+            );
+        } else {
+            // A newer accepted source snapshot without the capability
+            // supersedes all older proofs for that device.
+            candidate_termux_proofs.retain(|_, admitted| {
+                admitted.proof.device_id != signed.claims.observation.identity.device_id
+            });
         }
 
         // The source signs its complete peer status and proposal identity, but
@@ -909,6 +1247,7 @@ impl FleetManifoldAdapter {
             }
         }
         *hub = candidate_hub;
+        self.termux_proofs = candidate_termux_proofs;
         self.seen_checkins
             .insert(checkin_id.clone(), signed.claims.expires_at_ms);
         CheckInReceipt {
@@ -921,6 +1260,122 @@ impl FleetManifoldAdapter {
             fleet_decision: Some(fleet_decision),
         }
     }
+}
+
+fn signed_termux_proof_from_capability(
+    signed: &SignedFleetCheckIn,
+    proposal: &ManifoldPeerStatusProposal,
+) -> Result<Option<QuestWifiAdbTermuxProof>, ()> {
+    let capability = signed
+        .claims
+        .observation
+        .capabilities
+        .get(QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID);
+    let proposal_has_capability = proposal
+        .status
+        .capability_ids
+        .iter()
+        .any(|value| value.as_str() == QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID);
+    if capability.is_some() != proposal_has_capability {
+        return Err(());
+    }
+    let Some(capability) = capability else {
+        return Ok(None);
+    };
+    if capability.capability_id != QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID
+        || capability.owner != QUEST_WIFI_ADB_TERMUX_PROOF_OWNER
+        || capability.reason != "loopback_tls_shell_uid_2000"
+        || capability.support != SupportState::Supported
+        || capability.enablement != EnablementState::Enabled
+        || capability.authorization != AuthorizationState::Authorized
+        || capability.reachability != ReachabilityState::Reachable
+        || capability.freshness != FreshnessState::Current
+        || capability.evidence_revision == 0
+        || capability.observed_at_ms < 0
+        || capability.observed_at_ms > signed.claims.issued_at_ms
+        || capability.observed_at_ms > signed.claims.observation.source_time_ms
+        || capability.fresh_until_ms <= signed.claims.issued_at_ms
+        || capability.fresh_until_ms <= signed.claims.observation.source_time_ms
+        || capability.fresh_until_ms > signed.claims.expires_at_ms
+        || capability
+            .fresh_until_ms
+            .checked_sub(capability.observed_at_ms)
+            .is_none_or(|lifetime| lifetime == 0 || lifetime > 60_000)
+    {
+        return Err(());
+    }
+    let extensions = serde_json::from_value::<LoopbackAdbCapabilityExtensions>(
+        serde_json::to_value(&capability.extensions).map_err(|_| ())?,
+    )
+    .map_err(|_| ())?;
+    if extensions.proof_schema != "rusty.quest.loopback_adb_proof.v1"
+        || extensions.state != "available"
+        || extensions.route_mode != "modern_tls"
+        || !matches!(extensions.discovery_mode.as_str(), "tls_nsd" | "tls_mdns")
+        || !extensions.listener_discovered
+        || extensions.shell_uid != "2000"
+        || !is_lower_sha256(&extensions.owner_evidence_sha256)
+    {
+        return Err(());
+    }
+    let signing_bytes = signed.claims.signing_bytes().map_err(|_| ())?;
+    let claims_digest = hex::encode(Sha256::digest(signing_bytes));
+    Ok(Some(QuestWifiAdbTermuxProof {
+        schema: QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA.to_owned(),
+        proof_id: format!("termux-proof-{}", &claims_digest[..32]),
+        owner_id: QUEST_WIFI_ADB_TERMUX_PROOF_OWNER.to_owned(),
+        device_id: signed.claims.observation.identity.device_id.clone(),
+        identity_revision: signed.claims.observation.identity.identity_revision,
+        source_epoch: signed.claims.observation.source_epoch.clone(),
+        source_revision: signed.claims.observation.source_revision,
+        evidence_revision: capability.evidence_revision,
+        route_mode: QuestWifiAdbRouteMode::ModernTls,
+        discovery_mode: extensions.discovery_mode,
+        listener_discovered: true,
+        shell_identity: Some(TERMUX_ADB_SHELL_IDENTITY.to_owned()),
+        available: true,
+        evidence_sha256: extensions.owner_evidence_sha256,
+        observed_at_ms: capability.observed_at_ms,
+        fresh_until_ms: capability.fresh_until_ms,
+    }))
+}
+
+fn validate_signed_termux_proof(
+    _hub: &FleetHub,
+    signed: &SignedFleetCheckIn,
+    proof: &QuestWifiAdbTermuxProof,
+    now_ms: i64,
+    existing: &BTreeMap<String, AdmittedQuestWifiAdbTermuxProof>,
+) -> Result<(), String> {
+    if proof.schema != QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA
+        || proof.validate().is_err()
+        || proof.device_id != signed.claims.observation.identity.device_id
+        || proof.identity_revision != signed.claims.observation.identity.identity_revision
+        || proof.source_epoch != signed.claims.observation.source_epoch
+        || proof.observed_at_ms > signed.claims.issued_at_ms
+        || proof.observed_at_ms > signed.claims.observation.source_time_ms
+        || signed.claims.issued_at_ms >= proof.fresh_until_ms
+        || signed.claims.observation.source_time_ms >= proof.fresh_until_ms
+        || proof.fresh_until_ms > signed.claims.expires_at_ms
+        || proof.observed_at_ms > now_ms
+        || existing.contains_key(&proof.proof_id)
+        || proof.source_revision != signed.claims.observation.source_revision
+        || existing.values().any(|candidate| {
+            candidate.proof.device_id == proof.device_id
+                && candidate.proof.source_epoch == proof.source_epoch
+                && candidate.proof.source_revision >= proof.source_revision
+        })
+    {
+        return Err("signed Termux proof identity, freshness, or replay binding failed".to_owned());
+    }
+    Ok(())
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn verify_signature(public_key_hex: &str, signed: &SignedFleetCheckIn) -> bool {
@@ -965,10 +1420,16 @@ fn schema_id(value: &str) -> rusty_manifold_model::SchemaId {
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};
     use fleet_contracts::{
-        CHECKIN_SIGNATURE_ALGORITHM, CHECKIN_SIGNATURE_DOMAIN, FleetCheckInClaims,
-        SignedFleetCheckIn,
+        AuthorizationState, CHECKIN_SIGNATURE_ALGORITHM, CHECKIN_SIGNATURE_DOMAIN, CapabilityState,
+        EnablementState, FleetCheckInClaims, FreshnessState, QUEST_WIFI_ADB_ACTION_ID,
+        QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA, QUEST_WIFI_ADB_RECEIPT_SCHEMA,
+        QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID, QUEST_WIFI_ADB_TERMUX_PROOF_OWNER,
+        QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA, QuestWifiAdbAction, QuestWifiAdbOwnerReceipt,
+        QuestWifiAdbPreviewRequest, QuestWifiAdbRouteMode, QuestWifiAdbTermuxProof,
+        QuestWifiAdbWearerApproval, ReachabilityState, SignedFleetCheckIn, SupportState,
+        TERMUX_ADB_SHELL_IDENTITY,
     };
-    use fleet_hub::{FleetApi, FleetHub, HubPolicy};
+    use fleet_hub::{FleetApi, FleetHub, HubPolicy, QuestWifiAdbPreviewPlan};
     use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
     use rusty_manifold_model::{DottedId, Revision, SchemaId};
     use rusty_manifold_peer::{
@@ -982,8 +1443,11 @@ mod tests {
 
     use super::{
         CheckInRejectionReason, FleetManifoldAdapter, FleetManifoldAdapterSnapshot,
-        KioskShowControlsCommandAuthorization, kiosk_manifold_request_id,
+        KioskShowControlsCommandAuthorization, QuestWifiAdbCommandAuthorization,
+        kiosk_manifold_request_id, quest_wifi_adb_manifold_request_id,
+        signed_termux_proof_from_capability,
     };
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn kiosk_command_authority_binds_typed_params_and_survives_restart() {
@@ -1037,6 +1501,48 @@ mod tests {
         assert!(
             restarted
                 .authorize_kiosk_show_controls(&authorization, 2_001)
+                .expect_err("the same authority request cannot replay")
+                .contains("ReplayedRequest")
+        );
+    }
+
+    #[test]
+    fn wifi_adb_command_authority_binds_typed_params_and_rejects_replay() {
+        let mut adapter = FleetManifoldAdapter::new(vec![dotted("operator.local")]);
+        let owner_action_request_id = "owner-action-wifi-adb-0001";
+        let authorization = QuestWifiAdbCommandAuthorization {
+            manifold_request_id: quest_wifi_adb_manifold_request_id(
+                "operation-wifi-adb-1",
+                "device.quest.1",
+                owner_action_request_id,
+            ),
+            owner_action_request_id: owner_action_request_id.to_owned(),
+            requester_id: "operator.local".to_owned(),
+            operation_id: "operation-wifi-adb-1".to_owned(),
+            preview_id: "preview-wifi-adb-1".to_owned(),
+            device_id: "device.quest.1".to_owned(),
+            identity_revision: 7,
+            action: QuestWifiAdbAction::RequestWirelessAdb,
+            issued_at_ms: 2_000,
+            expires_at_ms: 92_000,
+        };
+        let receipt = adapter
+            .authorize_quest_wifi_adb(&authorization, 2_000)
+            .expect("Manifold authority applies exact Quest Wi-Fi ADB command");
+        assert!(receipt.application.applied);
+        let digest = receipt
+            .request
+            .params_digest
+            .as_ref()
+            .expect("typed parameters are mandatory");
+        assert_eq!(
+            digest.params_type_id.as_str(),
+            "rusty.fleet.quest.wifi-adb-control.params.v1"
+        );
+        assert!(digest.canonical_sha256.starts_with("sha256:"));
+        assert!(
+            adapter
+                .authorize_quest_wifi_adb(&authorization, 2_001)
                 .expect_err("the same authority request cannot replay")
                 .contains("ReplayedRequest")
         );
@@ -1434,6 +1940,615 @@ mod tests {
                 .as_str()
                 .expect("signature domain string")
         );
+    }
+
+    #[test]
+    fn signed_termux_capability_is_admitted_replayed_and_superseded_fail_closed() {
+        let signing_key = SigningKey::from_bytes(&[41_u8; 32]);
+        let peer_id = dotted("device.quest.proof");
+        let key_id = dotted("key.device.quest.proof.1");
+        let operator = dotted("operator.local");
+        let mut adapter = FleetManifoldAdapter::new(vec![operator.clone()]);
+        let enrollment = adapter.apply_enrollment(
+            &ManifoldPeerEnrollmentRequest {
+                schema_id: schema("rusty.manifold.peer.enrollment_request.v1"),
+                request_id: dotted("request.enroll.quest.proof"),
+                expected_authority_revision: Revision::INITIAL,
+                operator_id: operator,
+                issued_at_ms: u64::try_from(BASE_TIME_MS).expect("positive"),
+                action: ManifoldPeerEnrollmentAction::Enroll {
+                    credential: credential(&peer_id, &key_id, 1, &signing_key),
+                },
+            },
+            u64::try_from(BASE_TIME_MS).expect("positive"),
+        );
+        assert!(enrollment.applied);
+        let mut hub = FleetHub::new(HubPolicy::default());
+        let first = synthetic_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.proof.1",
+            "proposal.status.quest.proof.1",
+            1,
+            "agent-epoch-1",
+            1,
+        );
+        assert!(adapter.accept(&mut hub, first, BASE_TIME_MS).accepted);
+        let identity_revision = hub
+            .inspect(peer_id.as_str(), BASE_TIME_MS)
+            .expect("device")
+            .row
+            .identity
+            .identity_revision;
+        let operation = install_wifi_request_receipt(
+            &mut hub,
+            peer_id.as_str(),
+            identity_revision,
+            BASE_TIME_MS,
+        );
+
+        let available = termux_proof(
+            peer_id.as_str(),
+            identity_revision,
+            "termux-proof-available-1",
+            2,
+            true,
+        );
+        let signed_available = proof_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.proof.2",
+            "proposal.status.quest.proof.2",
+            2,
+            2,
+            available.clone(),
+        );
+        assert!(
+            adapter
+                .accept(&mut hub, signed_available.clone(), BASE_TIME_MS + 1)
+                .accepted
+        );
+        assert_eq!(
+            adapter.termux_proofs.len(),
+            1,
+            "only the current per-device proof is retained"
+        );
+        let projected = adapter
+            .quest_wifi_adb_operation(&hub, &operation.operation_id, BASE_TIME_MS + 1)
+            .expect("authenticated proof projection");
+        assert!(projected.targets[0].termux_usable);
+
+        let replay_receipt = adapter.accept(&mut hub, signed_available, BASE_TIME_MS + 2);
+        assert!(!replay_receipt.accepted);
+        assert_eq!(
+            replay_receipt.rejection_reason,
+            Some(CheckInRejectionReason::Replay)
+        );
+
+        let other_device = termux_proof(
+            peer_id.as_str(),
+            identity_revision,
+            "termux-proof-other-device",
+            3,
+            true,
+        );
+        let mut other = proof_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.proof.other",
+            "proposal.status.quest.proof.other",
+            3,
+            3,
+            other_device,
+        );
+        other.claims.observation.identity.device_id = "device.quest.other".to_owned();
+        let other_receipt = adapter.accept(&mut hub, other, BASE_TIME_MS + 2);
+        assert_eq!(
+            other_receipt.rejection_reason,
+            Some(CheckInRejectionReason::IdentityMismatch)
+        );
+
+        let unavailable = termux_proof(
+            peer_id.as_str(),
+            identity_revision,
+            "termux-proof-unavailable-3",
+            3,
+            false,
+        );
+        let signed_unavailable = proof_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.proof.3",
+            "proposal.status.quest.proof.3",
+            3,
+            3,
+            unavailable,
+        );
+        assert!(
+            adapter
+                .accept(&mut hub, signed_unavailable, BASE_TIME_MS + 2)
+                .accepted
+        );
+        assert!(
+            adapter.termux_proofs.is_empty(),
+            "a newer signed snapshot without the capability clears the old proof"
+        );
+        let projected = adapter
+            .quest_wifi_adb_operation(&hub, &operation.operation_id, BASE_TIME_MS + 2)
+            .expect("unavailable projection");
+        assert!(!projected.targets[0].termux_usable);
+
+        let renewed = termux_proof(
+            peer_id.as_str(),
+            identity_revision,
+            "termux-proof-renewed-4",
+            4,
+            true,
+        );
+        let signed_renewed = proof_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.proof.4",
+            "proposal.status.quest.proof.4",
+            4,
+            4,
+            renewed,
+        );
+        assert!(
+            adapter
+                .accept(&mut hub, signed_renewed, BASE_TIME_MS + 3)
+                .accepted
+        );
+        assert_eq!(
+            adapter.termux_proofs.len(),
+            1,
+            "renewal replaces rather than accumulates proof evidence"
+        );
+        assert!(
+            adapter
+                .quest_wifi_adb_operation(&hub, &operation.operation_id, BASE_TIME_MS + 3)
+                .expect("renewed projection")
+                .targets[0]
+                .termux_usable
+        );
+        install_wifi_disable_receipt(
+            &mut hub,
+            peer_id.as_str(),
+            identity_revision,
+            BASE_TIME_MS + 4,
+        );
+        assert!(
+            !adapter
+                .quest_wifi_adb_operation(&hub, &operation.operation_id, BASE_TIME_MS + 4)
+                .expect("disable supersession")
+                .targets[0]
+                .termux_usable
+        );
+
+        let reboot = synthetic_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.proof.reboot",
+            "proposal.status.quest.proof.reboot",
+            5,
+            "agent-epoch-2",
+            1,
+        );
+        assert!(adapter.accept(&mut hub, reboot, BASE_TIME_MS + 5).accepted);
+        let reboot_projection = adapter
+            .quest_wifi_adb_operation(&hub, &operation.operation_id, BASE_TIME_MS + 5)
+            .expect("reboot projection");
+        assert!(!reboot_projection.targets[0].termux_usable);
+        assert!(reboot_projection.targets[0].termux_proof.is_none());
+        assert!(
+            !adapter
+                .quest_wifi_adb_operation(&hub, &operation.operation_id, BASE_TIME_MS + 60_000)
+                .expect("expired projection")
+                .targets[0]
+                .termux_usable
+        );
+    }
+
+    #[test]
+    fn exact_rusty_quest_capability_fixture_derives_the_internal_proof() {
+        let signing_key = SigningKey::from_bytes(&[47_u8; 32]);
+        let key_id = dotted("key.device.quest.fixture.1");
+        let peer_id = dotted("device.quest.fixture");
+        let base = synthetic_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.fixture.2",
+            "proposal.status.quest.fixture.2",
+            2,
+            "agent-epoch-1",
+            2,
+        );
+        let mut claims = base.claims;
+        let capability: CapabilityState = serde_json::from_str(include_str!(
+            "../../../fixtures/contracts/quest-loopback-adb-capability.valid.json"
+        ))
+        .expect("exact Rusty Quest capability fixture");
+        claims
+            .observation
+            .capabilities
+            .capabilities
+            .insert(QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID.to_owned(), capability);
+        let mut proposal: ManifoldPeerStatusProposal =
+            serde_json::from_value(claims.manifold_peer_status_proposal.clone()).expect("proposal");
+        proposal
+            .status
+            .capability_ids
+            .push(dotted(QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID));
+        claims.manifold_peer_status_proposal =
+            serde_json::to_value(&proposal).expect("proposal JSON");
+        let signed = sign_checkin(&signing_key, key_id.as_str(), claims);
+        let proof = signed_termux_proof_from_capability(&signed, &proposal)
+            .expect("strict capability")
+            .expect("derived proof");
+        assert_eq!(proof.owner_id, "quest-termux-lab");
+        assert_eq!(proof.evidence_revision, 17);
+        assert_eq!(proof.discovery_mode, "tls_nsd");
+        assert_eq!(
+            proof.shell_identity.as_deref(),
+            Some(TERMUX_ADB_SHELL_IDENTITY)
+        );
+        assert_eq!(
+            proof.evidence_sha256,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn signed_termux_capability_rejects_signature_mutation_and_stale_freshness() {
+        let signing_key = SigningKey::from_bytes(&[43_u8; 32]);
+        let peer_id = dotted("device.quest.proof-mutation");
+        let key_id = dotted("key.device.quest.proof-mutation.1");
+        let operator = dotted("operator.local");
+        let mut adapter = FleetManifoldAdapter::new(vec![operator.clone()]);
+        assert!(
+            adapter
+                .apply_enrollment(
+                    &ManifoldPeerEnrollmentRequest {
+                        schema_id: schema("rusty.manifold.peer.enrollment_request.v1"),
+                        request_id: dotted("request.enroll.quest.proof-mutation"),
+                        expected_authority_revision: Revision::INITIAL,
+                        operator_id: operator,
+                        issued_at_ms: u64::try_from(BASE_TIME_MS).expect("positive"),
+                        action: ManifoldPeerEnrollmentAction::Enroll {
+                            credential: credential(&peer_id, &key_id, 1, &signing_key),
+                        },
+                    },
+                    u64::try_from(BASE_TIME_MS).expect("positive"),
+                )
+                .applied
+        );
+        let mut hub = FleetHub::new(HubPolicy::default());
+        assert!(
+            adapter
+                .accept(
+                    &mut hub,
+                    synthetic_checkin(
+                        &signing_key,
+                        &key_id,
+                        &peer_id,
+                        "checkin.quest.proof-mutation.1",
+                        "proposal.status.quest.proof-mutation.1",
+                        1,
+                        "agent-epoch-1",
+                        1,
+                    ),
+                    BASE_TIME_MS,
+                )
+                .accepted
+        );
+        let identity_revision = hub
+            .inspect(peer_id.as_str(), BASE_TIME_MS)
+            .expect("device")
+            .row
+            .identity
+            .identity_revision;
+        let proof = termux_proof(
+            peer_id.as_str(),
+            identity_revision,
+            "termux-proof-mutation-2",
+            2,
+            true,
+        );
+        let mut mutated = proof_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.proof-mutation.2",
+            "proposal.status.quest.proof-mutation.2",
+            2,
+            2,
+            proof.clone(),
+        );
+        mutated
+            .claims
+            .observation
+            .capabilities
+            .capabilities
+            .get_mut(QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID)
+            .expect("signed capability")
+            .extensions
+            .insert(
+                "owner_evidence_sha256".to_owned(),
+                serde_json::Value::String("ff".repeat(32)),
+            );
+        let mutated_receipt = adapter.accept(&mut hub, mutated, BASE_TIME_MS + 1);
+        assert_eq!(
+            mutated_receipt.rejection_reason,
+            Some(CheckInRejectionReason::SignatureInvalid)
+        );
+
+        let mut stale = termux_proof(
+            peer_id.as_str(),
+            identity_revision,
+            "termux-proof-stale-2",
+            2,
+            true,
+        );
+        stale.observed_at_ms = BASE_TIME_MS - 60_000;
+        stale.fresh_until_ms = BASE_TIME_MS - 1;
+        let stale_checkin = proof_checkin(
+            &signing_key,
+            &key_id,
+            &peer_id,
+            "checkin.quest.proof-stale.2",
+            "proposal.status.quest.proof-stale.2",
+            2,
+            2,
+            stale,
+        );
+        let stale_receipt = adapter.accept(&mut hub, stale_checkin, BASE_TIME_MS + 1);
+        assert_eq!(
+            stale_receipt.rejection_reason,
+            Some(CheckInRejectionReason::AuthorityEvidenceMismatch)
+        );
+    }
+
+    fn install_wifi_request_receipt(
+        hub: &mut FleetHub,
+        device_id: &str,
+        identity_revision: u64,
+        now_ms: i64,
+    ) -> fleet_contracts::QuestWifiAdbOperation {
+        let operation = hub
+            .preview_quest_wifi_adb(QuestWifiAdbPreviewPlan {
+                operation_id: "wifi-adb-operation-proof".to_owned(),
+                preview_id: "wifi-adb-preview-proof".to_owned(),
+                request: QuestWifiAdbPreviewRequest {
+                    schema: QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA.to_owned(),
+                    action_id: QUEST_WIFI_ADB_ACTION_ID.to_owned(),
+                    action: QuestWifiAdbAction::RequestWirelessAdb,
+                    targets: BTreeMap::from([(device_id.to_owned(), identity_revision)]),
+                },
+                created_at_ms: now_ms,
+                expires_at_ms: now_ms + 60_000,
+                provider_ready_devices: BTreeSet::from([device_id.to_owned()]),
+            })
+            .expect("Wi-Fi ADB preview");
+        hub.confirm_quest_wifi_adb(
+            &operation.operation_id,
+            &operation.preview.preview_id,
+            now_ms,
+        )
+        .expect("confirm");
+        hub.prepare_quest_wifi_adb_invocation(
+            &operation.operation_id,
+            device_id,
+            "request.wifi.proof".to_owned(),
+            now_ms,
+        )
+        .expect("prepare");
+        hub.mark_quest_wifi_adb_dispatched(&operation.operation_id, device_id, now_ms)
+            .expect("dispatch");
+        hub.apply_quest_wifi_adb_receipt(
+            QuestWifiAdbOwnerReceipt {
+                schema: QUEST_WIFI_ADB_RECEIPT_SCHEMA.to_owned(),
+                request_id: "request.wifi.proof".to_owned(),
+                operation_id: operation.operation_id.clone(),
+                preview_id: operation.preview.preview_id.clone(),
+                device_id: device_id.to_owned(),
+                identity_revision,
+                action: QuestWifiAdbAction::RequestWirelessAdb,
+                route_mode: QuestWifiAdbRouteMode::ModernTls,
+                request_delivered: true,
+                kiosk_setting_applied: true,
+                request_after_boot_enabled: None,
+                wearer_approval: QuestWifiAdbWearerApproval::Pending,
+                listener_discovered: false,
+                effect_applied: true,
+                outcome: "wireless_adb_request_applied".to_owned(),
+                evidence_sha256: "11".repeat(32),
+                // Simulate the Windows provider clock running ahead of the
+                // device source clock. Projection must use trusted Hub
+                // admission order, not compare these unrelated timestamps.
+                observed_at_ms: now_ms + 20_000,
+            },
+            now_ms,
+        )
+        .expect("apply receipt")
+    }
+
+    fn install_wifi_disable_receipt(
+        hub: &mut FleetHub,
+        device_id: &str,
+        identity_revision: u64,
+        now_ms: i64,
+    ) {
+        let operation = hub
+            .preview_quest_wifi_adb(QuestWifiAdbPreviewPlan {
+                operation_id: "wifi-adb-operation-disable-proof".to_owned(),
+                preview_id: "wifi-adb-preview-disable-proof".to_owned(),
+                request: QuestWifiAdbPreviewRequest {
+                    schema: QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA.to_owned(),
+                    action_id: QUEST_WIFI_ADB_ACTION_ID.to_owned(),
+                    action: QuestWifiAdbAction::DisableWirelessAdb,
+                    targets: BTreeMap::from([(device_id.to_owned(), identity_revision)]),
+                },
+                created_at_ms: now_ms,
+                expires_at_ms: now_ms + 60_000,
+                provider_ready_devices: BTreeSet::from([device_id.to_owned()]),
+            })
+            .expect("disable preview");
+        hub.confirm_quest_wifi_adb(
+            &operation.operation_id,
+            &operation.preview.preview_id,
+            now_ms,
+        )
+        .expect("confirm disable");
+        hub.prepare_quest_wifi_adb_invocation(
+            &operation.operation_id,
+            device_id,
+            "request.wifi.disable-proof".to_owned(),
+            now_ms,
+        )
+        .expect("prepare disable");
+        hub.mark_quest_wifi_adb_dispatched(&operation.operation_id, device_id, now_ms)
+            .expect("dispatch disable");
+        hub.apply_quest_wifi_adb_receipt(
+            QuestWifiAdbOwnerReceipt {
+                schema: QUEST_WIFI_ADB_RECEIPT_SCHEMA.to_owned(),
+                request_id: "request.wifi.disable-proof".to_owned(),
+                operation_id: operation.operation_id,
+                preview_id: operation.preview.preview_id,
+                device_id: device_id.to_owned(),
+                identity_revision,
+                action: QuestWifiAdbAction::DisableWirelessAdb,
+                route_mode: QuestWifiAdbRouteMode::ModernTls,
+                request_delivered: true,
+                kiosk_setting_applied: true,
+                request_after_boot_enabled: None,
+                wearer_approval: QuestWifiAdbWearerApproval::NotApplicable,
+                listener_discovered: false,
+                effect_applied: true,
+                outcome: "wireless_adb_disabled".to_owned(),
+                evidence_sha256: "55".repeat(32),
+                observed_at_ms: now_ms,
+            },
+            now_ms,
+        )
+        .expect("apply disable receipt");
+    }
+
+    fn termux_proof(
+        device_id: &str,
+        identity_revision: u64,
+        proof_id: &str,
+        source_revision: u64,
+        available: bool,
+    ) -> QuestWifiAdbTermuxProof {
+        QuestWifiAdbTermuxProof {
+            schema: QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA.to_owned(),
+            proof_id: proof_id.to_owned(),
+            owner_id: QUEST_WIFI_ADB_TERMUX_PROOF_OWNER.to_owned(),
+            device_id: device_id.to_owned(),
+            identity_revision,
+            source_epoch: "agent-epoch-1".to_owned(),
+            source_revision,
+            evidence_revision: source_revision + 10,
+            route_mode: QuestWifiAdbRouteMode::ModernTls,
+            discovery_mode: "tls_nsd".to_owned(),
+            listener_discovered: available,
+            shell_identity: available.then(|| TERMUX_ADB_SHELL_IDENTITY.to_owned()),
+            available,
+            evidence_sha256: "33".repeat(32),
+            observed_at_ms: BASE_TIME_MS,
+            fresh_until_ms: BASE_TIME_MS + 60_000,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn proof_checkin(
+        signing_key: &SigningKey,
+        key_id: &DottedId,
+        peer_id: &DottedId,
+        checkin_id: &str,
+        proposal_id: &str,
+        status_revision: u64,
+        source_revision: u64,
+        proof: QuestWifiAdbTermuxProof,
+    ) -> SignedFleetCheckIn {
+        let base = synthetic_checkin(
+            signing_key,
+            key_id,
+            peer_id,
+            checkin_id,
+            proposal_id,
+            status_revision,
+            "agent-epoch-1",
+            source_revision,
+        );
+        let mut claims = base.claims;
+        if proof.available {
+            claims.observation.capabilities.capabilities.insert(
+                QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID.to_owned(),
+                CapabilityState {
+                    capability_id: QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID.to_owned(),
+                    support: SupportState::Supported,
+                    enablement: EnablementState::Enabled,
+                    authorization: AuthorizationState::Authorized,
+                    reachability: ReachabilityState::Reachable,
+                    freshness: FreshnessState::Current,
+                    evidence_revision: proof.evidence_revision,
+                    observed_at_ms: proof.observed_at_ms,
+                    fresh_until_ms: proof.fresh_until_ms,
+                    owner: QUEST_WIFI_ADB_TERMUX_PROOF_OWNER.to_owned(),
+                    reason: "loopback_tls_shell_uid_2000".to_owned(),
+                    extensions: BTreeMap::from([
+                        (
+                            "proof_schema".to_owned(),
+                            serde_json::Value::String(
+                                "rusty.quest.loopback_adb_proof.v1".to_owned(),
+                            ),
+                        ),
+                        (
+                            "state".to_owned(),
+                            serde_json::Value::String("available".to_owned()),
+                        ),
+                        (
+                            "route_mode".to_owned(),
+                            serde_json::Value::String("modern_tls".to_owned()),
+                        ),
+                        (
+                            "discovery_mode".to_owned(),
+                            serde_json::Value::String(proof.discovery_mode.clone()),
+                        ),
+                        (
+                            "listener_discovered".to_owned(),
+                            serde_json::Value::Bool(true),
+                        ),
+                        (
+                            "shell_uid".to_owned(),
+                            serde_json::Value::String("2000".to_owned()),
+                        ),
+                        (
+                            "owner_evidence_sha256".to_owned(),
+                            serde_json::Value::String(proof.evidence_sha256.clone()),
+                        ),
+                    ]),
+                },
+            );
+            let mut proposal: ManifoldPeerStatusProposal =
+                serde_json::from_value(claims.manifold_peer_status_proposal.clone())
+                    .expect("proposal");
+            proposal
+                .status
+                .capability_ids
+                .push(dotted(QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID));
+            claims.manifold_peer_status_proposal =
+                serde_json::to_value(proposal).expect("proposal JSON");
+        }
+        sign_checkin(signing_key, key_id.as_str(), claims)
     }
 
     fn dotted(value: &str) -> DottedId {

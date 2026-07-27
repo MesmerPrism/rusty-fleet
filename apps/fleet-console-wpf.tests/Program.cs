@@ -890,6 +890,212 @@ internal static class Program
                 }
             }
 
+            operationWorkspace.DismissQuestWifiAdb();
+            operationWorkspace.SelectedQuestWifiAdbModernAction =
+                operationWorkspace.QuestWifiAdbModernActionOptions.Single(option =>
+                    option.Action == QuestWifiAdbActions.DisableWirelessAdb);
+            Require(
+                operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "may disconnect active tools",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "after-boot request is a separate setting",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.QuestWifiAdbConfirmationButtonText ==
+                "Confirm disable Wireless ADB",
+                "destructive Wireless ADB confirmation copy was not explicit");
+            operationWorkspace.IsQuestWifiAdbClassicRoute = true;
+            Require(
+                operationWorkspace.SelectedQuestWifiAdbAction.Action ==
+                QuestWifiAdbActions.EnableClassicTcpipFromUsb &&
+                operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "separate classic",
+                    StringComparison.Ordinal) &&
+                !operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "accept",
+                    StringComparison.OrdinalIgnoreCase),
+                "classic USB tcpip was conflated with the modern Kiosk route");
+            operationWorkspace.SelectedQuestWifiAdbModernAction =
+                operationWorkspace.QuestWifiAdbModernActionOptions.Single(option =>
+                    option.Action == QuestWifiAdbActions.RequestWirelessAdb);
+            Require(
+                operationWorkspace.IsQuestWifiAdbModernRoute &&
+                operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "cannot accept or automate",
+                    StringComparison.Ordinal),
+                "modern Wireless ADB did not keep protected wearer approval explicit");
+
+            operationWorkspace.PreviewQuestWifiAdbAsync()
+                .GetAwaiter()
+                .GetResult();
+            var connectivityPreview =
+                operationWorkspace.CurrentQuestWifiAdbOperation ??
+                throw new InvalidOperationException(
+                    "Quest connectivity preview was not projected");
+            Require(
+                operationSource.LastQuestWifiAdbPreviewRequest is
+                {
+                    Action: QuestWifiAdbActions.RequestWirelessAdb
+                } connectivityRequest &&
+                connectivityRequest.Targets.Count == 50 &&
+                packageIdentities.All(target =>
+                    connectivityRequest.Targets.TryGetValue(
+                        target.Key,
+                        out var identityRevision) &&
+                    identityRevision == target.Value) &&
+                operationWorkspace.IsQuestWifiAdbInputLocked &&
+                operationWorkspace.CanConfirmQuestWifiAdb &&
+                operationWorkspace.QuestWifiAdbSummaryText.Contains(
+                    "Request Wireless ADB",
+                    StringComparison.Ordinal),
+                "Quest connectivity preview did not freeze the exact typed action and identities");
+
+            operationWorkspace.ConfirmQuestWifiAdbAsync()
+                .GetAwaiter()
+                .GetResult();
+            var appliedConnectivity =
+                operationWorkspace.CurrentQuestWifiAdbOperation ??
+                throw new InvalidOperationException(
+                    "confirmed Quest connectivity operation was not projected");
+            Require(
+                operationSource.LastQuestWifiAdbExecuteRequest is
+                { } connectivityExecute &&
+                connectivityExecute.OperationId ==
+                connectivityPreview.OperationId &&
+                connectivityExecute.PreviewId ==
+                connectivityPreview.Preview.PreviewId &&
+                appliedConnectivity.Targets.All(target =>
+                    target.Receipt is
+                    {
+                        RequestDelivered: true,
+                        KioskSettingApplied: true,
+                        WearerApproval: "pending",
+                        ListenerDiscovered: true,
+                        EffectApplied: true
+                    } &&
+                    target.TermuxUsable &&
+                    target.TermuxProof is
+                    {
+                        Available: true,
+                        ShellIdentity: "uid=2000(shell)"
+                    }) &&
+                operationWorkspace.QuestWifiAdbTargets.All(target =>
+                    target.RequestDelivery == "Delivered" &&
+                    target.KioskSetting == "Applied" &&
+                    target.WearerApproval.Contains(
+                        "wearer must approve in headset",
+                        StringComparison.Ordinal) &&
+                    target.Listener.Contains(
+                        "listener observed",
+                        StringComparison.Ordinal) &&
+                    target.Termux.Contains(
+                        "enrolled signed proof",
+                        StringComparison.Ordinal) &&
+                    target.Termux.Contains(
+                        "current until",
+                        StringComparison.Ordinal)),
+                "Quest connectivity independent evidence or signed Termux freshness was collapsed");
+
+            var retainedConnectivity =
+                operationWorkspace.CurrentQuestWifiAdbOperation;
+            operationSource.DamageNextQuestWifiAdbResponse = true;
+            operationWorkspace.RefreshQuestWifiAdbAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedConnectivity,
+                    operationWorkspace.CurrentQuestWifiAdbOperation) &&
+                operationWorkspace.QuestWifiAdbStatusText.StartsWith(
+                    "Refresh failed · prior connectivity projection retained",
+                    StringComparison.Ordinal),
+                "damaged Quest connectivity identity evidence did not fail closed");
+
+            var classicPreview = operationSource.PreviewQuestWifiAdbAsync(
+                    new QuestWifiAdbPreviewRequest
+                    {
+                        Action =
+                            QuestWifiAdbActions.EnableClassicTcpipFromUsb,
+                        Targets = singleAwakeTarget
+                    },
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var classicApplied = operationSource.ExecuteQuestWifiAdbAsync(
+                    new QuestWifiAdbExecuteRequest
+                    {
+                        OperationId = classicPreview.OperationId,
+                        PreviewId = classicPreview.Preview.PreviewId
+                    },
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            QuestWifiAdbProjectionValidation.ValidateOperation(classicApplied);
+            var classicReceipt = classicApplied.Targets.Single().Receipt ??
+                                 throw new InvalidOperationException(
+                                     "classic connectivity receipt was absent");
+            Require(
+                classicReceipt.RouteMode == "classic_tcpip" &&
+                classicReceipt.RequestDelivered &&
+                !classicReceipt.KioskSettingApplied &&
+                classicReceipt.WearerApproval == "not_applicable" &&
+                classicReceipt.ListenerDiscovered &&
+                classicApplied.Targets.Single().TermuxProof is null &&
+                !classicApplied.Targets.Single().TermuxUsable,
+                "classic USB tcpip receipt claimed modern Kiosk, wearer, or Termux facts");
+
+            var falseTermuxNode = JsonNode.Parse(
+                JsonSerializer.Serialize(classicApplied, FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "classic connectivity operation could not be cloned");
+            falseTermuxNode["targets"]![0]!["termux_usable"] = true;
+            var falseTermux = JsonSerializer.Deserialize<QuestWifiAdbOperation>(
+                                  falseTermuxNode.ToJsonString(),
+                                  FleetJson.Options) ??
+                              throw new InvalidOperationException(
+                                  "false Termux operation could not be projected");
+            var falseTermuxRejected = false;
+            try
+            {
+                QuestWifiAdbProjectionValidation.ValidateOperation(falseTermux);
+            }
+            catch (InvalidOperationException)
+            {
+                falseTermuxRejected = true;
+            }
+
+            Require(
+                falseTermuxRejected,
+                "Termux usability was accepted without an admitted signed shell proof");
+            var automatedApprovalNode = JsonNode.Parse(
+                JsonSerializer.Serialize(
+                    appliedConnectivity,
+                    FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "modern connectivity operation could not be cloned");
+            automatedApprovalNode["targets"]![0]!["receipt"]![
+                "wearer_approval"] = "accepted";
+            var automatedApproval =
+                JsonSerializer.Deserialize<QuestWifiAdbOperation>(
+                    automatedApprovalNode.ToJsonString(),
+                    FleetJson.Options) ??
+                throw new InvalidOperationException(
+                    "automated-approval damage could not be projected");
+            var automatedApprovalRejected = false;
+            try
+            {
+                QuestWifiAdbProjectionValidation.ValidateOperation(
+                    automatedApproval);
+            }
+            catch (InvalidOperationException)
+            {
+                automatedApprovalRejected = true;
+            }
+
+            Require(
+                automatedApprovalRejected,
+                "provider receipt was allowed to claim protected wearer acceptance");
+
             var operationWindow = new MainWindow(operationWorkspace)
             {
                 ShowActivated = false,
@@ -1012,6 +1218,69 @@ internal static class Program
                     "No headset serials or private paths",
                     StringComparison.Ordinal),
                 "awake-control target ledger lost bounded native DataGrid or privacy semantics");
+            Require(
+                AutomationProperties.GetName(
+                    operationWindow.QuestWifiAdbOperationRegion) ==
+                "Quest Wireless ADB connectivity" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestWifiAdbOperationRegion).Contains(
+                    "does not prove wearer approval",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestWifiAdbOperationRegion).Contains(
+                    "Only a current admitted signed shell proof",
+                    StringComparison.Ordinal) &&
+                operationWindow.QuestWifiAdbModernActionControl.Items.Count == 5 &&
+                AutomationProperties.GetName(
+                    operationWindow.QuestWifiAdbModernRouteControl).Contains(
+                    "modern Wireless ADB",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.QuestWifiAdbClassicRouteControl).Contains(
+                    "separate classic USB tcpip",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestWifiAdbClassicRouteControl).Contains(
+                    "not modern TLS",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewQuestWifiAdbControl).Contains(
+                    "exact selected devices",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.ConfirmQuestWifiAdbControl).Contains(
+                    "cannot accept or automate",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.DismissQuestWifiAdbControl).Contains(
+                    "does not disable Wireless ADB",
+                    StringComparison.Ordinal) &&
+                !operationWindow.QuestWifiAdbModernActionControl.IsEnabled &&
+                !operationWindow.QuestWifiAdbModernRouteControl.IsEnabled &&
+                !operationWindow.QuestWifiAdbClassicRouteControl.IsEnabled &&
+                !operationWindow.ConfirmQuestWifiAdbControl.IsEnabled,
+                "Quest connectivity controls did not expose route, approval, and immutable-preview boundaries");
+            var connectivityGrid =
+                operationWindow.QuestWifiAdbTargetsControl;
+            connectivityGrid.BringIntoView();
+            operationRoot.UpdateLayout();
+            Require(
+                connectivityGrid.Columns.Count == 8 &&
+                connectivityGrid.IsReadOnly &&
+                connectivityGrid.EnableRowVirtualization &&
+                connectivityGrid.EnableColumnVirtualization &&
+                VirtualizingPanel.GetIsVirtualizing(connectivityGrid) &&
+                VirtualizingPanel.GetVirtualizationMode(connectivityGrid) ==
+                VirtualizationMode.Recycling &&
+                AutomationProperties.GetName(connectivityGrid) ==
+                "Quest connectivity target results" &&
+                AutomationProperties.GetHelpText(connectivityGrid).Contains(
+                    "independent request-delivery",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(connectivityGrid).Contains(
+                    "No serials, credentials, pairing codes, or private paths",
+                    StringComparison.Ordinal),
+                "Quest connectivity target ledger lost independent evidence, privacy, or native virtualization semantics");
             var packageGrid = operationWindow.PackageOperationTargetsControl;
             packageGrid.BringIntoView();
             operationRoot.UpdateLayout();
@@ -1681,6 +1950,20 @@ internal static class Program
                 quest_awake_accessible = true,
                 quest_awake_private_bindings_hidden = true,
                 quest_awake_fail_closed = true,
+                quest_wifi_adb_preview = true,
+                quest_wifi_adb_exact_action_and_targets = true,
+                quest_wifi_adb_explicit_confirmation = true,
+                quest_wifi_adb_destructive_copy = true,
+                quest_wifi_adb_request_delivery_independent = true,
+                quest_wifi_adb_kiosk_setting_independent = true,
+                quest_wifi_adb_wearer_approval_not_automated = true,
+                quest_wifi_adb_modern_listener_independent = true,
+                quest_wifi_adb_signed_termux_proof_current = true,
+                quest_wifi_adb_termux_without_proof_rejected = true,
+                quest_wifi_adb_classic_usb_route_separate = true,
+                quest_wifi_adb_accessible = true,
+                quest_wifi_adb_private_bindings_hidden = true,
+                quest_wifi_adb_fail_closed = true,
                 batch_operations_collapsed_by_default = true,
                 minimum_window_layout = true,
                 expanded_minimum_window_layout = true,
@@ -2218,6 +2501,14 @@ internal static class Program
 
         public string? QuestAwakeInvocationGenerationOverride { get; set; }
 
+        public QuestWifiAdbPreviewRequest? LastQuestWifiAdbPreviewRequest { get; private set; }
+
+        public QuestWifiAdbExecuteRequest? LastQuestWifiAdbExecuteRequest { get; private set; }
+
+        public QuestWifiAdbOperation? LastQuestWifiAdbOperation { get; private set; }
+
+        public bool DamageNextQuestWifiAdbResponse { get; set; }
+
         public Task<FleetQueryResult> QueryAsync(
             FleetQuery query,
             CancellationToken cancellationToken)
@@ -2609,6 +2900,54 @@ internal static class Program
             }
 
             return Task.FromResult(ReturnQuestAwakeOperation());
+        }
+
+        public Task<QuestWifiAdbOperation> PreviewQuestWifiAdbAsync(
+            QuestWifiAdbPreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastQuestWifiAdbPreviewRequest = request;
+            LastQuestWifiAdbOperation = CreateQuestWifiAdbOperation(
+                request,
+                executed: false);
+            return Task.FromResult(ReturnQuestWifiAdbOperation());
+        }
+
+        public Task<QuestWifiAdbOperation> ExecuteQuestWifiAdbAsync(
+            QuestWifiAdbExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastQuestWifiAdbExecuteRequest = request;
+            if (LastQuestWifiAdbOperation is null ||
+                LastQuestWifiAdbPreviewRequest is null ||
+                LastQuestWifiAdbOperation.OperationId != request.OperationId ||
+                LastQuestWifiAdbOperation.Preview.PreviewId != request.PreviewId)
+            {
+                throw new InvalidOperationException(
+                    "connectivity execute request did not match the synthetic preview");
+            }
+
+            LastQuestWifiAdbOperation = CreateQuestWifiAdbOperation(
+                LastQuestWifiAdbPreviewRequest,
+                executed: true);
+            return Task.FromResult(ReturnQuestWifiAdbOperation());
+        }
+
+        public Task<QuestWifiAdbOperation> QuestWifiAdbAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastQuestWifiAdbOperation is null ||
+                LastQuestWifiAdbOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic connectivity operation not found");
+            }
+
+            return Task.FromResult(ReturnQuestWifiAdbOperation());
         }
 
         private OperationLedger ReturnOperation()
@@ -3203,6 +3542,238 @@ internal static class Program
                 Targets = targets,
                 UpdatedAtMs = operation.UpdatedAtMs
             };
+        }
+
+        private QuestWifiAdbOperation CreateQuestWifiAdbOperation(
+            QuestWifiAdbPreviewRequest request,
+            bool executed)
+        {
+            var identities = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal);
+            foreach (var target in request.Targets)
+            {
+                identities.Add(target.Key, target.Value);
+            }
+
+            var createdAt = Projection.AsOfMs;
+            var operationId = "wifi-adb-operation-0001";
+            var previewId = "wifi-adb-preview-0001";
+            var preflights = identities
+                .Select((identity, index) =>
+                    new QuestWifiAdbTargetPreflight
+                    {
+                        DeviceId = identity.Key,
+                        IdentityRevision = identity.Value,
+                        CapabilityId =
+                            "questionable-file-manager.quest-wifi-adb-provider",
+                        CapabilityEvidenceRevision = (ulong)(121 + index),
+                        CapabilityOwner = "questionable-file-manager",
+                        Support = "supported",
+                        Enablement = "enabled",
+                        Authorization = "authorized",
+                        Reachability = "reachable",
+                        Freshness = "current",
+                        ObservedAtMs = createdAt - 100,
+                        FreshUntilMs = createdAt + 30_000,
+                        EvaluatedAtMs = createdAt,
+                        Eligible = true,
+                        ReasonCode = "ready",
+                        Message =
+                            "Pinned Quest connectivity provider is current and ready."
+                    })
+                .ToArray();
+            var targets = preflights
+                .Select((preflight, index) =>
+                {
+                    var requestId = $"fleetwifi-{index + 1:D4}";
+                    var invocation = executed
+                        ? new QuestWifiAdbOwnerInvocation
+                        {
+                            Schema =
+                                "rusty.fleet.quest_wifi_adb_owner_invocation.v1",
+                            RequestId = requestId,
+                            OperationId = operationId,
+                            PreviewId = previewId,
+                            DeviceId = preflight.DeviceId,
+                            IdentityRevision = preflight.IdentityRevision,
+                            Action = request.Action,
+                            IssuedAtMs = createdAt + 100,
+                            ExpiresAtMs = createdAt + 60_000
+                        }
+                        : null;
+                    var receipt = executed
+                        ? CreateQuestWifiAdbReceipt(
+                            request.Action,
+                            preflight,
+                            operationId,
+                            previewId,
+                            requestId,
+                            createdAt)
+                        : null;
+                    var proof = executed &&
+                                request.Action ==
+                                QuestWifiAdbActions.RequestWirelessAdb
+                        ? new QuestWifiAdbTermuxProof
+                        {
+                            Schema =
+                                "rusty.fleet.quest_wifi_adb_termux_proof.v1",
+                            ProofId = $"termux-proof-{index + 1:D4}",
+                            OwnerId = "quest-termux-lab.loopback-proof",
+                            DeviceId = preflight.DeviceId,
+                            IdentityRevision = preflight.IdentityRevision,
+                            SourceEpoch = "boot-epoch-connectivity-0001",
+                            SourceRevision = (ulong)(501 + index),
+                            RouteMode = "modern_tls",
+                            DiscoveryMode = "tls_nsd",
+                            ListenerDiscovered = true,
+                            ShellIdentity = "uid=2000(shell)",
+                            Available = true,
+                            EvidenceSha256 = new string('c', 64),
+                            ObservedAtMs = createdAt + 400,
+                            FreshUntilMs = createdAt + 60_400
+                        }
+                        : null;
+                    return new QuestWifiAdbTargetLedger
+                    {
+                        DeviceId = preflight.DeviceId,
+                        IdentityRevision = preflight.IdentityRevision,
+                        Preflight = preflight,
+                        Lifecycle = executed ? "applied" : "proposed",
+                        Invocation = invocation,
+                        Receipt = receipt,
+                        TermuxProof = proof,
+                        TermuxUsable = proof?.Available == true,
+                        FailureCode = null,
+                        UpdatedAtMs = createdAt + (proof is null ? 300 : 400)
+                    };
+                })
+                .ToArray();
+            return new QuestWifiAdbOperation
+            {
+                Schema = "rusty.fleet.quest_wifi_adb_operation.v1",
+                OperationId = operationId,
+                ActionId = QuestWifiAdbActions.ActionId,
+                Lifecycle = executed ? "applied" : "proposed",
+                Preview = new QuestWifiAdbPreview
+                {
+                    Schema = "rusty.fleet.quest_wifi_adb_preview.v1",
+                    PreviewId = previewId,
+                    OperationId = operationId,
+                    ActionId = QuestWifiAdbActions.ActionId,
+                    Action = request.Action,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    Owner = new QuestWifiAdbOwnerBinding
+                    {
+                        OwnerRepoId = "questionable-file-manager",
+                        CapabilityId =
+                            "questionable-file-manager.quest-wifi-adb-provider",
+                        ProviderContract =
+                            "questionable.file_manager.fleet_connectivity_provider.v1",
+                        ReceiptSchema =
+                            "questionable.file_manager.quest_wifi_adb_receipt.v1",
+                        Transport = "pinned_local_subprocess",
+                        PrivateTargetResolution =
+                            "provider_owned_credential_profile"
+                    },
+                    Targets = preflights
+                },
+                ConfirmedAtMs = executed ? createdAt + 50 : null,
+                Targets = targets,
+                UpdatedAtMs = createdAt +
+                              (executed &&
+                               request.Action ==
+                               QuestWifiAdbActions.RequestWirelessAdb
+                                  ? 400
+                                  : 300)
+            };
+        }
+
+        private static QuestWifiAdbOwnerReceipt CreateQuestWifiAdbReceipt(
+            string action,
+            QuestWifiAdbTargetPreflight preflight,
+            string operationId,
+            string previewId,
+            string requestId,
+            long createdAt)
+        {
+            var requestWireless =
+                action == QuestWifiAdbActions.RequestWirelessAdb;
+            var classic =
+                action == QuestWifiAdbActions.EnableClassicTcpipFromUsb;
+            var kiosk = !classic && action != QuestWifiAdbActions.Status;
+            return new QuestWifiAdbOwnerReceipt
+            {
+                Schema =
+                    "questionable.file_manager.quest_wifi_adb_receipt.v1",
+                RequestId = requestId,
+                OperationId = operationId,
+                PreviewId = previewId,
+                DeviceId = preflight.DeviceId,
+                IdentityRevision = preflight.IdentityRevision,
+                Action = action,
+                RouteMode = requestWireless
+                    ? "modern_tls"
+                    : classic
+                        ? "classic_tcpip"
+                        : "none",
+                RequestDelivered = true,
+                KioskSettingApplied = kiosk,
+                RequestAfterBootEnabled = action switch
+                {
+                    QuestWifiAdbActions.EnableRequestAfterBoot => true,
+                    QuestWifiAdbActions.DisableRequestAfterBoot => false,
+                    _ => null
+                },
+                WearerApproval = requestWireless
+                    ? "pending"
+                    : classic
+                        ? "not_applicable"
+                        : "unknown",
+                ListenerDiscovered = requestWireless || classic,
+                EffectApplied = true,
+                Outcome = action switch
+                {
+                    QuestWifiAdbActions.Status =>
+                        "Current connectivity facts read",
+                    QuestWifiAdbActions.RequestWirelessAdb =>
+                        "Wireless ADB requested; wearer approval remains pending",
+                    QuestWifiAdbActions.EnableRequestAfterBoot =>
+                        "After-boot request enabled",
+                    QuestWifiAdbActions.DisableRequestAfterBoot =>
+                        "After-boot request disabled",
+                    QuestWifiAdbActions.DisableWirelessAdb =>
+                        "Wireless ADB disabled",
+                    _ => "Classic USB tcpip listener observed"
+                },
+                EvidenceSha256 = new string('d', 64),
+                ObservedAtMs = createdAt + 300
+            };
+        }
+
+        private QuestWifiAdbOperation ReturnQuestWifiAdbOperation()
+        {
+            var operation = LastQuestWifiAdbOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic connectivity operation was not created");
+            if (!DamageNextQuestWifiAdbResponse)
+            {
+                return operation;
+            }
+
+            DamageNextQuestWifiAdbResponse = false;
+            var damaged = JsonNode.Parse(
+                JsonSerializer.Serialize(operation, FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "synthetic connectivity operation could not be cloned");
+            damaged["targets"]![0]!["identity_revision"] =
+                operation.Targets[0].IdentityRevision + 1;
+            return JsonSerializer.Deserialize<QuestWifiAdbOperation>(
+                       damaged.ToJsonString(),
+                       FleetJson.Options) ??
+                   throw new InvalidOperationException(
+                       "damaged connectivity operation could not be projected");
         }
 
         private static KioskOwnerContractBinding CreateOwnerContract() =>

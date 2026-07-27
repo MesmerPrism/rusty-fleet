@@ -49,6 +49,13 @@ Quick is safe during normal editing and checks:
   receipt-gated power/watchdog readbacks, pinned-provider response binding,
   serial/boot-ID redaction, inert absent-provider behavior, and CLI/API
   projection parity;
+- Quest Wi-Fi ADB valid/damaged contracts, modern-TLS versus classic-USB
+  separation, immutable exact targets, Manifold typed authorization,
+  pinned-provider receipt binding, absent-provider HTTP 501 behavior,
+  private-field rejection, CLI/API parity, and enrolled signed-check-in
+  capability reconciliation covering exact shell UID, freshness, mutation,
+  replay, other-device, unavailable supersession, expiry, disable, reboot,
+  and renewal;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
   across off-screen 10/50/100-row layout windows cut from deterministic
   50/250-device Rust projections, with the 50-device source projection as the
@@ -176,6 +183,11 @@ Quest awake commands use the same explicit loopback Hub and are documented in
 provider transport and synthetic readbacks only. They do not contact ADB,
 Meta tooling, or a headset, and they do not prove live watchdog persistence or
 restoration.
+
+Quest Wi-Fi ADB commands use the same explicit loopback Hub and are documented
+in [Quest Wi-Fi ADB Control](QUEST_WIFI_ADB_CONTROL.md). Repository tiers use a
+fake provider plus signed synthetic check-ins only. They do not contact ADB,
+Kiosk, Credential Manager, Termux, Meta tooling, or a headset.
 
 For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
 surface separately:

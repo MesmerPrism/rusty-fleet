@@ -289,7 +289,7 @@
                       MaxHeight="180"
                       Margin="0,0,0,8"
                       AutomationProperties.Name="Batch operations"
-                      AutomationProperties.HelpText="Expands Kiosk controls, headset awake controls, and package preparation workflows.">
+                      AutomationProperties.HelpText="Expands Kiosk controls, headset awake controls, Quest Wireless ADB connectivity, and package preparation workflows.">
                 <ScrollViewer x:Name="BatchOperationsScrollViewer"
                               MaxHeight="140"
                               VerticalScrollBarVisibility="Auto"
@@ -584,6 +584,223 @@
                                     <DataGridTextColumn Header="Result"
                                                         Binding="{Binding Result}"
                                                         Width="2*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="QuestWifiAdbOperationPane"
+                            Margin="0,8,0,0"
+                            Padding="6"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Quest Wireless ADB connectivity"
+                            AutomationProperties.HelpText="Preview exact selected identities, then confirm one typed action. Kiosk setting application does not prove wearer approval. A listener does not prove Termux usability. Only a current admitted signed shell proof can make Termux usable. Classic USB tcpip is a separate route.">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding QuestWifiAdbInputLockText}"
+                                           FontStyle="Italic"
+                                           Opacity="0.75"
+                                           AutomationProperties.Name="{Binding QuestWifiAdbInputLockText}" />
+                                <TextBlock Text="Quest Wireless ADB connectivity"
+                                           FontWeight="SemiBold" />
+                            </DockPanel>
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="Fleet can deliver a Kiosk setting request, but it cannot accept or automate Meta's protected wearer prompt. Listener discovery and signed Termux shell proof are reported separately."
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Fleet cannot automate Meta's protected wearer prompt. Kiosk setting, listener discovery, and signed Termux shell proof are separate facts." />
+                            <Grid Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <RadioButton x:Name="QuestWifiAdbModernRouteButton"
+                                             Content="Modern Wireless ADB through Kiosk"
+                                             GroupName="QuestWifiAdbRoute"
+                                             IsChecked="{Binding IsQuestWifiAdbModernRoute, Mode=TwoWay}"
+                                             IsEnabled="{Binding IsQuestWifiAdbInputUnlocked}"
+                                             VerticalAlignment="Center"
+                                             AutomationProperties.Name="Use modern Wireless ADB through Kiosk"
+                                             AutomationProperties.HelpText="Modern TLS request and setting evidence. Protected wearer approval remains explicit and cannot be automated." />
+                                <ComboBox x:Name="QuestWifiAdbModernActionBox"
+                                          Grid.Column="1"
+                                          Margin="12,0,0,0"
+                                          ItemsSource="{Binding QuestWifiAdbModernActionOptions}"
+                                          SelectedItem="{Binding SelectedQuestWifiAdbModernAction}"
+                                          DisplayMemberPath="Label"
+                                          IsEnabled="{Binding IsQuestWifiAdbInputUnlocked}"
+                                          AutomationProperties.Name="Modern Wireless ADB action"
+                                          AutomationProperties.HelpText="{Binding QuestWifiAdbActionHelpText}" />
+                            </Grid>
+                            <Border Margin="0,6,0,0"
+                                    Padding="5"
+                                    BorderThickness="1"
+                                    BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                                    AutomationProperties.Name="Classic USB tcpip separate route">
+                                <StackPanel>
+                                    <RadioButton x:Name="QuestWifiAdbClassicRouteButton"
+                                                 Content="Classic tcpip from an existing USB ADB connection"
+                                                 GroupName="QuestWifiAdbRoute"
+                                                 IsChecked="{Binding IsQuestWifiAdbClassicRoute, Mode=TwoWay}"
+                                                 IsEnabled="{Binding IsQuestWifiAdbInputUnlocked}"
+                                                 AutomationProperties.Name="Use the separate classic USB tcpip route"
+                                                 AutomationProperties.HelpText="Requires an existing exact USB ADB connection. This is not modern TLS, a Kiosk setting, or proof of a protected Meta prompt." />
+                                    <TextBlock Margin="22,3,0,0"
+                                               Text="Separate classic route: no Kiosk setting and no wearer-approval claim."
+                                               TextWrapping="Wrap"
+                                               Opacity="0.8" />
+                                </StackPanel>
+                            </Border>
+                            <TextBlock Margin="0,5,0,0"
+                                       Text="{Binding QuestWifiAdbActionHelpText}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding QuestWifiAdbActionHelpText}" />
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="{Binding QuestWifiAdbConfirmationText}"
+                                       TextWrapping="Wrap"
+                                       FontWeight="SemiBold"
+                                       AutomationProperties.Name="{Binding QuestWifiAdbConfirmationText}" />
+                            <Grid Margin="0,5,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="{Binding QuestWifiAdbSummaryText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="{Binding QuestWifiAdbSummaryText}" />
+                                <WrapPanel Grid.Row="1"
+                                           Margin="0,4,0,0"
+                                           HorizontalAlignment="Right">
+                                    <Button x:Name="PreviewQuestWifiAdbButton"
+                                            Content="Preview connectivity"
+                                            Command="{Binding PreviewQuestWifiAdbCommand}"
+                                            AutomationProperties.Name="Preview Quest Wireless ADB connectivity for exact selected devices" />
+                                    <Button x:Name="ConfirmQuestWifiAdbButton"
+                                            Content="{Binding QuestWifiAdbConfirmationButtonText}"
+                                            Command="{Binding ConfirmQuestWifiAdbCommand}"
+                                            AutomationProperties.Name="Confirm the exact immutable Quest connectivity preview"
+                                            AutomationProperties.HelpText="{Binding QuestWifiAdbConfirmationText}" />
+                                    <Button x:Name="RefreshQuestWifiAdbButton"
+                                            Content="Refresh results"
+                                            Command="{Binding RefreshQuestWifiAdbCommand}"
+                                            AutomationProperties.Name="Refresh Quest connectivity results" />
+                                    <Button x:Name="DismissQuestWifiAdbButton"
+                                            Content="Close view"
+                                            Command="{Binding DismissQuestWifiAdbCommand}"
+                                            AutomationProperties.Name="Close Quest connectivity view"
+                                            AutomationProperties.HelpText="Clears only this Console view. It does not disable Wireless ADB or change after-boot requests." />
+                                </WrapPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding QuestWifiAdbStatusText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding QuestWifiAdbStatusText}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <DataGrid x:Name="QuestWifiAdbTargetsGrid"
+                                      ItemsSource="{Binding QuestWifiAdbTargets}"
+                                      Margin="0,6,0,0"
+                                      MaxHeight="190"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      CanUserReorderColumns="False"
+                                      CanUserResizeColumns="True"
+                                      CanUserSortColumns="False"
+                                      HeadersVisibility="Column"
+                                      GridLinesVisibility="Horizontal"
+                                      SelectionMode="Single"
+                                      SelectionUnit="FullRow"
+                                      IsReadOnly="True"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      ScrollViewer.CanContentScroll="True"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                      AutomationProperties.Name="Quest connectivity target results"
+                                      AutomationProperties.HelpText="Read-only independent request-delivery, Kiosk-setting, wearer-approval, listener, and admitted signed Termux proof facts. No serials, credentials, pairing codes, or private paths are shown.">
+                                <DataGrid.Style>
+                                    <Style TargetType="{x:Type DataGrid}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentQuestWifiAdbOperation}"
+                                                         Value="{x:Null}">
+                                                <Setter Property="Visibility"
+                                                        Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.Style>
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="{x:Type DataGridRow}">
+                                        <Setter Property="AutomationProperties.Name"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="AutomationProperties.HelpText"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="Focusable"
+                                                Value="True" />
+                                        <Setter Property="MinHeight"
+                                                Value="44" />
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="Device"
+                                                            Width="175">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding DeviceId}"
+                                                               FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding IdentityRevision, StringFormat={}Identity revision {0}}"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Route / lifecycle"
+                                                            Width="165">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding Route}"
+                                                               TextWrapping="Wrap" />
+                                                    <TextBlock Opacity="0.75">
+                                                        <Run Text="{Binding Eligibility, Mode=OneWay}" />
+                                                        <Run Text=" · " />
+                                                        <Run Text="{Binding Lifecycle, Mode=OneWay}" />
+                                                    </TextBlock>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Request delivered"
+                                                        Binding="{Binding RequestDelivery}"
+                                                        Width="125" />
+                                    <DataGridTemplateColumn Header="Kiosk setting"
+                                                            Width="175">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding KioskSetting}"
+                                                               TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding AfterBoot}"
+                                                               TextWrapping="Wrap"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Wearer approval"
+                                                        Binding="{Binding WearerApproval}"
+                                                        Width="190" />
+                                    <DataGridTextColumn Header="Listener observed"
+                                                        Binding="{Binding Listener}"
+                                                        Width="190" />
+                                    <DataGridTextColumn Header="Signed Termux proof / freshness"
+                                                        Binding="{Binding Termux}"
+                                                        Width="260" />
+                                    <DataGridTextColumn Header="Result"
+                                                        Binding="{Binding Result}"
+                                                        Width="220" />
                                 </DataGrid.Columns>
                             </DataGrid>
                         </StackPanel>

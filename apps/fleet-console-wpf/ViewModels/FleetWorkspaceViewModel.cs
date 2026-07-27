@@ -82,6 +82,18 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private string _questAwakeSummaryText = "No headset awake-control preview";
     private string _questAwakeStatusText =
         "Choose an action, select exact devices, then preview";
+    private QuestWifiAdbOperation? _currentQuestWifiAdbOperation;
+    private QuestWifiAdbActionOption _selectedQuestWifiAdbModernAction =
+        new(
+            QuestWifiAdbActions.Status,
+            "Check Wireless ADB status",
+            "Reads current Kiosk, wearer-approval, listener, and signed Termux facts.",
+            "This status check reads connectivity facts without changing settings.",
+            false);
+    private bool _isQuestWifiAdbClassicRoute;
+    private string _questWifiAdbSummaryText = "No Quest connectivity preview";
+    private string _questWifiAdbStatusText =
+        "Choose a modern or classic action, select exact devices, then preview";
 
     public FleetWorkspaceViewModel(Func<Uri, IFleetDataSource> sourceFactory)
     {
@@ -148,6 +160,23 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         DismissQuestAwakeCommand = new RelayCommand(
             DismissQuestAwake,
             () => !IsBusy && CurrentQuestAwakeOperation is not null);
+        PreviewQuestWifiAdbCommand = new AsyncCommand(
+            PreviewQuestWifiAdbAsync,
+            () => !IsBusy &&
+                  _source is not null &&
+                  _batchSelection.Count > 0 &&
+                  CurrentQuestWifiAdbOperation is null);
+        ConfirmQuestWifiAdbCommand = new AsyncCommand(
+            ConfirmQuestWifiAdbAsync,
+            () => CanConfirmQuestWifiAdb);
+        RefreshQuestWifiAdbCommand = new AsyncCommand(
+            RefreshQuestWifiAdbAsync,
+            () => !IsBusy &&
+                  _source is not null &&
+                  CurrentQuestWifiAdbOperation is not null);
+        DismissQuestWifiAdbCommand = new RelayCommand(
+            DismissQuestWifiAdb,
+            () => !IsBusy && CurrentQuestWifiAdbOperation is not null);
         if (RowsView is ICollectionViewLiveShaping liveView &&
             liveView.CanChangeLiveGrouping)
         {
@@ -178,6 +207,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         [];
 
     public ObservableCollection<QuestAwakeTargetViewModel> QuestAwakeTargets { get; } = [];
+
+    public ObservableCollection<QuestWifiAdbTargetViewModel> QuestWifiAdbTargets { get; } = [];
 
     public ICollectionView RowsView { get; }
 
@@ -221,6 +252,48 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             "Stops watchdogs, then restores normal sleep and proximity behavior.")
     ];
 
+    public IReadOnlyList<QuestWifiAdbActionOption> QuestWifiAdbModernActionOptions { get; } =
+    [
+        new(
+            QuestWifiAdbActions.Status,
+            "Check Wireless ADB status",
+            "Reads independent Kiosk, wearer-approval, listener, and signed Termux facts.",
+            "This status check reads connectivity facts without changing settings.",
+            false),
+        new(
+            QuestWifiAdbActions.RequestWirelessAdb,
+            "Request Wireless ADB",
+            "Requests modern TLS Wireless ADB through Kiosk. The wearer must handle Meta's protected in-headset prompt.",
+            "This sends the Wireless ADB request. It cannot accept or automate Meta's protected wearer prompt; the wearer must approve in the headset.",
+            false),
+        new(
+            QuestWifiAdbActions.EnableRequestAfterBoot,
+            "Request Wireless ADB after boot",
+            "Requests the attended Wireless ADB prompt after future headset boots.",
+            "This enables an after-boot request. Each boot can still require the wearer to approve Meta's protected in-headset prompt.",
+            false),
+        new(
+            QuestWifiAdbActions.DisableRequestAfterBoot,
+            "Stop requesting after boot",
+            "Stops future after-boot requests. It does not disable a currently active Wireless ADB route.",
+            "This stops future after-boot Wireless ADB requests. It does not disable the current Wireless ADB route.",
+            true),
+        new(
+            QuestWifiAdbActions.DisableWirelessAdb,
+            "Disable Wireless ADB",
+            "Disables the current modern Wireless ADB setting and may disconnect active tools.",
+            "This disables current Wireless ADB and may disconnect active tools. The after-boot request is a separate setting and is not changed.",
+            true)
+    ];
+
+    public QuestWifiAdbActionOption QuestWifiAdbClassicAction { get; } =
+        new(
+            QuestWifiAdbActions.EnableClassicTcpipFromUsb,
+            "Enable classic tcpip from USB",
+            "Uses an existing exact USB ADB connection to enable the separate classic tcpip route. It is not modern TLS or a Kiosk setting.",
+            "This changes the separate classic ADB tcpip route through an existing exact USB connection. It does not request modern Wireless ADB or automate a wearer prompt.",
+            false);
+
     public AsyncCommand ConnectCommand { get; }
 
     public AsyncCommand SynchronizeUpdatesCommand { get; }
@@ -262,6 +335,14 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public AsyncCommand RefreshQuestAwakeCommand { get; }
 
     public RelayCommand DismissQuestAwakeCommand { get; }
+
+    public AsyncCommand PreviewQuestWifiAdbCommand { get; }
+
+    public AsyncCommand ConfirmQuestWifiAdbCommand { get; }
+
+    public AsyncCommand RefreshQuestWifiAdbCommand { get; }
+
+    public RelayCommand DismissQuestWifiAdbCommand { get; }
 
     public event Action<SavedView>? SavedViewRestorationRequested;
 
@@ -550,6 +631,127 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         private set => SetProperty(ref _questAwakeStatusText, value);
     }
 
+    public QuestWifiAdbActionOption SelectedQuestWifiAdbModernAction
+    {
+        get => _selectedQuestWifiAdbModernAction;
+        set
+        {
+            if (value is not null &&
+                CurrentQuestWifiAdbOperation is null &&
+                SetProperty(ref _selectedQuestWifiAdbModernAction, value))
+            {
+                if (_isQuestWifiAdbClassicRoute)
+                {
+                    _isQuestWifiAdbClassicRoute = false;
+                    OnPropertyChanged(nameof(IsQuestWifiAdbClassicRoute));
+                    OnPropertyChanged(nameof(IsQuestWifiAdbModernRoute));
+                }
+                NotifyQuestWifiAdbActionChanged();
+            }
+        }
+    }
+
+    public bool IsQuestWifiAdbModernRoute
+    {
+        get => !IsQuestWifiAdbClassicRoute;
+        set
+        {
+            if (value)
+            {
+                IsQuestWifiAdbClassicRoute = false;
+            }
+        }
+    }
+
+    public bool IsQuestWifiAdbClassicRoute
+    {
+        get => _isQuestWifiAdbClassicRoute;
+        set
+        {
+            if (CurrentQuestWifiAdbOperation is null &&
+                SetProperty(ref _isQuestWifiAdbClassicRoute, value))
+            {
+                OnPropertyChanged(nameof(IsQuestWifiAdbModernRoute));
+                NotifyQuestWifiAdbActionChanged();
+            }
+        }
+    }
+
+    public QuestWifiAdbActionOption SelectedQuestWifiAdbAction =>
+        IsQuestWifiAdbClassicRoute
+            ? QuestWifiAdbClassicAction
+            : SelectedQuestWifiAdbModernAction;
+
+    public string QuestWifiAdbActionHelpText =>
+        SelectedQuestWifiAdbAction.HelpText;
+
+    public string QuestWifiAdbConfirmationText =>
+        SelectedQuestWifiAdbAction.ConfirmationText;
+
+    public QuestWifiAdbOperation? CurrentQuestWifiAdbOperation
+    {
+        get => _currentQuestWifiAdbOperation;
+        private set
+        {
+            if (SetProperty(ref _currentQuestWifiAdbOperation, value))
+            {
+                OnPropertyChanged(nameof(IsQuestWifiAdbInputLocked));
+                OnPropertyChanged(nameof(IsQuestWifiAdbInputUnlocked));
+                OnPropertyChanged(nameof(QuestWifiAdbInputLockText));
+                OnPropertyChanged(nameof(CanConfirmQuestWifiAdb));
+                OnPropertyChanged(nameof(QuestWifiAdbConfirmationButtonText));
+                PreviewQuestWifiAdbCommand.RaiseCanExecuteChanged();
+                ConfirmQuestWifiAdbCommand.RaiseCanExecuteChanged();
+                RefreshQuestWifiAdbCommand.RaiseCanExecuteChanged();
+                DismissQuestWifiAdbCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsQuestWifiAdbInputLocked =>
+        CurrentQuestWifiAdbOperation is not null;
+
+    public bool IsQuestWifiAdbInputUnlocked => !IsQuestWifiAdbInputLocked;
+
+    public string QuestWifiAdbInputLockText => IsQuestWifiAdbInputLocked
+        ? "Locked to immutable preview"
+        : string.Empty;
+
+    public bool CanConfirmQuestWifiAdb =>
+        !IsBusy &&
+        _source is not null &&
+        CurrentQuestWifiAdbOperation is
+        {
+            Lifecycle: "proposed",
+            ConfirmedAtMs: null
+        } operation &&
+        operation.Targets.Any(target => target.Preflight.Eligible);
+
+    public string QuestWifiAdbConfirmationButtonText =>
+        CurrentQuestWifiAdbOperation?.ConfirmedAtMs is not null
+            ? "Confirmed"
+            : SelectedQuestWifiAdbAction.Action switch
+            {
+                QuestWifiAdbActions.Status => "Confirm status check",
+                QuestWifiAdbActions.DisableWirelessAdb =>
+                    "Confirm disable Wireless ADB",
+                QuestWifiAdbActions.DisableRequestAfterBoot =>
+                    "Confirm stop after-boot requests",
+                _ => "Confirm and apply"
+            };
+
+    public string QuestWifiAdbSummaryText
+    {
+        get => _questWifiAdbSummaryText;
+        private set => SetProperty(ref _questWifiAdbSummaryText, value);
+    }
+
+    public string QuestWifiAdbStatusText
+    {
+        get => _questWifiAdbStatusText;
+        private set => SetProperty(ref _questWifiAdbStatusText, value);
+    }
+
     public bool IsBusy
     {
         get => _isBusy;
@@ -578,6 +780,11 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 ConfirmQuestAwakeCommand.RaiseCanExecuteChanged();
                 RefreshQuestAwakeCommand.RaiseCanExecuteChanged();
                 DismissQuestAwakeCommand.RaiseCanExecuteChanged();
+                PreviewQuestWifiAdbCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanConfirmQuestWifiAdb));
+                ConfirmQuestWifiAdbCommand.RaiseCanExecuteChanged();
+                RefreshQuestWifiAdbCommand.RaiseCanExecuteChanged();
+                DismissQuestWifiAdbCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -1119,6 +1326,156 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             "Choose an action, select exact devices, then preview";
     }
 
+    public async Task PreviewQuestWifiAdbAsync()
+    {
+        if (_source is null)
+        {
+            QuestWifiAdbStatusText = "Not connected to a Fleet Hub";
+            return;
+        }
+        if (_batchSelection.Count == 0)
+        {
+            QuestWifiAdbStatusText =
+                "Select at least one exact device before previewing connectivity";
+            return;
+        }
+
+        var targets = new SortedDictionary<string, ulong>(
+            _batchSelection,
+            StringComparer.Ordinal);
+        var request = new QuestWifiAdbPreviewRequest
+        {
+            Action = SelectedQuestWifiAdbAction.Action,
+            Targets = targets
+        };
+        IsBusy = true;
+        QuestWifiAdbStatusText =
+            $"Requesting immutable connectivity preview for " +
+            $"{targets.Count} exact device(s)";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.PreviewQuestWifiAdbAsync(
+                request,
+                timeout.Token);
+            ValidateQuestWifiAdbBinding(operation, request);
+            ProjectQuestWifiAdbOperation(operation);
+            QuestWifiAdbStatusText =
+                "Preview ready · review every target and the confirmation statement";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            QuestWifiAdbStatusText =
+                $"Preview failed · prior connectivity projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task ConfirmQuestWifiAdbAsync()
+    {
+        var prior = CurrentQuestWifiAdbOperation;
+        if (_source is null || prior is null)
+        {
+            QuestWifiAdbStatusText =
+                "Preview a connectivity action before confirming it";
+            return;
+        }
+        if (!CanConfirmQuestWifiAdb)
+        {
+            QuestWifiAdbStatusText = prior.ConfirmedAtMs is not null
+                ? "This immutable connectivity preview is already confirmed"
+                : "The current connectivity preview has no eligible target to confirm";
+            return;
+        }
+
+        var request = new QuestWifiAdbExecuteRequest
+        {
+            OperationId = prior.OperationId,
+            PreviewId = prior.Preview.PreviewId
+        };
+        IsBusy = true;
+        QuestWifiAdbStatusText =
+            $"Confirming operation {prior.OperationId} against immutable preview " +
+            prior.Preview.PreviewId;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.ExecuteQuestWifiAdbAsync(
+                request,
+                timeout.Token);
+            ValidateQuestWifiAdbBinding(
+                operation,
+                prior.Preview.Action,
+                QuestWifiAdbPreviewIdentities(prior));
+            RequireSameQuestWifiAdbOperation(prior, operation);
+            ProjectQuestWifiAdbOperation(operation);
+            QuestWifiAdbStatusText =
+                "Action accepted · refresh for current independent connectivity facts";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            QuestWifiAdbStatusText =
+                $"Confirmation failed · prior connectivity projection retained · " +
+                error.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task RefreshQuestWifiAdbAsync()
+    {
+        var prior = CurrentQuestWifiAdbOperation;
+        if (_source is null || prior is null)
+        {
+            QuestWifiAdbStatusText =
+                "No connectivity operation is available to refresh";
+            return;
+        }
+
+        IsBusy = true;
+        QuestWifiAdbStatusText =
+            $"Refreshing connectivity operation {prior.OperationId}";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.QuestWifiAdbAsync(
+                prior.OperationId,
+                timeout.Token);
+            ValidateQuestWifiAdbBinding(
+                operation,
+                prior.Preview.Action,
+                QuestWifiAdbPreviewIdentities(prior));
+            RequireSameQuestWifiAdbOperation(prior, operation);
+            ProjectQuestWifiAdbOperation(operation);
+            QuestWifiAdbStatusText =
+                "Connectivity results refreshed from the Fleet Hub";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            QuestWifiAdbStatusText =
+                $"Refresh failed · prior connectivity projection retained · " +
+                error.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public void DismissQuestWifiAdb()
+    {
+        CurrentQuestWifiAdbOperation = null;
+        QuestWifiAdbTargets.Clear();
+        QuestWifiAdbSummaryText = "No Quest connectivity preview";
+        QuestWifiAdbStatusText =
+            "Choose a modern or classic action, select exact devices, then preview";
+    }
+
     public async Task SelectDeviceAsync(DeviceRowViewModel? device)
     {
         CloseFullDetail();
@@ -1603,6 +1960,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
         PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
         PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
+        PreviewQuestWifiAdbCommand.RaiseCanExecuteChanged();
         return invalidatedSelections;
     }
 
@@ -2062,6 +2420,38 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}";
     }
 
+    private void ProjectQuestWifiAdbOperation(QuestWifiAdbOperation operation)
+    {
+        QuestWifiAdbProjectionValidation.ValidateOperation(operation);
+        var targets = operation.Targets
+            .OrderBy(target => target.DeviceId, StringComparer.Ordinal)
+            .Select(target =>
+                new QuestWifiAdbTargetViewModel(
+                    target,
+                    operation.UpdatedAtMs))
+            .ToArray();
+        CurrentQuestWifiAdbOperation = operation;
+        QuestWifiAdbTargets.Clear();
+        foreach (var target in targets)
+        {
+            QuestWifiAdbTargets.Add(target);
+        }
+
+        var eligible = operation.Targets.Count(target => target.Preflight.Eligible);
+        var excluded = operation.Targets.Count - eligible;
+        var delivered = operation.Targets.Count(target =>
+            target.Receipt?.RequestDelivered == true);
+        var termuxUsable = operation.Targets.Count(target => target.TermuxUsable);
+        QuestWifiAdbSummaryText =
+            $"{QuestWifiAdbActionLabel(operation.Preview.Action)} · " +
+            $"operation {operation.OperationId} · " +
+            $"preview {operation.Preview.PreviewId} · " +
+            $"{operation.Targets.Count} exact target(s) · {eligible} eligible · " +
+            $"{excluded} excluded · {delivered} request receipt(s) · " +
+            $"{termuxUsable} signed Termux route(s) usable · " +
+            $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}";
+    }
+
     private static bool IsPackagePreviewReady(PackageInstallReleaseOperation? operation)
     {
         if (operation is null || operation.Lifecycle != "proposed")
@@ -2268,6 +2658,77 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             _ => DeviceRowViewModel.Title(action)
         };
 
+    private static void ValidateQuestWifiAdbBinding(
+        QuestWifiAdbOperation operation,
+        QuestWifiAdbPreviewRequest request) =>
+        ValidateQuestWifiAdbBinding(
+            operation,
+            request.Action,
+            request.Targets);
+
+    private static void ValidateQuestWifiAdbBinding(
+        QuestWifiAdbOperation operation,
+        string expectedAction,
+        IReadOnlyDictionary<string, ulong> expectedTargets)
+    {
+        QuestWifiAdbProjectionValidation.ValidateOperation(operation);
+        if (operation.ActionId != QuestWifiAdbActions.ActionId ||
+            operation.Preview.Action != expectedAction ||
+            operation.Preview.Targets.Count != expectedTargets.Count ||
+            expectedTargets.Any(target =>
+                operation.Preview.Targets.All(preflight =>
+                    preflight.DeviceId != target.Key ||
+                    preflight.IdentityRevision != target.Value)))
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub connectivity operation does not bind the exact action and target identities.");
+        }
+    }
+
+    private static void RequireSameQuestWifiAdbOperation(
+        QuestWifiAdbOperation prior,
+        QuestWifiAdbOperation current)
+    {
+        if (prior.OperationId != current.OperationId ||
+            prior.Preview.PreviewId != current.Preview.PreviewId ||
+            JsonSerializer.Serialize(prior.Preview, FleetJson.Options) !=
+            JsonSerializer.Serialize(current.Preview, FleetJson.Options))
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub changed immutable connectivity operation facts.");
+        }
+    }
+
+    private static IReadOnlyDictionary<string, ulong> QuestWifiAdbPreviewIdentities(
+        QuestWifiAdbOperation operation) =>
+        operation.Preview.Targets.ToDictionary(
+            target => target.DeviceId,
+            target => target.IdentityRevision,
+            StringComparer.Ordinal);
+
+    private static string QuestWifiAdbActionLabel(string action) =>
+        action switch
+        {
+            QuestWifiAdbActions.Status => "Check Wireless ADB status",
+            QuestWifiAdbActions.RequestWirelessAdb => "Request Wireless ADB",
+            QuestWifiAdbActions.EnableRequestAfterBoot =>
+                "Request Wireless ADB after boot",
+            QuestWifiAdbActions.DisableRequestAfterBoot =>
+                "Stop requesting after boot",
+            QuestWifiAdbActions.DisableWirelessAdb => "Disable Wireless ADB",
+            QuestWifiAdbActions.EnableClassicTcpipFromUsb =>
+                "Classic USB tcpip (separate route)",
+            _ => DeviceRowViewModel.Title(action)
+        };
+
+    private void NotifyQuestWifiAdbActionChanged()
+    {
+        OnPropertyChanged(nameof(SelectedQuestWifiAdbAction));
+        OnPropertyChanged(nameof(QuestWifiAdbActionHelpText));
+        OnPropertyChanged(nameof(QuestWifiAdbConfirmationText));
+        OnPropertyChanged(nameof(QuestWifiAdbConfirmationButtonText));
+    }
+
     private static bool IsProjectionFailure(Exception error) =>
         error is HttpRequestException or JsonException or TaskCanceledException or
             InvalidOperationException;
@@ -2284,6 +2745,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
         PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
         PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
+        PreviewQuestWifiAdbCommand.RaiseCanExecuteChanged();
     }
 
     private void SelectAllVisible()
@@ -2297,6 +2759,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
         PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
         PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
+        PreviewQuestWifiAdbCommand.RaiseCanExecuteChanged();
     }
 
     private void OnRowPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)
@@ -2318,6 +2781,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             PreviewKioskShowControlsCommand.RaiseCanExecuteChanged();
             PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
             PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
+            PreviewQuestWifiAdbCommand.RaiseCanExecuteChanged();
         }
     }
 

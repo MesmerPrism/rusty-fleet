@@ -15,6 +15,7 @@ mod packages;
 mod projection;
 mod query;
 mod stream;
+mod wifi_adb;
 
 pub use awake::{
     QUEST_AWAKE_ACTION_ID, QUEST_AWAKE_CAPABILITY_ID, QUEST_AWAKE_DEFAULT_WATCHDOG_INTERVAL_MS,
@@ -89,6 +90,17 @@ pub use stream::{
     QueueLimits, RecordingArtifact, RecordingArtifactState, SelectionMethod, SourceSelection,
     StreamDescriptor, StreamPlane, StreamSemantic, TimingCorrelation, TimingDomain,
     TimingTransform,
+};
+pub use wifi_adb::{
+    QUEST_WIFI_ADB_ACTION_ID, QUEST_WIFI_ADB_CAPABILITY_ID, QUEST_WIFI_ADB_EXECUTE_REQUEST_SCHEMA,
+    QUEST_WIFI_ADB_OPERATION_SCHEMA, QUEST_WIFI_ADB_OWNER, QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA,
+    QUEST_WIFI_ADB_PROVIDER_CONTRACT, QUEST_WIFI_ADB_RECEIPT_SCHEMA,
+    QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID, QUEST_WIFI_ADB_TERMUX_PROOF_OWNER,
+    QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA, QuestWifiAdbAction, QuestWifiAdbExecuteRequest,
+    QuestWifiAdbOperation, QuestWifiAdbOwnerBinding, QuestWifiAdbOwnerInvocation,
+    QuestWifiAdbOwnerReceipt, QuestWifiAdbPreview, QuestWifiAdbPreviewRequest,
+    QuestWifiAdbRouteMode, QuestWifiAdbTargetLedger, QuestWifiAdbTargetPreflight,
+    QuestWifiAdbTermuxProof, QuestWifiAdbWearerApproval, TERMUX_ADB_SHELL_IDENTITY,
 };
 
 use serde::{Deserialize, Serialize};

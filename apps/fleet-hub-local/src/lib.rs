@@ -27,13 +27,16 @@ use fleet_contracts::{
     PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_UPDATER_CLAIM_SCHEMA,
     PackageInstallReleaseExecuteRequest, PackageInstallReleasePreviewRequest,
     PackageReleaseReference, PackageUpdaterClaim, PackageUpdaterClaimRequest, PackageUpdaterOffer,
-    QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA, QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA, QuestAwakeAction,
+    QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA, QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA,
+    QUEST_WIFI_ADB_EXECUTE_REQUEST_SCHEMA, QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA, QuestAwakeAction,
     QuestAwakeExecuteRequest, QuestAwakeOwnerInvocation, QuestAwakePreviewRequest,
+    QuestWifiAdbAction, QuestWifiAdbExecuteRequest, QuestWifiAdbOperation,
+    QuestWifiAdbOwnerInvocation, QuestWifiAdbOwnerReceipt, QuestWifiAdbPreviewRequest,
     SavedViewMutationRequest, SignedFleetCheckIn, ValidateContract,
 };
 use fleet_hub::{
     FleetApi, FleetHub, FleetHubSnapshot, HubPolicy, KioskShowControlsPreviewPlan,
-    PackageInstallReleasePreviewPlan, QuestAwakePreviewPlan,
+    PackageInstallReleasePreviewPlan, QuestAwakePreviewPlan, QuestWifiAdbPreviewPlan,
 };
 use fleet_kiosk_adapter::{
     AdapterError, FleetKioskAdapter, HttpMethod, KioskAdapterLimits, KioskHttpRequest,
@@ -43,12 +46,16 @@ use fleet_kiosk_adapter::{
 use fleet_manifold_adapter::QuestAwakeCommandAuthorization;
 use fleet_manifold_adapter::{
     FleetManifoldAdapter, FleetManifoldAdapterSnapshot, KioskShowControlsCommandAuthorization,
-    PackageInstallReleaseCommandAuthorization, kiosk_manifold_request_id,
-    package_manifold_request_id, quest_awake_manifold_request_id,
+    PackageInstallReleaseCommandAuthorization, QuestWifiAdbCommandAuthorization,
+    kiosk_manifold_request_id, package_manifold_request_id, quest_awake_manifold_request_id,
+    quest_wifi_adb_manifold_request_id,
 };
 use fleet_package_updater_adapter::{PackageUpdaterAdapterLimits, PackageUpdaterOwnerAdapter};
 use fleet_quest_awake_adapter::{
     QuestAwakeOwnerAdapter, QuestAwakePinnedArtifact, QuestAwakeProviderConfig,
+};
+use fleet_quest_connectivity_adapter::{
+    QuestConnectivityOwnerAdapter, QuestConnectivityProviderConfig,
 };
 use rusty_manifold_model::{DottedId, SchemaId};
 use rusty_manifold_peer::{
@@ -67,6 +74,7 @@ const ERROR_SCHEMA: &str = "rusty.fleet.local_api_error.v1";
 const STATE_SCHEMA: &str = "rusty.fleet.local_hub_durable_state.v1";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CONCURRENT_AWAKE_PROVIDER_CALLS: usize = 8;
+const MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS: usize = 8;
 const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHECKIN_BYTES: usize = 256 * 1024;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
@@ -84,6 +92,7 @@ const PACKAGE_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
 const DEFAULT_PACKAGE_OPERATION_PARALLELISM: u16 = 8;
 const PACKAGE_OWNER_CLAIM_LIFETIME_MS: i64 = 60_000;
 const AWAKE_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
+const WIFI_ADB_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
 const AWAKE_WATCHDOG_AUTHORIZATION_LIFETIME_MS: u64 = 15 * 60_000;
 const AWAKE_WATCHDOG_AUTHORIZATION_RENEWAL_MARGIN_MS: u64 = 30_000;
 
@@ -179,6 +188,26 @@ pub struct ConfiguredQuestAwakePinnedArtifact {
     pub sha256: String,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredQuestConnectivityProvider {
+    pub executable_path: PathBuf,
+    pub executable_sha256: String,
+    pub private_stage_root: PathBuf,
+    pub targets: Vec<String>,
+}
+
+impl std::fmt::Debug for ConfiguredQuestConnectivityProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredQuestConnectivityProvider")
+            .field("executable_path", &"[private]")
+            .field("executable_sha256", &self.executable_sha256)
+            .field("private_stage_root", &"[private]")
+            .field("targets", &self.targets)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for ConfiguredQuestAwakePinnedArtifact {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -242,6 +271,8 @@ pub struct LocalHubConfig {
     #[serde(default)]
     pub quest_awake_provider: Option<ConfiguredQuestAwakeProvider>,
     #[serde(default)]
+    pub quest_connectivity_provider: Option<ConfiguredQuestConnectivityProvider>,
+    #[serde(default)]
     pub hub_policy: LocalHubPolicy,
 }
 
@@ -264,6 +295,9 @@ impl LocalHubConfig {
         }
         if self.quest_awake_provider.is_some() && !bind.ip().is_loopback() {
             return Err("Quest awake provider requires a loopback Hub bind".to_owned());
+        }
+        if self.quest_connectivity_provider.is_some() && !bind.ip().is_loopback() {
+            return Err("Quest connectivity provider requires a loopback Hub bind".to_owned());
         }
         if !self.state_directory.is_absolute() {
             return Err("state_directory must be an absolute private path".to_owned());
@@ -355,6 +389,32 @@ impl LocalHubConfig {
                 }
             }
         }
+        if let Some(provider) = &self.quest_connectivity_provider {
+            QuestConnectivityProviderConfig {
+                executable_path: provider.executable_path.clone(),
+                executable_sha256: provider.executable_sha256.clone(),
+                private_stage_root: provider.private_stage_root.clone(),
+            }
+            .verify_artifact()
+            .map_err(|error| format!("invalid Quest connectivity provider: {error}"))?;
+            let unique = provider.targets.iter().collect::<BTreeSet<_>>();
+            if provider.targets.is_empty()
+                || provider.targets.len() > 10_000
+                || unique.len() != provider.targets.len()
+                || provider.targets.iter().any(|device_id| {
+                    device_id.is_empty()
+                        || device_id.len() > 256
+                        || device_id.bytes().any(|byte| {
+                            !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+                        })
+                })
+            {
+                return Err(
+                    "Quest connectivity provider requires 1 through 10,000 unique portable target IDs"
+                        .to_owned(),
+                );
+            }
+        }
         if self.hub_policy.stale_after_ms <= 0
             || self.hub_policy.offline_after_ms <= self.hub_policy.stale_after_ms
             || self.hub_policy.history_limit_per_device == 0
@@ -383,6 +443,11 @@ struct RuntimeState {
     windows_awake_watchdogs: BTreeMap<String, WindowsAwakeWatchdogControl>,
     awake_provider_slots: Arc<Semaphore>,
     awake_device_slots: BTreeMap<String, Arc<Semaphore>>,
+    quest_connectivity_provider: Option<ConfiguredQuestConnectivityProvider>,
+    quest_connectivity_adapter: QuestConnectivityOwnerAdapter,
+    inflight_connectivity_targets: BTreeSet<(String, String)>,
+    connectivity_provider_slots: Arc<Semaphore>,
+    connectivity_device_slots: BTreeMap<String, Arc<Semaphore>>,
 }
 
 #[derive(Clone)]
@@ -790,6 +855,23 @@ impl LocalHubState {
                             .collect()
                     })
                     .unwrap_or_default(),
+                quest_connectivity_provider: config.quest_connectivity_provider.clone(),
+                quest_connectivity_adapter: QuestConnectivityOwnerAdapter::default(),
+                inflight_connectivity_targets: BTreeSet::new(),
+                connectivity_provider_slots: Arc::new(Semaphore::new(
+                    MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS,
+                )),
+                connectivity_device_slots: config
+                    .quest_connectivity_provider
+                    .as_ref()
+                    .map(|provider| {
+                        provider
+                            .targets
+                            .iter()
+                            .map(|device_id| (device_id.clone(), Arc::new(Semaphore::new(1))))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })),
         })
     }
@@ -894,6 +976,27 @@ impl From<StrictQuestAwakePreviewRequest> for QuestAwakePreviewRequest {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictQuestWifiAdbPreviewRequest {
+    schema: String,
+    action_id: String,
+    action: QuestWifiAdbAction,
+    #[serde(deserialize_with = "deserialize_unique_targets")]
+    targets: BTreeMap<String, u64>,
+}
+
+impl From<StrictQuestWifiAdbPreviewRequest> for QuestWifiAdbPreviewRequest {
+    fn from(value: StrictQuestWifiAdbPreviewRequest) -> Self {
+        Self {
+            schema: value.schema,
+            action_id: value.action_id,
+            action: value.action,
+            targets: value.targets,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct OwnerWork {
     request: KioskShowControlsRequest,
@@ -955,6 +1058,18 @@ pub fn router(state: LocalHubState) -> Router {
             "/fleet/v1/quest-awake/{operation_id}",
             get(quest_awake_status),
         )
+        .route(
+            "/fleet/v1/quest-wifi-adb/preview",
+            post(preview_quest_wifi_adb),
+        )
+        .route(
+            "/fleet/v1/quest-wifi-adb/{operation_id}/execute",
+            post(execute_quest_wifi_adb),
+        )
+        .route(
+            "/fleet/v1/quest-wifi-adb/{operation_id}",
+            get(quest_wifi_adb_status),
+        )
         .route("/fleet/v1/saved-views", get(saved_views))
         .route(
             "/fleet/v1/saved-views/{view_id}",
@@ -974,6 +1089,7 @@ pub async fn serve(config: LocalHubConfig) -> Result<(), String> {
     let state = LocalHubState::from_config(&config, unix_time_ms()?)?;
     schedule_recovered_owner_work(state.clone()).await?;
     schedule_recovered_awake_work(state.clone()).await?;
+    schedule_recovered_connectivity_work(state.clone()).await?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|error| format!("failed to bind {bind}: {error}"))?;
@@ -2405,6 +2521,233 @@ async fn quest_awake_status(
     }
 }
 
+#[derive(Clone)]
+struct ConnectivityOwnerWork {
+    invocation: QuestWifiAdbOwnerInvocation,
+    provider: QuestConnectivityProviderConfig,
+}
+
+enum ConnectivityOwnerWorkFailure {
+    InvocationExpired,
+    ProviderInvocation,
+}
+
+async fn preview_quest_wifi_adb(State(state): State<LocalHubState>, request: Request) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "Quest Wi-Fi ADB previews").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let request = match serde_json::from_slice::<StrictQuestWifiAdbPreviewRequest>(&bytes) {
+        Ok(value) => QuestWifiAdbPreviewRequest::from(value),
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_wifi_adb_preview_json",
+                format!("Quest Wi-Fi ADB preview is not valid strict JSON: {error}"),
+            );
+        }
+    };
+    if request.schema != QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_wifi_adb_preview",
+            "Quest Wi-Fi ADB preview schema is not supported",
+        );
+    }
+    if let Err(failures) = request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_wifi_adb_preview",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let Some(provider) = runtime.quest_connectivity_provider.as_ref() else {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "wifi_adb_provider_unavailable",
+            "Quest connectivity provider is disabled until private pinned configuration is supplied",
+        );
+    };
+    let provider_ready_devices = provider.targets.iter().cloned().collect::<BTreeSet<_>>();
+    if let Some(existing) = runtime
+        .hub
+        .quest_wifi_adb_operations()
+        .into_iter()
+        .find(|operation| {
+            operation.preview.fleet_revision == runtime.hub.result_revision()
+                && operation.preview.expires_at_ms >= now_ms
+                && operation.preview.action == request.action
+                && operation
+                    .preview
+                    .targets
+                    .iter()
+                    .map(|target| (target.device_id.clone(), target.identity_revision))
+                    .collect::<BTreeMap<_, _>>()
+                    == request.targets
+        })
+    {
+        return Json(existing).into_response();
+    }
+    let Some(expires_at_ms) = now_ms.checked_add(WIFI_ADB_OPERATION_PREVIEW_LIFETIME_MS) else {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "clock_error",
+            "Quest Wi-Fi ADB preview expiry overflowed",
+        );
+    };
+    let (operation_id, preview_id) = wifi_adb_operation_ids(&request, now_ms);
+    let mut candidate_hub = runtime.hub.clone();
+    let operation = match candidate_hub.preview_quest_wifi_adb(QuestWifiAdbPreviewPlan {
+        operation_id,
+        preview_id,
+        request,
+        created_at_ms: now_ms,
+        expires_at_ms,
+        provider_ready_devices,
+    }) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(operation).into_response()
+}
+
+async fn execute_quest_wifi_adb(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "Quest Wi-Fi ADB execution").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let execute = match serde_json::from_slice::<QuestWifiAdbExecuteRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_wifi_adb_execute_json",
+                format!("Quest Wi-Fi ADB execution is not valid JSON: {error}"),
+            );
+        }
+    };
+    if execute.schema != QUEST_WIFI_ADB_EXECUTE_REQUEST_SCHEMA
+        || execute.operation_id != operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "wifi_adb_operation_identity_mismatch",
+            "Quest Wi-Fi ADB operation path, schema, and payload identity must match",
+        );
+    }
+    if let Err(failures) = execute.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_wifi_adb_execute",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    if runtime.quest_connectivity_provider.is_none() {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "wifi_adb_provider_unavailable",
+            "Quest connectivity provider is disabled until private pinned configuration is supplied",
+        );
+    }
+    let existing = match runtime.hub.quest_wifi_adb_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    if existing.preview.preview_id != execute.preview_id {
+        return api_error(
+            StatusCode::CONFLICT,
+            "wifi_adb_preview_conflict",
+            "execute request does not bind the immutable Quest Wi-Fi ADB preview",
+        );
+    }
+    if existing.lifecycle != CommandLifecycle::Proposed {
+        return Json(existing).into_response();
+    }
+    let mut candidate_hub = runtime.hub.clone();
+    let operation =
+        match candidate_hub.confirm_quest_wifi_adb(&operation_id, &execute.preview_id, now_ms) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    drop(runtime);
+    schedule_pending_connectivity_work(state.clone(), &operation_id).await;
+    let runtime = state.runtime.lock().await;
+    match runtime
+        .adapter
+        .quest_wifi_adb_operation(&runtime.hub, &operation_id, now_ms)
+    {
+        Ok(updated) => Json(updated).into_response(),
+        Err(_) => Json(operation).into_response(),
+    }
+}
+
+async fn quest_wifi_adb_status(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let runtime = state.runtime.lock().await;
+    match runtime
+        .adapter
+        .quest_wifi_adb_operation(&runtime.hub, &operation_id, now_ms)
+    {
+        Ok(operation) => Json(operation).into_response(),
+        Err(error) if error.contains("not found") => {
+            api_error(StatusCode::NOT_FOUND, "operation_not_found", error)
+        }
+        Err(error) => api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation", error),
+    }
+}
+
 async fn summary(State(state): State<LocalHubState>) -> Response {
     let now_ms = match unix_time_ms() {
         Ok(value) => value,
@@ -2708,6 +3051,20 @@ fn awake_operation_ids(
     )
 }
 
+fn wifi_adb_operation_ids(request: &QuestWifiAdbPreviewRequest, now_ms: i64) -> (String, String) {
+    let sequence = OPERATION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-wifi-adb.operation.v1\0");
+    digest.update(serde_json::to_vec(request).unwrap_or_default());
+    digest.update(now_ms.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    let suffix = hex::encode(digest.finalize());
+    (
+        format!("wifi-adb-operation-{}", &suffix[..32]),
+        format!("wifi-adb-preview-{}", &suffix[32..64]),
+    )
+}
+
 fn package_owner_action_request_id(operation_id: &str, device_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"rusty.fleet.package.owner-action.v1\0");
@@ -2724,6 +3081,15 @@ fn awake_owner_action_request_id(operation_id: &str, device_id: &str) -> String 
     digest.update([0]);
     digest.update(device_id.as_bytes());
     format!("fleetawake-{}", &hex::encode(digest.finalize())[..32])
+}
+
+fn wifi_adb_owner_action_request_id(operation_id: &str, device_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-wifi-adb.owner-action.v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(device_id.as_bytes());
+    format!("fleetwifi-{}", &hex::encode(digest.finalize())[..32])
 }
 
 fn owner_action_request_id(operation_id: &str, device_id: &str, attempt: u8) -> String {
@@ -2765,6 +3131,9 @@ fn hub_operation_error(error: fleet_hub::HubError) -> Response {
         "awake_operation_not_found" | "awake_target_not_found" => {
             (StatusCode::NOT_FOUND, "operation_not_found")
         }
+        "wifi_adb_operation_not_found" | "wifi_adb_target_not_found" => {
+            (StatusCode::NOT_FOUND, "operation_not_found")
+        }
         "kiosk_preview_mismatch"
         | "kiosk_operation_id_conflict"
         | "kiosk_preview_expired"
@@ -2779,10 +3148,446 @@ fn hub_operation_error(error: fleet_hub::HubError) -> Response {
         | "awake_operation_id_conflict"
         | "awake_preview_expired"
         | "awake_target_identity_changed"
-        | "awake_capability_changed" => (StatusCode::CONFLICT, "operation_conflict"),
+        | "awake_capability_changed"
+        | "wifi_adb_preview_conflict"
+        | "wifi_adb_operation_id_conflict"
+        | "wifi_adb_preview_expired"
+        | "wifi_adb_target_identity_changed"
+        | "wifi_adb_capability_changed" => (StatusCode::CONFLICT, "operation_conflict"),
         _ => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation"),
     };
     api_error(status, code, error.to_string())
+}
+
+async fn schedule_pending_connectivity_work(state: LocalHubState, operation_id: &str) {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let now_unsigned = match u64::try_from(now_ms) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let mut runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.quest_wifi_adb_operation(operation_id) {
+        Ok(operation) => operation,
+        Err(_) => return,
+    };
+    let Some(configured) = runtime.quest_connectivity_provider.clone() else {
+        return;
+    };
+    let provider = QuestConnectivityProviderConfig {
+        executable_path: configured.executable_path,
+        executable_sha256: configured.executable_sha256,
+        private_stage_root: configured.private_stage_root,
+    };
+    let configured_targets = configured.targets.into_iter().collect::<BTreeSet<_>>();
+    let slots = connectivity_dispatch_slots(runtime.inflight_connectivity_targets.len());
+    let expires_unsigned = match u64::try_from(operation.preview.expires_at_ms) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let pending = operation
+        .targets
+        .iter()
+        .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+        .map(|target| (target.device_id.clone(), target.identity_revision))
+        .collect::<Vec<_>>();
+    let mut candidate_hub = runtime.hub.clone();
+    if now_ms >= operation.preview.expires_at_ms {
+        for (device_id, _) in pending {
+            let _ = candidate_hub.fail_quest_wifi_adb_target(
+                operation_id,
+                &device_id,
+                "provider_invocation_expired".to_owned(),
+                now_ms,
+            );
+        }
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            ..
+        } = &mut *runtime;
+        if state_store
+            .persist(&candidate_hub, adapter, owner_receipts, now_ms)
+            .is_ok()
+        {
+            *hub = candidate_hub;
+        }
+        return;
+    }
+    if slots == 0 {
+        return;
+    }
+    let (prepared_hub, candidate_adapter, work) = prepare_pending_connectivity_batch(
+        &runtime.hub,
+        &runtime.adapter,
+        &operation,
+        &configured_targets,
+        &runtime.inflight_connectivity_targets,
+        &provider,
+        now_ms,
+        now_unsigned,
+        expires_unsigned,
+    );
+    candidate_hub = prepared_hub;
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        inflight_connectivity_targets,
+        ..
+    } = &mut *runtime;
+    if state_store
+        .persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+        .is_err()
+    {
+        return;
+    }
+    *hub = candidate_hub;
+    *adapter = candidate_adapter;
+    for item in &work {
+        inflight_connectivity_targets.insert((
+            item.invocation.operation_id.clone(),
+            item.invocation.device_id.clone(),
+        ));
+    }
+    drop(runtime);
+    for item in work {
+        spawn_connectivity_owner_work(state.clone(), item);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_pending_connectivity_batch(
+    hub: &FleetHub,
+    adapter: &FleetManifoldAdapter,
+    operation: &QuestWifiAdbOperation,
+    configured_targets: &BTreeSet<String>,
+    inflight_targets: &BTreeSet<(String, String)>,
+    provider: &QuestConnectivityProviderConfig,
+    now_ms: i64,
+    now_unsigned: u64,
+    expires_unsigned: u64,
+) -> (FleetHub, FleetManifoldAdapter, Vec<ConnectivityOwnerWork>) {
+    let mut candidate_hub = hub.clone();
+    let mut candidate_adapter = adapter.clone();
+    let slots = connectivity_dispatch_slots(inflight_targets.len());
+    let pending = operation
+        .targets
+        .iter()
+        .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+        .map(|target| (target.device_id.clone(), target.identity_revision));
+    let mut work = Vec::new();
+    for (device_id, identity_revision) in pending {
+        if work.len() >= slots {
+            break;
+        }
+        if !configured_targets.contains(&device_id) {
+            let _ = candidate_hub.fail_quest_wifi_adb_target(
+                &operation.operation_id,
+                &device_id,
+                "provider_target_unconfigured".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        if inflight_targets
+            .iter()
+            .any(|(_, candidate_device)| candidate_device == &device_id)
+        {
+            let _ = candidate_hub.fail_quest_wifi_adb_target(
+                &operation.operation_id,
+                &device_id,
+                "connectivity_control_conflict".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        let owner_action_request_id =
+            wifi_adb_owner_action_request_id(&operation.operation_id, &device_id);
+        let manifold_request_id = quest_wifi_adb_manifold_request_id(
+            &operation.operation_id,
+            &device_id,
+            &owner_action_request_id,
+        );
+        if candidate_adapter
+            .authorize_quest_wifi_adb(
+                &QuestWifiAdbCommandAuthorization {
+                    manifold_request_id,
+                    owner_action_request_id: owner_action_request_id.clone(),
+                    requester_id: "operator.fleet.local".to_owned(),
+                    operation_id: operation.operation_id.clone(),
+                    preview_id: operation.preview.preview_id.clone(),
+                    device_id: device_id.clone(),
+                    identity_revision,
+                    action: operation.preview.action,
+                    issued_at_ms: now_unsigned,
+                    expires_at_ms: expires_unsigned,
+                },
+                now_unsigned,
+            )
+            .is_err()
+        {
+            let _ = candidate_hub.fail_quest_wifi_adb_target(
+                &operation.operation_id,
+                &device_id,
+                "manifold_command_rejected".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        let updated = match candidate_hub.prepare_quest_wifi_adb_invocation(
+            &operation.operation_id,
+            &device_id,
+            owner_action_request_id,
+            now_ms,
+        ) {
+            Ok(updated) => updated,
+            Err(_) => continue,
+        };
+        let Some(invocation) = updated
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+            .and_then(|target| target.invocation.clone())
+        else {
+            continue;
+        };
+        if candidate_hub
+            .mark_quest_wifi_adb_dispatched(&operation.operation_id, &device_id, now_ms)
+            .is_err()
+        {
+            continue;
+        }
+        work.push(ConnectivityOwnerWork {
+            invocation,
+            provider: provider.clone(),
+        });
+    }
+    (candidate_hub, candidate_adapter, work)
+}
+
+fn spawn_connectivity_owner_work(state: LocalHubState, work: ConnectivityOwnerWork) {
+    tokio::spawn(async move {
+        let operation_id = work.invocation.operation_id.clone();
+        let device_id = work.invocation.device_id.clone();
+        let (device_slot, provider_slots, adapter) = {
+            let runtime = state.runtime.lock().await;
+            (
+                runtime.connectivity_device_slots.get(&device_id).cloned(),
+                Arc::clone(&runtime.connectivity_provider_slots),
+                runtime.quest_connectivity_adapter.clone(),
+            )
+        };
+        let result = match device_slot {
+            Some(device_slot) => match device_slot.try_acquire_owned() {
+                Ok(_device_permit) => match provider_slots.try_acquire_owned() {
+                    Ok(_provider_permit) => {
+                        let provider = work.provider.clone();
+                        let invocation = work.invocation.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let invocation_started_at_ms = unix_time_ms()
+                                .map_err(|_| ConnectivityOwnerWorkFailure::ProviderInvocation)?;
+                            if connectivity_invocation_expired(
+                                &invocation,
+                                invocation_started_at_ms,
+                            ) {
+                                return Err(ConnectivityOwnerWorkFailure::InvocationExpired);
+                            }
+                            adapter
+                                .invoke(&provider, &invocation)
+                                .map_err(|_| ConnectivityOwnerWorkFailure::ProviderInvocation)
+                        })
+                        .await
+                        .map_err(|_| ConnectivityOwnerWorkFailure::ProviderInvocation)
+                        .and_then(|result| result)
+                    }
+                    Err(_) => Err(ConnectivityOwnerWorkFailure::ProviderInvocation),
+                },
+                Err(_) => Err(ConnectivityOwnerWorkFailure::ProviderInvocation),
+            },
+            None => Err(ConnectivityOwnerWorkFailure::ProviderInvocation),
+        };
+        let now_ms = unix_time_ms().unwrap_or(work.invocation.issued_at_ms);
+        let mut runtime = state.runtime.lock().await;
+        let mut candidate_hub = runtime.hub.clone();
+        let settled = settle_connectivity_owner_result(
+            &mut candidate_hub,
+            &operation_id,
+            &device_id,
+            result,
+            now_ms,
+        )
+        .is_ok();
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            inflight_connectivity_targets,
+            ..
+        } = &mut *runtime;
+        let persisted = settled
+            && state_store
+                .persist(&candidate_hub, adapter, owner_receipts, now_ms)
+                .is_ok();
+        if persisted {
+            *hub = candidate_hub;
+        }
+        inflight_connectivity_targets.remove(&(operation_id, device_id));
+        drop(runtime);
+        if persisted {
+            let _ = schedule_recovered_connectivity_work(state).await;
+        }
+    });
+}
+
+fn settle_connectivity_owner_result(
+    hub: &mut FleetHub,
+    operation_id: &str,
+    device_id: &str,
+    result: Result<QuestWifiAdbOwnerReceipt, ConnectivityOwnerWorkFailure>,
+    now_ms: i64,
+) -> Result<(), String> {
+    let failure_code = match result {
+        Ok(receipt) => match hub.apply_quest_wifi_adb_receipt(receipt, now_ms) {
+            Ok(_) => return Ok(()),
+            Err(_) => "provider_receipt_rejected",
+        },
+        Err(ConnectivityOwnerWorkFailure::InvocationExpired) => "provider_invocation_expired",
+        Err(ConnectivityOwnerWorkFailure::ProviderInvocation) => "provider_invocation_failed",
+    };
+    hub.fail_quest_wifi_adb_target(operation_id, device_id, failure_code.to_owned(), now_ms)
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "Quest connectivity terminal settlement failed with code {}",
+                error.code
+            )
+        })
+}
+
+fn connectivity_dispatch_slots(inflight: usize) -> usize {
+    MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS.saturating_sub(inflight)
+}
+
+fn connectivity_invocation_expired(invocation: &QuestWifiAdbOwnerInvocation, now_ms: i64) -> bool {
+    now_ms >= invocation.expires_at_ms
+}
+
+async fn schedule_recovered_connectivity_work(state: LocalHubState) -> Result<(), String> {
+    let now_ms = unix_time_ms()?;
+    let mut recovered = Vec::new();
+    {
+        let mut runtime = state.runtime.lock().await;
+        let Some(configured) = runtime.quest_connectivity_provider.clone() else {
+            return Ok(());
+        };
+        let provider = QuestConnectivityProviderConfig {
+            executable_path: configured.executable_path,
+            executable_sha256: configured.executable_sha256,
+            private_stage_root: configured.private_stage_root,
+        };
+        let configured_targets = configured.targets.into_iter().collect::<BTreeSet<_>>();
+        let operations = runtime.hub.quest_wifi_adb_operations();
+        let mut candidate_hub = runtime.hub.clone();
+        let mut changed = false;
+        let mut remaining_slots =
+            connectivity_dispatch_slots(runtime.inflight_connectivity_targets.len());
+        let mut reserved = runtime.inflight_connectivity_targets.clone();
+        for operation in operations {
+            for target in operation
+                .targets
+                .into_iter()
+                .filter(|target| target.lifecycle == CommandLifecycle::Dispatched)
+            {
+                let Some(invocation) = target.invocation else {
+                    continue;
+                };
+                if connectivity_invocation_expired(&invocation, now_ms) {
+                    candidate_hub
+                        .fail_quest_wifi_adb_target(
+                            &operation.operation_id,
+                            &target.device_id,
+                            "provider_invocation_expired".to_owned(),
+                            now_ms,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    changed = true;
+                    continue;
+                }
+                if !configured_targets.contains(&target.device_id) {
+                    candidate_hub
+                        .fail_quest_wifi_adb_target(
+                            &operation.operation_id,
+                            &target.device_id,
+                            "provider_target_unconfigured".to_owned(),
+                            now_ms,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    changed = true;
+                    continue;
+                }
+                if remaining_slots == 0
+                    || reserved
+                        .iter()
+                        .any(|(_, candidate_device)| candidate_device == &target.device_id)
+                {
+                    continue;
+                }
+                let key = (operation.operation_id.clone(), target.device_id.clone());
+                reserved.insert(key.clone());
+                recovered.push((
+                    key,
+                    ConnectivityOwnerWork {
+                        invocation,
+                        provider: provider.clone(),
+                    },
+                ));
+                remaining_slots -= 1;
+            }
+        }
+        if changed {
+            let RuntimeState {
+                hub,
+                adapter,
+                state_store,
+                owner_receipts,
+                ..
+            } = &mut *runtime;
+            state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms)?;
+            *hub = candidate_hub;
+        }
+        for (key, _) in &recovered {
+            runtime.inflight_connectivity_targets.insert(key.clone());
+        }
+    }
+    for (_, work) in recovered {
+        spawn_connectivity_owner_work(state.clone(), work);
+    }
+    let pending_operation_ids = {
+        let runtime = state.runtime.lock().await;
+        runtime
+            .hub
+            .quest_wifi_adb_operations()
+            .into_iter()
+            .filter(|operation| {
+                operation
+                    .targets
+                    .iter()
+                    .any(|target| target.lifecycle == CommandLifecycle::Accepted)
+            })
+            .map(|operation| operation.operation_id)
+            .collect::<Vec<_>>()
+    };
+    for operation_id in pending_operation_ids {
+        schedule_pending_connectivity_work(state.clone(), &operation_id).await;
+    }
+    Ok(())
 }
 
 async fn schedule_pending_awake_work(state: LocalHubState, operation_id: &str) {
@@ -4303,7 +5108,7 @@ fn schema_id(value: &str) -> Result<SchemaId, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -4315,9 +5120,15 @@ mod tests {
     use fleet_contracts::{
         AuthorizationState, CHECKIN_SIGNATURE_ALGORITHM, CapabilityState, CommandLifecycle,
         EnablementState, FleetCheckInClaims, FleetQuery, FreshnessState, NavigationRestoration,
-        ReachabilityState, SavedView, SavedViewMutationRequest, SignedFleetCheckIn, SupportState,
+        QUEST_WIFI_ADB_ACTION_ID, QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA,
+        QUEST_WIFI_ADB_RECEIPT_SCHEMA, QuestWifiAdbAction, QuestWifiAdbOwnerInvocation,
+        QuestWifiAdbOwnerReceipt, QuestWifiAdbPreviewRequest, QuestWifiAdbRouteMode,
+        QuestWifiAdbWearerApproval, ReachabilityState, SavedView, SavedViewMutationRequest,
+        SignedFleetCheckIn, SupportState,
     };
-    use fleet_simulator::ScenarioBuilder;
+    use fleet_hub::{FleetHub, HubPolicy, ObservationDecision, QuestWifiAdbPreviewPlan};
+    use fleet_quest_connectivity_adapter::QuestConnectivityProviderConfig;
+    use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
     use rusty_manifold_model::{DottedId, Revision, SchemaId};
     use rusty_manifold_peer::{
         ManifoldPeerAvailability, ManifoldPeerCredentialAlgorithm, ManifoldPeerCredentialRecord,
@@ -4331,9 +5142,12 @@ mod tests {
     use super::{
         ConfiguredEnrollment, ConfiguredKioskDirectOperator, ConfiguredPackageUpdaterOwner,
         ConfiguredQuestAwakePinnedArtifact, ConfiguredQuestAwakeProvider,
-        ConfiguredQuestAwakeTarget, IngressRateLimiter, LocalHubConfig, LocalHubState,
-        MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, RuntimeState, router,
-        schedule_recovered_owner_work, state_slot_path, transport_request_id, unix_time_ms,
+        ConfiguredQuestAwakeTarget, ConnectivityOwnerWorkFailure, FleetManifoldAdapter,
+        IngressRateLimiter, LocalHubConfig, LocalHubState, MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW,
+        MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS, RuntimeState, connectivity_dispatch_slots,
+        connectivity_invocation_expired, prepare_pending_connectivity_batch, router,
+        schedule_recovered_owner_work, settle_connectivity_owner_result, state_slot_path,
+        transport_request_id, unix_time_ms,
     };
 
     static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -4537,6 +5351,287 @@ mod tests {
             .expect("strict preview response");
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn quest_wifi_adb_routes_are_strict_inert_and_expose_no_proof_submission() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[17_u8; 32]);
+        let (config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let app = router(LocalHubState::from_config(&config, now_ms).expect("valid config"));
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let identity_revision = signed.claims.observation.identity.identity_revision;
+        let accepted = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let request = serde_json::json!({
+            "schema": "rusty.fleet.quest_wifi_adb_preview_request.v1",
+            "action_id": "quest.wifi-adb-control",
+            "action": "request_wireless_adb",
+            "targets": {"device.quest.1": identity_revision}
+        });
+        let unavailable = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/quest-wifi-adb/preview",
+                serde_json::to_vec(&request).expect("Wi-Fi ADB preview JSON"),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(unavailable.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let mut private_field = request;
+        private_field["serial"] = serde_json::json!("must-not-cross-public-api");
+        let rejected = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/quest-wifi-adb/preview",
+                serde_json::to_vec(&private_field).expect("strict preview JSON"),
+            ))
+            .await
+            .expect("strict preview response");
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+
+        let no_proof_ingress = app
+            .oneshot(json_request(
+                "/fleet/v1/quest-wifi-adb/proofs",
+                serde_json::to_vec(&serde_json::json!({"shape": "must-not-be-authority"}))
+                    .expect("proof JSON"),
+            ))
+            .await
+            .expect("missing proof route response");
+        assert_eq!(
+            no_proof_ingress.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "the operation read route must not accept proof writes"
+        );
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[test]
+    fn rejected_connectivity_receipts_fail_the_dispatched_target_without_leaking_reason() {
+        for damage in ["late", "future", "binding"] {
+            let (mut hub, operation_id, device_id, mut receipt) =
+                dispatched_wifi_adb_receipt_fixture();
+            let now_ms = BASE_TIME_MS + 4;
+            match damage {
+                "late" => receipt.observed_at_ms = BASE_TIME_MS + 60_001,
+                "future" => receipt.observed_at_ms = BASE_TIME_MS + 40_000,
+                "binding" => receipt.request_id = "request.wifi.other".to_owned(),
+                _ => unreachable!("bounded test cases"),
+            }
+            settle_connectivity_owner_result(
+                &mut hub,
+                &operation_id,
+                &device_id,
+                Ok(receipt),
+                if damage == "late" {
+                    BASE_TIME_MS + 60_001
+                } else {
+                    now_ms
+                },
+            )
+            .expect("receipt rejection becomes a terminal sanitized failure");
+            let operation = hub
+                .quest_wifi_adb_operation(&operation_id)
+                .expect("settled operation");
+            let target = &operation.targets[0];
+            assert_eq!(target.lifecycle, CommandLifecycle::Failed, "{damage}");
+            assert_eq!(
+                target.failure_code.as_deref(),
+                Some("provider_receipt_rejected"),
+                "{damage}"
+            );
+            assert!(target.receipt.is_none(), "{damage}");
+        }
+    }
+
+    #[test]
+    fn connectivity_batch_dispatches_only_eight_then_fills_the_freed_slot() {
+        let mut hub = FleetHub::new(HubPolicy::default());
+        let mut targets = BTreeMap::new();
+        for mut observation in ScenarioBuilder::new(9).build().initial {
+            observation.source_time_ms = BASE_TIME_MS;
+            observation.received_time_ms = 0;
+            targets.insert(
+                observation.identity.device_id.clone(),
+                observation.identity.identity_revision,
+            );
+            assert!(matches!(
+                hub.accept_observation(observation, BASE_TIME_MS),
+                ObservationDecision::Accepted { .. }
+            ));
+        }
+        let configured_targets = targets.keys().cloned().collect::<BTreeSet<_>>();
+        let operation = hub
+            .preview_quest_wifi_adb(QuestWifiAdbPreviewPlan {
+                operation_id: "operation.wifi.nine-targets".to_owned(),
+                preview_id: "preview.wifi.nine-targets".to_owned(),
+                request: QuestWifiAdbPreviewRequest {
+                    schema: QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA.to_owned(),
+                    action_id: QUEST_WIFI_ADB_ACTION_ID.to_owned(),
+                    action: QuestWifiAdbAction::Status,
+                    targets,
+                },
+                created_at_ms: BASE_TIME_MS,
+                expires_at_ms: BASE_TIME_MS + 60_000,
+                provider_ready_devices: configured_targets.clone(),
+            })
+            .expect("nine-target preview");
+        let operation = hub
+            .confirm_quest_wifi_adb(
+                &operation.operation_id,
+                &operation.preview.preview_id,
+                BASE_TIME_MS + 1,
+            )
+            .expect("confirm nine-target preview");
+        let provider = QuestConnectivityProviderConfig {
+            executable_path: PathBuf::from("provider.exe"),
+            executable_sha256: "11".repeat(32),
+            private_stage_root: PathBuf::from("private-stage"),
+        };
+        let adapter = FleetManifoldAdapter::new(vec![dotted("operator.fleet.local")]);
+        let (mut dispatched_hub, dispatched_adapter, work) = prepare_pending_connectivity_batch(
+            &hub,
+            &adapter,
+            &operation,
+            &configured_targets,
+            &BTreeSet::new(),
+            &provider,
+            BASE_TIME_MS + 2,
+            u64::try_from(BASE_TIME_MS + 2).expect("positive time"),
+            u64::try_from(BASE_TIME_MS + 60_000).expect("positive expiry"),
+        );
+        assert_eq!(work.len(), MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS);
+        let dispatched = dispatched_hub
+            .quest_wifi_adb_operation(&operation.operation_id)
+            .expect("bounded dispatch");
+        assert_eq!(
+            dispatched
+                .targets
+                .iter()
+                .filter(|target| target.lifecycle == CommandLifecycle::Dispatched)
+                .count(),
+            MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS
+        );
+        assert_eq!(
+            dispatched
+                .targets
+                .iter()
+                .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+                .count(),
+            1
+        );
+
+        let completed = &work[0].invocation;
+        dispatched_hub
+            .fail_quest_wifi_adb_target(
+                &completed.operation_id,
+                &completed.device_id,
+                "provider_invocation_failed".to_owned(),
+                BASE_TIME_MS + 3,
+            )
+            .expect("complete one occupied slot");
+        let inflight = work
+            .iter()
+            .skip(1)
+            .map(|item| {
+                (
+                    item.invocation.operation_id.clone(),
+                    item.invocation.device_id.clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let operation = dispatched_hub
+            .quest_wifi_adb_operation(&operation.operation_id)
+            .expect("one queued target remains");
+        let (refilled_hub, _, refilled) = prepare_pending_connectivity_batch(
+            &dispatched_hub,
+            &dispatched_adapter,
+            &operation,
+            &configured_targets,
+            &inflight,
+            &provider,
+            BASE_TIME_MS + 4,
+            u64::try_from(BASE_TIME_MS + 4).expect("positive time"),
+            u64::try_from(BASE_TIME_MS + 60_000).expect("positive expiry"),
+        );
+        assert_eq!(refilled.len(), 1);
+        let refilled_operation = refilled_hub
+            .quest_wifi_adb_operation(&operation.operation_id)
+            .expect("refilled operation");
+        assert_eq!(
+            refilled_operation
+                .targets
+                .iter()
+                .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn connectivity_dispatch_budget_has_no_waiting_overflow_and_expiry_is_inclusive() {
+        assert_eq!(
+            connectivity_dispatch_slots(0),
+            MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS
+        );
+        assert_eq!(
+            connectivity_dispatch_slots(MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS - 1),
+            1
+        );
+        assert_eq!(
+            connectivity_dispatch_slots(MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS),
+            0
+        );
+        assert_eq!(
+            connectivity_dispatch_slots(MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS + 1),
+            0
+        );
+        let invocation = QuestWifiAdbOwnerInvocation {
+            schema: "rusty.fleet.quest_wifi_adb_owner_invocation.v1".to_owned(),
+            request_id: "request.wifi.expiry".to_owned(),
+            operation_id: "operation.wifi.expiry".to_owned(),
+            preview_id: "preview.wifi.expiry".to_owned(),
+            device_id: "device.quest.expiry".to_owned(),
+            identity_revision: 1,
+            action: QuestWifiAdbAction::Status,
+            issued_at_ms: BASE_TIME_MS,
+            expires_at_ms: BASE_TIME_MS + 10,
+        };
+        assert!(!connectivity_invocation_expired(
+            &invocation,
+            BASE_TIME_MS + 9
+        ));
+        assert!(connectivity_invocation_expired(
+            &invocation,
+            BASE_TIME_MS + 10
+        ));
+        let (mut hub, operation_id, device_id, _) = dispatched_wifi_adb_receipt_fixture();
+        settle_connectivity_owner_result(
+            &mut hub,
+            &operation_id,
+            &device_id,
+            Err(ConnectivityOwnerWorkFailure::InvocationExpired),
+            BASE_TIME_MS + 60_000,
+        )
+        .expect("expired invocation becomes terminal");
+        let operation = hub
+            .quest_wifi_adb_operation(&operation_id)
+            .expect("expired operation");
+        assert_eq!(operation.targets[0].lifecycle, CommandLifecycle::Failed);
+        assert_eq!(
+            operation.targets[0].failure_code.as_deref(),
+            Some("provider_invocation_expired")
+        );
     }
 
     #[tokio::test]
@@ -5352,6 +6447,68 @@ mod tests {
         fs::remove_dir_all(artifact_root).expect("remove artifact root");
     }
 
+    fn dispatched_wifi_adb_receipt_fixture() -> (FleetHub, String, String, QuestWifiAdbOwnerReceipt)
+    {
+        let observation = ScenarioBuilder::new(1).build().initial.remove(0);
+        let device_id = observation.identity.device_id.clone();
+        let identity_revision = observation.identity.identity_revision;
+        let mut hub = FleetHub::new(HubPolicy::default());
+        assert!(matches!(
+            hub.accept_observation(observation, BASE_TIME_MS),
+            ObservationDecision::Accepted { .. }
+        ));
+        let operation = hub
+            .preview_quest_wifi_adb(QuestWifiAdbPreviewPlan {
+                operation_id: "operation.wifi.receipt-settlement".to_owned(),
+                preview_id: "preview.wifi.receipt-settlement".to_owned(),
+                request: QuestWifiAdbPreviewRequest {
+                    schema: QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA.to_owned(),
+                    action_id: QUEST_WIFI_ADB_ACTION_ID.to_owned(),
+                    action: QuestWifiAdbAction::RequestWirelessAdb,
+                    targets: BTreeMap::from([(device_id.clone(), identity_revision)]),
+                },
+                created_at_ms: BASE_TIME_MS,
+                expires_at_ms: BASE_TIME_MS + 60_000,
+                provider_ready_devices: BTreeSet::from([device_id.clone()]),
+            })
+            .expect("Wi-Fi ADB preview");
+        hub.confirm_quest_wifi_adb(
+            &operation.operation_id,
+            &operation.preview.preview_id,
+            BASE_TIME_MS + 1,
+        )
+        .expect("confirm Wi-Fi ADB");
+        hub.prepare_quest_wifi_adb_invocation(
+            &operation.operation_id,
+            &device_id,
+            "request.wifi.receipt-settlement".to_owned(),
+            BASE_TIME_MS + 2,
+        )
+        .expect("prepare Wi-Fi ADB invocation");
+        hub.mark_quest_wifi_adb_dispatched(&operation.operation_id, &device_id, BASE_TIME_MS + 3)
+            .expect("dispatch Wi-Fi ADB invocation");
+        let receipt = QuestWifiAdbOwnerReceipt {
+            schema: QUEST_WIFI_ADB_RECEIPT_SCHEMA.to_owned(),
+            request_id: "request.wifi.receipt-settlement".to_owned(),
+            operation_id: operation.operation_id.clone(),
+            preview_id: operation.preview.preview_id,
+            device_id: device_id.clone(),
+            identity_revision,
+            action: QuestWifiAdbAction::RequestWirelessAdb,
+            route_mode: QuestWifiAdbRouteMode::ModernTls,
+            request_delivered: true,
+            kiosk_setting_applied: true,
+            request_after_boot_enabled: None,
+            wearer_approval: QuestWifiAdbWearerApproval::Pending,
+            listener_discovered: false,
+            effect_applied: true,
+            outcome: "wireless_adb_request_applied".to_owned(),
+            evidence_sha256: "11".repeat(32),
+            observed_at_ms: BASE_TIME_MS + 4,
+        };
+        (hub, operation.operation_id, device_id, receipt)
+    }
+
     fn config(signing_key: &SigningKey, now_ms: i64) -> (LocalHubConfig, DottedId) {
         let public_key = signing_key.verifying_key().to_bytes();
         let digest = hex::encode(Sha256::digest(public_key));
@@ -5387,6 +6544,7 @@ mod tests {
                 kiosk_direct_operators: Vec::new(),
                 package_updater_owner: None,
                 quest_awake_provider: None,
+                quest_connectivity_provider: None,
                 hub_policy: Default::default(),
             },
             key_id,

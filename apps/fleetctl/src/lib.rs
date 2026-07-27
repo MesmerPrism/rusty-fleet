@@ -8,6 +8,7 @@ mod local_client;
 mod operation;
 mod package_operation;
 mod quest_awake_operation;
+mod quest_wifi_adb_operation;
 
 use fleet_contracts::{
     Comparison, FleetQuery, FleetQueryResult, FleetSummaryProjection, ProjectionFreshness,
@@ -111,6 +112,9 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 "awake-preview ACTION DURATION_MS WATCHDOG_INTERVAL_MS DEVICE@IDENTITY_REVISION...",
                 "awake-execute OPERATION_ID PREVIEW_ID",
                 "awake-get OPERATION_ID"
+                ,"wifi-adb-preview ACTION DEVICE@IDENTITY_REVISION..."
+                ,"wifi-adb-execute OPERATION_ID PREVIEW_ID"
+                ,"wifi-adb-get OPERATION_ID"
             ],
             "scale_fixtures": supported_scale_fixtures()
         }));
@@ -195,6 +199,8 @@ pub fn execute_with_operation_client<C: FleetOperationClient + ?Sized>(
     let command = arguments.first().map_or("help", String::as_str);
     if quest_awake_operation::is_quest_awake_operation_command(command) {
         quest_awake_operation::execute_quest_awake_operation_command(&arguments, client)
+    } else if quest_wifi_adb_operation::is_quest_wifi_adb_operation_command(command) {
+        quest_wifi_adb_operation::execute_quest_wifi_adb_operation_command(&arguments, client)
     } else if package_operation::is_package_operation_command(command) {
         package_operation::execute_package_operation_command(&arguments, client)
     } else if operation::is_operation_command(command) {

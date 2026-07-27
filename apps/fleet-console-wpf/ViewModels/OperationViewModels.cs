@@ -170,3 +170,138 @@ public sealed class QuestAwakeTargetViewModel
             : string.Empty;
     }
 }
+
+public sealed class QuestWifiAdbTargetViewModel
+{
+    public QuestWifiAdbTargetViewModel(
+        QuestWifiAdbTargetLedger projection,
+        long operationUpdatedAtMs)
+    {
+        DeviceId = projection.DeviceId;
+        IdentityRevision = projection.IdentityRevision;
+        Eligibility = projection.Preflight.Eligible ? "Eligible" : "Excluded";
+        Lifecycle = DeviceRowViewModel.Title(projection.Lifecycle);
+        var receipt = projection.Receipt;
+        Route = receipt is null
+            ? "No route readback"
+            : receipt.RouteMode switch
+            {
+                "modern_tls" => "Modern Wireless ADB (TLS)",
+                "classic_tcpip" => "Classic USB tcpip route",
+                _ => "No active route reported"
+            };
+        RequestDelivery = receipt is null
+            ? "No delivery receipt"
+            : receipt.RequestDelivered
+                ? "Delivered"
+                : "Not delivered";
+        KioskSetting = receipt is null
+            ? "No Kiosk readback"
+            : receipt.RouteMode == "classic_tcpip"
+                ? "Not applicable to classic USB tcpip"
+                : receipt.KioskSettingApplied
+                    ? "Applied"
+                    : "Not applied";
+        AfterBoot = receipt?.RequestAfterBootEnabled switch
+        {
+            true => "After-boot request enabled",
+            false => "After-boot request disabled",
+            _ => "After-boot state not reported"
+        };
+        WearerApproval = receipt is null
+            ? "Unknown · no receipt"
+            : receipt.WearerApproval switch
+            {
+                "pending" => "Pending · wearer must approve in headset",
+                "rejected" => "Rejected by wearer",
+                "not_applicable" => "Not applicable",
+                _ => "Unknown · protected prompt is not automated"
+            };
+        Listener = receipt is null
+            ? "No listener readback"
+            : receipt.ListenerDiscovered
+                ? $"{Route} listener observed"
+                : $"{Route} listener not observed";
+        Termux = TermuxText(
+            projection.TermuxProof,
+            projection.TermuxUsable,
+            operationUpdatedAtMs);
+        Result = receipt is null
+            ? projection.FailureCode is null
+                ? projection.Preflight.Message
+                : $"Failed · {DeviceRowViewModel.Title(projection.FailureCode)}"
+            : $"{(receipt.EffectApplied ? "Action applied" : "Not applied")} · " +
+              receipt.Outcome;
+        AccessibleName =
+            $"Device {DeviceId}, identity revision {IdentityRevision}, " +
+            $"eligibility {Eligibility}, lifecycle {Lifecycle}. Route: {Route}. " +
+            $"Request delivery: {RequestDelivery}. Kiosk setting: {KioskSetting}. " +
+            $"{AfterBoot}. Wearer approval: {WearerApproval}. Listener: {Listener}. " +
+            $"Termux loopback: {Termux}. Result: {Result}.";
+    }
+
+    public string DeviceId { get; }
+
+    public ulong IdentityRevision { get; }
+
+    public string Eligibility { get; }
+
+    public string Lifecycle { get; }
+
+    public string Route { get; }
+
+    public string RequestDelivery { get; }
+
+    public string KioskSetting { get; }
+
+    public string AfterBoot { get; }
+
+    public string WearerApproval { get; }
+
+    public string Listener { get; }
+
+    public string Termux { get; }
+
+    public string Result { get; }
+
+    public string AccessibleName { get; }
+
+    private static string TermuxText(
+        QuestWifiAdbTermuxProof? proof,
+        bool usable,
+        long operationUpdatedAtMs)
+    {
+        if (proof is null)
+        {
+            return "Not proven · no admitted signed proof";
+        }
+
+        var freshness = proof.FreshUntilMs > operationUpdatedAtMs
+            ? $"current until {FormatTime(proof.FreshUntilMs)}"
+            : $"stale since {FormatTime(proof.FreshUntilMs)}";
+        if (usable &&
+            proof.Available &&
+            proof.ShellIdentity == "uid=2000(shell)")
+        {
+            return $"Usable · enrolled signed proof · {freshness} · " +
+                   "shell identity verified";
+        }
+
+        return $"Not usable · signed proof {freshness}";
+    }
+
+    private static string FormatTime(long unixMilliseconds)
+    {
+        try
+        {
+            return DateTimeOffset
+                .FromUnixTimeMilliseconds(unixMilliseconds)
+                .ToLocalTime()
+                .ToString("yyyy-MM-dd HH:mm:ss zzz");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return "an invalid time";
+        }
+    }
+}
