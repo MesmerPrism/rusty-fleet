@@ -16,6 +16,7 @@ mod projection;
 mod query;
 mod stream;
 mod wifi_adb;
+mod windows_hotspot;
 
 pub use awake::{
     QUEST_AWAKE_ACTION_ID, QUEST_AWAKE_CAPABILITY_ID, QUEST_AWAKE_DEFAULT_WATCHDOG_INTERVAL_MS,
@@ -101,6 +102,16 @@ pub use wifi_adb::{
     QuestWifiAdbOwnerReceipt, QuestWifiAdbPreview, QuestWifiAdbPreviewRequest,
     QuestWifiAdbRouteMode, QuestWifiAdbTargetLedger, QuestWifiAdbTargetPreflight,
     QuestWifiAdbTermuxProof, QuestWifiAdbWearerApproval, TERMUX_ADB_SHELL_IDENTITY,
+};
+pub use windows_hotspot::{
+    WINDOWS_HOTSPOT_ACTION_ID, WINDOWS_HOTSPOT_EXECUTE_REQUEST_SCHEMA,
+    WINDOWS_HOTSPOT_LEASE_SCHEMA, WINDOWS_HOTSPOT_OPERATION_SCHEMA, WINDOWS_HOTSPOT_OWNER,
+    WINDOWS_HOTSPOT_PREVIEW_REQUEST_SCHEMA, WINDOWS_HOTSPOT_PROVIDER_FILE,
+    WINDOWS_HOTSPOT_PROVIDER_RECEIPT_SCHEMA, WINDOWS_HOTSPOT_PROVIDER_REQUEST_SCHEMA,
+    WINDOWS_HOTSPOT_RESOURCE_ID, WindowsHotspotAction, WindowsHotspotExecuteRequest,
+    WindowsHotspotLease, WindowsHotspotOperation, WindowsHotspotOwnership, WindowsHotspotPreflight,
+    WindowsHotspotPreview, WindowsHotspotPreviewRequest, WindowsHotspotProviderReceipt,
+    WindowsHotspotProviderRequest, WindowsHotspotResult,
 };
 
 use serde::{Deserialize, Serialize};

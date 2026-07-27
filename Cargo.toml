@@ -8,6 +8,7 @@ members = [
     "crates/fleet-package-updater-adapter",
     "crates/fleet-quest-awake-adapter",
     "crates/fleet-quest-connectivity-adapter",
+    "crates/fleet-windows-hotspot-adapter",
     "crates/fleet-manifold-adapter",
     "crates/fleet-simulator",
 ]

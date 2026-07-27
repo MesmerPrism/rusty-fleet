@@ -4,7 +4,7 @@
 use fleet_contracts::{
     DeviceObservation, FleetCheckInClaims, FleetQuery, KioskShowControlsOperation,
     PackageInstallReleaseOperation, QuestAwakeOperation, SavedView, StreamDescriptor,
-    ValidateContract,
+    ValidateContract, WindowsHotspotProviderReceipt, WindowsHotspotProviderRequest,
 };
 
 #[test]
@@ -55,6 +55,18 @@ fn committed_valid_contract_fixtures_round_trip() {
     ))
     .expect("valid Quest awake JSON");
     assert!(awake_operation.validate().is_ok());
+
+    let hotspot_request: WindowsHotspotProviderRequest = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/windows-hotspot-provider-request.valid.json"
+    ))
+    .expect("valid Hostess hotspot request JSON");
+    assert!(hotspot_request.validate().is_ok());
+
+    let hotspot_receipt: WindowsHotspotProviderReceipt = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/windows-hotspot-provider-receipt.valid.json"
+    ))
+    .expect("valid Hostess hotspot receipt JSON");
+    assert!(hotspot_receipt.validate().is_ok());
 }
 
 #[test]
@@ -125,6 +137,13 @@ fn committed_damaged_package_operation_fails_closed() {
     assert!(codes.contains(&"invalid_manifest_url".to_owned()));
     assert!(codes.contains(&"owner_contract_mismatch".to_owned()));
     assert!(codes.contains(&"applied_without_effective_receipt".to_owned()));
+}
+
+#[test]
+fn committed_damaged_hotspot_receipt_rejects_private_fields() {
+    let damaged =
+        include_str!("../../../fixtures/contracts/windows-hotspot-provider-receipt.damaged.json");
+    assert!(serde_json::from_str::<WindowsHotspotProviderReceipt>(damaged).is_err());
 }
 
 #[test]

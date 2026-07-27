@@ -13,7 +13,8 @@ use fleet_contracts::{
     QUEST_WIFI_ADB_TERMUX_PROOF_OWNER, QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA, QuestAwakeAction,
     QuestWifiAdbAction, QuestWifiAdbOperation, QuestWifiAdbRouteMode, QuestWifiAdbTermuxProof,
     ReachabilityState, Sensitivity, SignedFleetCheckIn, StatusCondition, StatusSource,
-    SupportState, TERMUX_ADB_SHELL_IDENTITY, ValidateContract,
+    SupportState, TERMUX_ADB_SHELL_IDENTITY, ValidateContract, WINDOWS_HOTSPOT_ACTION_ID,
+    WindowsHotspotAction,
 };
 use fleet_hub::{FleetApi, FleetHub, ObservationDecision};
 use rusty_manifold_model::{DottedId, Revision};
@@ -43,6 +44,8 @@ const QUEST_AWAKE_COMMAND_ID: &str = QUEST_AWAKE_ACTION_ID;
 const QUEST_AWAKE_PARAMS_TYPE_ID: &str = "rusty.fleet.quest.awake-control.params.v1";
 const QUEST_WIFI_ADB_COMMAND_ID: &str = QUEST_WIFI_ADB_ACTION_ID;
 const QUEST_WIFI_ADB_PARAMS_TYPE_ID: &str = "rusty.fleet.quest.wifi-adb-control.params.v1";
+const WINDOWS_HOTSPOT_COMMAND_ID: &str = WINDOWS_HOTSPOT_ACTION_ID;
+const WINDOWS_HOTSPOT_PARAMS_TYPE_ID: &str = "rusty.fleet.windows-hotspot.params.v1";
 const FLEET_MANIFOLD_SNAPSHOT_V1_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v1";
 const FLEET_MANIFOLD_SNAPSHOT_V2_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v2";
 const FLEET_MANIFOLD_SNAPSHOT_SCHEMA: &str = "rusty.fleet.manifold_adapter_snapshot.v3";
@@ -50,6 +53,7 @@ const MAX_KIOSK_COMMAND_LIFETIME_MS: u64 = 90_000;
 const MAX_PACKAGE_COMMAND_LIFETIME_MS: u64 = 15 * 60_000;
 const MAX_QUEST_AWAKE_COMMAND_LIFETIME_MS: u64 = 15 * 60_000;
 const MAX_QUEST_WIFI_ADB_COMMAND_LIFETIME_MS: u64 = 15 * 60_000;
+const MAX_WINDOWS_HOTSPOT_COMMAND_LIFETIME_MS: u64 = 5 * 60_000;
 
 #[must_use]
 pub fn kiosk_manifold_request_id(
@@ -113,6 +117,24 @@ pub fn quest_wifi_adb_manifold_request_id(
     }
     format!(
         "request.fleet.quest-wifi-adb.{}",
+        hex::encode(digest.finalize())
+    )
+}
+
+#[must_use]
+pub fn windows_hotspot_manifold_request_id(
+    operation_id: &str,
+    lease_id: &str,
+    owner_action_request_id: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.windows-hotspot.manifold-request.v1\0");
+    for value in [operation_id, lease_id, owner_action_request_id] {
+        digest.update(value.as_bytes());
+        digest.update([0]);
+    }
+    format!(
+        "request.fleet.windows-hotspot.{}",
         hex::encode(digest.finalize())
     )
 }
@@ -251,6 +273,28 @@ pub struct QuestWifiAdbAuthorityReceipt {
     pub application: ManifoldRuntimeApplicationReceipt,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowsHotspotCommandAuthorization {
+    pub manifold_request_id: String,
+    pub owner_action_request_id: String,
+    pub requester_id: String,
+    pub operation_id: String,
+    pub preview_id: String,
+    pub lease_id: String,
+    pub lease_generation: String,
+    pub action: WindowsHotspotAction,
+    pub ownership_generation: Option<String>,
+    pub issued_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowsHotspotAuthorityReceipt {
+    pub request: ManifoldRuntimeCommandRequest,
+    pub dispatch: ManifoldRuntimeDispatchReceipt,
+    pub application: ManifoldRuntimeApplicationReceipt,
+}
+
 #[derive(Serialize)]
 struct KioskShowControlsTypedParams<'a> {
     schema: &'static str,
@@ -299,6 +343,19 @@ struct QuestWifiAdbTypedParams<'a> {
     action: QuestWifiAdbAction,
 }
 
+#[derive(Serialize)]
+struct WindowsHotspotTypedParams<'a> {
+    schema: &'static str,
+    operation_id: &'a str,
+    preview_id: &'a str,
+    action_id: &'static str,
+    resource_id: &'static str,
+    lease_id: &'a str,
+    lease_generation: &'a str,
+    action: WindowsHotspotAction,
+    ownership_generation: Option<&'a str>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LoopbackAdbCapabilityExtensions {
@@ -345,6 +402,11 @@ impl FleetManifoldAdapter {
                 },
                 ManifoldRuntimeCommandDescriptor {
                     command_id: DottedId::new(PACKAGES_INSTALL_RELEASE_COMMAND_ID)
+                        .expect("static command id"),
+                    required_lease_scope: None,
+                },
+                ManifoldRuntimeCommandDescriptor {
+                    command_id: DottedId::new(WINDOWS_HOTSPOT_COMMAND_ID)
                         .expect("static command id"),
                     required_lease_scope: None,
                 },
@@ -473,20 +535,32 @@ impl FleetManifoldAdapter {
         snapshot
             .seen_checkins
             .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
-        let restored_runtime_host = match snapshot.runtime_host {
-            Some(runtime_snapshot) => {
-                if runtime_snapshot.authority_revision.get() == u64::MAX {
-                    return Err(
-                        "Fleet runtime authority cannot recover at the terminal revision"
-                            .to_owned(),
-                    );
+        let restored_runtime_host =
+            match snapshot.runtime_host {
+                Some(mut runtime_snapshot) => {
+                    if runtime_snapshot.authority_revision.get() == u64::MAX {
+                        return Err(
+                            "Fleet runtime authority cannot recover at the terminal revision"
+                                .to_owned(),
+                        );
+                    }
+                    if !runtime_snapshot.commands.iter().any(|descriptor| {
+                        descriptor.command_id.as_str() == WINDOWS_HOTSPOT_COMMAND_ID
+                    }) {
+                        runtime_snapshot
+                            .commands
+                            .push(ManifoldRuntimeCommandDescriptor {
+                                command_id: DottedId::new(WINDOWS_HOTSPOT_COMMAND_ID)
+                                    .expect("static command id"),
+                                required_lease_scope: None,
+                            });
+                    }
+                    ManifoldRuntimeHost::from_snapshot(runtime_snapshot).map_err(|error| {
+                        format!("Fleet runtime authority snapshot is invalid: {error}")
+                    })?
                 }
-                ManifoldRuntimeHost::from_snapshot(runtime_snapshot).map_err(|error| {
-                    format!("Fleet runtime authority snapshot is invalid: {error}")
-                })?
-            }
-            None => self.runtime_host.clone(),
-        };
+                None => self.runtime_host.clone(),
+            };
         self.accepted_peers = snapshot.accepted_peers;
         self.seen_checkins = snapshot.seen_checkins;
         self.runtime_host = restored_runtime_host;
@@ -1027,6 +1101,121 @@ impl FleetManifoldAdapter {
         })
     }
 
+    pub fn authorize_windows_hotspot(
+        &mut self,
+        authorization: &WindowsHotspotCommandAuthorization,
+        now_ms: u64,
+    ) -> Result<WindowsHotspotAuthorityReceipt, String> {
+        if authorization.operation_id.is_empty()
+            || authorization.operation_id.len() > 256
+            || authorization.preview_id.is_empty()
+            || authorization.preview_id.len() > 256
+            || authorization.lease_id.is_empty()
+            || authorization.lease_id.len() > 256
+            || authorization.lease_generation.is_empty()
+            || authorization.lease_generation.len() > 256
+            || authorization.issued_at_ms > now_ms
+            || now_ms >= authorization.expires_at_ms
+            || authorization.expires_at_ms <= authorization.issued_at_ms
+            || authorization
+                .expires_at_ms
+                .checked_sub(authorization.issued_at_ms)
+                .is_none_or(|lifetime| lifetime > MAX_WINDOWS_HOTSPOT_COMMAND_LIFETIME_MS)
+        {
+            return Err("Fleet Windows hotspot authorization is invalid or expired".to_owned());
+        }
+        let generations_valid = match authorization.action {
+            WindowsHotspotAction::Status | WindowsHotspotAction::Start => {
+                authorization.ownership_generation.is_none()
+            }
+            WindowsHotspotAction::Ensure => authorization
+                .ownership_generation
+                .as_deref()
+                .is_none_or(|value| !value.is_empty()),
+            WindowsHotspotAction::Stop => authorization
+                .ownership_generation
+                .as_deref()
+                .is_some_and(|value| !value.is_empty()),
+        };
+        if !generations_valid
+            || authorization.owner_action_request_id.is_empty()
+            || authorization.manifold_request_id
+                != windows_hotspot_manifold_request_id(
+                    &authorization.operation_id,
+                    &authorization.lease_id,
+                    &authorization.owner_action_request_id,
+                )
+        {
+            return Err(
+                "Fleet Windows hotspot request does not bind its exact lease and generation"
+                    .to_owned(),
+            );
+        }
+        if self.runtime_host.snapshot().authority_revision.get() == u64::MAX {
+            return Err("Fleet runtime authority reached its terminal revision".to_owned());
+        }
+        let params = WindowsHotspotTypedParams {
+            schema: "rusty.fleet.windows_hotspot_params.v1",
+            operation_id: &authorization.operation_id,
+            preview_id: &authorization.preview_id,
+            action_id: WINDOWS_HOTSPOT_COMMAND_ID,
+            resource_id: "windows.mobile-hotspot",
+            lease_id: &authorization.lease_id,
+            lease_generation: &authorization.lease_generation,
+            action: authorization.action,
+            ownership_generation: authorization.ownership_generation.as_deref(),
+        };
+        let canonical_params = serde_jcs::to_vec(&params)
+            .map_err(|error| format!("hotspot parameters are not canonicalizable: {error}"))?;
+        if canonical_params.is_empty() || canonical_params.len() > 8_192 {
+            return Err("Fleet Windows hotspot parameters exceed the command bound".to_owned());
+        }
+        let request = ManifoldRuntimeCommandRequest {
+            schema_id: schema_id(HOST_COMMAND_REQUEST_SCHEMA),
+            request_id: DottedId::new(authorization.manifold_request_id.clone())
+                .map_err(|error| format!("invalid Manifold request ID: {error}"))?,
+            expected_authority_revision: self.runtime_host.snapshot().authority_revision,
+            requester_id: DottedId::new(authorization.requester_id.clone())
+                .map_err(|error| format!("invalid Manifold requester ID: {error}"))?,
+            command_id: DottedId::new(WINDOWS_HOTSPOT_COMMAND_ID).expect("static command id"),
+            lease_id: None,
+            params_digest: Some(ManifoldRuntimeTypedParamsDigest {
+                schema_id: schema_id(HOST_TYPED_PARAMS_DIGEST_SCHEMA),
+                params_type_id: DottedId::new(WINDOWS_HOTSPOT_PARAMS_TYPE_ID)
+                    .expect("static params type id"),
+                canonical_sha256: format!(
+                    "sha256:{}",
+                    hex::encode(Sha256::digest(&canonical_params))
+                ),
+                canonical_size_bytes: u32::try_from(canonical_params.len())
+                    .map_err(|_| "hotspot parameter size is not representable".to_owned())?,
+            }),
+            issued_at_ms: authorization.issued_at_ms,
+            expires_at_ms: authorization.expires_at_ms,
+        };
+        let dispatch = self.runtime_host.review_command(&request, now_ms);
+        if dispatch.outcome != ManifoldRuntimeDispatchOutcome::Ready {
+            return Err(format!(
+                "Manifold rejected Fleet Windows hotspot review: {:?}",
+                dispatch.rejection_reason
+            ));
+        }
+        let application = self
+            .runtime_host
+            .apply_dispatch(&request, &dispatch, now_ms);
+        if !application.applied {
+            return Err(format!(
+                "Manifold rejected Fleet Windows hotspot application: {:?}",
+                application.rejection_reason
+            ));
+        }
+        Ok(WindowsHotspotAuthorityReceipt {
+            request,
+            dispatch,
+            application,
+        })
+    }
+
     pub fn apply_enrollment(
         &mut self,
         request: &ManifoldPeerEnrollmentRequest,
@@ -1427,7 +1616,7 @@ mod tests {
         QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA, QuestWifiAdbAction, QuestWifiAdbOwnerReceipt,
         QuestWifiAdbPreviewRequest, QuestWifiAdbRouteMode, QuestWifiAdbTermuxProof,
         QuestWifiAdbWearerApproval, ReachabilityState, SignedFleetCheckIn, SupportState,
-        TERMUX_ADB_SHELL_IDENTITY,
+        TERMUX_ADB_SHELL_IDENTITY, WindowsHotspotAction,
     };
     use fleet_hub::{FleetApi, FleetHub, HubPolicy, QuestWifiAdbPreviewPlan};
     use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
@@ -1444,10 +1633,63 @@ mod tests {
     use super::{
         CheckInRejectionReason, FleetManifoldAdapter, FleetManifoldAdapterSnapshot,
         KioskShowControlsCommandAuthorization, QuestWifiAdbCommandAuthorization,
-        kiosk_manifold_request_id, quest_wifi_adb_manifold_request_id,
-        signed_termux_proof_from_capability,
+        WindowsHotspotCommandAuthorization, kiosk_manifold_request_id,
+        quest_wifi_adb_manifold_request_id, signed_termux_proof_from_capability,
+        windows_hotspot_manifold_request_id,
     };
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn hotspot_authority_binds_lease_rejects_replay_and_expiry() {
+        let mut adapter = FleetManifoldAdapter::new(vec![
+            DottedId::new("operator.fleet.local").expect("operator"),
+        ]);
+        let owner_request = "hotspot-request-1".to_owned();
+        let operation = "hotspot-operation-1".to_owned();
+        let lease = "hotspot-lease-1".to_owned();
+        let authorization = WindowsHotspotCommandAuthorization {
+            manifold_request_id: windows_hotspot_manifold_request_id(
+                &operation,
+                &lease,
+                &owner_request,
+            ),
+            owner_action_request_id: owner_request,
+            requester_id: "operator.fleet.local".to_owned(),
+            operation_id: operation,
+            preview_id: "hotspot-preview-1".to_owned(),
+            lease_id: lease,
+            lease_generation: "hotspot-lease-generation-1".to_owned(),
+            action: WindowsHotspotAction::Start,
+            ownership_generation: None,
+            issued_at_ms: 1_000,
+            expires_at_ms: 61_000,
+        };
+        assert!(
+            adapter
+                .authorize_windows_hotspot(&authorization, 2_000)
+                .is_ok()
+        );
+        assert!(
+            adapter
+                .authorize_windows_hotspot(&authorization, 2_001)
+                .expect_err("replay")
+                .contains("rejected")
+        );
+        let mut expired = authorization.clone();
+        expired.manifold_request_id.push('a');
+        expired.owner_action_request_id.push('a');
+        expired.manifold_request_id = windows_hotspot_manifold_request_id(
+            &expired.operation_id,
+            &expired.lease_id,
+            &expired.owner_action_request_id,
+        );
+        assert!(
+            adapter
+                .authorize_windows_hotspot(&expired, 61_000)
+                .expect_err("expired")
+                .contains("expired")
+        );
+    }
 
     #[test]
     fn kiosk_command_authority_binds_typed_params_and_survives_restart() {

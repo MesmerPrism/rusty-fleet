@@ -11,6 +11,7 @@ use fleet_contracts::{
     OperationExecuteRequest, OperationPreviewRequest, PackageInstallReleaseExecuteRequest,
     PackageInstallReleasePreviewRequest, PackageUpdaterClaimRequest, QuestAwakeExecuteRequest,
     QuestAwakePreviewRequest, QuestWifiAdbExecuteRequest, QuestWifiAdbPreviewRequest,
+    WindowsHotspotExecuteRequest, WindowsHotspotPreviewRequest,
 };
 
 use crate::{CliFailure, FleetOperationClient};
@@ -275,6 +276,46 @@ impl FleetOperationClient for LocalFleetOperationClient {
             "GET",
             &format!(
                 "/fleet/v1/quest-wifi-adb/{}",
+                encode_path_segment(operation_id)
+            ),
+            None,
+        )
+    }
+
+    fn preview_windows_hotspot(
+        &mut self,
+        request: &WindowsHotspotPreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            "/fleet/v1/windows-hotspot/preview",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn execute_windows_hotspot(
+        &mut self,
+        request: &WindowsHotspotExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            &format!(
+                "/fleet/v1/windows-hotspot/{}/execute",
+                encode_path_segment(&request.operation_id)
+            ),
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn get_windows_hotspot(&mut self, operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/windows-hotspot/{}",
                 encode_path_segment(operation_id)
             ),
             None,

@@ -16,6 +16,7 @@ fleet-manifold-adapter = { path = "../../crates/fleet-manifold-adapter" }
 fleet-package-updater-adapter = { path = "../../crates/fleet-package-updater-adapter" }
 fleet-quest-awake-adapter = { path = "../../crates/fleet-quest-awake-adapter" }
 fleet-quest-connectivity-adapter = { path = "../../crates/fleet-quest-connectivity-adapter" }
+fleet-windows-hotspot-adapter = { path = "../../crates/fleet-windows-hotspot-adapter" }
 hex.workspace = true
 rusty-manifold-model.workspace = true
 rusty-manifold-peer.workspace = true

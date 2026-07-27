@@ -9,6 +9,7 @@ mod operation;
 mod package_operation;
 mod quest_awake_operation;
 mod quest_wifi_adb_operation;
+mod windows_hotspot_operation;
 
 use fleet_contracts::{
     Comparison, FleetQuery, FleetQueryResult, FleetSummaryProjection, ProjectionFreshness,
@@ -115,6 +116,9 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 ,"wifi-adb-preview ACTION DEVICE@IDENTITY_REVISION..."
                 ,"wifi-adb-execute OPERATION_ID PREVIEW_ID"
                 ,"wifi-adb-get OPERATION_ID"
+                ,"hotspot-preview status|start|ensure|stop"
+                ,"hotspot-execute OPERATION_ID PREVIEW_ID"
+                ,"hotspot-get OPERATION_ID"
             ],
             "scale_fixtures": supported_scale_fixtures()
         }));
@@ -201,6 +205,8 @@ pub fn execute_with_operation_client<C: FleetOperationClient + ?Sized>(
         quest_awake_operation::execute_quest_awake_operation_command(&arguments, client)
     } else if quest_wifi_adb_operation::is_quest_wifi_adb_operation_command(command) {
         quest_wifi_adb_operation::execute_quest_wifi_adb_operation_command(&arguments, client)
+    } else if windows_hotspot_operation::is_windows_hotspot_command(command) {
+        windows_hotspot_operation::execute_windows_hotspot_command(&arguments, client)
     } else if package_operation::is_package_operation_command(command) {
         package_operation::execute_package_operation_command(&arguments, client)
     } else if operation::is_operation_command(command) {

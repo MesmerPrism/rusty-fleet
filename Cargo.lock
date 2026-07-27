@@ -232,6 +232,7 @@ dependencies = [
  "fleet-quest-awake-adapter",
  "fleet-quest-connectivity-adapter",
  "fleet-simulator",
+ "fleet-windows-hotspot-adapter",
  "hex",
  "rusty-manifold-model",
  "rusty-manifold-peer",
@@ -307,6 +308,16 @@ dependencies = [
  "fleet-contracts",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "fleet-windows-hotspot-adapter"
+version = "0.1.0"
+dependencies = [
+ "fleet-contracts",
+ "hex",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

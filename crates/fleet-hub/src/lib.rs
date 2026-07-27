@@ -24,11 +24,13 @@ mod awake;
 mod kiosk;
 mod packages;
 mod wifi_adb;
+mod windows_hotspot;
 
 pub use awake::QuestAwakePreviewPlan;
 pub use kiosk::KioskShowControlsPreviewPlan;
 pub use packages::PackageInstallReleasePreviewPlan;
 pub use wifi_adb::QuestWifiAdbPreviewPlan;
+pub use windows_hotspot::WindowsHotspotPreviewPlan;
 
 const ROW_SCHEMA: &str = "rusty.fleet.device_row.v1";
 const INSPECTOR_SCHEMA: &str = "rusty.fleet.device_inspector.v1";
@@ -40,6 +42,7 @@ const MAX_KIOSK_OPERATIONS: usize = 1_000;
 const MAX_PACKAGE_OPERATIONS: usize = 1_000;
 const MAX_AWAKE_OPERATIONS: usize = 1_000;
 const MAX_WIFI_ADB_OPERATIONS: usize = 1_000;
+const MAX_WINDOWS_HOTSPOT_OPERATIONS: usize = 1_000;
 
 const fn initial_saved_view_revision() -> u64 {
     1
@@ -178,6 +181,10 @@ pub struct FleetHubSnapshot {
     awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
     #[serde(default)]
     wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
+    #[serde(default)]
+    windows_hotspot_operations: BTreeMap<String, fleet_contracts::WindowsHotspotOperation>,
+    #[serde(default)]
+    windows_hotspot_observation: Option<windows_hotspot::WindowsHotspotObservedState>,
 }
 
 #[derive(Clone, Debug)]
@@ -193,6 +200,8 @@ pub struct FleetHub {
     package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
     awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
     wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
+    windows_hotspot_operations: BTreeMap<String, fleet_contracts::WindowsHotspotOperation>,
+    windows_hotspot_observation: Option<windows_hotspot::WindowsHotspotObservedState>,
 }
 
 impl FleetHub {
@@ -218,6 +227,8 @@ impl FleetHub {
             package_operations: BTreeMap::new(),
             awake_operations: BTreeMap::new(),
             wifi_adb_operations: BTreeMap::new(),
+            windows_hotspot_operations: BTreeMap::new(),
+            windows_hotspot_observation: None,
         }
     }
 
@@ -267,6 +278,8 @@ impl FleetHub {
             package_operations: self.package_operations.clone(),
             awake_operations: self.awake_operations.clone(),
             wifi_adb_operations: self.wifi_adb_operations.clone(),
+            windows_hotspot_operations: self.windows_hotspot_operations.clone(),
+            windows_hotspot_observation: self.windows_hotspot_observation.clone(),
         }
     }
 
@@ -430,6 +443,34 @@ impl FleetHub {
                 "Fleet Hub snapshot Quest Wi-Fi ADB operations are invalid or exceed their limit",
             ));
         }
+        if snapshot.windows_hotspot_operations.len() > MAX_WINDOWS_HOTSPOT_OPERATIONS
+            || snapshot
+                .windows_hotspot_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                })
+            || snapshot
+                .windows_hotspot_operations
+                .values()
+                .filter(|operation| {
+                    matches!(
+                        operation.lifecycle,
+                        CommandLifecycle::Accepted
+                            | CommandLifecycle::Dispatched
+                            | CommandLifecycle::Running
+                    )
+                })
+                .count()
+                > 1
+        {
+            return Err(HubError::new(
+                "snapshot_windows_hotspot_operations_invalid",
+                "Fleet Hub snapshot Windows hotspot state is invalid",
+            ));
+        }
         Ok(Self {
             policy,
             devices: snapshot.devices,
@@ -442,6 +483,8 @@ impl FleetHub {
             package_operations: snapshot.package_operations,
             awake_operations: snapshot.awake_operations,
             wifi_adb_operations: snapshot.wifi_adb_operations,
+            windows_hotspot_operations: snapshot.windows_hotspot_operations,
+            windows_hotspot_observation: snapshot.windows_hotspot_observation,
         })
     }
 

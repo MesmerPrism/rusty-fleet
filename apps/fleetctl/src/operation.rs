@@ -112,6 +112,36 @@ pub trait FleetOperationClient {
         ))
     }
 
+    fn preview_windows_hotspot(
+        &mut self,
+        _request: &fleet_contracts::WindowsHotspotPreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "windows_hotspot_client_required",
+            "the injected Fleet client does not support Windows hotspot operations",
+        ))
+    }
+
+    fn execute_windows_hotspot(
+        &mut self,
+        _request: &fleet_contracts::WindowsHotspotExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "windows_hotspot_client_required",
+            "the injected Fleet client does not support Windows hotspot operations",
+        ))
+    }
+
+    fn get_windows_hotspot(
+        &mut self,
+        _operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "windows_hotspot_client_required",
+            "the injected Fleet client does not support Windows hotspot operations",
+        ))
+    }
+
     fn claim_package_updater(
         &mut self,
         _request: &fleet_contracts::PackageUpdaterClaimRequest,
@@ -171,6 +201,9 @@ pub fn is_operation_command(command: &str) -> bool {
             | "wifi-adb-preview"
             | "wifi-adb-execute"
             | "wifi-adb-get"
+            | "hotspot-preview"
+            | "hotspot-execute"
+            | "hotspot-get"
     )
 }
 
