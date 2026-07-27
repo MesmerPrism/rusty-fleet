@@ -469,6 +469,21 @@ Cleanup is a first-class dimension. It may include session release, route
 closure, temporary-file removal, media-sink stop, prior-state restoration, and
 lease/concurrency release.
 
+### Windows host Mobile Hotspot presentation
+
+The hotspot pane appears before selected-device workflows in the bounded
+`Operations` region because it controls one Windows-host singleton, not the
+device batch. Its four typed actions are status, start, ensure, and stop.
+Every action uses explicit immutable-preview confirmation. Stop copy names
+exact Fleet ownership and warns that connected clients may be disconnected.
+
+The pane shows only sanitized readiness, ownership, eligibility, lifecycle,
+expiry, result, capability, operational state, client count, band, and source
+connectivity. External ownership is always labeled observe-only. A timed-out
+execute keeps the preview and directs the operator to refresh the durable
+operation; refresh is never described as a new live status read. Closing the
+projection explicitly says that it does not stop or release host work.
+
 ### Quest awake-control presentation
 
 The awake-control review pane names all six modes instead of presenting one

@@ -82,6 +82,18 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private string _questAwakeSummaryText = "No headset awake-control preview";
     private string _questAwakeStatusText =
         "Choose an action, select exact devices, then preview";
+    private WindowsHotspotOperation? _currentWindowsHotspotOperation;
+    private WindowsHotspotActionOption _selectedWindowsHotspotAction =
+        new(
+            WindowsHotspotActions.Status,
+            "Check Mobile Hotspot status",
+            "Reads the Windows host Mobile Hotspot state without changing it.",
+            "This status check is read-only and still requires explicit confirmation.");
+    private WindowsHotspotResultViewModel? _windowsHotspotResult;
+    private string _windowsHotspotSummaryText =
+        "No Windows host hotspot preview";
+    private string _windowsHotspotStatusText =
+        "Choose a Windows host action, then preview";
     private QuestWifiAdbOperation? _currentQuestWifiAdbOperation;
     private QuestWifiAdbActionOption _selectedQuestWifiAdbModernAction =
         new(
@@ -143,6 +155,22 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         DismissPackageInstallReleaseCommand = new RelayCommand(
             DismissPackageInstallRelease,
             () => !IsBusy && CurrentPackageOperation is not null);
+        PreviewWindowsHotspotCommand = new AsyncCommand(
+            PreviewWindowsHotspotAsync,
+            () => !IsBusy &&
+                  _source is not null &&
+                  CurrentWindowsHotspotOperation is null);
+        ConfirmWindowsHotspotCommand = new AsyncCommand(
+            ConfirmWindowsHotspotAsync,
+            () => CanConfirmWindowsHotspot);
+        RefreshWindowsHotspotCommand = new AsyncCommand(
+            RefreshWindowsHotspotAsync,
+            () => !IsBusy &&
+                  _source is not null &&
+                  CurrentWindowsHotspotOperation is not null);
+        DismissWindowsHotspotCommand = new RelayCommand(
+            DismissWindowsHotspot,
+            () => !IsBusy && CurrentWindowsHotspotOperation is not null);
         PreviewQuestAwakeCommand = new AsyncCommand(
             PreviewQuestAwakeAsync,
             () => !IsBusy &&
@@ -252,6 +280,30 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             "Stops watchdogs, then restores normal sleep and proximity behavior.")
     ];
 
+    public IReadOnlyList<WindowsHotspotActionOption> WindowsHotspotActionOptions { get; } =
+    [
+        new(
+            WindowsHotspotActions.Status,
+            "Check Mobile Hotspot status",
+            "Reads the Windows host Mobile Hotspot state without changing it.",
+            "This status check is read-only and still requires explicit confirmation."),
+        new(
+            WindowsHotspotActions.Start,
+            "Start Fleet-owned Mobile Hotspot",
+            "Starts the host hotspot only when no external hotspot is active.",
+            "This starts a Fleet-owned Windows Mobile Hotspot. Fleet will not adopt an external hotspot."),
+        new(
+            WindowsHotspotActions.Ensure,
+            "Ensure Fleet-owned Mobile Hotspot",
+            "Maintains or restarts only a Fleet-owned hotspot; external hotspots remain observe-only.",
+            "This may restart the Fleet-owned Windows Mobile Hotspot. Fleet will not adopt an external hotspot."),
+        new(
+            WindowsHotspotActions.Stop,
+            "Stop Fleet-owned Mobile Hotspot",
+            "Stops only the exact Fleet-owned hotspot and never an external hotspot.",
+            "This stops the exact Fleet-owned Windows Mobile Hotspot and may disconnect connected clients.")
+    ];
+
     public IReadOnlyList<QuestWifiAdbActionOption> QuestWifiAdbModernActionOptions { get; } =
     [
         new(
@@ -327,6 +379,14 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public AsyncCommand RefreshPackageInstallReleaseCommand { get; }
 
     public RelayCommand DismissPackageInstallReleaseCommand { get; }
+
+    public AsyncCommand PreviewWindowsHotspotCommand { get; }
+
+    public AsyncCommand ConfirmWindowsHotspotCommand { get; }
+
+    public AsyncCommand RefreshWindowsHotspotCommand { get; }
+
+    public RelayCommand DismissWindowsHotspotCommand { get; }
 
     public AsyncCommand PreviewQuestAwakeCommand { get; }
 
@@ -531,6 +591,99 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     {
         get => _packageOperationStatusText;
         private set => SetProperty(ref _packageOperationStatusText, value);
+    }
+
+    public WindowsHotspotActionOption SelectedWindowsHotspotAction
+    {
+        get => _selectedWindowsHotspotAction;
+        set
+        {
+            if (value is not null &&
+                CurrentWindowsHotspotOperation is null &&
+                SetProperty(ref _selectedWindowsHotspotAction, value))
+            {
+                OnPropertyChanged(nameof(WindowsHotspotActionHelpText));
+                OnPropertyChanged(nameof(WindowsHotspotConfirmationText));
+                OnPropertyChanged(nameof(WindowsHotspotConfirmButtonText));
+            }
+        }
+    }
+
+    public string WindowsHotspotActionHelpText =>
+        SelectedWindowsHotspotAction.HelpText;
+
+    public string WindowsHotspotConfirmationText =>
+        SelectedWindowsHotspotAction.ConfirmationText;
+
+    public WindowsHotspotOperation? CurrentWindowsHotspotOperation
+    {
+        get => _currentWindowsHotspotOperation;
+        private set
+        {
+            if (SetProperty(ref _currentWindowsHotspotOperation, value))
+            {
+                OnPropertyChanged(nameof(IsWindowsHotspotInputLocked));
+                OnPropertyChanged(nameof(IsWindowsHotspotInputUnlocked));
+                OnPropertyChanged(nameof(WindowsHotspotInputLockText));
+                OnPropertyChanged(nameof(CanConfirmWindowsHotspot));
+                OnPropertyChanged(nameof(WindowsHotspotConfirmButtonText));
+                PreviewWindowsHotspotCommand.RaiseCanExecuteChanged();
+                ConfirmWindowsHotspotCommand.RaiseCanExecuteChanged();
+                RefreshWindowsHotspotCommand.RaiseCanExecuteChanged();
+                DismissWindowsHotspotCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsWindowsHotspotInputLocked =>
+        CurrentWindowsHotspotOperation is not null;
+
+    public bool IsWindowsHotspotInputUnlocked =>
+        !IsWindowsHotspotInputLocked;
+
+    public string WindowsHotspotInputLockText =>
+        IsWindowsHotspotInputLocked
+            ? "Locked to immutable preview"
+            : string.Empty;
+
+    public bool CanConfirmWindowsHotspot =>
+        !IsBusy &&
+        _source is not null &&
+        CurrentWindowsHotspotOperation is
+        {
+            Lifecycle: "proposed",
+            ConfirmedAtMs: null
+        } operation &&
+        operation.Preview.Preflight.Eligible;
+
+    public string WindowsHotspotConfirmButtonText =>
+        CurrentWindowsHotspotOperation?.ConfirmedAtMs is not null
+            ? "Confirmed"
+            : SelectedWindowsHotspotAction.Action switch
+            {
+                WindowsHotspotActions.Status => "Confirm status check",
+                WindowsHotspotActions.Start => "Confirm start",
+                WindowsHotspotActions.Ensure => "Confirm ensure",
+                WindowsHotspotActions.Stop => "Confirm stop",
+                _ => "Confirm"
+            };
+
+    public WindowsHotspotResultViewModel? WindowsHotspotResult
+    {
+        get => _windowsHotspotResult;
+        private set => SetProperty(ref _windowsHotspotResult, value);
+    }
+
+    public string WindowsHotspotSummaryText
+    {
+        get => _windowsHotspotSummaryText;
+        private set => SetProperty(ref _windowsHotspotSummaryText, value);
+    }
+
+    public string WindowsHotspotStatusText
+    {
+        get => _windowsHotspotStatusText;
+        private set => SetProperty(ref _windowsHotspotStatusText, value);
     }
 
     public QuestAwakeActionOption SelectedQuestAwakeAction
@@ -775,6 +928,11 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 ConfirmPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 RefreshPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 DismissPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                PreviewWindowsHotspotCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanConfirmWindowsHotspot));
+                ConfirmWindowsHotspotCommand.RaiseCanExecuteChanged();
+                RefreshWindowsHotspotCommand.RaiseCanExecuteChanged();
+                DismissWindowsHotspotCommand.RaiseCanExecuteChanged();
                 PreviewQuestAwakeCommand.RaiseCanExecuteChanged();
                 OnPropertyChanged(nameof(CanConfirmQuestAwake));
                 ConfirmQuestAwakeCommand.RaiseCanExecuteChanged();
@@ -1160,6 +1318,148 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         PackageOperationSummaryText = "No package operation preview";
         PackageOperationStatusText =
             "Enter a signed manifest URL and package identity, then select exact devices";
+    }
+
+    public async Task PreviewWindowsHotspotAsync()
+    {
+        if (_source is null)
+        {
+            WindowsHotspotStatusText = "Not connected to a Fleet Hub";
+            return;
+        }
+
+        var request = new WindowsHotspotPreviewRequest
+        {
+            Action = SelectedWindowsHotspotAction.Action
+        };
+        IsBusy = true;
+        WindowsHotspotStatusText =
+            "Requesting an immutable Windows host Mobile Hotspot preview";
+        try
+        {
+            using var timeout =
+                new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.PreviewWindowsHotspotAsync(
+                request,
+                timeout.Token);
+            ValidateWindowsHotspotBinding(operation, request.Action);
+            ProjectWindowsHotspotOperation(operation);
+            WindowsHotspotStatusText = operation.Preview.Preflight.Eligible
+                ? "Preview ready · review the host-scoped action and confirmation statement"
+                : "Preview is observe-only or unavailable · review the bounded preflight reason";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            WindowsHotspotStatusText =
+                $"{SanitizedHotspotFailure(error)} · prior hotspot projection retained";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task ConfirmWindowsHotspotAsync()
+    {
+        var prior = CurrentWindowsHotspotOperation;
+        if (_source is null || prior is null)
+        {
+            WindowsHotspotStatusText =
+                "Preview a Windows host Mobile Hotspot operation before confirming it";
+            return;
+        }
+        if (!CanConfirmWindowsHotspot)
+        {
+            WindowsHotspotStatusText = prior.ConfirmedAtMs is not null
+                ? "This immutable host-hotspot preview is already confirmed"
+                : "The current host-hotspot preview is not eligible for confirmation";
+            return;
+        }
+
+        var request = new WindowsHotspotExecuteRequest
+        {
+            OperationId = prior.OperationId,
+            PreviewId = prior.Preview.PreviewId
+        };
+        IsBusy = true;
+        WindowsHotspotStatusText =
+            "Confirming the exact immutable Windows host Mobile Hotspot preview";
+        try
+        {
+            using var timeout =
+                new CancellationTokenSource(TimeSpan.FromSeconds(50));
+            var operation = await _source.ExecuteWindowsHotspotAsync(
+                request,
+                timeout.Token);
+            ValidateWindowsHotspotBinding(
+                operation,
+                prior.Preview.Action);
+            RequireSameWindowsHotspotOperation(prior, operation);
+            ProjectWindowsHotspotOperation(operation);
+            WindowsHotspotStatusText =
+                "Host action settled · Refresh rereads this durable operation; " +
+                "close it and run a new status check for a new live observation";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            WindowsHotspotStatusText =
+                $"{SanitizedHotspotFailure(error)} · the host action may still settle · " +
+                "prior preview retained; use Refresh to reread the durable operation";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task RefreshWindowsHotspotAsync()
+    {
+        var prior = CurrentWindowsHotspotOperation;
+        if (_source is null || prior is null)
+        {
+            WindowsHotspotStatusText =
+                "No Windows host Mobile Hotspot operation is available to refresh";
+            return;
+        }
+
+        IsBusy = true;
+        WindowsHotspotStatusText =
+            "Refreshing the durable Windows host Mobile Hotspot operation";
+        try
+        {
+            using var timeout =
+                new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var operation = await _source.WindowsHotspotAsync(
+                prior.OperationId,
+                timeout.Token);
+            ValidateWindowsHotspotBinding(
+                operation,
+                prior.Preview.Action);
+            RequireSameWindowsHotspotOperation(prior, operation);
+            ProjectWindowsHotspotOperation(operation);
+            WindowsHotspotStatusText =
+                "Durable operation refreshed · this does not perform a new live read; " +
+                "close it and run a new status check for current host state";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            WindowsHotspotStatusText =
+                $"{SanitizedHotspotFailure(error)} · prior hotspot projection retained";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public void DismissWindowsHotspot()
+    {
+        CurrentWindowsHotspotOperation = null;
+        WindowsHotspotResult = null;
+        WindowsHotspotSummaryText =
+            "No Windows host hotspot preview";
+        WindowsHotspotStatusText =
+            "Console projection cleared only · no hotspot was stopped and no lease was released";
     }
 
     public async Task PreviewQuestAwakeAsync()
@@ -2391,6 +2691,22 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}";
     }
 
+    private void ProjectWindowsHotspotOperation(
+        WindowsHotspotOperation operation)
+    {
+        WindowsHotspotProjectionValidation.ValidateOperation(operation);
+        CurrentWindowsHotspotOperation = operation;
+        WindowsHotspotResult =
+            new WindowsHotspotResultViewModel(operation);
+        WindowsHotspotSummaryText =
+            $"{WindowsHotspotActionLabel(operation.Preview.Action)} · " +
+            $"host-scoped singleton · " +
+            $"ownership {WindowsHotspotResult.Ownership} · " +
+            $"hotspot {WindowsHotspotResult.Activity} · " +
+            $"lifecycle {WindowsHotspotResult.Lifecycle} · " +
+            $"outcome {WindowsHotspotResult.Outcome}";
+    }
+
     private void ProjectQuestAwakeOperation(QuestAwakeOperation operation)
     {
         QuestAwakeProjectionValidation.ValidateOperation(operation);
@@ -2559,6 +2875,57 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 "Fleet Hub changed immutable package operation facts.");
         }
     }
+
+    private static void ValidateWindowsHotspotBinding(
+        WindowsHotspotOperation operation,
+        string expectedAction)
+    {
+        WindowsHotspotProjectionValidation.ValidateOperation(operation);
+        if (operation.ActionId != WindowsHotspotActions.ActionId ||
+            operation.Preview.ActionId != WindowsHotspotActions.ActionId ||
+            operation.Preview.Action != expectedAction)
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub host-hotspot operation does not bind the exact action.");
+        }
+    }
+
+    private static void RequireSameWindowsHotspotOperation(
+        WindowsHotspotOperation prior,
+        WindowsHotspotOperation current)
+    {
+        if (prior.OperationId != current.OperationId ||
+            prior.Preview.PreviewId != current.Preview.PreviewId ||
+            JsonSerializer.Serialize(prior.Preview, FleetJson.Options) !=
+            JsonSerializer.Serialize(current.Preview, FleetJson.Options))
+        {
+            throw new InvalidOperationException(
+                "Fleet Hub changed immutable host-hotspot operation facts.");
+        }
+    }
+
+    private static string WindowsHotspotActionLabel(string action) =>
+        action switch
+        {
+            WindowsHotspotActions.Status => "Check Mobile Hotspot status",
+            WindowsHotspotActions.Start =>
+                "Start Fleet-owned Mobile Hotspot",
+            WindowsHotspotActions.Ensure =>
+                "Ensure Fleet-owned Mobile Hotspot",
+            WindowsHotspotActions.Stop =>
+                "Stop Fleet-owned Mobile Hotspot",
+            _ => "Unknown host-hotspot action"
+        };
+
+    private static string SanitizedHotspotFailure(Exception error) =>
+        error switch
+        {
+            TaskCanceledException => "Request timed out",
+            HttpRequestException => "Fleet Hub request failed",
+            JsonException or InvalidOperationException =>
+                "Fleet Hub returned an invalid hotspot projection",
+            _ => "Hotspot operation failed"
+        };
 
     private bool TryReadQuestAwakePolicy(
         out uint durationMs,

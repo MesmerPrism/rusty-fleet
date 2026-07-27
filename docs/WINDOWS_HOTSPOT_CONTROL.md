@@ -18,6 +18,29 @@ The matching CLI commands are `hotspot-preview`, `hotspot-execute`, and
 `hotspot-get`. Preview never performs an effect. Execute must name the exact
 unexpired preview.
 
+## Fleet Console
+
+The native Fleet Console exposes the same four actions as the first pane in
+the bounded `Operations` region. This pane is a Windows-host singleton and
+does not use the selected-device batch. Every action, including the read-only
+status action, requires an immutable preview and explicit confirmation.
+
+The Console displays only provider readiness, lease availability, active
+state, `Fleet`/`external`/`none` ownership, eligibility, lifecycle, preview
+expiry, and bounded provider readback facts. It never displays the ownership
+generation, lease/request/operation identifiers, provider configuration,
+SSID, passphrase, profile, address, or private endpoint. An external active
+hotspot is observe-only and cannot be confirmed for `start`, `ensure`, or
+`stop`.
+
+Provider execution can take 30 seconds, so the execute call has its own
+45-second HTTP budget while ordinary Console calls retain their 10-second
+budget. If an execute response is lost or times out, the immutable preview
+remains visible and the operator can refresh the durable operation. Refresh
+does not perform a new live status read; close the projection and confirm a
+new `status` preview for that. Closing the Console projection never stops the
+hotspot or releases host work.
+
 ## Provider boundary
 
 Private local configuration pins an absolute

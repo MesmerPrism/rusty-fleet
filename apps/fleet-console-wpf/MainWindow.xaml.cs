@@ -49,7 +49,31 @@ public partial class MainWindow : Window
 
     public Expander BatchOperationsControl => BatchOperationsExpander;
 
+    public Expander OperationsControl => BatchOperationsExpander;
+
     public ScrollViewer BatchOperationsScrollControl => BatchOperationsScrollViewer;
+
+    public ScrollViewer OperationsScrollControl => BatchOperationsScrollViewer;
+
+    public FrameworkElement WindowsHotspotOperationRegion =>
+        WindowsHotspotOperationPane;
+
+    public ComboBox WindowsHotspotActionControl => WindowsHotspotActionBox;
+
+    public Button PreviewWindowsHotspotControl =>
+        PreviewWindowsHotspotButton;
+
+    public Button ConfirmWindowsHotspotControl =>
+        ConfirmWindowsHotspotButton;
+
+    public Button RefreshWindowsHotspotControl =>
+        RefreshWindowsHotspotButton;
+
+    public Button DismissWindowsHotspotControl =>
+        DismissWindowsHotspotButton;
+
+    public FrameworkElement WindowsHotspotResultRegion =>
+        WindowsHotspotResultPane;
 
     public FrameworkElement KioskOperationRegion => OperationPane;
 

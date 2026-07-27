@@ -136,13 +136,15 @@ The current implementation is split into:
   datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
   mutations;
 - `fleetctl`: structured JSON list/inspect/detail/watch projections,
-  saved-view parity fixtures, package commands, and Quest awake
-  preview/execute/get commands over the same loopback local API;
+  saved-view parity fixtures, package, Quest awake, Quest connectivity, and
+  Windows host-hotspot preview/execute/get commands over the same loopback
+  local API;
 - `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical
   scope/sort/grouping, revisioned saved-view controls, stable live-order
   application, bounded monotonic watch synchronization, distinct inspection
-  and batch selection, and a persistent selected-device inspector plus
-  full-device detail over the canonical local API;
+  and batch selection, a host-scoped Windows Mobile Hotspot pane, and a
+  persistent selected-device inspector plus full-device detail over the
+  canonical local API;
 - `fleet-console-wpf.tests`: package-free native UI Automation,
   watch-cursor/reset/damage, grouped virtualization, stable-context/order,
   capability-family, normal 50-row presented keyboard, and 10/50/100-row
@@ -237,6 +239,9 @@ Quest awake commands use that same loopback Hub and are documented in
 [Quest awake control](docs/QUEST_AWAKE_CONTROL.md).
 Quest Wi-Fi ADB commands use that same loopback Hub and are documented in
 [Quest Wi-Fi ADB control](docs/QUEST_WIFI_ADB_CONTROL.md).
+Windows host-hotspot commands and Console behavior use that same loopback Hub
+and are documented in
+[Windows Mobile Hotspot control](docs/WINDOWS_HOTSPOT_CONTROL.md).
 
 Build and exercise the native WPF projection against the real deterministic
 Rust query result:

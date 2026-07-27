@@ -29,6 +29,7 @@ internal static class Program
         try
         {
             var repoRoot = ReadRepoRoot(arguments);
+            WindowsHotspotContractTests.Run();
             var kioskOperationFixture = JsonSerializer.Deserialize<OperationLedger>(
                 File.ReadAllText(
                     Path.Combine(
@@ -679,6 +680,189 @@ internal static class Program
                     StringComparison.Ordinal),
                 "damaged package operation evidence did not fail closed");
 
+            operationWorkspace.ClearBatchSelectionCommand.Execute(null);
+            operationWorkspace.SelectedWindowsHotspotAction =
+                operationWorkspace.WindowsHotspotActionOptions.Single(option =>
+                    option.Action == WindowsHotspotActions.Start);
+            operationWorkspace.PreviewWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            var hotspotPreview =
+                operationWorkspace.CurrentWindowsHotspotOperation ??
+                throw new InvalidOperationException(
+                    "Windows host Mobile Hotspot preview was not projected");
+            Require(
+                operationWorkspace.WindowsHotspotActionOptions.Count == 4 &&
+                operationSource.LastWindowsHotspotPreviewRequest is
+                {
+                    ActionId: WindowsHotspotActions.ActionId,
+                    Action: WindowsHotspotActions.Start
+                } &&
+                operationWorkspace.BatchSelectionText.StartsWith(
+                    "0 selected",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.IsWindowsHotspotInputLocked &&
+                operationWorkspace.CanConfirmWindowsHotspot &&
+                operationWorkspace.WindowsHotspotConfirmationText.Contains(
+                    "will not adopt an external hotspot",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.WindowsHotspotSummaryText.Contains(
+                    "host-scoped singleton",
+                    StringComparison.Ordinal),
+                "host hotspot preview was device-scoped or did not freeze the typed action");
+
+            operationSource.ThrowAfterWindowsHotspotSettlement = true;
+            operationWorkspace.ConfirmWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    hotspotPreview,
+                    operationWorkspace.CurrentWindowsHotspotOperation) &&
+                operationSource.LastWindowsHotspotExecuteRequest is
+                { } hotspotExecute &&
+                hotspotExecute.OperationId == hotspotPreview.OperationId &&
+                hotspotExecute.PreviewId ==
+                hotspotPreview.Preview.PreviewId &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "may still settle",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "use Refresh",
+                    StringComparison.Ordinal),
+                "lost host-hotspot execute response did not retain the immutable preview and recovery path");
+
+            operationWorkspace.RefreshWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            var settledHotspot =
+                operationWorkspace.CurrentWindowsHotspotOperation ??
+                throw new InvalidOperationException(
+                    "settled Windows host Mobile Hotspot operation was not projected");
+            var hotspotResult =
+                operationWorkspace.WindowsHotspotResult ??
+                throw new InvalidOperationException(
+                    "Windows host Mobile Hotspot result was not projected");
+            var publicHotspotProjection =
+                operationWorkspace.WindowsHotspotSummaryText + " " +
+                operationWorkspace.WindowsHotspotStatusText + " " +
+                hotspotResult.AccessibleName;
+            Require(
+                settledHotspot.Lifecycle == "applied" &&
+                hotspotResult.Ownership == "None" &&
+                hotspotResult.OperationalState == "On" &&
+                hotspotResult.Outcome == "Verified" &&
+                hotspotResult.Clients.Contains(
+                    "1 of 8",
+                    StringComparison.Ordinal) &&
+                hotspotResult.Band == "5 GHz" &&
+                hotspotResult.SourceConnectivity == "Internet access" &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "Durable operation refreshed",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "does not perform a new live read",
+                    StringComparison.Ordinal) &&
+                !publicHotspotProjection.Contains(
+                    "hotspot-operation",
+                    StringComparison.Ordinal) &&
+                !publicHotspotProjection.Contains(
+                    "hotspot-preview",
+                    StringComparison.Ordinal) &&
+                !publicHotspotProjection.Contains(
+                    "hotspot-request",
+                    StringComparison.Ordinal) &&
+                !publicHotspotProjection.Contains(
+                    "generation",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !publicHotspotProjection.Contains(
+                    "ssid",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !publicHotspotProjection.Contains(
+                    "passphrase",
+                    StringComparison.OrdinalIgnoreCase),
+                "host-hotspot recovery or public projection lost durable semantics or exposed private evidence");
+
+            var retainedHotspot = operationWorkspace.CurrentWindowsHotspotOperation;
+            operationSource.DamageNextWindowsHotspotResponse = true;
+            operationWorkspace.RefreshWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedHotspot,
+                    operationWorkspace.CurrentWindowsHotspotOperation) &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "invalid hotspot projection",
+                    StringComparison.Ordinal) &&
+                !operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "preview_id",
+                    StringComparison.OrdinalIgnoreCase),
+                "damaged host-hotspot evidence was not rejected with bounded error copy");
+
+            operationWorkspace.DismissWindowsHotspot();
+            Require(
+                operationWorkspace.CurrentWindowsHotspotOperation is null &&
+                operationWorkspace.WindowsHotspotResult is null &&
+                operationSource.LastWindowsHotspotOperation?.Lifecycle ==
+                "applied" &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "no hotspot was stopped",
+                    StringComparison.Ordinal),
+                "dismissing the Console projection mutated or misrepresented host state");
+
+            operationSource.WindowsHotspotOwnership =
+                WindowsHotspotActions.OwnershipExternal;
+            operationWorkspace.SelectedWindowsHotspotAction =
+                operationWorkspace.WindowsHotspotActionOptions.Single(option =>
+                    option.Action == WindowsHotspotActions.Start);
+            operationWorkspace.PreviewWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationWorkspace.CurrentWindowsHotspotOperation is
+                {
+                    Lifecycle: "rejected"
+                } externalHotspot &&
+                externalHotspot.Preview.Preflight.ReasonCode ==
+                "external_hotspot_not_owned" &&
+                operationWorkspace.WindowsHotspotResult?.Ownership.Contains(
+                    "observe only",
+                    StringComparison.Ordinal) == true &&
+                !operationWorkspace.CanConfirmWindowsHotspot,
+                "external Windows hotspot was adopted or offered a mutating confirmation");
+
+            operationWorkspace.DismissWindowsHotspot();
+            operationSource.WindowsHotspotOwnership =
+                WindowsHotspotActions.OwnershipFleet;
+            operationWorkspace.SelectedWindowsHotspotAction =
+                operationWorkspace.WindowsHotspotActionOptions.Single(option =>
+                    option.Action == WindowsHotspotActions.Stop);
+            Require(
+                operationWorkspace.WindowsHotspotConfirmationText.Contains(
+                    "exact Fleet-owned",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.WindowsHotspotConfirmationText.Contains(
+                    "may disconnect connected clients",
+                    StringComparison.Ordinal),
+                "host hotspot stop confirmation did not name ownership and disconnection impact");
+            operationWorkspace.PreviewWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationWorkspace.CanConfirmWindowsHotspot &&
+                operationWorkspace.WindowsHotspotConfirmButtonText ==
+                "Confirm stop",
+                "exact Fleet-owned hotspot stop preview was not confirmable");
+            Require(
+                operationWorkspace.SelectedDevice?.StableKey ==
+                operationSelected &&
+                operationWorkspace.ActiveScopeText == operationScope &&
+                operationWorkspace.Rows.Select(row => row.StableKey)
+                    .SequenceEqual(operationStableKeys),
+                "host-scoped hotspot workflow changed fleet scope, inspector, or ordering");
+
+            operationWorkspace.SelectAllVisibleCommand.Execute(null);
             operationWorkspace.SelectedQuestAwakeAction =
                 operationWorkspace.QuestAwakeActionOptions.Single(option =>
                     option.Action == QuestAwakeActions.StartDeviceWatchdog);
@@ -1107,13 +1291,54 @@ internal static class Program
             Require(
                 !operationWindow.BatchOperationsControl.IsExpanded &&
                 AutomationProperties.GetName(
-                    operationWindow.BatchOperationsControl) == "Batch operations",
-                "batch operations were not collapsed and neutrally labeled by default");
+                    operationWindow.BatchOperationsControl) == "Operations" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.BatchOperationsControl).Contains(
+                    "independent of selected devices",
+                    StringComparison.Ordinal),
+                "operations were not collapsed and neutrally labeled by default");
             operationWindow.BatchOperationsControl.IsExpanded = true;
             var operationRoot = (FrameworkElement)operationWindow.Content;
             operationRoot.Measure(new Size(1_500, 900));
             operationRoot.Arrange(new Rect(0, 0, 1_500, 900));
             operationRoot.UpdateLayout();
+            Require(
+                AutomationProperties.GetName(
+                    operationWindow.WindowsHotspotOperationRegion) ==
+                "Windows host Mobile Hotspot operation" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.WindowsHotspotOperationRegion).Contains(
+                    "independent of selected devices",
+                    StringComparison.Ordinal) &&
+                operationWindow.WindowsHotspotActionControl.Items.Count == 4 &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewWindowsHotspotControl).Contains(
+                    "Windows host",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.PreviewWindowsHotspotControl).Contains(
+                    "without changing",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.ConfirmWindowsHotspotControl).Contains(
+                    "exact immutable",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.RefreshWindowsHotspotControl).Contains(
+                    "durable operation record",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.DismissWindowsHotspotControl).Contains(
+                    "does not stop the hotspot",
+                    StringComparison.Ordinal) &&
+                !operationWindow.WindowsHotspotActionControl.IsEnabled &&
+                operationWindow.WindowsHotspotResultRegion.Visibility ==
+                Visibility.Visible &&
+                !AutomationProperties.GetName(
+                    operationWindow.WindowsHotspotResultRegion).Contains(
+                    "generation",
+                    StringComparison.OrdinalIgnoreCase),
+                "Windows host hotspot controls lost host scope, immutable-preview, recovery, or sanitized-result semantics");
             Require(
                 AutomationProperties.GetName(operationWindow.KioskOperationRegion) ==
                 "Kiosk show-controls operation" &&
@@ -1937,6 +2162,16 @@ internal static class Program
                 package_target_rows_focusable = true,
                 package_install_release_fail_closed = true,
                 package_install_release_rust_fixture_aligned = true,
+                windows_hotspot_host_scoped = true,
+                windows_hotspot_exact_immutable_preview = true,
+                windows_hotspot_explicit_confirmation = true,
+                windows_hotspot_lost_response_recoverable = true,
+                windows_hotspot_durable_refresh_not_live = true,
+                windows_hotspot_external_observe_only = true,
+                windows_hotspot_exact_fleet_stop = true,
+                windows_hotspot_sanitized_projection = true,
+                windows_hotspot_accessible = true,
+                windows_hotspot_fail_closed = true,
                 quest_awake_preview = true,
                 quest_awake_exact_action_policy_and_targets = true,
                 quest_awake_eight_hour_bound = true,
@@ -2489,6 +2724,23 @@ internal static class Program
 
         public bool DamageNextPackageOperationResponse { get; set; }
 
+        public WindowsHotspotPreviewRequest? LastWindowsHotspotPreviewRequest { get; private set; }
+
+        public WindowsHotspotExecuteRequest? LastWindowsHotspotExecuteRequest { get; private set; }
+
+        public WindowsHotspotOperation? LastWindowsHotspotOperation { get; private set; }
+
+        public string WindowsHotspotOwnership { get; set; } =
+            WindowsHotspotActions.OwnershipNone;
+
+        public bool WindowsHotspotProviderReady { get; set; } = true;
+
+        public bool WindowsHotspotLeaseAvailable { get; set; } = true;
+
+        public bool DamageNextWindowsHotspotResponse { get; set; }
+
+        public bool ThrowAfterWindowsHotspotSettlement { get; set; }
+
         public QuestAwakePreviewRequest? LastQuestAwakePreviewRequest { get; private set; }
 
         public QuestAwakeExecuteRequest? LastQuestAwakeExecuteRequest { get; private set; }
@@ -2852,6 +3104,60 @@ internal static class Program
             }
 
             return Task.FromResult(ReturnPackageOperation());
+        }
+
+        public Task<WindowsHotspotOperation> PreviewWindowsHotspotAsync(
+            WindowsHotspotPreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastWindowsHotspotPreviewRequest = request;
+            LastWindowsHotspotOperation =
+                CreateWindowsHotspotOperation(request, executed: false);
+            return Task.FromResult(ReturnWindowsHotspotOperation());
+        }
+
+        public Task<WindowsHotspotOperation> ExecuteWindowsHotspotAsync(
+            WindowsHotspotExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastWindowsHotspotExecuteRequest = request;
+            if (LastWindowsHotspotOperation is null ||
+                LastWindowsHotspotPreviewRequest is null ||
+                LastWindowsHotspotOperation.OperationId != request.OperationId ||
+                LastWindowsHotspotOperation.Preview.PreviewId != request.PreviewId)
+            {
+                throw new InvalidOperationException(
+                    "host-hotspot execute request did not match the synthetic preview");
+            }
+
+            LastWindowsHotspotOperation = CreateWindowsHotspotOperation(
+                LastWindowsHotspotPreviewRequest,
+                executed: true);
+            if (ThrowAfterWindowsHotspotSettlement)
+            {
+                ThrowAfterWindowsHotspotSettlement = false;
+                throw new TaskCanceledException(
+                    "synthetic response lost after hotspot settlement");
+            }
+
+            return Task.FromResult(ReturnWindowsHotspotOperation());
+        }
+
+        public Task<WindowsHotspotOperation> WindowsHotspotAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastWindowsHotspotOperation is null ||
+                LastWindowsHotspotOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic host-hotspot operation not found");
+            }
+
+            return Task.FromResult(ReturnWindowsHotspotOperation());
         }
 
         public Task<QuestAwakeOperation> PreviewQuestAwakeAsync(
@@ -3240,6 +3546,190 @@ internal static class Program
                 CleanupRequired = false,
                 Targets = targets
             };
+        }
+
+        private WindowsHotspotOperation CreateWindowsHotspotOperation(
+            WindowsHotspotPreviewRequest request,
+            bool executed)
+        {
+            const string operationId = "hotspot-operation-0001";
+            const string previewId = "hotspot-preview-0001";
+            const string leaseGeneration = "hotspot-lease-generation-0001";
+            const string ownershipGeneration = "hotspot-owned-generation-0001";
+            var createdAt = Projection.AsOfMs;
+            var active =
+                WindowsHotspotOwnership != WindowsHotspotActions.OwnershipNone;
+            var observedGeneration =
+                WindowsHotspotOwnership == WindowsHotspotActions.OwnershipFleet
+                    ? ownershipGeneration
+                    : null;
+            var actionEligible = request.Action switch
+            {
+                WindowsHotspotActions.Status => true,
+                WindowsHotspotActions.Start or WindowsHotspotActions.Ensure =>
+                    WindowsHotspotOwnership !=
+                    WindowsHotspotActions.OwnershipExternal,
+                WindowsHotspotActions.Stop =>
+                    WindowsHotspotOwnership ==
+                    WindowsHotspotActions.OwnershipFleet,
+                _ => false
+            };
+            var eligible =
+                WindowsHotspotProviderReady &&
+                WindowsHotspotLeaseAvailable &&
+                actionEligible;
+            var reason = !WindowsHotspotProviderReady
+                ? "provider_unavailable"
+                : !WindowsHotspotLeaseAvailable
+                    ? "resource_leased"
+                    : WindowsHotspotOwnership ==
+                      WindowsHotspotActions.OwnershipExternal
+                        ? "external_hotspot_not_owned"
+                        : request.Action == WindowsHotspotActions.Stop &&
+                          !actionEligible
+                            ? "fleet_ownership_required"
+                            : "ready";
+            var lifecycle = eligible
+                ? executed ? "applied" : "proposed"
+                : "rejected";
+            var invocationGeneration = request.Action switch
+            {
+                WindowsHotspotActions.Ensure =>
+                    observedGeneration,
+                WindowsHotspotActions.Stop =>
+                    observedGeneration,
+                _ => null
+            };
+            var invocation = executed
+                ? new WindowsHotspotProviderRequest
+                {
+                    Schema =
+                        "rusty.hostess.windows_hotspot.provider_request.v1",
+                    RequestId = "hotspot-request-0001",
+                    OperationId = operationId,
+                    Action = request.Action,
+                    ExpiresAtUtc = DateTimeOffset
+                        .FromUnixTimeMilliseconds(createdAt + 60_000)
+                        .UtcDateTime
+                        .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"),
+                    TimeoutMs = 30_000,
+                    OwnershipGeneration = invocationGeneration
+                }
+                : null;
+            var receipt = executed
+                ? new WindowsHotspotProviderReceipt
+                {
+                    Schema =
+                        "rusty.hostess.windows_hotspot.provider_receipt.v1",
+                    RequestId = "hotspot-request-0001",
+                    OperationId = operationId,
+                    Action = request.Action,
+                    Outcome = WindowsHotspotActions.ResultVerified,
+                    Reason = "effective_readback_verified",
+                    ObservedAtUtc = DateTimeOffset
+                        .FromUnixTimeMilliseconds(createdAt + 300)
+                        .UtcDateTime
+                        .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"),
+                    CapabilityAvailable = true,
+                    Capability = "Available",
+                    OperationalState =
+                        request.Action == WindowsHotspotActions.Stop
+                            ? "Off"
+                            : request.Action == WindowsHotspotActions.Status
+                                ? active ? "On" : "Off"
+                                : "On",
+                    ClientCount = request.Action == WindowsHotspotActions.Stop
+                        ? 0u
+                        : 1u,
+                    MaxClientCount = 8,
+                    Band = "FiveGigahertz",
+                    SourceConnectivity = "Internet",
+                    OwnershipGeneration = request.Action switch
+                    {
+                        WindowsHotspotActions.Start or
+                        WindowsHotspotActions.Ensure =>
+                            ownershipGeneration,
+                        WindowsHotspotActions.Status =>
+                            observedGeneration,
+                        _ => null
+                    }
+                }
+                : null;
+
+            return new WindowsHotspotOperation
+            {
+                Schema = "rusty.fleet.windows_hotspot_operation.v1",
+                OperationId = operationId,
+                ActionId = WindowsHotspotActions.ActionId,
+                Lifecycle = lifecycle,
+                Preview = new WindowsHotspotPreview
+                {
+                    Schema = "rusty.fleet.windows_hotspot_preview.v1",
+                    PreviewId = previewId,
+                    OperationId = operationId,
+                    ActionId = WindowsHotspotActions.ActionId,
+                    ResourceId = WindowsHotspotActions.ResourceId,
+                    OwnerId = WindowsHotspotActions.OwnerId,
+                    Action = request.Action,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    Preflight = new WindowsHotspotPreflight
+                    {
+                        ProviderReady = WindowsHotspotProviderReady,
+                        LeaseAvailable = WindowsHotspotLeaseAvailable,
+                        Active = active,
+                        Ownership = WindowsHotspotOwnership,
+                        OwnershipGeneration = observedGeneration,
+                        Eligible = eligible,
+                        ReasonCode = reason,
+                        Message = eligible
+                            ? "Host-scoped hotspot operation is ready for explicit confirmation."
+                            : "Host-scoped hotspot operation is not eligible."
+                    }
+                },
+                ConfirmedAtMs = executed ? createdAt + 50 : null,
+                Lease = new WindowsHotspotLease
+                {
+                    Schema = "rusty.fleet.host_resource_lease.v1",
+                    LeaseId = "hotspot-lease-0001",
+                    ResourceId = WindowsHotspotActions.ResourceId,
+                    HolderOperationId = operationId,
+                    Generation = leaseGeneration,
+                    IssuedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000
+                },
+                Invocation = invocation,
+                Receipt = receipt,
+                FailureCode = eligible
+                    ? null
+                    : reason,
+                UpdatedAtMs = createdAt + (executed ? 300 : 10)
+            };
+        }
+
+        private WindowsHotspotOperation ReturnWindowsHotspotOperation()
+        {
+            var operation = LastWindowsHotspotOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic host-hotspot operation was not created");
+            if (!DamageNextWindowsHotspotResponse)
+            {
+                return operation;
+            }
+
+            DamageNextWindowsHotspotResponse = false;
+            var damaged = JsonNode.Parse(
+                JsonSerializer.Serialize(operation, FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "synthetic host-hotspot operation could not be cloned");
+            damaged["preview"]!["preview_id"] =
+                "hotspot-preview-damaged";
+            return JsonSerializer.Deserialize<WindowsHotspotOperation>(
+                       damaged.ToJsonString(),
+                       FleetJson.Options) ??
+                   throw new InvalidOperationException(
+                       "damaged host-hotspot operation could not be projected");
         }
 
         private QuestAwakeOperation CreateQuestAwakeOperation(

@@ -284,20 +284,185 @@
 
             <Expander x:Name="BatchOperationsExpander"
                       Grid.Row="3"
-                      Header="Batch operations"
+                      Header="Operations"
                       IsExpanded="False"
                       MaxHeight="180"
                       Margin="0,0,0,8"
-                      AutomationProperties.Name="Batch operations"
-                      AutomationProperties.HelpText="Expands Kiosk controls, headset awake controls, Quest Wireless ADB connectivity, and package preparation workflows.">
+                      AutomationProperties.Name="Operations"
+                      AutomationProperties.HelpText="Expands one Windows-host singleton workflow and selected-device batch workflows. Windows host controls are independent of selected devices.">
                 <ScrollViewer x:Name="BatchOperationsScrollViewer"
                               MaxHeight="140"
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled"
                               Focusable="False"
-                              AutomationProperties.Name="Batch operations content">
+                              AutomationProperties.Name="Operations content">
                     <StackPanel>
+                    <Border x:Name="WindowsHotspotOperationPane"
+                            Padding="8"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Windows host Mobile Hotspot operation"
+                            AutomationProperties.HelpText="This host-scoped singleton affects the Windows PC running Fleet Hub. It is independent of selected devices, displays only sanitized status facts, and never adopts or stops an externally owned hotspot.">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding WindowsHotspotInputLockText}"
+                                           FontStyle="Italic"
+                                           Opacity="0.75"
+                                           AutomationProperties.Name="{Binding WindowsHotspotInputLockText}" />
+                                <TextBlock Text="Windows host · Mobile Hotspot"
+                                           FontWeight="SemiBold" />
+                            </DockPanel>
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="Host-scoped singleton · does not use selected devices. An external active hotspot is observe-only; Fleet will not adopt or stop it."
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Windows Mobile Hotspot is a host-scoped singleton independent of selected devices. External hotspots are observe-only." />
+                            <Grid Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Action"
+                                           Margin="0,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <ComboBox x:Name="WindowsHotspotActionBox"
+                                          Grid.Column="1"
+                                          ItemsSource="{Binding WindowsHotspotActionOptions}"
+                                          SelectedItem="{Binding SelectedWindowsHotspotAction}"
+                                          DisplayMemberPath="Label"
+                                          IsEnabled="{Binding IsWindowsHotspotInputUnlocked}"
+                                          AutomationProperties.Name="Windows host Mobile Hotspot action"
+                                          AutomationProperties.HelpText="{Binding WindowsHotspotActionHelpText}" />
+                            </Grid>
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="{Binding WindowsHotspotActionHelpText}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding WindowsHotspotActionHelpText}" />
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="{Binding WindowsHotspotConfirmationText}"
+                                       TextWrapping="Wrap"
+                                       FontWeight="SemiBold"
+                                       AutomationProperties.Name="{Binding WindowsHotspotConfirmationText}" />
+                            <Grid Margin="0,5,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="{Binding WindowsHotspotSummaryText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="{Binding WindowsHotspotSummaryText}" />
+                                <WrapPanel Grid.Row="1"
+                                           Margin="0,4,0,0"
+                                           HorizontalAlignment="Right">
+                                    <Button x:Name="PreviewWindowsHotspotButton"
+                                            Content="Preview host action"
+                                            Command="{Binding PreviewWindowsHotspotCommand}"
+                                            AutomationProperties.Name="Preview Windows host Mobile Hotspot action"
+                                            AutomationProperties.HelpText="Creates an immutable host-scoped preview without changing the hotspot or using selected devices." />
+                                    <Button x:Name="ConfirmWindowsHotspotButton"
+                                            Content="{Binding WindowsHotspotConfirmButtonText}"
+                                            Command="{Binding ConfirmWindowsHotspotCommand}"
+                                            AutomationProperties.Name="Confirm the exact immutable Windows host Mobile Hotspot preview"
+                                            AutomationProperties.HelpText="{Binding WindowsHotspotConfirmationText}" />
+                                    <Button x:Name="RefreshWindowsHotspotButton"
+                                            Content="Refresh operation"
+                                            Command="{Binding RefreshWindowsHotspotCommand}"
+                                            AutomationProperties.Name="Refresh Windows host Mobile Hotspot operation"
+                                            AutomationProperties.HelpText="Reads the durable operation record. A fresh host readback requires a new Status preview and confirmation." />
+                                    <Button x:Name="DismissWindowsHotspotButton"
+                                            Content="Close view"
+                                            Command="{Binding DismissWindowsHotspotCommand}"
+                                            AutomationProperties.Name="Close Windows host Mobile Hotspot view"
+                                            AutomationProperties.HelpText="Clears only this Console view. It does not stop the hotspot or cancel or release host work." />
+                                </WrapPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding WindowsHotspotStatusText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding WindowsHotspotStatusText}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <Border x:Name="WindowsHotspotResultPane"
+                                    Margin="0,6,0,0"
+                                    Padding="6"
+                                    BorderThickness="1"
+                                    BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                                    DataContext="{Binding WindowsHotspotResult}"
+                                    AutomationProperties.Name="{Binding AccessibleName}"
+                                    AutomationProperties.HelpText="Sanitized host result containing only provider readiness, singleton availability, activity, ownership, eligibility, lifecycle, expiry, and bounded public readback facts.">
+                                <Border.Style>
+                                    <Style TargetType="{x:Type Border}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding}"
+                                                         Value="{x:Null}">
+                                                <Setter Property="Visibility"
+                                                        Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <UniformGrid Columns="4">
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Provider" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Provider}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Singleton lease" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Lease}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Activity" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Activity}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Ownership" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Ownership}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Eligibility" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Eligibility}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Lifecycle" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Lifecycle}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Preview expiry" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Expires}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Outcome" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Outcome}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Observed" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Observed}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Capability" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Capability}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Operational state" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding OperationalState}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Connected clients" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Clients}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Band" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Band}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Source connectivity" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding SourceConnectivity}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </UniformGrid>
+                            </Border>
+                        </StackPanel>
+                    </Border>
                     <Border x:Name="OperationPane"
+                            Margin="0,8,0,0"
                             Padding="8"
                             BorderThickness="1"
                             BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"

@@ -56,6 +56,10 @@ Quick is safe during normal editing and checks:
   capability reconciliation covering exact shell UID, freshness, mutation,
   replay, other-device, unavailable supersession, expiry, disable, reboot,
   and renewal;
+- Windows host-hotspot valid/damaged contracts, immutable host-singleton
+  preview/confirmation, exact Fleet ownership for stop, external observe-only
+  behavior, provider timeout and lost-response durable recovery, non-live
+  refresh wording, private-field rejection, and CLI/API/WPF projection parity;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
   across off-screen 10/50/100-row layout windows cut from deterministic
   50/250-device Rust projections, with the 50-device source projection as the

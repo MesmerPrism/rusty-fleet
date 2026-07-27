@@ -305,3 +305,162 @@ public sealed class QuestWifiAdbTargetViewModel
         }
     }
 }
+
+public sealed class WindowsHotspotResultViewModel
+{
+    public WindowsHotspotResultViewModel(WindowsHotspotOperation operation)
+    {
+        var preflight = operation.Preview.Preflight;
+        Provider = preflight.ProviderReady ? "Ready" : "Unavailable";
+        Lease = preflight.LeaseAvailable ? "Available" : "In use";
+        Activity = preflight.Active ? "On" : "Off";
+        Ownership = preflight.Ownership switch
+        {
+            WindowsHotspotActions.OwnershipFleet => "Fleet-owned",
+            WindowsHotspotActions.OwnershipExternal =>
+                "External · observe only; Fleet will not adopt or stop it",
+            WindowsHotspotActions.OwnershipNone => "None",
+            _ => "Unknown"
+        };
+        Eligibility = preflight.Eligible
+            ? "Eligible · ready for explicit confirmation"
+            : PreflightReason(preflight.ReasonCode);
+        Lifecycle = DeviceRowViewModel.Title(operation.Lifecycle);
+        Expires = FormatUnixTime(operation.Preview.ExpiresAtMs);
+
+        var receipt = operation.Receipt;
+        Outcome = receipt is null
+            ? operation.FailureCode is null
+                ? "No result yet"
+                : "Operation failed"
+            : receipt.Outcome switch
+            {
+                WindowsHotspotActions.ResultVerified => "Verified",
+                WindowsHotspotActions.ResultFailed => "Failed",
+                WindowsHotspotActions.ResultRejected => "Rejected",
+                WindowsHotspotActions.ResultUnavailable => "Unavailable",
+                _ => "Unknown result"
+            };
+        Observed = receipt is null
+            ? "No provider observation"
+            : FormatUtcTime(receipt.ObservedAtUtc);
+        Capability = receipt is null
+            ? "No capability readback"
+            : receipt.CapabilityAvailable
+                ? "Available"
+                : "Unavailable";
+        OperationalState = receipt is null
+            ? "No operational readback"
+            : receipt.OperationalState switch
+            {
+                "On" => "On",
+                "Off" => "Off",
+                "InTransition" => "Changing",
+                "Unknown" => "Unknown",
+                _ => "Unknown"
+            };
+        Clients = receipt is null
+            ? "No client readback"
+            : receipt.MaxClientCount == 0
+                ? $"{receipt.ClientCount:N0} connected · maximum not reported"
+                : $"{receipt.ClientCount:N0} of {receipt.MaxClientCount:N0} connected";
+        Band = receipt is null ? "Not reported" : SafeBand(receipt.Band);
+        SourceConnectivity = receipt is null
+            ? "Not reported"
+            : SafeConnectivity(receipt.SourceConnectivity);
+        AccessibleName =
+            $"Windows host Mobile Hotspot. Provider {Provider}. Lease {Lease}. " +
+            $"Hotspot {Activity}. Ownership {Ownership}. {Eligibility}. " +
+            $"Lifecycle {Lifecycle}. Preview expires {Expires}. Outcome {Outcome}. " +
+            $"Observed {Observed}. Capability {Capability}. " +
+            $"Operational state {OperationalState}. Clients {Clients}. " +
+            $"Band {Band}. Source connectivity {SourceConnectivity}.";
+    }
+
+    public string Provider { get; }
+
+    public string Lease { get; }
+
+    public string Activity { get; }
+
+    public string Ownership { get; }
+
+    public string Eligibility { get; }
+
+    public string Lifecycle { get; }
+
+    public string Expires { get; }
+
+    public string Outcome { get; }
+
+    public string Observed { get; }
+
+    public string Capability { get; }
+
+    public string OperationalState { get; }
+
+    public string Clients { get; }
+
+    public string Band { get; }
+
+    public string SourceConnectivity { get; }
+
+    public string AccessibleName { get; }
+
+    private static string PreflightReason(string reason) =>
+        reason switch
+        {
+            "provider_unavailable" => "Not eligible · provider unavailable",
+            "resource_leased" => "Not eligible · another host operation holds the lease",
+            "external_hotspot_not_owned" =>
+                "Not eligible · external hotspot is observe only",
+            "fleet_ownership_required" =>
+                "Not eligible · stop requires exact Fleet ownership",
+            "ready" => "Eligible · ready for explicit confirmation",
+            _ => "Not eligible · reason unavailable"
+        };
+
+    private static string SafeBand(string value) =>
+        value switch
+        {
+            "Auto" => "Automatic",
+            "TwoPointFourGigahertz" => "2.4 GHz",
+            "FiveGigahertz" => "5 GHz",
+            "SixGigahertz" => "6 GHz",
+            "Unknown" => "Unknown",
+            _ => "Unknown"
+        };
+
+    private static string SafeConnectivity(string value) =>
+        value switch
+        {
+            "Internet" => "Internet access",
+            "InternetAccess" => "Internet access",
+            "ConstrainedInternetAccess" => "Constrained internet access",
+            "LocalAccess" => "Local access",
+            "None" => "No connectivity",
+            "Unknown" => "Unknown",
+            _ => "Unknown"
+        };
+
+    private static string FormatUnixTime(long unixMilliseconds)
+    {
+        try
+        {
+            return DateTimeOffset
+                .FromUnixTimeMilliseconds(unixMilliseconds)
+                .ToLocalTime()
+                .ToString("yyyy-MM-dd HH:mm:ss zzz");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return "invalid time";
+        }
+    }
+
+    private static string FormatUtcTime(string value) =>
+        DateTimeOffset.TryParse(value, out var timestamp) &&
+        timestamp.Offset == TimeSpan.Zero
+            ? timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz")
+            : "invalid time";
+}

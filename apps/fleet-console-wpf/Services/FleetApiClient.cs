@@ -85,6 +85,18 @@ public interface IFleetDataSource
     Task<QuestWifiAdbOperation> QuestWifiAdbAsync(
         string operationId,
         CancellationToken cancellationToken);
+
+    Task<WindowsHotspotOperation> PreviewWindowsHotspotAsync(
+        WindowsHotspotPreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<WindowsHotspotOperation> ExecuteWindowsHotspotAsync(
+        WindowsHotspotExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<WindowsHotspotOperation> WindowsHotspotAsync(
+        string operationId,
+        CancellationToken cancellationToken);
 }
 
 public sealed class FleetApiClient : IFleetDataSource, IDisposable
@@ -92,6 +104,7 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
     public const long MaxResponseBytes = 16 * 1024 * 1024;
 
     private readonly HttpClient _http;
+    private readonly HttpClient _hotspotExecuteHttp;
 
     public FleetApiClient(Uri baseAddress)
     {
@@ -108,6 +121,12 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
         {
             BaseAddress = baseAddress,
             Timeout = TimeSpan.FromSeconds(10),
+            MaxResponseContentBufferSize = MaxResponseBytes
+        };
+        _hotspotExecuteHttp = new HttpClient
+        {
+            BaseAddress = baseAddress,
+            Timeout = TimeSpan.FromSeconds(45),
             MaxResponseContentBufferSize = MaxResponseBytes
         };
     }
@@ -356,7 +375,53 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
         return await ReadAsync<QuestWifiAdbOperation>(response, cancellationToken);
     }
 
-    public void Dispose() => _http.Dispose();
+    public async Task<WindowsHotspotOperation> PreviewWindowsHotspotAsync(
+        WindowsHotspotPreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/windows-hotspot/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<WindowsHotspotOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<WindowsHotspotOperation> ExecuteWindowsHotspotAsync(
+        WindowsHotspotExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _hotspotExecuteHttp.PostAsJsonAsync(
+            $"/fleet/v1/windows-hotspot/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<WindowsHotspotOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<WindowsHotspotOperation> WindowsHotspotAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/windows-hotspot/{encoded}",
+            cancellationToken);
+        return await ReadAsync<WindowsHotspotOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public void Dispose()
+    {
+        _hotspotExecuteHttp.Dispose();
+        _http.Dispose();
+    }
 
     private static async Task<T> ReadAsync<T>(
         HttpResponseMessage response,
