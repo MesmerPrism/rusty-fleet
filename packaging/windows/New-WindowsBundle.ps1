@@ -36,7 +36,8 @@ param(
     [string] $HubArtifactPath,
     [string] $FleetctlArtifactPath,
     [switch] $RequireCleanSource,
-    [switch] $RequireAuthenticodeSignatures
+    [switch] $RequireAuthenticodeSignatures,
+    [string] $ExpectedHostessSignerThumbprint
 )
 
 Set-StrictMode -Version Latest
@@ -66,7 +67,8 @@ $hostessProvenance = Read-RustyFleetHostessProvenance `
     -MetadataDirectory $HostessProviderMetadataDirectory `
     -ProviderPath $providerPath `
     -ProviderSha256 $HostessProviderSha256 `
-    -BuildKind $BuildKind
+    -BuildKind $BuildKind `
+    -ExpectedSignerThumbprint $ExpectedHostessSignerThumbprint
 
 if (-not $SourceRevision) {
     $SourceRevision = (& git -C $repoPath rev-parse HEAD).Trim()
@@ -299,6 +301,8 @@ try {
                 supplied_externally = $true
                 artifact_name = "rusty-hostess-hotspot-provider.exe"
                 artifact_sha256 = $HostessProviderSha256
+                product_version = $hostessProvenance.provenance.artifact.product_version
+                provider_version = $hostessProvenance.provenance.provider_version
                 owner_document_schema = $hostessProvenance.provenance.schema
                 owner_document_path = "providers/hostess-hotspot-provider/provenance/rusty-hostess-hotspot-provider.provenance.json"
                 owner_document_sha256 = $hostessProvenance.provenance_sha256
@@ -308,11 +312,18 @@ try {
                 source_revision = $hostessProvenance.provenance.source.revision
                 source_tree = $hostessProvenance.provenance.source.tree
                 source_availability_url = $hostessProvenance.provenance.source.availability_url
+                source_availability_state = $hostessProvenance.provenance.source.availability_state
+                source_verified_at_utc = $hostessProvenance.provenance.source.verified_at_utc
+                unsigned_artifact_sha256 = $hostessProvenance.provenance.build.unsigned_artifact_sha256
+                unsigned_artifact_size_bytes = [long] $hostessProvenance.provenance.build.unsigned_artifact_size_bytes
+                canonical_payload_sha256 = $hostessProvenance.provenance.build.canonical_payload_sha256
+                canonical_payload_size_bytes = [long] $hostessProvenance.provenance.build.canonical_payload_size_bytes
                 dependency_count = @($hostessProvenance.provenance.dependencies).Count
                 bundled_native_library_count = @(
                     $hostessProvenance.provenance.bundled_native_libraries
                 ).Count
                 signing_state = $hostessProvenance.provenance.signing.state
+                authorized_signer_thumbprint = $hostessProvenance.provenance.signing.authorized_thumbprint
                 distribution_eligibility = $hostessProvenance.provenance.distribution.eligibility
             }
         }
@@ -430,7 +441,9 @@ try {
 
     & (Join-Path $PSScriptRoot "Test-WindowsBundle.ps1") `
         -BundleRoot $bundleRoot `
-        -ExpectedVersion $Version | Out-Null
+        -ExpectedVersion $Version `
+        -ExpectedHostessSignerThumbprint $ExpectedHostessSignerThumbprint |
+        Out-Null
 
     $archivePath = Join-Path $outputPath $archiveAsset
     New-RustyFleetDeterministicZip `

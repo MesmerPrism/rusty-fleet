@@ -6,7 +6,8 @@ param(
     [Parameter(Mandatory)]
     [string] $BundleRoot,
 
-    [string] $ExpectedVersion
+    [string] $ExpectedVersion,
+    [string] $ExpectedHostessSignerThumbprint
 )
 
 Set-StrictMode -Version Latest
@@ -81,6 +82,10 @@ if ($provider.Count -ne 1 -or
     $provider[0].provenance.supplied_externally -ne $true -or
     $provider[0].provenance.source_revision -cnotmatch "^[0-9a-f]{40}$" -or
     $provider[0].provenance.source_tree -cnotmatch "^[0-9a-f]{40}$" -or
+    $provider[0].provenance.product_version -cne (
+        "$($provider[0].provenance.provider_version)+" +
+        $provider[0].provenance.source_revision
+    ) -or
     $provider[0].provenance.owner_document_schema -ne
         "rusty.hostess.windows_hotspot.release_provenance.v1") {
     throw "Hostess hotspot provider contract or provenance is not exact"
@@ -102,7 +107,8 @@ $ownerProvenance = Read-RustyFleetHostessProvenance `
     -MetadataDirectory $ownerMetadataDirectory `
     -ProviderPath $providerPath `
     -ProviderSha256 $provider[0].provenance.artifact_sha256 `
-    -BuildKind $manifest.build.kind
+    -BuildKind $manifest.build.kind `
+    -ExpectedSignerThumbprint $ExpectedHostessSignerThumbprint
 if ($provider[0].provenance.owner_document_path -ne
         "providers/hostess-hotspot-provider/provenance/rusty-hostess-hotspot-provider.provenance.json" -or
     $provider[0].provenance.license_path -ne
@@ -119,12 +125,30 @@ if ($provider[0].provenance.owner_document_path -ne
         $ownerProvenance.provenance.source.tree -or
     $provider[0].provenance.source_availability_url -ne
         $ownerProvenance.provenance.source.availability_url -or
+    $provider[0].provenance.source_availability_state -ne
+        $ownerProvenance.provenance.source.availability_state -or
+    $provider[0].provenance.source_verified_at_utc -ne
+        $ownerProvenance.provenance.source.verified_at_utc -or
+    $provider[0].provenance.product_version -ne
+        $ownerProvenance.provenance.artifact.product_version -or
+    $provider[0].provenance.provider_version -ne
+        $ownerProvenance.provenance.provider_version -or
+    $provider[0].provenance.unsigned_artifact_sha256 -cne
+        $ownerProvenance.provenance.build.unsigned_artifact_sha256 -or
+    [long] $provider[0].provenance.unsigned_artifact_size_bytes -ne
+        [long] $ownerProvenance.provenance.build.unsigned_artifact_size_bytes -or
+    $provider[0].provenance.canonical_payload_sha256 -cne
+        $ownerProvenance.provenance.build.canonical_payload_sha256 -or
+    [long] $provider[0].provenance.canonical_payload_size_bytes -ne
+        [long] $ownerProvenance.provenance.build.canonical_payload_size_bytes -or
     [int] $provider[0].provenance.dependency_count -ne
         @($ownerProvenance.provenance.dependencies).Count -or
     [int] $provider[0].provenance.bundled_native_library_count -ne
         @($ownerProvenance.provenance.bundled_native_libraries).Count -or
     $provider[0].provenance.signing_state -ne
         $ownerProvenance.provenance.signing.state -or
+    $provider[0].provenance.authorized_signer_thumbprint -ne
+        $ownerProvenance.provenance.signing.authorized_thumbprint -or
     $provider[0].provenance.distribution_eligibility -ne
         $ownerProvenance.provenance.distribution.eligibility) {
     throw "Fleet projection does not preserve the Hostess owner provenance"

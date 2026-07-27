@@ -18,9 +18,11 @@ The Hostess provider is preserved as a separate owner artifact. The builder
 requires its exact SHA-256 and the owner-issued
 `rusty-hostess-hotspot-provider.provenance.json`, `LICENSE`, and
 `THIRD-PARTY-NOTICES.txt`. It independently checks the provider hash and size,
-clean source commit/tree and source availability, dependency and native
-library inventories, signing state, distribution eligibility, and companion
-document hashes. It rejects an alternate filename, digest, or Fleet-invented
+clean source commit/tree and source availability, embedded product version,
+canonical PE payload, dependency and native library inventories, signing
+state, distribution eligibility, and companion document hashes. Signed
+publication also requires the independently supplied owner-authorized signer
+thumbprint. It rejects an alternate filename, digest, or Fleet-invented
 provenance. Its fixed invocation is:
 
 ```text
@@ -70,6 +72,11 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -BundleRoot <expanded-bundle>
 ```
 
+For a signed bundle, append
+`-ExpectedHostessSignerThumbprint <owner-authorized-thumbprint>`. Obtain that
+pin from the independently trusted release channel, not from the bundle being
+validated.
+
 The installer is planning-only unless `-Execute` is explicitly supplied:
 
 ```powershell
@@ -77,6 +84,12 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -File <expanded-bundle>\distribution-tools\Install-RustyFleet.ps1 `
   -Action Install
 ```
+
+The same `-ExpectedHostessSignerThumbprint` argument is required when planning,
+installing, or rolling back a signed bundle.
+If rollback crosses an owner signer rotation, also provide
+`-RollbackHostessSignerThumbprint <previous-owner-authorized-thumbprint>`;
+otherwise rollback reuses the current pin.
 
 An install uses side-by-side version directories and atomically changes only a
 small current-version metadata pointer after the staged copy passes the same
@@ -100,10 +113,11 @@ previous release and switches the pointer; it does not delete either release.
 GitHub Releases is the binary source of truth. Publication is blocked unless
 the workflow runs in `signed-release` mode, all four executables have valid
 Authenticode signatures, and Hostess's owner document says
-`eligibility=signed_release` with a verified signing identity. The workflow
-downloads the provider and its three owner metadata documents, builds and
-signs the Fleet executables, validates the entire bundle, and publishes the
-ZIP plus hash-bound metadata.
+`eligibility=signed_release` with a verified signing identity matching the
+explicit workflow input `hostess_signer_thumbprint`. The workflow downloads
+the provider and its three owner metadata documents, builds and signs the
+Fleet executables, validates the entire bundle, and publishes the ZIP plus
+hash-bound metadata.
 
 GitHub Pages is a human-facing guide only. It links to GitHub Releases and does
 not duplicate or proxy release binaries.

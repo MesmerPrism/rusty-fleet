@@ -92,13 +92,118 @@ function Assert-RustyFleetExactProperties {
     }
 }
 
+function Get-RustyFleetPeCanonicalPayload {
+    param(
+        [Parameter(Mandatory)][string] $LiteralPath,
+        [Parameter(Mandatory)][long] $ExpectedPayloadSize
+    )
+
+    [byte[]] $bytes = [System.IO.File]::ReadAllBytes($LiteralPath)
+    if ($bytes.Length -lt 512) {
+        throw "Hostess provider PE artifact is unexpectedly small"
+    }
+    $peOffset = [int] [BitConverter]::ToUInt32($bytes, 0x3c)
+    if ($peOffset -lt 64 -or $peOffset + 256 -gt $bytes.Length -or
+        $bytes[$peOffset] -ne 0x50 -or
+        $bytes[$peOffset + 1] -ne 0x45 -or
+        $bytes[$peOffset + 2] -ne 0 -or
+        $bytes[$peOffset + 3] -ne 0) {
+        throw "Hostess provider does not have a valid PE header"
+    }
+    $optionalHeader = $peOffset + 24
+    $dataDirectories = switch (
+        [BitConverter]::ToUInt16($bytes, $optionalHeader)
+    ) {
+        0x10b { $optionalHeader + 96 }
+        0x20b { $optionalHeader + 112 }
+        default { throw "Hostess provider has an unsupported PE optional header" }
+    }
+    $checksumOffset = $optionalHeader + 64
+    $certificateDirectory = $dataDirectories + (4 * 8)
+    if ($certificateDirectory + 8 -gt $bytes.Length) {
+        throw "Hostess provider PE certificate directory is truncated"
+    }
+    $certificateOffset = [long] [BitConverter]::ToUInt32(
+        $bytes,
+        $certificateDirectory
+    )
+    $certificateSize = [long] [BitConverter]::ToUInt32(
+        $bytes,
+        $certificateDirectory + 4
+    )
+    if (($certificateOffset -eq 0) -xor ($certificateSize -eq 0)) {
+        throw "Hostess provider PE certificate directory is inconsistent"
+    }
+    $physicalPayloadSize = [long] $bytes.Length
+    if ($certificateOffset -ne 0) {
+        if ($certificateOffset % 8 -ne 0 -or
+            $certificateSize -lt 8 -or
+            $certificateOffset + $certificateSize -ne $bytes.Length) {
+            throw "Hostess provider signature table is malformed or has an overlay"
+        }
+        $physicalPayloadSize = $certificateOffset
+    }
+    if ($ExpectedPayloadSize -le $certificateDirectory + 8 -or
+        $ExpectedPayloadSize -gt $physicalPayloadSize) {
+        throw "Hostess provider canonical PE payload size is invalid"
+    }
+    for (
+        $index = $ExpectedPayloadSize
+        $index -lt $physicalPayloadSize
+        $index++
+    ) {
+        if ($bytes[$index] -ne 0) {
+            throw "Hostess provider has data between its payload and signature"
+        }
+    }
+    [byte[]] $payload = [byte[]]::new($ExpectedPayloadSize)
+    [Array]::Copy($bytes, 0, $payload, 0, $ExpectedPayloadSize)
+    [Array]::Clear($payload, $checksumOffset, 4)
+    [Array]::Clear($payload, $certificateDirectory, 8)
+    [ordered]@{
+        sha256 = [Convert]::ToHexString(
+            [System.Security.Cryptography.SHA256]::HashData($payload)
+        ).ToLowerInvariant()
+        size_bytes = $ExpectedPayloadSize
+    }
+}
+
+function Assert-RustyFleetHostessSignerAuthorization {
+    param(
+        [Parameter(Mandatory)][object] $Provenance,
+        [Parameter(Mandatory)][string] $ObservedSubject,
+        [Parameter(Mandatory)][string] $ObservedThumbprint,
+        [string] $ExpectedSignerThumbprint
+    )
+
+    $normalizedExpected = if ($ExpectedSignerThumbprint) {
+        $ExpectedSignerThumbprint.Replace(" ", "").ToLowerInvariant()
+    }
+    else {
+        $null
+    }
+    $normalizedObserved = $ObservedThumbprint.Replace(
+        " ",
+        ""
+    ).ToLowerInvariant()
+    if ($normalizedExpected -cnotmatch "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" -or
+        $Provenance.signing.authorized_thumbprint -cne
+            $normalizedExpected -or
+        $Provenance.signing.subject -cne $ObservedSubject -or
+        $Provenance.signing.thumbprint -cne $normalizedObserved -or
+        $normalizedObserved -cne $normalizedExpected) {
+        throw "Hostess signer does not match the independent authorization pin"
+    }
+}
+
 function Read-RustyFleetHostessProvenance {
     param(
         [Parameter(Mandatory)][string] $MetadataDirectory,
         [Parameter(Mandatory)][string] $ProviderPath,
         [Parameter(Mandatory)][string] $ProviderSha256,
         [Parameter(Mandatory)][ValidateSet("unsigned-dev", "signed-release")]
-        [string] $BuildKind
+        [string] $BuildKind,
+        [string] $ExpectedSignerThumbprint
     )
 
     $metadataPath = (Resolve-Path -LiteralPath $MetadataDirectory).Path
@@ -139,16 +244,29 @@ function Read-RustyFleetHostessProvenance {
         "distribution"
     ) -Context "Hostess provenance"
     Assert-RustyFleetExactProperties -InputObject $provenance.artifact -Expected @(
-        "name", "sha256", "size_bytes"
+        "name", "sha256", "size_bytes", "product_version"
     ) -Context "Hostess artifact provenance"
     Assert-RustyFleetExactProperties -InputObject $provenance.source -Expected @(
-        "repository", "revision", "tree", "availability_url", "tree_clean"
+        "repository",
+        "revision",
+        "tree",
+        "availability_url",
+        "availability_state",
+        "verified_at_utc",
+        "tree_clean"
     ) -Context "Hostess source provenance"
     Assert-RustyFleetExactProperties -InputObject $provenance.build -Expected @(
-        "kind", "framework", "runtime_identifier", "source_date_epoch"
+        "kind",
+        "framework",
+        "runtime_identifier",
+        "source_date_epoch",
+        "unsigned_artifact_sha256",
+        "unsigned_artifact_size_bytes",
+        "canonical_payload_sha256",
+        "canonical_payload_size_bytes"
     ) -Context "Hostess build provenance"
     Assert-RustyFleetExactProperties -InputObject $provenance.signing -Expected @(
-        "state", "status", "subject", "thumbprint"
+        "state", "status", "subject", "thumbprint", "authorized_thumbprint"
     ) -Context "Hostess signing provenance"
     Assert-RustyFleetExactProperties -InputObject $provenance.distribution -Expected @(
         "eligibility", "binary_authority"
@@ -161,12 +279,22 @@ function Read-RustyFleetHostessProvenance {
     }
 
     $providerItem = Get-Item -LiteralPath $providerFullPath
+    $expectedProductVersion = (
+        "$($provenance.provider_version)+$($provenance.source.revision)"
+    )
+    $observedProductVersion = (
+        [System.Diagnostics.FileVersionInfo]::GetVersionInfo(
+            $providerFullPath
+        ).ProductVersion
+    )
     if ($provenance.artifact.name -cne "rusty-hostess-hotspot-provider.exe" -or
         $provenance.artifact.sha256 -cne $ProviderSha256 -or
         $provenance.artifact.sha256 -cne (
             Get-RustyFleetSha256 -LiteralPath $providerFullPath
         ) -or
-        [long] $provenance.artifact.size_bytes -ne $providerItem.Length) {
+        [long] $provenance.artifact.size_bytes -ne $providerItem.Length -or
+        $provenance.artifact.product_version -cne $expectedProductVersion -or
+        $observedProductVersion -cne $expectedProductVersion) {
         throw "Hostess provenance does not bind the exact provider artifact"
     }
     Assert-RustyFleetSha256 `
@@ -197,8 +325,28 @@ function Read-RustyFleetHostessProvenance {
         }
     }
     if ($provenance.build.kind -cne $BuildKind -or
-        [long] $provenance.build.source_date_epoch -le 0) {
+        [long] $provenance.build.source_date_epoch -le 0 -or
+        [long] $provenance.build.unsigned_artifact_size_bytes -le 0) {
         throw "Hostess provenance source-date epoch is invalid"
+    }
+    Assert-RustyFleetSha256 `
+        -Value $provenance.build.unsigned_artifact_sha256 `
+        -Name "Hostess unsigned artifact digest"
+    Assert-RustyFleetSha256 `
+        -Value $provenance.build.canonical_payload_sha256 `
+        -Name "Hostess canonical PE payload digest"
+    $canonicalPayload = Get-RustyFleetPeCanonicalPayload `
+        -LiteralPath $providerFullPath `
+        -ExpectedPayloadSize $provenance.build.canonical_payload_size_bytes
+    if ($canonicalPayload.sha256 -cne
+            $provenance.build.canonical_payload_sha256 -or
+        $canonicalPayload.size_bytes -ne
+            [long] $provenance.build.canonical_payload_size_bytes -or
+        $provenance.build.unsigned_artifact_sha256 -cne
+            $provenance.build.canonical_payload_sha256 -or
+        [long] $provenance.build.unsigned_artifact_size_bytes -ne
+            [long] $provenance.build.canonical_payload_size_bytes) {
+        throw "Hostess provider canonical PE payload does not match owner provenance"
     }
 
     $dependencies = @($provenance.dependencies)
@@ -262,7 +410,27 @@ function Read-RustyFleetHostessProvenance {
         }
     }
 
+    $observedSignature = Get-AuthenticodeSignature -LiteralPath $providerFullPath
     if ($BuildKind -eq "signed-release") {
+        $verifiedAt = [DateTimeOffset]::MinValue
+        if ($provenance.source.availability_state -cne "verified_public" -or
+            [string]::IsNullOrWhiteSpace(
+                [string] $provenance.source.verified_at_utc
+            ) -or
+            -not [DateTimeOffset]::TryParse(
+                [string] $provenance.source.verified_at_utc,
+                [ref] $verifiedAt
+            ) -or
+            $observedSignature.Status -ne
+                [System.Management.Automation.SignatureStatus]::Valid -or
+            $null -eq $observedSignature.SignerCertificate) {
+            throw "Hostess signed release provenance is not independently verified"
+        }
+        Assert-RustyFleetHostessSignerAuthorization `
+            -Provenance $provenance `
+            -ObservedSubject $observedSignature.SignerCertificate.Subject `
+            -ObservedThumbprint $observedSignature.SignerCertificate.Thumbprint `
+            -ExpectedSignerThumbprint $ExpectedSignerThumbprint
         if ($provenance.distribution.eligibility -ne "signed_release" -or
             $provenance.signing.state -ne "verified" -or
             $provenance.signing.status -ine "valid" -or
@@ -271,8 +439,21 @@ function Read-RustyFleetHostessProvenance {
             throw "Hostess provenance does not authorize signed release distribution"
         }
     }
-    elseif ($provenance.distribution.eligibility -ne "development_only") {
-        throw "unsigned Hostess provenance must be development_only"
+    elseif ($provenance.distribution.eligibility -ne "development_only" -or
+        $provenance.source.availability_state -cne "unverified_development" -or
+        $null -ne $provenance.source.verified_at_utc -or
+        $provenance.signing.state -cne "unsigned" -or
+        $provenance.signing.status -ine "notsigned" -or
+        $null -ne $provenance.signing.subject -or
+        $null -ne $provenance.signing.thumbprint -or
+        $null -ne $provenance.signing.authorized_thumbprint -or
+        $observedSignature.Status -ne
+            [System.Management.Automation.SignatureStatus]::NotSigned -or
+        $provenance.build.unsigned_artifact_sha256 -cne
+            $provenance.artifact.sha256 -or
+        [long] $provenance.build.unsigned_artifact_size_bytes -ne
+            [long] $provenance.artifact.size_bytes) {
+        throw "unsigned Hostess provenance must be an exact development-only artifact"
     }
     if ($provenance.distribution.binary_authority -ne
         "rusty-hostess-github-releases") {

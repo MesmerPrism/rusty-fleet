@@ -8,7 +8,9 @@ param(
 
     [string] $BundleRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string] $InstallRoot = (Join-Path $env:LOCALAPPDATA "RustyFleet"),
-    [switch] $Execute
+    [switch] $Execute,
+    [string] $ExpectedHostessSignerThumbprint,
+    [string] $RollbackHostessSignerThumbprint
 )
 
 Set-StrictMode -Version Latest
@@ -30,7 +32,10 @@ $validatorPath = Join-Path $PSScriptRoot "Test-WindowsBundle.ps1"
 if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) {
     throw "the distribution validator is missing"
 }
-& $validatorPath -BundleRoot $bundlePath | Out-Null
+& $validatorPath `
+    -BundleRoot $bundlePath `
+    -ExpectedHostessSignerThumbprint $ExpectedHostessSignerThumbprint |
+    Out-Null
 $manifestPath = Join-Path $bundlePath "metadata\release-manifest.json"
 $manifest = Get-Content -LiteralPath $manifestPath -Raw |
     ConvertFrom-Json -Depth 30
@@ -66,7 +71,17 @@ if ($effectiveAction -eq "Rollback") {
     if (-not (Test-Path -LiteralPath $rollbackRoot -PathType Container)) {
         throw "the previous release directory is missing"
     }
-    & $validatorPath -BundleRoot $rollbackRoot -ExpectedVersion $targetVersion | Out-Null
+    $rollbackSigner = if ($RollbackHostessSignerThumbprint) {
+        $RollbackHostessSignerThumbprint
+    }
+    else {
+        $ExpectedHostessSignerThumbprint
+    }
+    & $validatorPath `
+        -BundleRoot $rollbackRoot `
+        -ExpectedVersion $targetVersion `
+        -ExpectedHostessSignerThumbprint $rollbackSigner |
+        Out-Null
     $rollbackManifest = Join-Path $rollbackRoot "metadata\release-manifest.json"
     if ((Get-RustyFleetSha256 -LiteralPath $rollbackManifest) -cne $targetManifestSha256) {
         throw "the previous release no longer matches installed rollback metadata"
@@ -120,7 +135,11 @@ if (-not $Execute) {
 if ($effectiveAction -eq "Install") {
     $releaseRoot = Join-Path $installPath "releases\$targetVersion"
     if (Test-Path -LiteralPath $releaseRoot) {
-        & $validatorPath -BundleRoot $releaseRoot -ExpectedVersion $targetVersion | Out-Null
+        & $validatorPath `
+            -BundleRoot $releaseRoot `
+            -ExpectedVersion $targetVersion `
+            -ExpectedHostessSignerThumbprint $ExpectedHostessSignerThumbprint |
+            Out-Null
         $installedManifest = Join-Path $releaseRoot "metadata\release-manifest.json"
         if ((Get-RustyFleetSha256 -LiteralPath $installedManifest) -cne $targetManifestSha256) {
             throw "an installed release with this version has different bytes"
@@ -134,7 +153,11 @@ if ($effectiveAction -eq "Install") {
             [System.IO.Directory]::CreateDirectory($stagingRoot) | Out-Null
             Get-ChildItem -LiteralPath $bundlePath -Force |
                 Copy-Item -Destination $stagingRoot -Recurse -Force
-            & $validatorPath -BundleRoot $stagingRoot -ExpectedVersion $targetVersion | Out-Null
+            & $validatorPath `
+                -BundleRoot $stagingRoot `
+                -ExpectedVersion $targetVersion `
+                -ExpectedHostessSignerThumbprint $ExpectedHostessSignerThumbprint |
+                Out-Null
             Move-Item -LiteralPath $stagingRoot -Destination $releaseRoot
         }
         finally {

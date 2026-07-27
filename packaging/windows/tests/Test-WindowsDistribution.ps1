@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 
 $packagingRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
+$distributionModule = Get-Module Distribution.Common
 
 function Assert-Distribution {
     param(
@@ -28,6 +29,58 @@ function Write-TestArtifact {
     )
 
     Write-RustyFleetUtf8 -LiteralPath $LiteralPath -Content $Content
+}
+
+function Write-TestProviderArtifact {
+    param(
+        [Parameter(Mandatory)][string] $LiteralPath,
+        [Parameter(Mandatory)][string] $ProductVersion
+    )
+
+    $projectRoot = Join-Path (Split-Path -Parent $LiteralPath) (
+        "provider-fixture-project"
+    )
+    $outputRoot = Join-Path $projectRoot "output"
+    [System.IO.Directory]::CreateDirectory($projectRoot) | Out-Null
+    $projectPath = Join-Path $projectRoot "ProviderFixture.csproj"
+    Write-RustyFleetUtf8 -LiteralPath $projectPath -Content @"
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>RustyFleet.HostessProviderFixture</AssemblyName>
+    <Version>0.0.0-test.1</Version>
+    <AssemblyVersion>0.0.0.0</AssemblyVersion>
+    <FileVersion>0.0.0.0</FileVersion>
+    <InformationalVersion>$ProductVersion</InformationalVersion>
+    <Deterministic>true</Deterministic>
+    <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+  </PropertyGroup>
+</Project>
+"@
+    Write-RustyFleetUtf8 `
+        -LiteralPath (Join-Path $projectRoot "ProviderFixture.cs") `
+        -Content @"
+namespace RustyFleetDistributionTests;
+public static class ProviderFixture { }
+"@
+    & dotnet build $projectPath `
+        --nologo `
+        --configuration Release `
+        --output $outputRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "could not build the synthetic versioned provider fixture"
+    }
+    Copy-Item `
+        -LiteralPath (Join-Path $outputRoot "RustyFleet.HostessProviderFixture.dll") `
+        -Destination $LiteralPath
+    $observed = (
+        [System.Diagnostics.FileVersionInfo]::GetVersionInfo(
+            $LiteralPath
+        ).ProductVersion
+    )
+    if ($observed -cne $ProductVersion) {
+        throw "synthetic provider fixture has the wrong ProductVersion"
+    }
 }
 
 function Invoke-TestBundle {
@@ -73,11 +126,16 @@ try {
     $hub = Join-Path $inputs "fleet-hub-local.exe"
     $fleetctl = Join-Path $inputs "fleetctl.exe"
     $provider = Join-Path $inputs "rusty-hostess-hotspot-provider.exe"
+    $providerRevision = "2" * 40
+    $providerVersion = "0.0.0-test.1"
+    $providerProductVersion = "$providerVersion+$providerRevision"
     Write-TestArtifact -LiteralPath $consoleExe -Content "console-test-artifact`n"
     Write-TestArtifact -LiteralPath $consoleRuntime -Content "{`"runtimeOptions`":{}}`n"
     Write-TestArtifact -LiteralPath $hub -Content "hub-test-artifact`n"
     Write-TestArtifact -LiteralPath $fleetctl -Content "fleetctl-test-artifact`n"
-    Write-TestArtifact -LiteralPath $provider -Content "hostess-provider-test-artifact`n"
+    Write-TestProviderArtifact `
+        -LiteralPath $provider `
+        -ProductVersion $providerProductVersion
     $providerSha256 = Get-RustyFleetSha256 -LiteralPath $provider
     $providerMetadata = Join-Path $inputs "hostess-provider-metadata"
     [System.IO.Directory]::CreateDirectory($providerMetadata) | Out-Null
@@ -92,20 +150,23 @@ try {
     $providerProvenance = [ordered]@{
         schema = "rusty.hostess.windows_hotspot.release_provenance.v1"
         product_id = "rusty-hostess-windows-hotspot-provider"
-        provider_version = "0.0.0-test.1"
+        provider_version = $providerVersion
         artifact = [ordered]@{
             name = "rusty-hostess-hotspot-provider.exe"
             sha256 = $providerSha256
             size_bytes = (Get-Item -LiteralPath $provider).Length
+            product_version = $providerProductVersion
         }
         source = [ordered]@{
             repository = "https://github.com/MesmerPrism/rusty-hostess"
-            revision = "2" * 40
+            revision = $providerRevision
             tree = "4" * 40
             availability_url = (
                 "https://github.com/MesmerPrism/rusty-hostess/tree/" +
-                ("2" * 40)
+                $providerRevision
             )
+            availability_state = "unverified_development"
+            verified_at_utc = $null
             tree_clean = $true
         }
         build = [ordered]@{
@@ -113,6 +174,14 @@ try {
             framework = "net9.0-windows10.0.19041.0"
             runtime_identifier = "win-x64"
             source_date_epoch = 1785110400
+            unsigned_artifact_sha256 = $providerSha256
+            unsigned_artifact_size_bytes = (
+                Get-Item -LiteralPath $provider
+            ).Length
+            canonical_payload_sha256 = $providerSha256
+            canonical_payload_size_bytes = (
+                Get-Item -LiteralPath $provider
+            ).Length
         }
         dependencies = @(
             [ordered]@{
@@ -133,8 +202,9 @@ try {
         signing = [ordered]@{
             state = "unsigned"
             status = "NotSigned"
-            subject = ""
-            thumbprint = ""
+            subject = $null
+            thumbprint = $null
+            authorized_thumbprint = $null
         }
         companion_documents = @(
             [ordered]@{
@@ -158,6 +228,104 @@ try {
             Join-Path $providerMetadata "rusty-hostess-hotspot-provider.provenance.json"
         ) `
         -Content (ConvertTo-RustyFleetJson -InputObject $providerProvenance)
+
+    $unboundMetadata = Join-Path $inputs "unbound-hostess-provider-metadata"
+    [System.IO.Directory]::CreateDirectory($unboundMetadata) | Out-Null
+    Copy-Item -LiteralPath $providerLicense -Destination $unboundMetadata
+    Copy-Item -LiteralPath $providerNotices -Destination $unboundMetadata
+    $unboundProvenance = (
+        ConvertTo-RustyFleetJson -InputObject $providerProvenance |
+        ConvertFrom-Json -Depth 30
+    )
+    $unboundProvenance.build.unsigned_artifact_sha256 = "7" * 64
+    Write-TestArtifact `
+        -LiteralPath (
+            Join-Path $unboundMetadata (
+                "rusty-hostess-hotspot-provider.provenance.json"
+            )
+        ) `
+        -Content (ConvertTo-RustyFleetJson -InputObject $unboundProvenance)
+    $unboundUnsignedRejected = $false
+    try {
+        Read-RustyFleetHostessProvenance `
+            -MetadataDirectory $unboundMetadata `
+            -ProviderPath $provider `
+            -ProviderSha256 $providerSha256 `
+            -BuildKind unsigned-dev | Out-Null
+    }
+    catch {
+        $unboundUnsignedRejected = $true
+    }
+    Assert-Distribution `
+        $unboundUnsignedRejected `
+        "unsigned rebuild evidence was not bound to the canonical PE payload"
+
+    $signedMetadata = Join-Path $inputs "signed-hostess-provider-metadata"
+    [System.IO.Directory]::CreateDirectory($signedMetadata) | Out-Null
+    Copy-Item -LiteralPath $providerLicense -Destination $signedMetadata
+    Copy-Item -LiteralPath $providerNotices -Destination $signedMetadata
+    $signedProvenance = (
+        ConvertTo-RustyFleetJson -InputObject $providerProvenance |
+        ConvertFrom-Json -Depth 30
+    )
+    $signedProvenance.build.kind = "signed-release"
+    $signedProvenance.source.availability_state = "verified_public"
+    $signedProvenance.source.verified_at_utc = "2026-07-27T00:00:00Z"
+    $signedProvenance.signing.state = "verified"
+    $signedProvenance.signing.status = "Valid"
+    $signedProvenance.signing.subject = "CN=Synthetic Test Signer"
+    $signedProvenance.signing.thumbprint = "6" * 40
+    $signedProvenance.signing.authorized_thumbprint = "6" * 40
+    $signedProvenance.distribution.eligibility = "signed_release"
+    Write-TestArtifact `
+        -LiteralPath (
+            Join-Path $signedMetadata (
+                "rusty-hostess-hotspot-provider.provenance.json"
+            )
+        ) `
+        -Content (ConvertTo-RustyFleetJson -InputObject $signedProvenance)
+    & $distributionModule {
+        param($Provenance, $ExpectedSigner)
+        Assert-RustyFleetHostessSignerAuthorization `
+            -Provenance $Provenance `
+            -ObservedSubject "CN=Synthetic Test Signer" `
+            -ObservedThumbprint ("6" * 40) `
+            -ExpectedSignerThumbprint $ExpectedSigner
+    } $signedProvenance ("6" * 40)
+    foreach ($expectedSigner in @($null, ("8" * 40))) {
+        $unauthorizedSignedRejected = $false
+        try {
+            & $distributionModule {
+                param($Provenance, $ExpectedSigner)
+                Assert-RustyFleetHostessSignerAuthorization `
+                    -Provenance $Provenance `
+                    -ObservedSubject "CN=Synthetic Test Signer" `
+                    -ObservedThumbprint ("6" * 40) `
+                    -ExpectedSignerThumbprint $ExpectedSigner
+            } $signedProvenance $expectedSigner
+        }
+        catch {
+            $unauthorizedSignedRejected = $true
+        }
+        Assert-Distribution `
+            $unauthorizedSignedRejected `
+            "signed provenance without the independently authorized signer was accepted"
+    }
+    $physicallyUnsignedReleaseRejected = $false
+    try {
+        Read-RustyFleetHostessProvenance `
+            -MetadataDirectory $signedMetadata `
+            -ProviderPath $provider `
+            -ProviderSha256 $providerSha256 `
+            -BuildKind signed-release `
+            -ExpectedSignerThumbprint ("6" * 40) | Out-Null
+    }
+    catch {
+        $physicallyUnsignedReleaseRejected = $true
+    }
+    Assert-Distribution `
+        $physicallyUnsignedReleaseRejected `
+        "signed metadata authorized a physically unsigned provider"
 
     $badProviderHashRejected = $false
     try {
@@ -379,6 +547,10 @@ try {
         provider_hash_pinned = $true
         provider_contract_exact = $true
         owner_license_and_notices_bound = $true
+        unsigned_rebuild_bound_to_canonical_payload = $true
+        signer_authorization_logic = $true
+        unauthorized_signed_provenance_rejected = $true
+        physically_unsigned_release_rejected = $true
         unsigned_dev_non_distributable = $true
         tamper_rejected = $true
         extra_payload_rejected = $true
