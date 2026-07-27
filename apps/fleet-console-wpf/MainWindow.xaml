@@ -99,6 +99,11 @@
                             HorizontalContentAlignment="Left"
                             AutomationProperties.Name="Refresh inert provider metadata"
                             AutomationProperties.HelpText="Reads target-free provider descriptions. This does not authorize or activate a provider." />
+                    <Button Content="View current snapshot"
+                            Command="{Binding LoadProviderCatalogCommand}"
+                            HorizontalContentAlignment="Left"
+                            AutomationProperties.Name="View current provider metadata snapshot"
+                            AutomationProperties.HelpText="Reads the current Hub snapshot without launching or refreshing any provider." />
                     <TextBlock Text="{Binding ProviderCatalogStatusText}"
                                Margin="4,4"
                                TextWrapping="Wrap"

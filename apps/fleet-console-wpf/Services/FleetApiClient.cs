@@ -15,6 +15,11 @@ public interface IFleetDataSource
         Task.FromException<ProviderCatalogProjection>(
             new NotSupportedException("This data source does not project provider metadata."));
 
+    Task<ProviderCatalogProjection> RefreshProviderCatalogAsync(
+        CancellationToken cancellationToken) =>
+        Task.FromException<ProviderCatalogProjection>(
+            new NotSupportedException("This data source does not refresh provider metadata."));
+
     Task<FleetQueryResult> QueryAsync(FleetQuery query, CancellationToken cancellationToken);
 
     Task<FleetSummaryProjection> SummaryAsync(CancellationToken cancellationToken);
@@ -137,6 +142,19 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
     }
 
     public async Task<ProviderCatalogProjection> ProviderCatalogAsync(
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.GetAsync(
+            "/fleet/v1/provider-catalog",
+            cancellationToken);
+        var projection = await ReadAsync<ProviderCatalogProjection>(
+            response,
+            cancellationToken);
+        ProviderCatalogProjectionValidation.Validate(projection);
+        return projection;
+    }
+
+    public async Task<ProviderCatalogProjection> RefreshProviderCatalogAsync(
         CancellationToken cancellationToken)
     {
         using var response = await _http.PostAsync(

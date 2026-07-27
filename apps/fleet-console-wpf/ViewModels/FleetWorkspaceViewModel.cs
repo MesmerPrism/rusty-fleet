@@ -121,6 +121,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         RefreshProviderCatalogCommand = new AsyncCommand(
             RefreshProviderCatalogAsync,
             () => !IsBusy && _source is not null);
+        LoadProviderCatalogCommand = new AsyncCommand(
+            LoadProviderCatalogAsync,
+            () => !IsBusy && _source is not null);
         ApplySearchCommand = new AsyncCommand(ApplyScopeAsync, () => !IsBusy && _source is not null);
         ClearSearchCommand = new AsyncCommand(ClearSearchAsync, () => !IsBusy);
         ClearBatchSelectionCommand = new RelayCommand(ClearBatchSelection);
@@ -359,6 +362,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public AsyncCommand SynchronizeUpdatesCommand { get; }
 
     public AsyncCommand RefreshProviderCatalogCommand { get; }
+
+    public AsyncCommand LoadProviderCatalogCommand { get; }
 
     public string ProviderCatalogStatusText
     {
@@ -931,6 +936,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 ConnectCommand.RaiseCanExecuteChanged();
                 SynchronizeUpdatesCommand.RaiseCanExecuteChanged();
                 RefreshProviderCatalogCommand.RaiseCanExecuteChanged();
+                LoadProviderCatalogCommand.RaiseCanExecuteChanged();
                 ApplySearchCommand.RaiseCanExecuteChanged();
                 ClearSearchCommand.RaiseCanExecuteChanged();
                 ApplyQueuedOrderingChangesCommand.RaiseCanExecuteChanged();
@@ -2012,18 +2018,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         ProviderCatalogStatusText = "Refreshing inert provider metadata";
         try
         {
-            var projection = await _source.ProviderCatalogAsync(cancellation.Token);
-            ProviderCatalogProjectionValidation.Validate(projection);
-            ProviderCatalogEntries.Clear();
-            foreach (var entry in projection.Entries.OrderBy(
-                         item => item.CatalogId,
-                         StringComparer.Ordinal))
-            {
-                ProviderCatalogEntries.Add(entry);
-            }
-            ProviderCatalogStatusText =
-                $"{ProviderCatalogEntries.Count:N0} provider slots · metadata only · " +
-                "does not authorize execution";
+            var projection = await _source.RefreshProviderCatalogAsync(cancellation.Token);
+            ProjectProviderCatalog(projection, "refreshed");
         }
         catch (Exception error) when (
             error is HttpRequestException or JsonException or TaskCanceledException or
@@ -2037,6 +2033,53 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    public async Task LoadProviderCatalogAsync()
+    {
+        if (_source is null)
+        {
+            ProviderCatalogStatusText = "Not connected to a Fleet Hub";
+            return;
+        }
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        IsBusy = true;
+        ProviderCatalogStatusText = "Reading the current inert provider snapshot";
+        try
+        {
+            var projection = await _source.ProviderCatalogAsync(cancellation.Token);
+            ProjectProviderCatalog(projection, "snapshot loaded");
+        }
+        catch (Exception error) when (
+            error is HttpRequestException or JsonException or TaskCanceledException or
+            InvalidOperationException or InvalidDataException or NotSupportedException)
+        {
+            ProviderCatalogEntries.Clear();
+            ProviderCatalogStatusText =
+                $"Provider snapshot read failed · cached metadata cleared · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void ProjectProviderCatalog(
+        ProviderCatalogProjection projection,
+        string activity)
+    {
+        ProviderCatalogProjectionValidation.Validate(projection);
+        ProviderCatalogEntries.Clear();
+        foreach (var entry in projection.Entries.OrderBy(
+                     item => item.CatalogId,
+                     StringComparer.Ordinal))
+        {
+            ProviderCatalogEntries.Add(entry);
+        }
+        ProviderCatalogStatusText =
+            $"{ProviderCatalogEntries.Count:N0} provider slots · {activity} · " +
+            $"revision {projection.Revision:N0} · metadata only · does not authorize execution";
     }
 
     public Task ApplyScopeAsync() => LoadScopeAsync(
