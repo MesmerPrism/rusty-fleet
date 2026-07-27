@@ -60,6 +60,37 @@ function Copy-JsonValue {
         ConvertFrom-Json -AsHashtable -Depth 32
 }
 
+function Invoke-RunnerProcess {
+    param(
+        [Parameter(Mandatory)][string[]] $Arguments
+    )
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = (Get-Command pwsh -ErrorAction Stop).Source
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in $Arguments) {
+        $start.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    Assert-True $process.Start() "Could not start isolated runner process."
+    try {
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        Assert-True ($process.WaitForExit(30000)) `
+            "Isolated runner process timed out."
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Stdout = $stdout.GetAwaiter().GetResult()
+            Stderr = $stderr.GetAwaiter().GetResult()
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-wifi-adb-acceptance-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
@@ -455,10 +486,21 @@ try {
             helper_grants = [ordered]@{}
             kiosk_helper_write_secure_settings_granted = $false
             qfm_profile_state = "absent"
-            kiosk_direct_link_observation = "not_yet_observed"
+            kiosk_direct_link_observation = "confirmed"
             after_boot_enabled = $false
             wifi_setting_enabled = $false
             transport_usb_present = $true
+            adb_tcp_port_state = "inactive"
+            adb_tls_port_state = "inactive"
+            adb_listener_state = "absent"
+            wireless_session_state = "absent"
+            wireless_pending_state = "absent"
+            host_forward_count = 0
+            host_reverse_count = 0
+            adb_manager_state_sha256 = "3" * 64
+            helper_status_state = "absent"
+            helper_in_flight = $false
+            helper_proof_listener_discovered = $false
             signer_checks_complete = $true
             agent_process_present = $false
             agent_private_inputs_absent = $true
@@ -474,7 +516,9 @@ try {
     $roundTrip = Read-SanitizedState -Context $validated
     Assert-True (
         [string]$roundTrip.schema -ceq
-            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v2" -and
+            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v3" -and
+        [string]$roundTrip.claims.installed -ceq "not_evaluated" -and
+        [string]$roundTrip.claims.reachable -ceq "not_evaluated" -and
         @(Get-ChildItem -LiteralPath $config.private_state_root `
             -Filter "*.pending").Count -eq 0
     ) "Write-through state publication did not round-trip cleanly."
@@ -505,7 +549,7 @@ try {
     Write-SanitizedState -Context $validated -State $modelState
     [void](Start-DurableMutation -Context $validated -State $modelState `
         -Kind "modeled-prepared-crash" -ActionId "test.prepared" `
-        -OwnerId "modeled-owner")
+        -OwnerId "modeled-owner" -ModeledNoDeviceProjection)
     $preparedState = Read-SanitizedState -Context $validated
     Assert-True (
         [string]$preparedState.mutation.stage -ceq "prepared_not_sent"
@@ -524,22 +568,31 @@ try {
     Write-SanitizedState -Context $validated -State $modelState
     [void](Start-DurableMutation -Context $validated -State $modelState `
         -Kind "modeled-sent-crash" -ActionId "test.sent" `
-        -OwnerId "modeled-owner")
+        -OwnerId "modeled-owner" -ModeledNoDeviceProjection)
     Set-DurableMutationSent -Context $validated -State $modelState
-    $sentState = Read-SanitizedState -Context $validated
+    $restartResult = Invoke-RunnerProcess -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $runnerPath,
+        "-Action", "Resume",
+        "-RunConfig", $configPath,
+        "-ConfirmMutation"
+    )
     Assert-True (
-        [string]$sentState.mutation.stage -ceq "sent_outcome_unknown"
-    ) "Sent mutation outcome was not durably unknown."
-    Assert-ThrowsCode -Code "mutation_cleanup_required" -Operation {
-        Assert-NoAmbiguousMutation -Context $validated -State $sentState
-    }
+        $restartResult.ExitCode -eq 2 -and
+        -not $restartResult.Stderr -and
+        [string](($restartResult.Stdout | ConvertFrom-Json).reason_code) -ceq
+            "mutation_cleanup_required" -and
+        [string](Read-SanitizedState `
+            -Context $validated).mutation.stage -ceq "cleanup_required"
+    ) "A fresh runner process did not preserve sent-outcome ambiguity and no-redispatch cleanup ownership."
 
     $modelState = New-SanitizedState `
         -Context $validated -Snapshots $syntheticSnapshots
     Write-SanitizedState -Context $validated -State $modelState
     [void](Start-DurableMutation -Context $validated -State $modelState `
         -Kind "modeled-confirmed" -ActionId "test.confirmed" `
-        -OwnerId "modeled-owner")
+        -OwnerId "modeled-owner" -ModeledNoDeviceProjection)
     Set-DurableMutationSent -Context $validated -State $modelState
     Complete-DurableMutation -Context $validated -State $modelState `
         -ReconciliationCode "modeled_exact_readback"
@@ -547,6 +600,8 @@ try {
     Assert-True (
         $null -eq $confirmedState.mutation -and
         $confirmedState.mutation_history.Count -eq 1 -and
+        [string]$confirmedState.mutation_history[0].isolation_scope -ceq
+            "modeled_not_executed" -and
         [string]$confirmedState.journal_head_sha256 -cne ("0" * 64)
     ) "Confirmed mutation did not advance the durable digest chain."
     $confirmedState.mutation_history[0].journal_sha256 = "f" * 64
@@ -594,8 +649,26 @@ try {
                 $forbidden, [StringComparison]::OrdinalIgnoreCase)) `
             "Runner contains a forbidden broad or approval-automation surface."
     }
+    foreach ($required in @(
+        "service.adb.tcp.port",
+        "service.adb.tls.port",
+        "wireless_pending_state",
+        "host_forward_count",
+        "Get-QfmDirectLinkObservation",
+        "Set-DurableMutationIsolationAfter",
+        "Add-FinalCleanupReadback",
+        "cleanup_exact_readback_confirmed"
+    )) {
+        Assert-True ($trackedText.Contains(
+                $required, [StringComparison]::Ordinal)) `
+            "Runner omitted required fail-closed state/readback marker $required."
+    }
+    $placeholderMarker = "not_yet" + "_observed"
+    Assert-True (-not $trackedText.Contains(
+            $placeholderMarker, [StringComparison]::Ordinal)) `
+        "Runner retained a constant direct-link placeholder."
 
-    Write-Output "Rusty Fleet two-Quest Wi-Fi ADB acceptance host tests passed."
+    Write-Output "Rusty Fleet two-Quest Wi-Fi ADB modeled host conformance tests passed."
 }
 finally {
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)

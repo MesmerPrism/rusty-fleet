@@ -87,14 +87,18 @@ all config/source/hash/duplicate/static checks and both device snapshots pass
 does it create a new current-user-only private state root. It snapshots the
 complete installed-package-set digest; relevant package presence and signer
 inspection; helper grants; QFM connectivity-profile state; Kiosk installation
-state; after-boot setting; Wi-Fi ADB setting; USB transport; boot ID digest and
+state; a fresh authenticated Kiosk direct-route status; helper boot/in-flight
+state; `adb_wifi_enabled`; classic and TLS ADB port properties; exact listening
+socket, session, and pending state; target-scoped host forwards and device
+reverses; bounded Android ADB-manager digest; USB transport; boot ID digest and
 elapsed clock; Termux process epoch; Fleet Agent process state; and absence of
-Fleet Agent app-private inputs. Initially enabled Wi-Fi ADB, enabled
-after-boot request state, an existing Fleet profile, or pre-existing Agent
-state rejects because the transaction cannot promise exact attended
-restoration. After the Hub and signed Agents are active, a Fleet `status`
-operation must return a fresh direct Kiosk provider receipt; profile enrollment
-alone is not treated as direct-link evidence.
+Fleet Agent app-private inputs. Unknown readback rejects. Any initially active
+Wi-Fi setting, listener, TLS/classic port, session, pending request, tunnel,
+after-boot request, existing Fleet profile, or pre-existing Agent state also
+rejects because the transaction cannot promise exact attended restoration.
+After the Hub and signed Agents are active, a Fleet `status` operation must
+return a fresh direct Kiosk provider receipt; profile enrollment alone is not
+treated as direct-link evidence.
 
 `Execute` and each `Resume` perform one durable transition. Both require
 `-ConfirmMutation`. Reusing a different config rejects before resume.
@@ -150,7 +154,11 @@ The transaction requires:
 3. request device A while device B remains fresh and unchanged;
 4. an explicit wearer checkpoint followed by the exact Hub operation
    projection containing both the Quest Termux Lab owner proof and a separate
-   Fleet-owned admission. The admission binds the expected device, operation,
+   Fleet-owned admission. Trusted ingress consumes the signed proof for
+   exactly one already-applied request operation and exact owner receipt before
+   any projection. The durable consumption binding rejects reuse for an
+   earlier or later request, including after adapter snapshot/restore. The
+   admission binds the expected device, operation,
    owner receipt, proof, source/evidence revisions, enrolled key generation,
    canonical JCS/signing/signature digests, Manifold/Fleet revisions, expiry,
    and deterministic lineage digest. The owner route is modern TLS, proof
@@ -172,14 +180,20 @@ closed. There is no proof submission route.
 Before and after every Wi-Fi/proof/reboot transition, the runner captures fresh
 signed projections for both devices. The non-target device must retain the
 same source epoch, operation set, effective Wi-Fi/receipt/proof lineage,
-installed package facts, managed-process presence, Wi-Fi setting, and exact
-USB transport. Its accepted check-in revision may only advance monotonically.
+boot identity and monotonic uptime, QFM profile/direct route, helper boot and
+in-flight state, installed package and permission facts, managed-process and
+Agent private-input state, Termux process epoch, Wi-Fi setting, TLS/classic
+ports, listener/session/pending state, ADB-manager digest, host
+forward/reverse state, and exact USB transport. Its accepted check-in revision
+may only advance monotonically. Pre-agent package/profile/permission
+provisioning uses the same complete physical projection for the non-target.
 
 ## State and evidence
 
 The private state file is resumable but sanitized. It stores logical slots,
-hashes, booleans, accepted revisions, operation IDs, stable reason codes,
-bounded event history, run-owned inventory, and cleanup truth. Its schema
+hashes, bounded states (including tri-state claims), accepted revisions,
+operation IDs, stable reason codes, bounded event history, run-owned inventory,
+and cleanup truth. Its schema
 rejects unknown and duplicate state fields. Before every write the runner
 rejects any configured path, serial, device ID, endpoint, enrollment path,
 profile path, seed path, or artifact path that appears in serialized state.
@@ -188,10 +202,21 @@ Every runner-owned mutation is recorded and durably published before dispatch,
 then recorded as `sent_outcome_unknown` before the owner can acknowledge it,
 and becomes `confirmed` only after exact owner/effective readback. Journal
 records bind target, boot, proof, action, artifact pin, request, cleanup owner,
-and the previous digest. Interruption leaves `prepared_not_sent` or
+and the previous digest. Each target-scoped record also binds complete
+before/after physical projections for the non-target; host-only mutations bind
+both devices. These projections cover boot/uptime, QFM route/profile, helper,
+permissions, packages, Agent process/private inputs, Termux epoch,
+listener/session/pending state, tunnels, ADB-manager digest, and USB transport.
+Interruption leaves `prepared_not_sent` or
 `sent_outcome_unknown`; neither is redispatched. Resume converts either to
 `cleanup_required`. Cleanup closes it as `terminal`, and acceptance/cleanup
 receipts bind the final journal head.
+
+Every cleanup effect has its own prepared, sent, confirmed or
+cleanup-required/terminal journal record and is persisted independently. On
+process restart an ambiguous cleanup record is terminalized without
+redispatch; cleanup continues to fresh final readback and reports partial or
+unknown truth instead of guessing the interrupted outcome.
 
 State publication uses a randomized same-directory create-new file, content
 flush, reparse check, and Windows `MoveFileExW` with replace and write-through
@@ -224,7 +249,8 @@ It attempts every bounded cleanup step even after a failure:
 - restore helper grants for pre-existing helpers;
 - uninstall only fixed packages absent in the preflight snapshot and added by
   this run;
-- leave Kiosk direct-link settings untouched and restore the QFM profile state;
+- freshly confirm the configured Kiosk direct route and restore the QFM
+  profile state;
 - remove only the exact run-owned firewall rule and verified runtime stage;
 - invoke the inventory-bound onboarding cleanup after the Hub stops.
 
@@ -232,12 +258,19 @@ Seed deletion is not Manifold authorization revocation. Use the onboarding
 owner's separate `revoke-plan` and the Manifold owner's authorized workflow
 when enrollment revocation is required.
 
-`complete` means every cleanup fact passed. Any missed fact remains
-`cleanup_partial_failure`; it is never rewritten as success.
+The terminal readback freshly re-reads packages and permissions, helper boot
+and in-flight state, Wireless Debugging setting and actual listener/session,
+Agent process and private inputs, QFM profile/direct route, boot identity,
+host tunnels, Hub PID, firewall, onboarding material, and runtime stage.
+`complete` means every cleanup fact passed. A complete cleanup changes the
+installed/reachable/authorized/effective acceptance claims to `not_claimed`;
+it never retains a positive runtime claim. Any missed fact becomes `partial`;
+an unreadable final fact becomes `unknown`, and status remains
+`cleanup_partial_failure`.
 
 ## Validation
 
-Host and synthetic checks only:
+Modeled host conformance plus integrated synthetic signed-Hub checks only:
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass `
@@ -249,7 +282,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 The synthetic suite covers strict config/state parsing, unknown/duplicate
 fields, parent-junction rejection, wrong hashes, duplicate and cross-device
 bindings, signed-admission UID/freshness/device/operation/hash/key/revision/
-unsigned/replay rejection, durable prepared/sent/confirmed crash models,
-no-redispatch recovery, digest-chain tampering, write-through publication,
+unsigned/replay rejection, durable prepared/sent/confirmed crash models, a
+real module process-boundary reload, no-redispatch recovery, exact-operation
+proof consumption and snapshot/restore rejection of cross-operation reuse,
+digest-chain tampering, write-through publication,
 resume mismatch, partial cleanup truth, parser checks, and forbidden
 ADB/approval surfaces. It does not touch a device or claim a live pass.

@@ -38,7 +38,7 @@ public static class RustyFleetAcceptanceNative
 }
 
 $script:ConfigSchema = "rusty.fleet.wifi_adb_two_quest_run_config.v1"
-$script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v2"
+$script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v3"
 $script:QfmCommit = "a6d8e88c9d65f642d0cbf74fc8b92c8f1cd19ae5"
 $script:HelperCommit = "d800e5c7c5f8c77ad2bae52450f32092f3c92ace"
 $script:ArtifactIds = @(
@@ -802,11 +802,13 @@ function Invoke-QfmExact {
     param(
         [Parameter(Mandatory)][object] $Context,
         [Parameter(Mandatory)][string[]] $Arguments,
+        [Collections.IDictionary] $Environment = @{},
         [ValidateRange(1, 600)][int] $TimeoutSeconds = 60
     )
     return Invoke-JsonOwner `
         -FilePath $Context.Artifacts["questionable-file-manager"].Path `
-        -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds
+        -Arguments $Arguments -Environment $Environment `
+        -TimeoutSeconds $TimeoutSeconds
 }
 
 function Invoke-HelperExact {
@@ -969,6 +971,17 @@ function Assert-ValidSanitizedStateShape {
     Assert-ExactProperties -Value $State.claims -Required @(
         "planned_only", "installed", "reachable", "authorized", "effective"
     ) -Context "acceptance state claims"
+    foreach ($claimName in @(
+        "planned_only", "installed", "reachable", "authorized", "effective"
+    )) {
+        Assert-Condition (
+            [string]$State.claims[$claimName] -cin @(
+                "not_evaluated", "confirmed", "not_claimed",
+                "partial", "unknown"
+            )
+        ) "state_claim_invalid" `
+            "Acceptance claims must use the bounded tri-state lifecycle vocabulary."
+    }
     Assert-Condition ($State.devices -is [Collections.IList] -and
         $State.devices.Count -eq 2) "state_shape_invalid" `
         "Acceptance state must retain exactly two device slots."
@@ -981,6 +994,12 @@ function Assert-ValidSanitizedStateShape {
             "kiosk_helper_write_secure_settings_granted", "qfm_profile_state",
             "kiosk_direct_link_observation", "after_boot_enabled",
             "wifi_setting_enabled", "transport_usb_present",
+            "adb_tcp_port_state", "adb_tls_port_state",
+            "adb_listener_state", "wireless_session_state",
+            "wireless_pending_state", "host_forward_count",
+            "host_reverse_count", "adb_manager_state_sha256",
+            "helper_status_state", "helper_in_flight",
+            "helper_proof_listener_discovered",
             "signer_checks_complete", "agent_process_present",
             "agent_private_inputs_absent", "boot_id_sha256",
             "boot_elapsed_milliseconds", "termux_process_epoch_sha256"
@@ -1019,7 +1038,12 @@ function Assert-ValidSanitizedStateShape {
             "prepared_at_ms", "sent_at_ms", "confirmed_at_ms",
             "reconciliation_code", "target_sha256", "boot_id_sha256",
             "proof_lineage_sha256", "artifact_pin_sha256", "request_id_sha256",
-            "cleanup_owner", "previous_journal_sha256", "journal_sha256"
+            "cleanup_owner", "isolation_scope",
+            "isolation_before_sha256", "isolation_before_boot_sha256",
+            "isolation_before_elapsed_a_ms", "isolation_before_elapsed_b_ms",
+            "isolation_after_sha256", "isolation_after_boot_sha256",
+            "isolation_after_elapsed_a_ms", "isolation_after_elapsed_b_ms",
+            "previous_journal_sha256", "journal_sha256"
         ) -Optional @("package", "expected_sha256") `
             -Context "acceptance state mutation"
     }
@@ -1029,7 +1053,12 @@ function Assert-ValidSanitizedStateShape {
             "prepared_at_ms", "sent_at_ms", "confirmed_at_ms",
             "reconciliation_code", "target_sha256", "boot_id_sha256",
             "proof_lineage_sha256", "artifact_pin_sha256", "request_id_sha256",
-            "cleanup_owner", "previous_journal_sha256", "journal_sha256"
+            "cleanup_owner", "isolation_scope",
+            "isolation_before_sha256", "isolation_before_boot_sha256",
+            "isolation_before_elapsed_a_ms", "isolation_before_elapsed_b_ms",
+            "isolation_after_sha256", "isolation_after_boot_sha256",
+            "isolation_after_elapsed_a_ms", "isolation_after_elapsed_b_ms",
+            "previous_journal_sha256", "journal_sha256"
         ) -Optional @("package", "expected_sha256") `
             -Context "acceptance state mutation history"
     }
@@ -1071,6 +1100,15 @@ function Get-MutationJournalSha256 {
         [string]$Mutation.artifact_pin_sha256,
         [string]$Mutation.request_id_sha256,
         [string]$Mutation.cleanup_owner,
+        [string]$Mutation.isolation_scope,
+        [string]$Mutation.isolation_before_sha256,
+        [string]$Mutation.isolation_before_boot_sha256,
+        [string][long]$Mutation.isolation_before_elapsed_a_ms,
+        [string][long]$Mutation.isolation_before_elapsed_b_ms,
+        [string]$Mutation.isolation_after_sha256,
+        [string]$Mutation.isolation_after_boot_sha256,
+        [string][long]$Mutation.isolation_after_elapsed_a_ms,
+        [string][long]$Mutation.isolation_after_elapsed_b_ms,
         [string]$Mutation.reconciliation_code,
         [string]$Mutation.previous_journal_sha256,
         [string][long]$Mutation.prepared_at_ms,
@@ -1091,7 +1129,22 @@ function Assert-MutationJournal {
             [string]$record.previous_journal_sha256 -ceq $previous -and
             [string]$record.journal_sha256 -ceq
                 (Get-MutationJournalSha256 -Mutation $record) -and
-            [string]$record.stage -cin @("confirmed", "terminal")
+            [string]$record.stage -cin @("confirmed", "terminal") -and
+            [string]$record.isolation_scope -cin @(
+                "device_a", "device_b", "both", "modeled_not_executed"
+            ) -and
+            (
+                [string]$record.isolation_scope -ceq
+                    "modeled_not_executed" -or
+                (
+                    [string]$record.isolation_after_sha256 -cmatch
+                        '^[0-9a-f]{64}$' -and
+                    [string]$record.isolation_after_sha256 -cne ("0" * 64) -and
+                    [string]$record.isolation_after_boot_sha256 -cmatch
+                        '^[0-9a-f]{64}$' -and
+                    [string]$record.isolation_after_boot_sha256 -cne ("0" * 64)
+                )
+            )
         ) "mutation_journal_invalid" `
             "The durable mutation digest chain is invalid."
         $previous = [string]$record.journal_sha256
@@ -1104,6 +1157,9 @@ function Assert-MutationJournal {
             [string]$State.mutation.previous_journal_sha256 -ceq $previous -and
             [string]$State.mutation.journal_sha256 -ceq
                 (Get-MutationJournalSha256 -Mutation $State.mutation) -and
+            [string]$State.mutation.isolation_scope -cin @(
+                "device_a", "device_b", "both", "modeled_not_executed"
+            ) -and
             [string]$State.mutation.stage -cin @(
                 "prepared_not_sent", "sent_outcome_unknown", "confirmed",
                 "cleanup_required", "terminal")
@@ -1126,7 +1182,8 @@ function Start-DurableMutation {
         [string] $CleanupOwner = "runner",
         [string] $Package = "",
         [string] $ExpectedSha256 = "",
-        [string] $RequestId = ""
+        [string] $RequestId = "",
+        [switch] $ModeledNoDeviceProjection
     )
     Assert-Condition ($null -eq $State.mutation) "mutation_already_active" `
         "A durable mutation must be reconciled before another can start."
@@ -1147,6 +1204,26 @@ function Start-DurableMutation {
         "0" * 64
     }
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $isolationScope = if ($ModeledNoDeviceProjection) {
+        "modeled_not_executed"
+    } elseif ($Slot -ceq "device_a") {
+        "device_b"
+    } elseif ($Slot -ceq "device_b") {
+        "device_a"
+    } else {
+        "both"
+    }
+    $isolation = if ($ModeledNoDeviceProjection) {
+        [pscustomobject]@{
+            ProjectionSha256 = "0" * 64
+            BootSha256 = "0" * 64
+            ElapsedA = 0L
+            ElapsedB = 0L
+        }
+    } else {
+        Get-DurableMutationIsolationProjection `
+            -Context $Context -Scope $isolationScope
+    }
     $record = [ordered]@{
         mutation_id = "mutation-" + $mutationHash.Substring(0, 32)
         kind = $Kind
@@ -1170,6 +1247,15 @@ function Start-DurableMutation {
         } else { "0" * 64 }
         request_id_sha256 = $requestHash
         cleanup_owner = $CleanupOwner
+        isolation_scope = $isolationScope
+        isolation_before_sha256 = $isolation.ProjectionSha256
+        isolation_before_boot_sha256 = $isolation.BootSha256
+        isolation_before_elapsed_a_ms = $isolation.ElapsedA
+        isolation_before_elapsed_b_ms = $isolation.ElapsedB
+        isolation_after_sha256 = "0" * 64
+        isolation_after_boot_sha256 = "0" * 64
+        isolation_after_elapsed_a_ms = 0L
+        isolation_after_elapsed_b_ms = 0L
         previous_journal_sha256 = [string]$State.journal_head_sha256
         journal_sha256 = ""
         package = $Package
@@ -1211,6 +1297,7 @@ function Complete-DurableMutation {
         [string]$State.mutation.stage -ceq "sent_outcome_unknown"
     ) "mutation_outcome_not_unknown" `
         "Only an exact owner readback can confirm a sent mutation."
+    Set-DurableMutationIsolationAfter -Context $Context -State $State
     $State.mutation.stage = "confirmed"
     $State.mutation.confirmed_at_ms =
         [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -1237,6 +1324,28 @@ function Set-DurableMutationCleanupRequired {
     $State.mutation.journal_sha256 =
         Get-MutationJournalSha256 -Mutation $State.mutation
     $State.status = "cleanup_required"
+    Write-SanitizedState -Context $Context -State $State
+}
+
+function Complete-DurableMutationTerminal {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [Parameter(Mandatory)][string] $ReconciliationCode
+    )
+    Assert-Condition ($null -ne $State.mutation) "mutation_absent" `
+        "No durable mutation is available to terminalize."
+    Set-DurableMutationIsolationAfter -Context $Context -State $State
+    $State.mutation.stage = "terminal"
+    $State.mutation.confirmed_at_ms =
+        [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $State.mutation.reconciliation_code = $ReconciliationCode
+    $State.mutation.journal_sha256 =
+        Get-MutationJournalSha256 -Mutation $State.mutation
+    Write-SanitizedState -Context $Context -State $State
+    $State.mutation_history = @($State.mutation_history) + $State.mutation
+    $State.journal_head_sha256 = [string]$State.mutation.journal_sha256
+    $State.mutation = $null
     Write-SanitizedState -Context $Context -State $State
 }
 
@@ -1336,6 +1445,18 @@ function New-SanitizedState {
                 after_boot_enabled = $snapshot.after_boot_enabled
                 wifi_setting_enabled = $snapshot.wifi_setting_enabled
                 transport_usb_present = $snapshot.transport_usb_present
+                adb_tcp_port_state = $snapshot.adb_tcp_port_state
+                adb_tls_port_state = $snapshot.adb_tls_port_state
+                adb_listener_state = $snapshot.adb_listener_state
+                wireless_session_state = $snapshot.wireless_session_state
+                wireless_pending_state = $snapshot.wireless_pending_state
+                host_forward_count = $snapshot.host_forward_count
+                host_reverse_count = $snapshot.host_reverse_count
+                adb_manager_state_sha256 = $snapshot.adb_manager_state_sha256
+                helper_status_state = $snapshot.helper_status_state
+                helper_in_flight = $snapshot.helper_in_flight
+                helper_proof_listener_discovered =
+                    $snapshot.helper_proof_listener_discovered
                 signer_checks_complete = $snapshot.signer_checks_complete
                 agent_process_present = $snapshot.agent_process_present
                 agent_private_inputs_absent =
@@ -1398,11 +1519,11 @@ function New-SanitizedState {
             checks = [ordered]@{}
         }
         claims = [ordered]@{
-            planned_only = $false
-            installed = $false
-            reachable = $false
-            authorized = $false
-            effective = $false
+            planned_only = "not_claimed"
+            installed = "not_evaluated"
+            reachable = "not_evaluated"
+            authorized = "not_evaluated"
+            effective = "not_evaluated"
         }
         events = @()
     }
@@ -1482,6 +1603,175 @@ function Get-TermuxProcessEpochSha256 {
         [Text.Encoding]::UTF8.GetBytes($stat.Stdout.Trim()))
 }
 
+function Convert-AdbPortState {
+    param(
+        [AllowEmptyString()][string] $Value,
+        [Parameter(Mandatory)][string] $PropertyName
+    )
+    $normalized = $Value.Trim()
+    Assert-Condition (
+        $normalized -cin @("", "-1", "0") -or
+        $normalized -cmatch '^[1-9][0-9]{0,4}$'
+    ) "adb_port_readback_invalid" `
+        "$PropertyName returned an unsupported value."
+    if ($normalized -cin @("", "-1", "0")) {
+        return [pscustomobject]@{ State = "inactive"; Port = 0 }
+    }
+    $port = [int]$normalized
+    Assert-Condition ($port -le 65535) "adb_port_readback_invalid" `
+        "$PropertyName returned an out-of-range port."
+    return [pscustomobject]@{ State = "active"; Port = $port }
+}
+
+function Get-AdbNetworkObservation {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $Device
+    )
+    $wifiResult = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @("shell", "settings", "get", "global", "adb_wifi_enabled")
+    $wifiValue = $wifiResult.Stdout.Trim()
+    Assert-Condition ($wifiValue -cin @("0", "1", "null", "")) `
+        "wifi_setting_readback_invalid" `
+        "Wireless Debugging setting readback was not bounded."
+
+    $tcpResult = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @("shell", "getprop", "service.adb.tcp.port")
+    $tlsResult = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @("shell", "getprop", "service.adb.tls.port")
+    $tcp = Convert-AdbPortState -Value $tcpResult.Stdout `
+        -PropertyName "service.adb.tcp.port"
+    $tls = Convert-AdbPortState -Value $tlsResult.Stdout `
+        -PropertyName "service.adb.tls.port"
+
+    # `ss` is read-only. Requiring it, rather than interpreting an unavailable
+    # command as an empty result, makes listener state fail closed.
+    $sockets = Invoke-AdbExact -Context $Context -Device $Device -Arguments @(
+        "shell", "sh", "-c", "command -v ss >/dev/null 2>&1 && ss -ltn"
+    )
+    Assert-Condition ($sockets.Stdout.Length -le 1048576) `
+        "adb_listener_readback_unbounded" `
+        "The Quest listener readback exceeded its bounded projection."
+    $listeningPorts = @()
+    foreach ($line in @($sockets.Stdout -split "`r?`n")) {
+        if ($line -match '^\s*LISTEN\s+' -and
+            $line -match '[:.]([0-9]{1,5})\s+') {
+            $candidate = [int]$Matches[1]
+            if ($candidate -ge 1 -and $candidate -le 65535) {
+                $listeningPorts += $candidate
+            }
+        }
+    }
+    $tcpListening = $tcp.State -ceq "active" -and
+        $listeningPorts -contains $tcp.Port
+    $tlsListening = $tls.State -ceq "active" -and
+        $listeningPorts -contains $tls.Port
+    Assert-Condition (
+        ($tcp.State -ceq "inactive" -or $tcpListening) -and
+        ($tls.State -ceq "inactive" -or $tlsListening)
+    ) "adb_listener_property_mismatch" `
+        "An active ADB port property had no exact listening socket readback."
+
+    $manager = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @("shell", "dumpsys", "adb")
+    $managerText = $manager.Stdout.Trim()
+    Assert-Condition (
+        -not [string]::IsNullOrWhiteSpace($managerText) -and
+        $managerText.Length -le 1048576
+    ) "adb_manager_readback_invalid" `
+        "Android's ADB manager returned no bounded state projection."
+
+    $forwards = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @("forward", "--list")
+    $forwardCount = 0
+    foreach ($line in @($forwards.Stdout -split "`r?`n" |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $parts = @($line.Trim() -split '\s+')
+        Assert-Condition ($parts.Count -eq 3) "adb_forward_readback_invalid" `
+            "ADB returned a malformed forward projection."
+        if ($parts[0] -ceq [string]$Device.usb_serial) {
+            $forwardCount++
+        }
+    }
+    $reverses = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @("reverse", "--list")
+    $reverseCount = 0
+    foreach ($line in @($reverses.Stdout -split "`r?`n" |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $parts = @($line.Trim() -split '\s+')
+        Assert-Condition ($parts.Count -in @(2, 3)) `
+            "adb_reverse_readback_invalid" `
+            "ADB returned a malformed reverse projection."
+        $reverseCount++
+    }
+
+    $listenerState = if ($tcpListening -or $tlsListening) {
+        "active"
+    } else {
+        "absent"
+    }
+    $sessionState = if ($tlsListening) { "active" } else { "absent" }
+    $pendingState = if ($wifiValue -ceq "1" -and -not $tlsListening) {
+        "pending"
+    } else {
+        "absent"
+    }
+    return [pscustomobject]@{
+        WifiSettingEnabled = $wifiValue -ceq "1"
+        TcpPortState = [string]$tcp.State
+        TlsPortState = [string]$tls.State
+        ListenerState = $listenerState
+        WirelessSessionState = $sessionState
+        WirelessPendingState = $pendingState
+        HostForwardCount = $forwardCount
+        HostReverseCount = $reverseCount
+        AdbManagerStateSha256 = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes($managerText))
+    }
+}
+
+function Get-QfmDirectLinkObservation {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $Device
+    )
+    $enrollment = Read-StrictJsonFile `
+        -Path ([string]$Device.qfm_enrollment_path) `
+        -Context "QFM enrollment direct-link readback" -MaximumBytes 4096
+    try {
+        Assert-ExactProperties -Value $enrollment.Value -Required @(
+            "schema", "target", "device_id", "usb_serial", "endpoint",
+            "pairing_code"
+        ) -Context "QFM enrollment direct-link readback"
+        Assert-Condition (
+            [string]$enrollment.Value.device_id -ceq
+                [string]$Device.device_id -and
+            [string]$enrollment.Value.usb_serial -ceq
+                [string]$Device.usb_serial
+        ) "qfm_direct_link_binding_mismatch" `
+            "The private Kiosk direct link did not bind the exact target."
+        $pairing = [string]$enrollment.Value.pairing_code
+        $endpoint = [string]$enrollment.Value.endpoint
+        $result = Invoke-QfmExact -Context $Context -Arguments @(
+            "kiosk-direct", "status",
+            "--endpoint", $endpoint,
+            "--json"
+        ) -Environment @{ RUSTY_KIOSK_PAIRING_CODE=$pairing }
+        Assert-Condition (
+            [string]$result.transport -ceq "direct" -and
+            $null -ne $result.status -and
+            $null -ne $result.kiosk
+        ) "qfm_direct_link_readback_invalid" `
+            "QFM did not confirm the configured direct Kiosk route."
+        return "confirmed"
+    } finally {
+        $enrollment = $null
+        $pairing = $null
+        $endpoint = $null
+        $result = $null
+    }
+}
+
 function Get-DeviceSnapshot {
     param(
         [Parameter(Mandatory)][object] $Context,
@@ -1524,12 +1814,7 @@ function Get-DeviceSnapshot {
             -Permission $script:WriteSecureSettingsPermission
     }
 
-    $wifi = Invoke-AdbExact -Context $Context -Device $Device `
-        -Arguments @("shell", "settings", "get", "global", "adb_wifi_enabled")
-    $wifiValue = $wifi.Stdout.Trim()
-    Assert-Condition ($wifiValue -cin @("0", "1", "null", "")) `
-        "wifi_setting_readback_invalid" `
-        "Wireless Debugging setting readback was not bounded."
+    $network = Get-AdbNetworkObservation -Context $Context -Device $Device
 
     $helperStatus = $null
     if ($packagePresence[$script:HelperPackage]) {
@@ -1560,7 +1845,8 @@ function Get-DeviceSnapshot {
     )
     Assert-Condition ($null -ne $kioskStatus.installation) `
         "kiosk_status_invalid" "QFM returned no Kiosk installation observation."
-    $directObservation = "not_yet_observed"
+    $directObservation = Get-QfmDirectLinkObservation `
+        -Context $Context -Device $Device
 
     $agentProcess = Invoke-AdbExact -Context $Context -Device $Device `
         -Arguments @("shell", "pidof", $script:FleetAgentPackage) `
@@ -1615,8 +1901,31 @@ function Get-DeviceSnapshot {
         } else {
             $false
         }
-        wifi_setting_enabled = $wifiValue -ceq "1"
+        wifi_setting_enabled = $network.WifiSettingEnabled
         transport_usb_present = $true
+        adb_tcp_port_state = $network.TcpPortState
+        adb_tls_port_state = $network.TlsPortState
+        adb_listener_state = $network.ListenerState
+        wireless_session_state = $network.WirelessSessionState
+        wireless_pending_state = $network.WirelessPendingState
+        host_forward_count = $network.HostForwardCount
+        host_reverse_count = $network.HostReverseCount
+        adb_manager_state_sha256 = $network.AdbManagerStateSha256
+        helper_status_state = if ($null -ne $helperStatus) {
+            "confirmed"
+        } else {
+            "absent"
+        }
+        helper_in_flight = if ($null -ne $helperStatus) {
+            [bool]$helperStatus.in_flight
+        } else {
+            $false
+        }
+        helper_proof_listener_discovered = if ($null -ne $helperStatus) {
+            [bool]$helperStatus.proof_fresh
+        } else {
+            $false
+        }
         signer_checks_complete = $true
         agent_process_present = -not [string]::IsNullOrWhiteSpace(
             $agentProcess.Stdout)
@@ -1649,12 +1958,147 @@ function Get-SanitizedPlan {
         )
         next_phase = "preflight"
         claims = [ordered]@{
-            installed = $false
-            reachable = $false
-            authorized = $false
-            effective = $false
+            installed = "not_evaluated"
+            reachable = "not_evaluated"
+            authorized = "not_evaluated"
+            effective = "not_evaluated"
         }
     }
+}
+
+function Get-PhysicalIsolationProjection {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][ValidateSet("device_a", "device_b")]
+        [string] $Slot
+    )
+    $device = Get-DeviceBySlot -Context $Context -Slot $Slot
+    $snapshot = Get-DeviceSnapshot -Context $Context -Device $device
+    $stable = [ordered]@{
+        package_set_sha256 = $snapshot.package_set_sha256
+        packages = $snapshot.packages
+        helper_grants = $snapshot.helper_grants
+        kiosk_helper_write_secure_settings_granted =
+            $snapshot.kiosk_helper_write_secure_settings_granted
+        qfm_profile_state = $snapshot.qfm_profile_state
+        kiosk_direct_link_observation =
+            $snapshot.kiosk_direct_link_observation
+        after_boot_enabled = $snapshot.after_boot_enabled
+        wifi_setting_enabled = $snapshot.wifi_setting_enabled
+        adb_tcp_port_state = $snapshot.adb_tcp_port_state
+        adb_tls_port_state = $snapshot.adb_tls_port_state
+        adb_listener_state = $snapshot.adb_listener_state
+        wireless_session_state = $snapshot.wireless_session_state
+        wireless_pending_state = $snapshot.wireless_pending_state
+        host_forward_count = $snapshot.host_forward_count
+        host_reverse_count = $snapshot.host_reverse_count
+        adb_manager_state_sha256 = $snapshot.adb_manager_state_sha256
+        helper_status_state = $snapshot.helper_status_state
+        helper_in_flight = $snapshot.helper_in_flight
+        helper_proof_listener_discovered =
+            $snapshot.helper_proof_listener_discovered
+        agent_process_present = $snapshot.agent_process_present
+        agent_private_inputs_absent = $snapshot.agent_private_inputs_absent
+        boot_id_sha256 = $snapshot.boot_id_sha256
+        termux_process_epoch_sha256 =
+            $snapshot.termux_process_epoch_sha256
+    }
+    return [pscustomobject]@{
+        BootIdSha256 = $snapshot.boot_id_sha256
+        BootElapsedMilliseconds = $snapshot.boot_elapsed_milliseconds
+        ProjectionSha256 = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes(
+                ($stable | ConvertTo-Json -Depth 12 -Compress)))
+    }
+}
+
+function Assert-PhysicalNonTargetIsolation {
+    param(
+        [Parameter(Mandatory)][object] $Before,
+        [Parameter(Mandatory)][object] $After
+    )
+    Assert-Condition (
+        $After.BootIdSha256 -ceq $Before.BootIdSha256 -and
+        $After.BootElapsedMilliseconds -ge
+            $Before.BootElapsedMilliseconds -and
+        $After.ProjectionSha256 -ceq $Before.ProjectionSha256
+    ) "cross_device_physical_state_changed" `
+        "A non-target device changed boot, profile, helper, permission, package, process, private-input, listener, route, or transport state."
+}
+
+function Get-DurableMutationIsolationProjection {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][ValidateSet("device_a", "device_b", "both")]
+        [string] $Scope
+    )
+    $slots = if ($Scope -ceq "both") {
+        @("device_a", "device_b")
+    } else {
+        @($Scope)
+    }
+    $stableParts = @()
+    $bootParts = @()
+    $elapsedA = 0L
+    $elapsedB = 0L
+    foreach ($slot in $slots) {
+        $projection = Get-PhysicalIsolationProjection `
+            -Context $Context -Slot $slot
+        $stableParts += "$slot`0$($projection.ProjectionSha256)"
+        $bootParts += "$slot`0$($projection.BootIdSha256)"
+        if ($slot -ceq "device_a") {
+            $elapsedA = [long]$projection.BootElapsedMilliseconds
+        } else {
+            $elapsedB = [long]$projection.BootElapsedMilliseconds
+        }
+    }
+    return [pscustomobject]@{
+        ProjectionSha256 = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes(($stableParts -join "`0")))
+        BootSha256 = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes(($bootParts -join "`0")))
+        ElapsedA = $elapsedA
+        ElapsedB = $elapsedB
+    }
+}
+
+function Set-DurableMutationIsolationAfter {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State
+    )
+    Assert-Condition ($null -ne $State.mutation) "mutation_absent" `
+        "No durable mutation is available for isolation readback."
+    $scope = [string]$State.mutation.isolation_scope
+    if ($scope -ceq "modeled_not_executed") {
+        return
+    }
+    $after = Get-DurableMutationIsolationProjection `
+        -Context $Context -Scope $scope
+    Assert-Condition (
+        [string]$after.ProjectionSha256 -ceq
+            [string]$State.mutation.isolation_before_sha256 -and
+        [string]$after.BootSha256 -ceq
+            [string]$State.mutation.isolation_before_boot_sha256 -and
+        (
+            [long]$State.mutation.isolation_before_elapsed_a_ms -eq 0 -or
+            [long]$after.ElapsedA -ge
+                [long]$State.mutation.isolation_before_elapsed_a_ms
+        ) -and
+        (
+            [long]$State.mutation.isolation_before_elapsed_b_ms -eq 0 -or
+            [long]$after.ElapsedB -ge
+                [long]$State.mutation.isolation_before_elapsed_b_ms
+        )
+    ) "durable_mutation_isolation_changed" `
+        "A mutation changed a device outside its exact target scope."
+    $State.mutation.isolation_after_sha256 = $after.ProjectionSha256
+    $State.mutation.isolation_after_boot_sha256 = $after.BootSha256
+    $State.mutation.isolation_after_elapsed_a_ms = $after.ElapsedA
+    $State.mutation.isolation_after_elapsed_b_ms = $after.ElapsedB
+    $State.mutation.journal_sha256 =
+        Get-MutationJournalSha256 -Mutation $State.mutation
+    Write-SanitizedState -Context $Context -State $State
 }
 
 function Get-OnboardingGeneratedPaths {
@@ -1698,12 +2142,34 @@ function Invoke-Preflight {
         Assert-Condition (-not $snapshot.wifi_setting_enabled) `
             "unsafe_initial_wireless_state" `
             "Acceptance requires Wireless Debugging initially disabled for exact cleanup."
+        Assert-Condition (
+            [string]$snapshot.adb_tcp_port_state -ceq "inactive" -and
+            [string]$snapshot.adb_tls_port_state -ceq "inactive" -and
+            [string]$snapshot.adb_listener_state -ceq "absent" -and
+            [string]$snapshot.wireless_session_state -ceq "absent" -and
+            [string]$snapshot.wireless_pending_state -ceq "absent"
+        ) "unsafe_initial_adb_network_state" `
+            "Acceptance refuses any classic, TLS, listener, session, or pending Wireless Debugging state."
+        Assert-Condition (
+            [int]$snapshot.host_forward_count -eq 0 -and
+            [int]$snapshot.host_reverse_count -eq 0
+        ) "unsafe_initial_adb_tunnel_state" `
+            "Acceptance refuses pre-existing host forwards or device reverses for either target."
         Assert-Condition (-not $snapshot.after_boot_enabled) `
             "unsafe_initial_after_boot_state" `
             "Acceptance requires the after-boot request initially disabled."
+        Assert-Condition (
+            -not $snapshot.helper_in_flight -and
+            -not $snapshot.helper_proof_listener_discovered
+        ) "unsafe_initial_helper_session_state" `
+            "Acceptance refuses a helper mutation in flight or a fresh pre-existing loopback proof."
         Assert-Condition ([string]$snapshot.qfm_profile_state -ceq "absent") `
             "preexisting_private_profile" `
             "Acceptance fails closed when a Fleet connectivity profile already exists."
+        Assert-Condition (
+            [string]$snapshot.kiosk_direct_link_observation -ceq "confirmed"
+        ) "kiosk_direct_link_unconfirmed" `
+            "Acceptance requires a fresh read-only confirmation of the configured Kiosk route."
         Assert-Condition (-not $snapshot.agent_process_present) `
             "preexisting_fleet_agent_process" `
             "Acceptance never adopts or stops a pre-existing Fleet Agent process."
@@ -2251,15 +2717,93 @@ function Get-SignedIsolationProjection {
         $processFacts[$package] =
             -not [string]::IsNullOrWhiteSpace($pid.Stdout)
     }
-    $wireless = Invoke-AdbExact -Context $Context -Device $device `
-        -Arguments @("shell", "settings", "get", "global", "adb_wifi_enabled")
+    $permissionFacts = [ordered]@{}
+    foreach ($package in @($script:HelperPackage, $script:KioskHelperPackage)) {
+        $permissionFacts[$package] = [ordered]@{}
+        if ([bool]$packageFacts[$package]) {
+            $dump = Invoke-AdbExact -Context $Context -Device $device `
+                -Arguments @("shell", "dumpsys", "package", $package)
+            $permissions = if ($package -ceq $script:HelperPackage) {
+                $script:HelperPermissions
+            } else {
+                @($script:WriteSecureSettingsPermission)
+            }
+            foreach ($permission in $permissions) {
+                $permissionFacts[$package][$permission] =
+                    Get-PermissionGrant -PackageDump $dump.Stdout `
+                        -Permission $permission
+            }
+        }
+    }
+    $network = Get-AdbNetworkObservation -Context $Context -Device $device
     $transport = Invoke-AdbExact -Context $Context -Device $device `
         -Arguments @("get-state")
+    $helperStatus = if ([bool]$packageFacts[$script:HelperPackage]) {
+        Invoke-HelperExact -Context $Context -Device $device `
+            -HelperAction "status"
+    } else {
+        $null
+    }
+    if ($null -ne $helperStatus) {
+        Assert-Condition (
+            [string]$helperStatus.schema -ceq
+                "quest-termux-lab.wireless-adb-operator-receipt.v1"
+        ) "isolation_helper_status_invalid" `
+            "Isolation received an invalid helper status projection."
+    }
+    $qfmProfile = Invoke-QfmExact -Context $Context -Arguments @(
+        "connectivity-profile", "status",
+        "--device-id", [string]$device.device_id,
+        "--json"
+    )
+    Assert-Condition (
+        [string]$qfmProfile.state -cin @("enrolled", "absent", "invalid")
+    ) "isolation_qfm_profile_invalid" `
+        "Isolation received an invalid QFM profile projection."
+    $directLink = Get-QfmDirectLinkObservation `
+        -Context $Context -Device $device
+    $agentPrivateInputsAbsent = $true
+    if ([bool]$packageFacts[$script:FleetAgentPackage]) {
+        $privateInputs = Invoke-AdbExact -Context $Context -Device $device `
+            -Arguments @(
+                "shell", "run-as", $script:FleetAgentPackage,
+                "sh", "-c", "test ! -e files/fleet-agent"
+            ) -AllowedExitCodes @(0, 1)
+        $agentPrivateInputsAbsent = $privateInputs.ExitCode -eq 0
+    }
+    $boot = Get-DeviceBootIdentity -Context $Context -Device $device
+    $termuxEpoch = Get-TermuxProcessEpochSha256 `
+        -Context $Context -Device $device
     $physicalJson = [ordered]@{
         packages = $packageFacts
+        permissions = $permissionFacts
         processes = $processFacts
-        wireless_setting = $wireless.Stdout.Trim()
+        qfm_profile_state = [string]$qfmProfile.state
+        kiosk_direct_link = $directLink
+        helper_status_state = if ($null -eq $helperStatus) {
+            "absent"
+        } else {
+            [ordered]@{
+                boot_attempt_enabled = $helperStatus.boot_attempt_enabled -eq $true
+                wireless_debugging_enabled =
+                    $helperStatus.wireless_debugging_enabled -eq $true
+                in_flight = $helperStatus.in_flight -eq $true
+                proof_fresh = $helperStatus.proof_fresh -eq $true
+            }
+        }
+        wireless_setting = $network.WifiSettingEnabled
+        adb_tcp_port_state = $network.TcpPortState
+        adb_tls_port_state = $network.TlsPortState
+        adb_listener_state = $network.ListenerState
+        wireless_session_state = $network.WirelessSessionState
+        wireless_pending_state = $network.WirelessPendingState
+        host_forward_count = $network.HostForwardCount
+        host_reverse_count = $network.HostReverseCount
+        adb_manager_state_sha256 = $network.AdbManagerStateSha256
         usb_transport = $transport.Stdout.Trim()
+        agent_private_inputs_absent = $agentPrivateInputsAbsent
+        boot_id_sha256 = $boot.BootIdSha256
+        termux_process_epoch_sha256 = $termuxEpoch
     } | ConvertTo-Json -Depth 8 -Compress
     return [pscustomobject]@{
         AcceptedRevision = [long]$inspect.row.accepted_revision
@@ -2268,6 +2812,8 @@ function Get-SignedIsolationProjection {
         OperationLineageSha256 = Get-BytesSha256 -Bytes (
             [Text.Encoding]::UTF8.GetBytes($lineageJson))
         OperationCount = $lineage.Count
+        BootIdSha256 = $boot.BootIdSha256
+        BootElapsedMilliseconds = $boot.ElapsedMilliseconds
         PhysicalLineageSha256 = Get-BytesSha256 -Bytes (
             [Text.Encoding]::UTF8.GetBytes($physicalJson))
     }
@@ -2284,6 +2830,9 @@ function Assert-NonTargetIsolation {
         $After.OperationCount -eq $Before.OperationCount -and
         $After.OperationLineageSha256 -ceq
             $Before.OperationLineageSha256 -and
+        $After.BootIdSha256 -ceq $Before.BootIdSha256 -and
+        $After.BootElapsedMilliseconds -ge
+            $Before.BootElapsedMilliseconds -and
         $After.PhysicalLineageSha256 -ceq
             $Before.PhysicalLineageSha256
     ) "cross_device_lineage_changed" `
@@ -2420,6 +2969,14 @@ function Invoke-ProfileAndPackageProvision {
     foreach ($slot in @("device_a", "device_b")) {
         $device = Get-DeviceBySlot -Context $Context -Slot $slot
         $stateDevice = Get-StateDevice -State $State -Slot $slot
+        $otherSlot = if ($slot -ceq "device_a") {
+            "device_b"
+        } else {
+            "device_a"
+        }
+        $otherBefore = Get-PhysicalIsolationProjection `
+            -Context $Context -Slot $otherSlot
+        try {
         if ([string]$stateDevice.snapshot.qfm_profile_state -ceq "invalid") {
             throw (New-AcceptanceError "qfm_profile_initially_invalid" `
                 "QFM has an invalid pre-existing profile; the runner will not replace it.")
@@ -2539,6 +3096,12 @@ function Invoke-ProfileAndPackageProvision {
                 -ProcessEpochSha256 $processEpoch
             return $false
         }
+        } finally {
+            $otherAfter = Get-PhysicalIsolationProjection `
+                -Context $Context -Slot $otherSlot
+            Assert-PhysicalNonTargetIsolation `
+                -Before $otherBefore -After $otherAfter
+        }
     }
     return $true
 }
@@ -2551,6 +3114,14 @@ function Invoke-AgentStagingAndBaseline {
     foreach ($slot in @("device_a", "device_b")) {
         $device = Get-DeviceBySlot -Context $Context -Slot $slot
         $stateDevice = Get-StateDevice -State $State -Slot $slot
+        $otherSlot = if ($slot -ceq "device_a") {
+            "device_b"
+        } else {
+            "device_a"
+        }
+        $otherBefore = Get-PhysicalIsolationProjection `
+            -Context $Context -Slot $otherSlot
+        try {
         $bootIdentity = Get-DeviceBootIdentity `
             -Context $Context -Device $device
         if (-not [bool]$stateDevice.run_owned.agent_profile_staged) {
@@ -2663,6 +3234,12 @@ function Invoke-AgentStagingAndBaseline {
             "Fleet did not receive a fresh direct Kiosk owner status readback."
         $stateDevice.snapshot.kiosk_direct_link_observation =
             "fresh_owner_status_readback"
+        } finally {
+            $otherAfter = Get-PhysicalIsolationProjection `
+                -Context $Context -Slot $otherSlot
+            Assert-PhysicalNonTargetIsolation `
+                -Before $otherBefore -After $otherAfter
+        }
     }
     $State.hub.two_fresh_baseline_checkins = $true
 }
@@ -3312,10 +3889,10 @@ function Invoke-ResumeTransition {
                 "The complete two-device isolation and lifecycle matrix did not pass."
             $State.status = "acceptance_passed_cleanup_required"
             $State.phase = "acceptance-passed"
-            $State.claims.installed = $true
-            $State.claims.reachable = $true
-            $State.claims.authorized = $true
-            $State.claims.effective = $true
+            $State.claims.installed = "confirmed"
+            $State.claims.reachable = "confirmed"
+            $State.claims.authorized = "confirmed"
+            $State.claims.effective = "confirmed"
             Add-StateEvent -State $State -Phase "acceptance-passed" `
                 -Status "passed" -ReasonCode "two_device_isolation_complete"
             Set-FinalReceiptDigest -State $State `
@@ -3333,16 +3910,70 @@ function Invoke-ResumeTransition {
     }
 }
 
-function Invoke-CleanupStep {
+function Resolve-InterruptedCleanupMutation {
     param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State
+    )
+    if ($null -eq $State.mutation) {
+        return
+    }
+    if ([string]$State.mutation.stage -ceq "confirmed") {
+        Complete-DurableMutationTerminal -Context $Context -State $State `
+            -ReconciliationCode "confirmed_record_recovered_after_restart"
+        return
+    }
+    Set-DurableMutationCleanupRequired -Context $Context -State $State `
+        -ReasonCode "interrupted_cleanup_no_blind_redispatch"
+    Complete-DurableMutationTerminal -Context $Context -State $State `
+        -ReconciliationCode "cleanup_required_fresh_final_readback_pending"
+}
+
+function Invoke-JournaledCleanupStep {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
         [Parameter(Mandatory)][Collections.IDictionary] $Checks,
         [Parameter(Mandatory)][string] $Name,
+        [ValidateSet("none", "device_a", "device_b")][string] $Slot = "none",
+        [string] $OwnerId = "acceptance-cleanup",
         [Parameter(Mandatory)][scriptblock] $Operation
     )
+    if ($Checks.Contains($Name)) {
+        return
+    }
+    $kind = "cleanup-" + ($Name -replace '[^a-z0-9-]+', '-').ToLowerInvariant()
+    [void](Start-DurableMutation -Context $Context -State $State `
+        -Kind $kind -ActionId "acceptance.cleanup.$Name" `
+        -Slot $Slot -OwnerId $OwnerId -CleanupOwner $OwnerId)
+    Set-DurableMutationSent -Context $Context -State $State
     try {
         $Checks[$Name] = (& $Operation) -eq $true
+        $State.cleanup.checks = $Checks
+        Write-SanitizedState -Context $Context -State $State
+        if ($Checks[$Name]) {
+            Complete-DurableMutation -Context $Context -State $State `
+                -ReconciliationCode "cleanup_exact_readback_confirmed"
+        } else {
+            Set-DurableMutationCleanupRequired `
+                -Context $Context -State $State `
+                -ReasonCode "cleanup_exact_readback_failed"
+            Complete-DurableMutationTerminal `
+                -Context $Context -State $State `
+                -ReconciliationCode "cleanup_step_partial_failure"
+        }
     } catch {
         $Checks[$Name] = $false
+        $State.cleanup.checks = $Checks
+        Write-SanitizedState -Context $Context -State $State
+        if ($null -ne $State.mutation) {
+            Set-DurableMutationCleanupRequired `
+                -Context $Context -State $State `
+                -ReasonCode "cleanup_owner_or_readback_failed"
+            Complete-DurableMutationTerminal `
+                -Context $Context -State $State `
+                -ReconciliationCode "cleanup_step_exception"
+        }
     }
 }
 
@@ -3373,7 +4004,17 @@ function Remove-AgentPrivateInputs {
             "files/fleet-agent/profile.json",
             "files/fleet-agent/signing-seed.bin"
         ) -AllowedExitCodes @(0, 1)
-    return $result.ExitCode -in @(0, 1)
+    [void](Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @(
+            "shell", "run-as", $script:FleetAgentPackage,
+            "rmdir", "files/fleet-agent"
+        ) -AllowedExitCodes @(0, 1))
+    $readback = Invoke-AdbExact -Context $Context -Device $Device `
+        -Arguments @(
+            "shell", "run-as", $script:FleetAgentPackage,
+            "sh", "-c", "test ! -e files/fleet-agent"
+        ) -AllowedExitCodes @(0, 1)
+    return $result.ExitCode -in @(0, 1) -and $readback.ExitCode -eq 0
 }
 
 function Invoke-OnboardingCleanup {
@@ -3401,6 +4042,181 @@ function Invoke-OnboardingCleanup {
     )
 }
 
+function Add-FinalCleanupReadback {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [Parameter(Mandatory)][Collections.IDictionary] $Checks
+    )
+    $unknown = $false
+    foreach ($slot in @("device_a", "device_b")) {
+        $device = Get-DeviceBySlot -Context $Context -Slot $slot
+        $stateDevice = Get-StateDevice -State $State -Slot $slot
+        foreach ($name in @(
+            "$slot-final-packages-restored",
+            "$slot-final-permissions-restored",
+            "$slot-final-helper-inactive",
+            "$slot-final-wireless-listener-absent",
+            "$slot-final-agent-absent",
+            "$slot-final-agent-private-inputs-absent",
+            "$slot-final-qfm-profile-restored",
+            "$slot-final-kiosk-route-confirmed",
+            "$slot-final-boot-readback-fresh"
+        )) {
+            $Checks[$name] = $false
+        }
+        try {
+            $fresh = Get-DeviceSnapshot -Context $Context -Device $device
+            $packagesRestored = $true
+            foreach ($package in $script:ManagedPackages) {
+                if (
+                    [bool]$fresh.packages[$package] -ne
+                    [bool]$stateDevice.snapshot.packages[$package]
+                ) {
+                    $packagesRestored = $false
+                }
+            }
+            $Checks["$slot-final-packages-restored"] = $packagesRestored
+
+            $permissionsRestored = $true
+            if ([bool]$stateDevice.snapshot.packages[$script:HelperPackage]) {
+                foreach ($permission in $script:HelperPermissions) {
+                    if (
+                        [bool]$fresh.helper_grants[$permission] -ne
+                        [bool]$stateDevice.snapshot.helper_grants[$permission]
+                    ) {
+                        $permissionsRestored = $false
+                    }
+                }
+            }
+            if (
+                [bool]$stateDevice.snapshot.packages[$script:KioskHelperPackage] -and
+                [bool]$fresh.kiosk_helper_write_secure_settings_granted -ne
+                [bool]$stateDevice.snapshot.kiosk_helper_write_secure_settings_granted
+            ) {
+                $permissionsRestored = $false
+            }
+            $Checks["$slot-final-permissions-restored"] =
+                $permissionsRestored
+
+            $helperInactive = -not [bool]$fresh.packages[$script:HelperPackage]
+            if ([bool]$fresh.packages[$script:HelperPackage]) {
+                $helper = Invoke-HelperExact -Context $Context -Device $device `
+                    -HelperAction "status"
+                $helperInactive =
+                    [string]$helper.schema -ceq
+                        "quest-termux-lab.wireless-adb-operator-receipt.v1" -and
+                    $helper.boot_attempt_enabled -eq $false -and
+                    $helper.wireless_debugging_enabled -eq $false -and
+                    $helper.in_flight -eq $false -and
+                    $helper.proof_fresh -eq $false
+            }
+            $Checks["$slot-final-helper-inactive"] = $helperInactive
+            $Checks["$slot-final-wireless-listener-absent"] =
+                $fresh.wifi_setting_enabled -eq $false -and
+                [string]$fresh.adb_tcp_port_state -ceq "inactive" -and
+                [string]$fresh.adb_tls_port_state -ceq "inactive" -and
+                [string]$fresh.adb_listener_state -ceq "absent" -and
+                [string]$fresh.wireless_session_state -ceq "absent" -and
+                [string]$fresh.wireless_pending_state -ceq "absent" -and
+                [int]$fresh.host_forward_count -eq 0 -and
+                [int]$fresh.host_reverse_count -eq 0
+            if ($Checks["$slot-final-wireless-listener-absent"]) {
+                $stateDevice.acceptance.termux_usable = $false
+            }
+            $Checks["$slot-final-agent-absent"] =
+                $fresh.agent_process_present -eq $false
+            $Checks["$slot-final-agent-private-inputs-absent"] =
+                $fresh.agent_private_inputs_absent -eq $true
+            $Checks["$slot-final-qfm-profile-restored"] =
+                [string]$fresh.qfm_profile_state -ceq
+                    [string]$stateDevice.snapshot.qfm_profile_state
+            $Checks["$slot-final-kiosk-route-confirmed"] =
+                [string]$fresh.kiosk_direct_link_observation -ceq "confirmed"
+            $Checks["$slot-final-boot-readback-fresh"] =
+                [string]$fresh.boot_id_sha256 -cmatch '^[0-9a-f]{64}$' -and
+                [long]$fresh.boot_elapsed_milliseconds -ge 0
+        } catch {
+            $unknown = $true
+        }
+        $State.cleanup.checks = $Checks
+        Write-SanitizedState -Context $Context -State $State
+    }
+
+    $Checks["final-hub-process-absent"] = try {
+        -not [bool]$State.hub.started_by_run -or
+        [int]$State.hub.process_id -le 0 -or
+        $null -eq (Get-Process -Id ([int]$State.hub.process_id) `
+            -ErrorAction SilentlyContinue)
+    } catch {
+        $unknown = $true
+        $false
+    }
+    $ruleName = "RustyFleet-WifiAdb-" + $Context.Sha256.Substring(0, 12)
+    $Checks["final-firewall-rule-absent"] = try {
+        $null -eq (Get-NetFirewallRule -DisplayName $ruleName `
+            -ErrorAction SilentlyContinue)
+    } catch {
+        $unknown = $true
+        $false
+    }
+    $Checks["final-onboarding-private-material-absent"] = @(
+        Get-OnboardingGeneratedPaths -Context $Context |
+            Where-Object { Test-Path -LiteralPath $_ }
+    ).Count -eq 0
+    $Checks["final-runtime-stage-absent"] = -not (
+        Test-Path -LiteralPath (
+            Join-Path ([string]$Context.Config.private_state_root) "runtime")
+    )
+    $State.cleanup.checks = $Checks
+    Write-SanitizedState -Context $Context -State $State
+    return $unknown
+}
+
+function Set-ClaimsFromFinalCleanupReadback {
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [Parameter(Mandatory)][Collections.IDictionary] $Checks,
+        [Parameter(Mandatory)][bool] $Unknown
+    )
+    if ($Unknown) {
+        $State.claims.installed = "unknown"
+        $State.claims.reachable = "unknown"
+        $State.claims.authorized = "unknown"
+        $State.claims.effective = "unknown"
+        return
+    }
+    $packageChecks = @($Checks.GetEnumerator() | Where-Object {
+        [string]$_.Key -clike "*-final-packages-restored"
+    })
+    $reachabilityChecks = @($Checks.GetEnumerator() | Where-Object {
+        [string]$_.Key -clike "*-final-wireless-listener-absent" -or
+        [string]$_.Key -clike "*-final-agent-absent" -or
+        [string]$_.Key -ceq "final-hub-process-absent" -or
+        [string]$_.Key -ceq "final-firewall-rule-absent"
+    })
+    $authorityChecks = @($Checks.GetEnumerator() | Where-Object {
+        [string]$_.Key -clike "*-final-permissions-restored" -or
+        [string]$_.Key -clike "*-final-agent-private-inputs-absent" -or
+        [string]$_.Key -clike "*-final-qfm-profile-restored"
+    })
+    $allComplete = @($Checks.Values | Where-Object { $_ -ne $true }).Count -eq 0
+    $State.claims.installed = if (
+        @($packageChecks | Where-Object { $_.Value -ne $true }).Count -eq 0
+    ) { "not_claimed" } else { "partial" }
+    $State.claims.reachable = if (
+        @($reachabilityChecks | Where-Object { $_.Value -ne $true }).Count -eq 0
+    ) { "not_claimed" } else { "partial" }
+    $State.claims.authorized = if (
+        @($authorityChecks | Where-Object { $_.Value -ne $true }).Count -eq 0
+    ) { "not_claimed" } else { "partial" }
+    $State.claims.effective = if ($allComplete) {
+        "not_claimed"
+    } else {
+        "partial"
+    }
+}
+
 function Invoke-AcceptanceCleanup {
     param(
         [Parameter(Mandatory)][object] $Context,
@@ -3410,7 +4226,11 @@ function Invoke-AcceptanceCleanup {
     $State.cleanup.status = "running"
     $State.status = "cleanup_running"
     Write-SanitizedState -Context $Context -State $State
+    Resolve-InterruptedCleanupMutation -Context $Context -State $State
     $checks = [ordered]@{}
+    foreach ($entry in $State.cleanup.checks.GetEnumerator()) {
+        $checks[[string]$entry.Key] = $entry.Value
+    }
 
     foreach ($slot in @("device_a", "device_b")) {
         $device = Get-DeviceBySlot -Context $Context -Slot $slot
@@ -3420,7 +4240,9 @@ function Invoke-AcceptanceCleanup {
             @($stateDevice.run_owned.added_packages) -contains
                 $script:HelperPackage
 
-        Invoke-CleanupStep -Checks $checks -Name "$slot-disable-boot" -Operation {
+        Invoke-JournaledCleanupStep -Context $Context -State $State `
+            -Checks $checks -Name "$slot-disable-boot" -Slot $slot `
+            -OwnerId "wireless-adb-helper" -Operation {
             if (-not $helperExpectedPresent) {
                 return $true
             }
@@ -3428,7 +4250,9 @@ function Invoke-AcceptanceCleanup {
                 -HelperAction "disable-boot-attempt" -Confirm
             return $receipt.accepted -eq $true
         }
-        Invoke-CleanupStep -Checks $checks -Name "$slot-disable-wireless" -Operation {
+        Invoke-JournaledCleanupStep -Context $Context -State $State `
+            -Checks $checks -Name "$slot-disable-wireless" -Slot $slot `
+            -OwnerId "wireless-adb-helper" -Operation {
             if (-not $helperExpectedPresent) {
                 return $true
             }
@@ -3436,7 +4260,9 @@ function Invoke-AcceptanceCleanup {
                 -HelperAction "disable-wireless" -Confirm
             return $receipt.accepted -eq $true
         }
-        Invoke-CleanupStep -Checks $checks -Name "$slot-proof-absent" -Operation {
+        Invoke-JournaledCleanupStep -Context $Context -State $State `
+            -Checks $checks -Name "$slot-proof-absent" -Slot $slot `
+            -OwnerId "fleet-hub" -Operation {
             if ($stateDevice.acceptance.Contains("operation_id") -and
                 [string]$stateDevice.acceptance.operation_id) {
                 [void](Wait-WifiProofAbsent -Context $Context `
@@ -3444,20 +4270,26 @@ function Invoke-AcceptanceCleanup {
             }
             return $true
         }
-        Invoke-CleanupStep -Checks $checks -Name "$slot-agent-stopped" -Operation {
+        Invoke-JournaledCleanupStep -Context $Context -State $State `
+            -Checks $checks -Name "$slot-agent-stopped" -Slot $slot `
+            -OwnerId "fleet-agent" -Operation {
             if ([bool]$stateDevice.run_owned.agent_started) {
                 Stop-FleetAgent -Context $Context -Device $device
             }
             return $true
         }
-        Invoke-CleanupStep -Checks $checks -Name "$slot-agent-inputs-removed" -Operation {
+        Invoke-JournaledCleanupStep -Context $Context -State $State `
+            -Checks $checks -Name "$slot-agent-inputs-removed" -Slot $slot `
+            -OwnerId "fleet-agent-app-private-storage" -Operation {
             if ([bool]$stateDevice.run_owned.agent_profile_staged -and
                 [bool]$stateDevice.snapshot.packages[$script:FleetAgentPackage]) {
                 return Remove-AgentPrivateInputs -Context $Context -Device $device
             }
             return $true
         }
-        Invoke-CleanupStep -Checks $checks -Name "$slot-qfm-profile-restored" -Operation {
+        Invoke-JournaledCleanupStep -Context $Context -State $State `
+            -Checks $checks -Name "$slot-qfm-profile-restored" -Slot $slot `
+            -OwnerId "questionable-file-manager" -Operation {
             if ([bool]$stateDevice.run_owned.qfm_profile_created) {
                 $receipt = Invoke-QfmExact -Context $Context -Arguments @(
                     "connectivity-profile",
@@ -3473,7 +4305,8 @@ function Invoke-AcceptanceCleanup {
 
         foreach ($permission in $script:HelperPermissions) {
             $permissionKey = ($permission -replace '[^A-Za-z0-9]+', '-').ToLowerInvariant()
-            Invoke-CleanupStep -Checks $checks `
+            Invoke-JournaledCleanupStep -Context $Context -State $State `
+                -Checks $checks -Slot $slot -OwnerId "android-package-manager" `
                 -Name "$slot-grant-$permissionKey-restored" -Operation {
                     if ([bool]$stateDevice.snapshot.packages[$script:HelperPackage]) {
                         Set-FixedPackagePermission `
@@ -3485,7 +4318,8 @@ function Invoke-AcceptanceCleanup {
                     return $true
                 }
         }
-        Invoke-CleanupStep -Checks $checks `
+        Invoke-JournaledCleanupStep -Context $Context -State $State `
+            -Checks $checks -Slot $slot -OwnerId "android-package-manager" `
             -Name "$slot-kiosk-helper-grant-restored" -Operation {
                 if ([bool]$stateDevice.snapshot.packages[$script:KioskHelperPackage]) {
                     Set-FixedPackagePermission `
@@ -3501,27 +4335,33 @@ function Invoke-AcceptanceCleanup {
         [Array]::Reverse($addedPackages)
         foreach ($package in $addedPackages) {
             $packageKey = ($package -replace '[^A-Za-z0-9]+', '-').ToLowerInvariant()
-            Invoke-CleanupStep -Checks $checks `
+            Invoke-JournaledCleanupStep -Context $Context -State $State `
+                -Checks $checks -Slot $slot -OwnerId "android-package-manager" `
                 -Name "$slot-package-$packageKey-removed" -Operation {
                     return Remove-RunAddedPackage -Context $Context `
                         -Device $device -Package $package
                 }
         }
-        Invoke-CleanupStep -Checks $checks `
+        Invoke-JournaledCleanupStep -Context $Context -State $State `
+            -Checks $checks -Slot $slot -OwnerId "questionable-file-manager" `
             -Name "$slot-kiosk-direct-link-unchanged" -Operation {
-                # The runner never changes Kiosk direct-link settings. QFM profile
-                # creation/revocation is tracked independently above.
-                return $true
+                return [string](Get-QfmDirectLinkObservation `
+                    -Context $Context -Device $device) -ceq "confirmed"
             }
     }
 
-    Invoke-CleanupStep -Checks $checks -Name "hub-stopped" -Operation {
+    Invoke-JournaledCleanupStep -Context $Context -State $State `
+        -Checks $checks -Name "hub-stopped" -OwnerId "fleet-hub" -Operation {
         return Stop-RunOwnedHub -Context $Context -State $State
     }
-    Invoke-CleanupStep -Checks $checks -Name "firewall-removed" -Operation {
+    Invoke-JournaledCleanupStep -Context $Context -State $State `
+        -Checks $checks -Name "firewall-removed" `
+        -OwnerId "windows-firewall" -Operation {
         return Remove-RunFirewallRule -Context $Context -State $State
     }
-    Invoke-CleanupStep -Checks $checks -Name "onboarding-seeds-removed" -Operation {
+    Invoke-JournaledCleanupStep -Context $Context -State $State `
+        -Checks $checks -Name "onboarding-seeds-removed" `
+        -OwnerId "fleet-onboard" -Operation {
         if ([bool]$State.onboarding.apply_attempted_by_run -and
             (Test-Path -LiteralPath $Context.Config.onboarding.inventory_path `
                 -PathType Leaf)) {
@@ -3535,7 +4375,9 @@ function Invoke-AcceptanceCleanup {
         }
         return $true
     }
-    Invoke-CleanupStep -Checks $checks -Name "runtime-stage-empty" -Operation {
+    Invoke-JournaledCleanupStep -Context $Context -State $State `
+        -Checks $checks -Name "runtime-stage-empty" `
+        -OwnerId "acceptance-runtime" -Operation {
         $root = [IO.Path]::GetFullPath([string]$Context.Config.private_state_root)
         $runtime = [IO.Path]::GetFullPath((Join-Path $root "runtime"))
         Assert-Condition ($runtime.StartsWith(
@@ -3548,6 +4390,8 @@ function Invoke-AcceptanceCleanup {
         return -not (Test-Path -LiteralPath $runtime)
     }
 
+    $finalReadbackUnknown = Add-FinalCleanupReadback `
+        -Context $Context -State $State -Checks $checks
     $truth = Get-CleanupTruth -Checks $checks
     $State.cleanup.checks = $checks
     $State.cleanup.status = $truth.Status
@@ -3557,7 +4401,8 @@ function Invoke-AcceptanceCleanup {
         "cleanup_partial_failure"
     }
     $State.phase = "cleanup"
-    $State.claims.effective = $false
+    Set-ClaimsFromFinalCleanupReadback -State $State -Checks $checks `
+        -Unknown $finalReadbackUnknown
     if ($null -ne $State.mutation) {
         $State.mutation.stage = "terminal"
         $State.mutation.confirmed_at_ms =
@@ -3600,10 +4445,10 @@ function Get-SanitizedStatus {
                 [ordered]@{ slot = "device_b"; state = "private" }
             )
             claims = [ordered]@{
-                installed = $false
-                reachable = $false
-                authorized = $false
-                effective = $false
+                installed = "not_evaluated"
+                reachable = "not_evaluated"
+                authorized = "not_evaluated"
+                effective = "not_evaluated"
             }
         }
     }

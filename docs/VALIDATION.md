@@ -219,7 +219,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -File .\tools\Test-FleetIconProvenance.ps1
 ```
 
-Quick runs that gate without contacting a device. The live phase remains an
+Quick runs that modeled host-conformance gate plus the integrated synthetic
+signed-Hub exact-operation/proof-consumption and process-restart fault gates
+without contacting a device. The live phase remains an
 explicitly confirmed, serial-reserved Meta Quest workflow with attended wearer
 and reboot checkpoints plus complete cleanup truth.
 The icon provenance test proves LF, CRLF, and CR canonical source text bind to
