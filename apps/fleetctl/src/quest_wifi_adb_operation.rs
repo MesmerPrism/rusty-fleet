@@ -17,7 +17,7 @@ use crate::operation::{
 pub(crate) fn is_quest_wifi_adb_operation_command(command: &str) -> bool {
     matches!(
         command,
-        "wifi-adb-preview" | "wifi-adb-execute" | "wifi-adb-get"
+        "wifi-adb-preview" | "wifi-adb-execute" | "wifi-adb-get" | "wifi-adb-list"
     )
 }
 
@@ -29,11 +29,46 @@ pub(crate) fn execute_quest_wifi_adb_operation_command<C: FleetOperationClient +
         Some("wifi-adb-preview") => preview(arguments, client),
         Some("wifi-adb-execute") => execute(arguments, client),
         Some("wifi-adb-get") => get(arguments, client),
+        Some("wifi-adb-list") => list(arguments, client),
         _ => Err(CliFailure::new(
             "unknown_command",
             "the requested Quest Wi-Fi ADB command is unknown",
         )),
     }
+}
+
+fn list<C: FleetOperationClient + ?Sized>(
+    arguments: &[String],
+    client: &mut C,
+) -> Result<serde_json::Value, CliFailure> {
+    if arguments.len() != 1 {
+        return Err(CliFailure::new(
+            "unexpected_arguments",
+            "wifi-adb-list accepts no arguments",
+        ));
+    }
+    let raw = client.list_quest_wifi_adb()?;
+    let values = raw.as_array().ok_or_else(|| {
+        CliFailure::new(
+            "malformed_wifi_adb_operation_set_response",
+            "Fleet Hub operation set must be a JSON array",
+        )
+    })?;
+    let mut prior_id: Option<String> = None;
+    for value in values {
+        let operation = validate_operation(value)?;
+        if prior_id
+            .as_deref()
+            .is_some_and(|prior| prior >= operation.operation_id.as_str())
+        {
+            return Err(CliFailure::new(
+                "invalid_wifi_adb_operation_set_response",
+                "Fleet Hub operation set must be uniquely sorted by operation ID",
+            ));
+        }
+        prior_id = Some(operation.operation_id);
+    }
+    Ok(raw)
 }
 
 fn preview<C: FleetOperationClient + ?Sized>(

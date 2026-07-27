@@ -203,9 +203,11 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 name = "fleet-contracts"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde",
  "serde_jcs",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

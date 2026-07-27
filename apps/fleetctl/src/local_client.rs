@@ -317,6 +317,10 @@ impl FleetOperationClient for LocalFleetOperationClient {
         )
     }
 
+    fn list_quest_wifi_adb(&mut self) -> Result<serde_json::Value, CliFailure> {
+        self.request("GET", "/fleet/v1/quest-wifi-adb", None)
+    }
+
     fn preview_windows_hotspot(
         &mut self,
         request: &WindowsHotspotPreviewRequest,

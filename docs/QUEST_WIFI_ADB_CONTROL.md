@@ -50,13 +50,20 @@ payload for the modern-TLS discovery route, listener state, shell UID, and
 owner evidence digest. Fleet binds the admitted fact to the signed device
 identity, identity revision, source epoch/revision, capability evidence
 revision, and observation/freshness window. It contains no operation or
-preview identity. After admission, Manifold projects the fact onto matching
-device operations only when it is fresh, admitted by the Hub after the
-provider receipt, and not superseded by a newer signed check-in where the
-capability is absent, a later-admitted disable receipt, or source-epoch
-change. Fleet never orders the device-owned proof clock against the Windows
-provider clock; it uses trusted local admission order and fails closed when
-two admissions share the same millisecond. Superseded and expired proofs are
+preview identity because the proof owner does not own those facts. After
+admission, Manifold projects the fact onto matching device operations only
+when it is fresh, admitted by the Hub after the provider receipt, and not
+superseded by a newer signed check-in where the capability is absent, a
+later-admitted disable receipt, or source-epoch change. The projection adds a
+separate Fleet-owned `termux_admission` that binds the proof to the exact
+operation and owner receipt plus enrolled key generation/fingerprint,
+canonical-claims/signing/signature digests, Fleet and Manifold accepted
+revisions, expiry, and a deterministic lineage digest. `termux_usable`
+requires both objects.
+
+Fleet never orders the device-owned proof clock against the Windows provider
+clock; it uses trusted local admission order and fails closed when two
+admissions share the same millisecond. Superseded and expired proofs are
 pruned, and proof IDs and source revisions are replay protected.
 
 There is deliberately no local API or CLI proof-submission route. A caller

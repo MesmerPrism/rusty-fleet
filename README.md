@@ -74,13 +74,17 @@ provider. Fleet and Manifold retain policy and command authority; private
 serial, endpoint, and pairing resolution stays in File Manager. Termux
 usability is projected only from an enrolled signed check-in carrying fresh
 exact `uid=2000(shell)` capability evidence, never from the provider receipt
-or a caller-submitted proof. See
+or a caller-submitted proof. The Hub adds a separate Fleet-owned verified
+admission that binds the proof to its enrolled key, canonical signed claims,
+accepted revisions, exact device/operation, and owner receipt. See
 [Quest Wi-Fi ADB control](docs/QUEST_WIFI_ADB_CONTROL.md).
 The separate
 [two-Quest attended acceptance transaction](docs/QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md)
 binds offline onboarding, File Manager profiles, the proof helper, signed
 Fleet state, two-device isolation, typed wearer/reboot checkpoints, and exact
-cleanup without putting private run inputs in this repository.
+cleanup without putting private run inputs in this repository. Its host
+mutation journal is write-through, digest-chained, and never redispatches an
+interrupted unknown outcome.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status

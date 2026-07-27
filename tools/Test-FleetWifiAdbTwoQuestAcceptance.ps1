@@ -279,9 +279,12 @@ try {
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $proof = [pscustomobject]@{
         schema = "rusty.fleet.quest_wifi_adb_termux_proof.v1"
+        proof_id = "termux-proof-synthetic"
         owner_id = "quest-termux-lab"
         device_id = "device.synthetic.a"
         identity_revision = 1
+        source_epoch = "source.synthetic.a"
+        source_revision = 3
         evidence_revision = 2
         route_mode = "modern_tls"
         discovery_mode = "tls_nsd"
@@ -292,34 +295,130 @@ try {
         observed_at_ms = $now - 1000
         fresh_until_ms = $now + 59000
     }
+    $receipt = [pscustomobject]@{
+        request_id = "request.synthetic.termux"
+        operation_id = "operation.synthetic.termux"
+        device_id = "device.synthetic.a"
+        evidence_sha256 = "2" * 64
+    }
+    $admission = [pscustomobject]@{
+        schema = "rusty.fleet.quest_wifi_adb_termux_admission.v1"
+        checkin_id = "checkin.synthetic.termux"
+        operation_id = "operation.synthetic.termux"
+        device_id = "device.synthetic.a"
+        identity_revision = 1
+        source_epoch = "source.synthetic.a"
+        source_revision = 3
+        evidence_revision = 2
+        proof_id = "termux-proof-synthetic"
+        receipt_request_id = "request.synthetic.termux"
+        receipt_evidence_sha256 = "2" * 64
+        key_id = "key.synthetic.a"
+        key_generation = 1
+        public_key_sha256 = "3" * 64
+        claims_jcs_sha256 = "4" * 64
+        signing_message_sha256 = "5" * 64
+        signature_sha256 = "6" * 64
+        fleet_accepted_revision = 9
+        enrollment_authority_revision = 2
+        manifold_authority_revision = 9
+        signature_verified = $true
+        canonical_claims_verified = $true
+        enrollment_active = $true
+        accepted_at_ms = $now - 500
+        expires_at_ms = $now + 59000
+        lineage_sha256 = ""
+    }
+    $admission.lineage_sha256 =
+        Get-TermuxAdmissionLineageSha256 -Admission $admission
+    $operation = [pscustomobject]@{
+        operation_id = "operation.synthetic.termux"
+        targets = @([pscustomobject]@{
+            device_id = "device.synthetic.a"
+            identity_revision = 1
+            receipt = $receipt
+            termux_proof = $proof
+            termux_admission = $admission
+            termux_usable = $true
+        })
+    }
     Assert-True (
-        (Test-TermuxProof -Proof $proof `
+        (Test-HubTermuxAdmission -Operation $operation `
+            -ExpectedOperationId "operation.synthetic.termux" `
             -ExpectedDeviceId "device.synthetic.a" `
             -ExpectedIdentityRevision 1 -NowMs $now `
             -MinimumEvidenceRevision 1).Valid
-    ) "Valid exact-shell proof was rejected."
-    $wrongUid = Copy-JsonValue $proof
-    $wrongUid.shell_identity = "uid=10234(app)"
+    ) "Valid exact signed Hub admission was rejected."
+    $wrongUid = Copy-JsonValue $operation
+    $wrongUid.targets[0].termux_proof.shell_identity = "uid=10234(app)"
     Assert-True (
-        (Test-TermuxProof -Proof $wrongUid `
+        (Test-HubTermuxAdmission -Operation $wrongUid `
+            -ExpectedOperationId "operation.synthetic.termux" `
             -ExpectedDeviceId "device.synthetic.a" `
             -ExpectedIdentityRevision 1 -NowMs $now).ReasonCode -ceq
             "proof_shell_uid_invalid"
     ) "Wrong-UID proof did not fail closed."
-    $stale = Copy-JsonValue $proof
-    $stale.fresh_until_ms = $now - 1
+    $stale = Copy-JsonValue $operation
+    $stale.targets[0].termux_proof.fresh_until_ms = $now - 1
     Assert-True (
-        (Test-TermuxProof -Proof $stale `
+        (Test-HubTermuxAdmission -Operation $stale `
+            -ExpectedOperationId "operation.synthetic.termux" `
             -ExpectedDeviceId "device.synthetic.a" `
             -ExpectedIdentityRevision 1 -NowMs $now).ReasonCode -ceq
             "proof_stale"
     ) "Stale proof did not fail closed."
     Assert-True (
-        (Test-TermuxProof -Proof $proof `
+        (Test-HubTermuxAdmission -Operation $operation `
+            -ExpectedOperationId "operation.synthetic.termux" `
             -ExpectedDeviceId "device.synthetic.b" `
             -ExpectedIdentityRevision 1 -NowMs $now).ReasonCode -ceq
-            "proof_device_mismatch"
+            "admission_device_mismatch"
     ) "Cross-device proof did not fail closed."
+    $negativeAdmissions = @(
+        @{ name = "unsigned"; mutate = {
+            param($value)
+            $value.targets[0].termux_admission = $null
+        }},
+        @{ name = "claims-hash"; mutate = {
+            param($value)
+            $value.targets[0].termux_admission.claims_jcs_sha256 = "0" * 64
+        }},
+        @{ name = "key"; mutate = {
+            param($value)
+            $value.targets[0].termux_admission.key_generation = 0
+        }},
+        @{ name = "revision"; mutate = {
+            param($value)
+            $value.targets[0].termux_admission.evidence_revision = 99
+        }},
+        @{ name = "lineage"; mutate = {
+            param($value)
+            $value.targets[0].termux_admission.lineage_sha256 = "f" * 64
+        }}
+    )
+    foreach ($case in $negativeAdmissions) {
+        $mutated = Copy-JsonValue $operation
+        & $case.mutate $mutated
+        Assert-True (-not (
+            Test-HubTermuxAdmission -Operation $mutated `
+                -ExpectedOperationId "operation.synthetic.termux" `
+                -ExpectedDeviceId "device.synthetic.a" `
+                -ExpectedIdentityRevision 1 -NowMs $now
+        ).Valid) "Altered $($case.name) admission did not fail closed."
+    }
+    Assert-True (-not (
+        Test-HubTermuxAdmission -Operation $operation `
+            -ExpectedOperationId "operation.synthetic.other" `
+            -ExpectedDeviceId "device.synthetic.a" `
+            -ExpectedIdentityRevision 1 -NowMs $now
+    ).Valid) "Cross-operation admission did not fail closed."
+    Assert-True (-not (
+        Test-HubTermuxAdmission -Operation $operation `
+            -ExpectedOperationId "operation.synthetic.termux" `
+            -ExpectedDeviceId "device.synthetic.a" `
+            -ExpectedIdentityRevision 1 -NowMs $now `
+            -MinimumEvidenceRevision 2
+    ).Valid) "Replay/non-advancing proof revision did not fail closed."
 
     New-Item -ItemType Directory -Path $config.private_state_root | Out-Null
     Write-Json -Path (Join-Path $config.private_state_root "acceptance-state.json") `
@@ -331,6 +430,129 @@ try {
     Assert-ThrowsCode -Code "resume_config_mismatch" -Operation {
         Invoke-FleetWifiAdbTwoQuestAcceptance `
             -Action Status -RunConfig $configPath | Out-Null
+    }
+    Remove-Item -LiteralPath $config.private_state_root -Recurse -Force
+
+    $junctionTarget = Join-Path $testRoot "junction-target"
+    $junctionPath = Join-Path $testRoot "junction"
+    New-Item -ItemType Directory -Path $junctionTarget | Out-Null
+    Copy-Item -LiteralPath $configPath `
+        -Destination (Join-Path $junctionTarget "config.json")
+    New-Item -ItemType Junction -Path $junctionPath `
+        -Target $junctionTarget | Out-Null
+    Assert-ThrowsCode -Code "private_input_reparse" -Operation {
+        Read-ValidatedRunConfig `
+            -RunConfig (Join-Path $junctionPath "config.json") | Out-Null
+    }
+
+    $syntheticSnapshots = @()
+    foreach ($slot in @("device_a", "device_b")) {
+        $syntheticSnapshots += [pscustomobject]@{
+            slot = $slot
+            usb_ready = $true
+            package_set_sha256 = "1" * 64
+            packages = [ordered]@{}
+            helper_grants = [ordered]@{}
+            kiosk_helper_write_secure_settings_granted = $false
+            qfm_profile_state = "absent"
+            kiosk_direct_link_observation = "not_yet_observed"
+            after_boot_enabled = $false
+            wifi_setting_enabled = $false
+            transport_usb_present = $true
+            signer_checks_complete = $true
+            agent_process_present = $false
+            agent_private_inputs_absent = $true
+            boot_id_sha256 = "2" * 64
+            boot_elapsed_milliseconds = 100000
+            termux_process_epoch_sha256 = "0" * 64
+        }
+    }
+    New-Item -ItemType Directory -Path $config.private_state_root | Out-Null
+    $modelState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $modelState
+    $roundTrip = Read-SanitizedState -Context $validated
+    Assert-True (
+        [string]$roundTrip.schema -ceq
+            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v2" -and
+        @(Get-ChildItem -LiteralPath $config.private_state_root `
+            -Filter "*.pending").Count -eq 0
+    ) "Write-through state publication did not round-trip cleanly."
+
+    $unknownState = Copy-JsonValue $modelState
+    $unknownState["unexpected"] = $true
+    Write-Json -Path (
+        Join-Path $config.private_state_root "acceptance-state.json"
+    ) -Value $unknownState
+    Assert-ThrowsCode -Code "config_unknown_field" -Operation {
+        Read-SanitizedState -Context $validated | Out-Null
+    }
+
+    Write-SanitizedState -Context $validated -State $modelState
+    $statePath =
+        Join-Path $config.private_state_root "acceptance-state.json"
+    $stateJson = Get-Content -LiteralPath $statePath -Raw
+    $duplicateStateJson = $stateJson -replace
+        '"status":\s*"preflighted",',
+        '"status":"preflighted","status":"preflighted",'
+    [IO.File]::WriteAllText($statePath, $duplicateStateJson)
+    Assert-ThrowsCode -Code "config_duplicate_field" -Operation {
+        Read-SanitizedState -Context $validated | Out-Null
+    }
+
+    $modelState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $modelState
+    [void](Start-DurableMutation -Context $validated -State $modelState `
+        -Kind "modeled-prepared-crash" -ActionId "test.prepared" `
+        -OwnerId "modeled-owner")
+    $preparedState = Read-SanitizedState -Context $validated
+    Assert-True (
+        [string]$preparedState.mutation.stage -ceq "prepared_not_sent"
+    ) "Prepared mutation was not durable before dispatch."
+    Assert-ThrowsCode -Code "mutation_cleanup_required" -Operation {
+        Assert-NoAmbiguousMutation `
+            -Context $validated -State $preparedState
+    }
+    Assert-True (
+        [string](Read-SanitizedState `
+            -Context $validated).mutation.stage -ceq "cleanup_required"
+    ) "Prepared crash recovery did not fail closed without redispatch."
+
+    $modelState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $modelState
+    [void](Start-DurableMutation -Context $validated -State $modelState `
+        -Kind "modeled-sent-crash" -ActionId "test.sent" `
+        -OwnerId "modeled-owner")
+    Set-DurableMutationSent -Context $validated -State $modelState
+    $sentState = Read-SanitizedState -Context $validated
+    Assert-True (
+        [string]$sentState.mutation.stage -ceq "sent_outcome_unknown"
+    ) "Sent mutation outcome was not durably unknown."
+    Assert-ThrowsCode -Code "mutation_cleanup_required" -Operation {
+        Assert-NoAmbiguousMutation -Context $validated -State $sentState
+    }
+
+    $modelState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $modelState
+    [void](Start-DurableMutation -Context $validated -State $modelState `
+        -Kind "modeled-confirmed" -ActionId "test.confirmed" `
+        -OwnerId "modeled-owner")
+    Set-DurableMutationSent -Context $validated -State $modelState
+    Complete-DurableMutation -Context $validated -State $modelState `
+        -ReconciliationCode "modeled_exact_readback"
+    $confirmedState = Read-SanitizedState -Context $validated
+    Assert-True (
+        $null -eq $confirmedState.mutation -and
+        $confirmedState.mutation_history.Count -eq 1 -and
+        [string]$confirmedState.journal_head_sha256 -cne ("0" * 64)
+    ) "Confirmed mutation did not advance the durable digest chain."
+    $confirmedState.mutation_history[0].journal_sha256 = "f" * 64
+    Write-Json -Path $statePath -Value $confirmedState
+    Assert-ThrowsCode -Code "mutation_journal_invalid" -Operation {
+        Read-SanitizedState -Context $validated | Out-Null
     }
 
     $cleanup = Get-CleanupTruth -Checks ([ordered]@{

@@ -126,6 +126,13 @@ pub trait FleetOperationClient {
         ))
     }
 
+    fn list_quest_wifi_adb(&mut self) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_wifi_adb_client_required",
+            "the injected Fleet client does not support Quest Wi-Fi ADB operation listing",
+        ))
+    }
+
     fn preview_windows_hotspot(
         &mut self,
         _request: &fleet_contracts::WindowsHotspotPreviewRequest,
@@ -217,6 +224,7 @@ pub fn is_operation_command(command: &str) -> bool {
             | "wifi-adb-preview"
             | "wifi-adb-execute"
             | "wifi-adb-get"
+            | "wifi-adb-list"
             | "hotspot-preview"
             | "hotspot-execute"
             | "hotspot-get"
