@@ -1896,105 +1896,211 @@ function ConvertFrom-ClosedAdbMdnsServices {
     }
 }
 
+function New-UnknownAdbdSocketOwnerReadback {
+    return [pscustomobject]@{
+        ParseState = "unknown"
+        ListenerPorts = @()
+        EstablishedPorts = @()
+    }
+}
+
 function ConvertFrom-ClosedAdbdSocketOwnerReadback {
     param([Parameter(Mandatory)][AllowEmptyString()][string] $Text)
-    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 1048576) {
-        return [pscustomobject]@{
-            ParseState = "unknown"
-            ListenerPorts = @()
-            EstablishedPorts = @()
-        }
+    $unknown = New-UnknownAdbdSocketOwnerReadback
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 2097152) {
+        return $unknown
     }
     $lines = @($Text.Replace("`r`n", "`n").Replace("`r", "`n").Trim() `
         -split "`n")
     if (
-        $lines.Count -lt 3 -or
-        $lines[0] -cne "rusty.fleet.adbd_socket_owner.v1" -or
-        $lines[1] -cnotmatch '^pid=([1-9][0-9]*)$'
+        $lines.Count -lt 25 -or
+        $lines[0] -cne "rusty.fleet.adbd_socket_owner.v2"
     ) {
-        return [pscustomobject]@{
-            ParseState = "unknown"
-            ListenerPorts = @()
-            EstablishedPorts = @()
-        }
+        return $unknown
     }
-    $inodes = [Collections.Generic.HashSet[string]]::new(
-        [StringComparer]::Ordinal)
-    $rows = @()
-    foreach ($line in @($lines | Select-Object -Skip 2)) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            continue
-        }
-        if ($line -cmatch '^inode=([1-9][0-9]*)$') {
-            if (-not $inodes.Add([string]$Matches[1])) {
-                return [pscustomobject]@{
-                    ParseState = "unknown"
-                    ListenerPorts = @()
-                    EstablishedPorts = @()
-                }
-            }
-            continue
-        }
-        if ($line -cnotmatch (
-            '^tcp(4|6)=([0-9A-F]{8}|[0-9A-F]{32}):([0-9A-F]{4}),' +
-            '([0-9A-F]{8}|[0-9A-F]{32}):([0-9A-F]{4}),' +
-            '([0-9A-F]{2}),([1-9][0-9]*)$'
-        )) {
-            return [pscustomobject]@{
-                ParseState = "unknown"
-                ListenerPorts = @()
-                EstablishedPorts = @()
-            }
-        }
-        $family = [int]$Matches[1]
-        $localAddress = [string]$Matches[2]
-        $remoteAddress = [string]$Matches[4]
+
+    $lineIndex = 1
+    $samples = @()
+    foreach ($sampleNumber in @(1, 2)) {
         if (
-            ($family -eq 4 -and (
-                $localAddress.Length -ne 8 -or
-                $remoteAddress.Length -ne 8
-            )) -or
-            ($family -eq 6 -and (
-                $localAddress.Length -ne 32 -or
-                $remoteAddress.Length -ne 32
-            ))
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cne "sample_begin=$sampleNumber"
         ) {
-            return [pscustomobject]@{
-                ParseState = "unknown"
-                ListenerPorts = @()
-                EstablishedPorts = @()
-            }
+            return $unknown
         }
-        $port = [Convert]::ToInt32([string]$Matches[3], 16)
-        if ($port -lt 1 -or $port -gt 65535) {
-            return [pscustomobject]@{
-                ParseState = "unknown"
-                ListenerPorts = @()
-                EstablishedPorts = @()
-            }
+        $lineIndex++
+        if (
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cnotmatch '^pre_pid=([1-9][0-9]*)$'
+        ) {
+            return $unknown
         }
-        $rows += [pscustomobject]@{
-            LocalPort = $port
-            State = [string]$Matches[6]
-            Inode = [string]$Matches[7]
+        $prePid = [string]$Matches[1]
+        $lineIndex++
+        if (
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cnotmatch '^pre_starttime=([1-9][0-9]*)$'
+        ) {
+            return $unknown
+        }
+        $preStartTime = [string]$Matches[1]
+        $lineIndex++
+        if (
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cne "fd_begin=1"
+        ) {
+            return $unknown
+        }
+        $lineIndex++
+
+        $inodes = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::Ordinal)
+        while (
+            $lineIndex -lt $lines.Count -and
+            $lines[$lineIndex] -cne "fd_end=1"
+        ) {
+            if (
+                $lines[$lineIndex] -cnotmatch '^inode=([1-9][0-9]*)$' -or
+                -not $inodes.Add([string]$Matches[1])
+            ) {
+                return $unknown
+            }
+            $lineIndex++
+        }
+        if (
+            $inodes.Count -eq 0 -or
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cne "fd_end=1"
+        ) {
+            return $unknown
+        }
+        $lineIndex++
+
+        $rows = @()
+        $canonicalRows = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::Ordinal)
+        foreach ($family in @(4, 6)) {
+            if (
+                $lineIndex -ge $lines.Count -or
+                $lines[$lineIndex] -cne "tcp${family}_begin=1"
+            ) {
+                return $unknown
+            }
+            $lineIndex++
+            while (
+                $lineIndex -lt $lines.Count -and
+                $lines[$lineIndex] -cne "tcp${family}_end=1"
+            ) {
+                $line = [string]$lines[$lineIndex]
+                if ($line -cnotmatch (
+                    "^tcp${family}=([0-9A-F]{8}|[0-9A-F]{32}):" +
+                    '([0-9A-F]{4}),' +
+                    '([0-9A-F]{8}|[0-9A-F]{32}):([0-9A-F]{4}),' +
+                    '([0-9A-F]{2}),([1-9][0-9]*)$'
+                )) {
+                    return $unknown
+                }
+                $localAddress = [string]$Matches[1]
+                $remoteAddress = [string]$Matches[3]
+                if (
+                    ($family -eq 4 -and (
+                        $localAddress.Length -ne 8 -or
+                        $remoteAddress.Length -ne 8
+                    )) -or
+                    ($family -eq 6 -and (
+                        $localAddress.Length -ne 32 -or
+                        $remoteAddress.Length -ne 32
+                    )) -or
+                    -not $canonicalRows.Add($line)
+                ) {
+                    return $unknown
+                }
+                $port = [Convert]::ToInt32([string]$Matches[2], 16)
+                if ($port -lt 1 -or $port -gt 65535) {
+                    return $unknown
+                }
+                $rows += [pscustomobject]@{
+                    Canonical = $line
+                    LocalPort = $port
+                    State = [string]$Matches[5]
+                    Inode = [string]$Matches[6]
+                }
+                $lineIndex++
+            }
+            if (
+                $lineIndex -ge $lines.Count -or
+                $lines[$lineIndex] -cne "tcp${family}_end=1"
+            ) {
+                return $unknown
+            }
+            $lineIndex++
+        }
+
+        if (
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cnotmatch '^post_pid=([1-9][0-9]*)$'
+        ) {
+            return $unknown
+        }
+        $postPid = [string]$Matches[1]
+        $lineIndex++
+        if (
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cnotmatch '^post_starttime=([1-9][0-9]*)$'
+        ) {
+            return $unknown
+        }
+        $postStartTime = [string]$Matches[1]
+        $lineIndex++
+        if (
+            $lineIndex -ge $lines.Count -or
+            $lines[$lineIndex] -cne "sample_end=$sampleNumber"
+        ) {
+            return $unknown
+        }
+        $lineIndex++
+
+        if (
+            $prePid -cne $postPid -or
+            $preStartTime -cne $postStartTime
+        ) {
+            return $unknown
+        }
+        $ownedRows = @($rows | Where-Object {
+            $inodes.Contains([string]$_.Inode)
+        })
+        $projectionParts = @(
+            @($inodes | Sort-Object | ForEach-Object { "inode=$_" })
+            @($ownedRows | ForEach-Object {
+                [string]$_.Canonical
+            } | Sort-Object)
+        )
+        $samples += [pscustomobject]@{
+            Pid = $prePid
+            StartTime = $preStartTime
+            Projection = $projectionParts -join "`n"
+            OwnedRows = $ownedRows
         }
     }
-    if ($inodes.Count -eq 0) {
-        return [pscustomobject]@{
-            ParseState = "unknown"
-            ListenerPorts = @()
-            EstablishedPorts = @()
-        }
+    if (
+        $lineIndex -ne $lines.Count -or
+        $samples.Count -ne 2 -or
+        [string]$samples[0].Pid -cne [string]$samples[1].Pid -or
+        [string]$samples[0].StartTime -cne
+            [string]$samples[1].StartTime -or
+        [string]$samples[0].Projection -cne
+            [string]$samples[1].Projection
+    ) {
+        return $unknown
     }
-    $ownedRows = @($rows | Where-Object {
-        $inodes.Contains([string]$_.Inode)
-    })
+
+    $stableOwnedRows = @($samples[1].OwnedRows)
     return [pscustomobject]@{
         ParseState = "known"
-        ListenerPorts = @($ownedRows | Where-Object {
+        ListenerPorts = @($stableOwnedRows | Where-Object {
             [string]$_.State -ceq "0A"
         } | ForEach-Object { [int]$_.LocalPort } | Sort-Object -Unique)
-        EstablishedPorts = @($ownedRows | Where-Object {
+        EstablishedPorts = @($stableOwnedRows | Where-Object {
             [string]$_.State -ceq "01"
         } | ForEach-Object { [int]$_.LocalPort } | Sort-Object -Unique)
     }
@@ -2133,32 +2239,65 @@ function Get-AdbNetworkObservation {
         -PropertyName "service.adb.tls.port"
 
     # Resolve the exact adbd process's socket FDs against the kernel TCP
-    # tables. If procfs ownership is unavailable, the fixed command fails and
-    # no property or discovery absence is allowed to substitute for it.
+    # tables twice. Each complete sample is bounded by the same PID and
+    # /proc/<pid>/stat start time before and after capture. Only identical
+    # consecutive owner projections can prove presence or absence.
     $ownerSocketCommand = @'
 command -v awk >/dev/null 2>&1 || exit 40
-pid=$(pidof adbd) || exit 41
-case "$pid" in *" "*) exit 42 ;; esac
-printf "rusty.fleet.adbd_socket_owner.v1\npid=%s\n" "$pid"
-for fd in /proc/"$pid"/fd/*; do
-  link=$(readlink "$fd") || exit 43
-  case "$link" in
-    socket:\[*\])
-      inode=$(printf "%s" "$link" | awk -F'[][]' '{print $2}')
-      printf "inode=%s\n" "$inode"
-      ;;
-  esac
+printf "rusty.fleet.adbd_socket_owner.v2\n"
+for sample in 1 2; do
+  pre_pid=$(pidof adbd) || exit 41
+  case "$pre_pid" in ''|*[!0-9]*) exit 42 ;; esac
+  pre_starttime=$(awk -v expected="$pre_pid" '
+    NF >= 22 && $1 == expected && $2 == "(adbd)" &&
+      $22 ~ /^[0-9]+$/ { print $22; found=1 }
+    END { if (!found) exit 1 }
+  ' /proc/"$pre_pid"/stat) || exit 43
+  case "$pre_starttime" in ''|*[!0-9]*) exit 43 ;; esac
+
+  printf "sample_begin=%s\npre_pid=%s\npre_starttime=%s\nfd_begin=1\n" "$sample" "$pre_pid" "$pre_starttime"
+  saw_socket=0
+  for fd in /proc/"$pre_pid"/fd/*; do
+    link=$(readlink "$fd") || exit 44
+    case "$link" in
+      socket:\[*\])
+        inode=$(printf "%s" "$link" | awk -F'[][]' '{print $2}')
+        case "$inode" in ''|*[!0-9]*) exit 45 ;; esac
+        printf "inode=%s\n" "$inode"
+        saw_socket=1
+        ;;
+    esac
+  done
+  [ "$saw_socket" = 1 ] || exit 46
+  printf "fd_end=1\ntcp4_begin=1\n"
+  awk 'NR > 1 { print "tcp4=" $2 "," $3 "," $4 "," $10 }' /proc/net/tcp || exit 47
+  printf "tcp4_end=1\ntcp6_begin=1\n"
+  awk 'NR > 1 { print "tcp6=" $2 "," $3 "," $4 "," $10 }' /proc/net/tcp6 || exit 48
+  printf "tcp6_end=1\n"
+
+  post_pid=$(pidof adbd) || exit 41
+  case "$post_pid" in ''|*[!0-9]*) exit 42 ;; esac
+  post_starttime=$(awk -v expected="$post_pid" '
+    NF >= 22 && $1 == expected && $2 == "(adbd)" &&
+      $22 ~ /^[0-9]+$/ { print $22; found=1 }
+    END { if (!found) exit 1 }
+  ' /proc/"$post_pid"/stat) || exit 43
+  case "$post_starttime" in ''|*[!0-9]*) exit 43 ;; esac
+  printf "post_pid=%s\npost_starttime=%s\nsample_end=%s\n" "$post_pid" "$post_starttime" "$sample"
 done
-awk 'NR > 1 { print "tcp4=" $2 "," $3 "," $4 "," $10 }' /proc/net/tcp || exit 44
-awk 'NR > 1 { print "tcp6=" $2 "," $3 "," $4 "," $10 }' /proc/net/tcp6 || exit 45
 '@
     $ownerSocketCommand =
         $ownerSocketCommand.Replace("`r`n", "`n").Replace("`r", "`n")
     $ownerSocketsResult = Invoke-AdbExact `
         -Context $Context -Device $Device `
-        -Arguments @("shell", "sh", "-c", $ownerSocketCommand)
-    $ownerSockets = ConvertFrom-ClosedAdbdSocketOwnerReadback `
-        -Text $ownerSocketsResult.Stdout
+        -Arguments @("shell", "sh", "-c", $ownerSocketCommand) `
+        -AllowedExitCodes (@(0) + @(40..48))
+    $ownerSockets = if ($ownerSocketsResult.ExitCode -eq 0) {
+        ConvertFrom-ClosedAdbdSocketOwnerReadback `
+            -Text $ownerSocketsResult.Stdout
+    } else {
+        New-UnknownAdbdSocketOwnerReadback
+    }
 
     $manager = Invoke-AdbExact -Context $Context -Device $Device `
         -Arguments @("shell", "dumpsys", "adb")

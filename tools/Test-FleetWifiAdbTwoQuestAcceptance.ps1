@@ -142,6 +142,13 @@ $dynamicOwnerSockets = ConvertFrom-ClosedAdbdSocketOwnerReadback -Text (
 $emptyOwnerSockets = ConvertFrom-ClosedAdbdSocketOwnerReadback -Text (
     Get-Content -LiteralPath (
         Join-Path $ownerFixtureRoot "adbd-sockets-empty.txt") -Raw)
+$unstableOwnerSockets = @(
+    "adbd-sockets-listener-churn.txt",
+    "adbd-sockets-pid-reuse.txt"
+) | ForEach-Object {
+    ConvertFrom-ClosedAdbdSocketOwnerReadback -Text (
+        Get-Content -LiteralPath (Join-Path $ownerFixtureRoot $_) -Raw)
+}
 Assert-True (
     $dynamicOwnerSockets.ParseState -ceq "known" -and
     @($dynamicOwnerSockets.ListenerPorts) -contains 43127 -and
@@ -150,6 +157,13 @@ Assert-True (
     @($emptyOwnerSockets.ListenerPorts).Count -eq 0 -and
     @($emptyOwnerSockets.EstablishedPorts).Count -eq 0
 ) "The closed adbd socket-owner parser lost an owned listener/session."
+Assert-True (
+    @($unstableOwnerSockets | Where-Object {
+        $_.ParseState -cne "unknown" -or
+        @($_.ListenerPorts).Count -ne 0 -or
+        @($_.EstablishedPorts).Count -ne 0
+    }).Count -eq 0
+) "An atomicity-damaged adbd snapshot was falsely interpreted as absent."
 $inactivePort = [pscustomobject]@{ State = "inactive"; Port = 0 }
 $dynamicFacts = Resolve-AdbOwnerNetworkFacts `
     -Manager $retainedManager -Mdns $dynamicMdns `
@@ -188,6 +202,31 @@ Assert-True (
     $pendingWithoutListener.WirelessSessionState -ceq "absent" -and
     $pendingWithoutListener.WirelessPendingState -ceq "pending"
 ) "A conclusive empty owner projection lost the pending activation."
+
+$unstableFacts = Resolve-AdbOwnerNetworkFacts `
+    -Manager $retainedManager `
+    -Mdns ([pscustomobject]@{ ParseState = "known"; Services = @() }) `
+    -OwnerSockets $unstableOwnerSockets[0] `
+    -Tcp $inactivePort -Tls $inactivePort -WifiSetting "0" `
+    -PersistentTlsSetting "0" -TargetServices @()
+Assert-True (
+    $unstableFacts.ListenerState -ceq "unknown" -and
+    $unstableFacts.WirelessSessionState -ceq "unknown" -and
+    $unstableFacts.WirelessPendingState -ceq "unknown"
+) "Owner-snapshot churn did not poison every derived network fact."
+$preflightWouldAdmit =
+    $unstableFacts.ListenerState -ceq "absent" -and
+    $unstableFacts.WirelessSessionState -ceq "absent" -and
+    $unstableFacts.WirelessPendingState -ceq "absent"
+$terminalCleanupWouldAccept =
+    $unstableFacts.ListenerState -ceq "absent" -and
+    $unstableFacts.WirelessSessionState -ceq "absent" -and
+    $unstableFacts.WirelessPendingState -ceq "absent" -and
+    $retainedManager.Format -ceq "android.debugging_manager.text.v1"
+Assert-True (-not $preflightWouldAdmit) `
+    "An unstable owner snapshot could pass Preflight admission."
+Assert-True (-not $terminalCleanupWouldAccept) `
+    "An unstable owner snapshot could satisfy terminal cleanup."
 
 $unknownFacts = Resolve-AdbOwnerNetworkFacts `
     -Manager $unknownManager -Mdns $dynamicMdns `
@@ -772,6 +811,8 @@ try {
         "ConvertFrom-ClosedAdbManagerDump",
         "ConvertFrom-ClosedAdbMdnsServices",
         "ConvertFrom-ClosedAdbdSocketOwnerReadback",
+        "rusty.fleet.adbd_socket_owner.v2",
+        "pre_starttime",
         "adb_retained_pairing_sha256",
         "wireless_pending_state",
         "host_forward_count",

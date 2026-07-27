@@ -113,17 +113,21 @@ pairing-in-progress flag, so Fleet never derives those facts from
 Actual dynamic listener and pending-pairing ports come from the ADB owner's
 closed `adb mdns services` projection, target-bound by the Quest's current
 global IPv4 address or platform-serial service prefix. A closed
-`rusty.fleet.adbd_socket_owner.v1` readback resolves the exact `adbd` process's
-socket FDs to `/proc/net/tcp*`; its owned listening and established sockets are
-the actual listener/session facts. Inaccessible procfs ownership, an
-unrecognized readback, or disagreement between properties/mDNS and the owned
-socket set remains `unknown`, never `absent`. Any unknown manager, mDNS, or
-socket-owner grammar therefore fails Preflight and cannot satisfy terminal
-cleanup. Because AOSP v1 omits pairing-in-progress, missing mDNS while Wireless
-Debugging remains enabled also stays `unknown`; only an observed pairing
-service is `pending`, and only disabled owner flags can close it as `absent`.
-Final cleanup also requires the retained pairing/trusted-network digest to
-equal its initial value.
+`rusty.fleet.adbd_socket_owner.v2` readback resolves the exact `adbd` process's
+socket FDs to `/proc/net/tcp*`. Each complete sample binds the PID and
+`/proc/<pid>/stat` start time before and after the FD and TCP-table capture.
+Fleet requires two consecutive samples with the same process identity and
+identical complete owner projection before deriving actual listener/session
+facts. A listener appearing between FD and TCP capture, PID reuse, process or
+socket churn, inaccessible procfs ownership, an unrecognized readback, or
+disagreement between properties/mDNS and the owned socket set remains
+`unknown`, never `absent`. Any unknown manager, mDNS, or socket-owner grammar
+therefore fails Preflight and cannot satisfy terminal cleanup. Because AOSP v1
+omits pairing-in-progress, missing mDNS while Wireless Debugging remains
+enabled also stays `unknown`; only an observed pairing service is `pending`,
+and only disabled owner flags can close it as `absent`. Final cleanup also
+requires the retained pairing/trusted-network digest to equal its initial
+value.
 
 This readback correction advances private acceptance state to v4. A v3 state
 cannot be migrated safely because it has no retained-pairing baseline and may
