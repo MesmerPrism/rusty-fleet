@@ -26,6 +26,11 @@ Quick is safe during normal editing and checks:
   stale-revision, agent-upgrade, old-epoch-replay, and exact-owner key-rotation
   behavior;
 - exact `fleetctl`/local-API projection parity;
+- exact Manifold revision convergence across model, peer, admission,
+  media-session, and Runtime Host dependencies; Runtime Host v2-to-v4 restart
+  migration must retain command replay state, initialize new revocation replay
+  sets empty, and invent no lease, revocation, barrier, convergence, owner
+  acknowledgement, effect result, or cleanup fact;
 - saved-view valid/damaged contracts, canonical ordering, optimistic
   revision conflict, durable restart restoration, HTTP CRUD, and structured
   `fleetctl` round-trip parity;
@@ -130,6 +135,8 @@ Deep includes Standard and adds:
 
 - tracked-file reconciliation and large/generated artifact checks;
 - architecture/authority/public-boundary review markers;
+- source-candidate dependency convergence and unsigned/non-publishable
+  Windows distribution eligibility;
 - any implementation-era full workspace, security, performance, or
   cross-repository checks registered by the active milestone.
 

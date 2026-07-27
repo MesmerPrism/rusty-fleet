@@ -26,6 +26,7 @@ use rusty_manifold_peer::{
 };
 use rusty_manifold_runtime_host::{
     HOST_COMMAND_REQUEST_SCHEMA, HOST_SNAPSHOT_SCHEMA, HOST_TYPED_PARAMS_DIGEST_SCHEMA,
+    LEGACY_HOST_SNAPSHOT_V1_SCHEMA, LEGACY_HOST_SNAPSHOT_V2_SCHEMA, LEGACY_HOST_SNAPSHOT_V3_SCHEMA,
     ManifoldRuntimeApplicationReceipt, ManifoldRuntimeCommandDescriptor,
     ManifoldRuntimeCommandRequest, ManifoldRuntimeDispatchOutcome, ManifoldRuntimeDispatchReceipt,
     ManifoldRuntimeHost, ManifoldRuntimeHostSnapshot, ManifoldRuntimeTypedParamsDigest,
@@ -414,6 +415,8 @@ impl FleetManifoldAdapter {
             leases: Vec::new(),
             applied_request_ids: Vec::new(),
             reviewed_sweep_ids: Vec::new(),
+            reviewed_control_lease_adoption_ids: Vec::new(),
+            reviewed_derivative_lease_revocation_ids: Vec::new(),
             audit_events: Vec::new(),
         })
         .expect("static Fleet runtime host snapshot");
@@ -555,9 +558,7 @@ impl FleetManifoldAdapter {
                                 required_lease_scope: None,
                             });
                     }
-                    ManifoldRuntimeHost::from_snapshot(runtime_snapshot).map_err(|error| {
-                        format!("Fleet runtime authority snapshot is invalid: {error}")
-                    })?
+                    restart_runtime_host(runtime_snapshot)?
                 }
                 None => self.runtime_host.clone(),
             };
@@ -1451,6 +1452,54 @@ impl FleetManifoldAdapter {
     }
 }
 
+fn restart_runtime_host(
+    runtime_snapshot: ManifoldRuntimeHostSnapshot,
+) -> Result<ManifoldRuntimeHost, String> {
+    if runtime_snapshot.schema_id.as_str() == HOST_SNAPSHOT_SCHEMA {
+        return ManifoldRuntimeHost::from_snapshot(runtime_snapshot)
+            .map_err(|error| format!("Fleet runtime authority snapshot is invalid: {error}"));
+    }
+
+    let legacy_schema = runtime_snapshot.schema_id.as_str().to_owned();
+    let mut legacy_value = serde_json::to_value(runtime_snapshot).map_err(|error| {
+        format!("Fleet runtime authority snapshot cannot be prepared for migration: {error}")
+    })?;
+    let object = legacy_value.as_object_mut().ok_or_else(|| {
+        "Fleet runtime authority snapshot cannot be prepared for migration".to_owned()
+    })?;
+    match legacy_schema.as_str() {
+        LEGACY_HOST_SNAPSHOT_V1_SCHEMA => {
+            object.remove("reviewed_sweep_ids");
+            object.remove("reviewed_control_lease_adoption_ids");
+            object.remove("reviewed_derivative_lease_revocation_ids");
+        }
+        LEGACY_HOST_SNAPSHOT_V2_SCHEMA => {
+            object.remove("reviewed_control_lease_adoption_ids");
+            object.remove("reviewed_derivative_lease_revocation_ids");
+        }
+        LEGACY_HOST_SNAPSHOT_V3_SCHEMA => {
+            object.remove("reviewed_derivative_lease_revocation_ids");
+        }
+        _ => {
+            return Err(format!(
+                "Fleet runtime authority snapshot schema is not supported: {legacy_schema}"
+            ));
+        }
+    }
+    let legacy_json = serde_json::to_string(&legacy_value).map_err(|error| {
+        format!("Fleet runtime authority snapshot cannot be serialized for migration: {error}")
+    })?;
+    let (host, migration) = ManifoldRuntimeHost::restart_from_json_with_migration(&legacy_json)
+        .map_err(|error| format!("Fleet runtime authority snapshot migration failed: {error}"))?;
+    if !migration.migrated
+        || migration.source_schema_id.as_str() != legacy_schema
+        || migration.resulting_schema_id.as_str() != HOST_SNAPSHOT_SCHEMA
+    {
+        return Err("Fleet runtime authority snapshot migration evidence is invalid".to_owned());
+    }
+    Ok(host)
+}
+
 fn signed_termux_proof_from_capability(
     signed: &SignedFleetCheckIn,
     proposal: &ManifoldPeerStatusProposal,
@@ -1627,6 +1676,9 @@ mod tests {
         ManifoldPeerIdentity, ManifoldPeerPayloadClass, ManifoldPeerRole, ManifoldPeerStatus,
         ManifoldPeerStatusProposal,
     };
+    use rusty_manifold_runtime_host::{
+        HOST_SNAPSHOT_SCHEMA, LEGACY_HOST_AUDIT_EVENT_V2_SCHEMA, LEGACY_HOST_SNAPSHOT_V2_SCHEMA,
+    };
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
@@ -1744,6 +1796,71 @@ mod tests {
             restarted
                 .authorize_kiosk_show_controls(&authorization, 2_001)
                 .expect_err("the same authority request cannot replay")
+                .contains("ReplayedRequest")
+        );
+    }
+
+    #[test]
+    fn legacy_runtime_authority_migrates_without_inventing_revocation_state() {
+        let mut adapter = FleetManifoldAdapter::new(vec![dotted("operator.local")]);
+        let owner_action_request_id = "owner-action-legacy-0001";
+        let authorization = KioskShowControlsCommandAuthorization {
+            manifold_request_id: kiosk_manifold_request_id(
+                "operation-legacy-1",
+                "device-legacy-1",
+                owner_action_request_id,
+            ),
+            owner_action_request_id: owner_action_request_id.to_owned(),
+            requester_id: "operator.local".to_owned(),
+            operation_id: "operation-legacy-1".to_owned(),
+            preview_id: "preview-legacy-1".to_owned(),
+            device_id: "device-legacy-1".to_owned(),
+            identity_revision: 9,
+            issued_at_ms: 2_000,
+            expires_at_ms: 92_000,
+        };
+        adapter
+            .authorize_kiosk_show_controls(&authorization, 2_000)
+            .expect("legacy fixture starts from one applied command");
+
+        let mut snapshot_value =
+            serde_json::to_value(adapter.snapshot()).expect("snapshot serializes");
+        let runtime_snapshot = snapshot_value["runtime_host"]
+            .as_object_mut()
+            .expect("runtime snapshot object");
+        runtime_snapshot.insert("$schema".to_owned(), json!(LEGACY_HOST_SNAPSHOT_V2_SCHEMA));
+        runtime_snapshot.remove("reviewed_control_lease_adoption_ids");
+        runtime_snapshot.remove("reviewed_derivative_lease_revocation_ids");
+        for event in runtime_snapshot["audit_events"]
+            .as_array_mut()
+            .expect("runtime audit array")
+        {
+            event["$schema"] = json!(LEGACY_HOST_AUDIT_EVENT_V2_SCHEMA);
+        }
+        let snapshot: FleetManifoldAdapterSnapshot =
+            serde_json::from_value(snapshot_value).expect("legacy snapshot deserializes");
+
+        let mut restarted = FleetManifoldAdapter::new(vec![dotted("operator.local")]);
+        restarted
+            .restore_session(snapshot, 2_001)
+            .expect("legacy Runtime Host authority migrates explicitly");
+        let runtime_snapshot = restarted.runtime_host_snapshot();
+        assert_eq!(runtime_snapshot.schema_id.as_str(), HOST_SNAPSHOT_SCHEMA);
+        assert!(runtime_snapshot.leases.is_empty());
+        assert!(
+            runtime_snapshot
+                .reviewed_control_lease_adoption_ids
+                .is_empty()
+        );
+        assert!(
+            runtime_snapshot
+                .reviewed_derivative_lease_revocation_ids
+                .is_empty()
+        );
+        assert!(
+            restarted
+                .authorize_kiosk_show_controls(&authorization, 2_001)
+                .expect_err("migrated replay state remains authoritative")
                 .contains("ReplayedRequest")
         );
     }

@@ -42,7 +42,9 @@ Live device work is never implied by a source or documentation task.
   and the local API;
 - `crates/fleet-manifold-adapter`: exact pinned Manifold enrollment/status
   admission plus transactional signed-check-in projection and Runtime Host
-  command authority;
+  command authority; the current provider pin is
+  `ef1d40b8e0b7e7b47270509eddf53787c23b9fea`, and legacy Runtime Host v2 state
+  reaches v4 only through Manifold's explicit migration path;
 - `crates/fleet-kiosk-adapter`: signed bounded Kiosk direct-operator transport,
   effective receipt projection, and poll-only recovery;
 - `crates/fleet-package-updater-adapter`: exact immutable updater invocation
@@ -213,6 +215,12 @@ authority rejects. Persist the matching Fleet and Manifold snapshots before
 acknowledging an accepted check-in; damaged state must recover from a valid
 prior slot or fail closed. Device source time is signed evidence; Hub received
 time is supplied by the ingress adapter.
+
+Fleet's current Runtime Host commands are lease-free. Do not reconstruct
+Manifold control leases, administrative revocation barriers, derivative
+convergence, or retaining-consumer acknowledgements in Fleet. A Manifold
+application receipt is command-authorization evidence, not an owner effect or
+cleanup receipt.
 
 Keep `AGENTS.md` concise. Put detailed procedures in linked docs or runbooks and
 update the nearest README/router plus relevant skills when ownership,

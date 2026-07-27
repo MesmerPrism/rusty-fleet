@@ -13,7 +13,7 @@ controls are open.
 The owner surface is pinned to Rusty Kiosk revision
 `8954228f9ae67c5995a72569e3c9cdd3758f85c0` and
 `rusty.kiosk.direct_operator.v1` on port `39873`. The accepted Manifold source
-pin is `40c05b27a1c1f6c6990652802e16491bfc1fbc8b`.
+pin is `ef1d40b8e0b7e7b47270509eddf53787c23b9fea`.
 
 ## Activation
 
@@ -74,6 +74,15 @@ The Manifold typed-parameter digest binds the operation ID, preview ID, action
 ID, device ID, and identity revision. The Runtime Host snapshot, replay
 identities, audit events, Fleet operation, and raw Kiosk owner evidence share
 one alternating durable envelope.
+
+The pinned Runtime Host v4 retains lease-adoption and derivative-revocation
+replay state. Existing v2 Fleet snapshots restart only through Manifold's
+explicit migration path, which preserves command replay evidence without
+inventing a lease, revocation, or convergence result. Current Fleet operations
+remain lease-free. A future leased operation must consume owner-issued
+adoption and revocation evidence and stop dispatch while the owning Manifold
+composition reports a pending convergence barrier; Fleet does not synthesize
+or clear that barrier.
 
 An effective Fleet receipt retains the exact owner contract, stable action
 request, distinct signed transport request, response digest and signature,

@@ -600,7 +600,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-admission"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=ef1d40b8e0b7e7b47270509eddf53787c23b9fea#ef1d40b8e0b7e7b47270509eddf53787c23b9fea"
 dependencies = [
  "rusty-manifold-model",
  "serde",
@@ -610,7 +610,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-media-session"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=ef1d40b8e0b7e7b47270509eddf53787c23b9fea#ef1d40b8e0b7e7b47270509eddf53787c23b9fea"
 dependencies = [
  "rusty-manifold-admission",
  "rusty-manifold-model",
@@ -623,7 +623,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-model"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=ef1d40b8e0b7e7b47270509eddf53787c23b9fea#ef1d40b8e0b7e7b47270509eddf53787c23b9fea"
 dependencies = [
  "serde",
 ]
@@ -631,7 +631,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-peer"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=ef1d40b8e0b7e7b47270509eddf53787c23b9fea#ef1d40b8e0b7e7b47270509eddf53787c23b9fea"
 dependencies = [
  "ed25519-dalek",
  "rusty-manifold-media-session",
@@ -645,7 +645,7 @@ dependencies = [
 [[package]]
 name = "rusty-manifold-runtime-host"
 version = "0.1.0"
-source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=40c05b27a1c1f6c6990652802e16491bfc1fbc8b#40c05b27a1c1f6c6990652802e16491bfc1fbc8b"
+source = "git+https://github.com/MesmerPrism/rusty-manifold?rev=ef1d40b8e0b7e7b47270509eddf53787c23b9fea#ef1d40b8e0b7e7b47270509eddf53787c23b9fea"
 dependencies = [
  "rusty-manifold-model",
  "serde",

@@ -28,9 +28,9 @@ serde_jcs = "=0.2.0"
 serde_json = "1.0"
 ed25519-dalek = { version = "=2.1.1", default-features = false, features = ["std"] }
 hex = "0.4"
-rusty-manifold-model = { git = "https://github.com/MesmerPrism/rusty-manifold", rev = "40c05b27a1c1f6c6990652802e16491bfc1fbc8b", features = ["serde"] }
-rusty-manifold-peer = { git = "https://github.com/MesmerPrism/rusty-manifold", rev = "40c05b27a1c1f6c6990652802e16491bfc1fbc8b" }
-rusty-manifold-runtime-host = { git = "https://github.com/MesmerPrism/rusty-manifold", rev = "40c05b27a1c1f6c6990652802e16491bfc1fbc8b" }
+rusty-manifold-model = { git = "https://github.com/MesmerPrism/rusty-manifold", rev = "ef1d40b8e0b7e7b47270509eddf53787c23b9fea", features = ["serde"] }
+rusty-manifold-peer = { git = "https://github.com/MesmerPrism/rusty-manifold", rev = "ef1d40b8e0b7e7b47270509eddf53787c23b9fea" }
+rusty-manifold-runtime-host = { git = "https://github.com/MesmerPrism/rusty-manifold", rev = "ef1d40b8e0b7e7b47270509eddf53787c23b9fea" }
 sha2 = "0.10"
 tokio = { version = "=1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tower = { version = "=0.5.3", features = ["limit", "util"] }

@@ -239,9 +239,20 @@ sequenceDiagram
     H-->>O: per-device terminal projection
 ```
 
-A dispatch acknowledgement is intermediate evidence. Completion requires the
-current owner receipt and any selected cleanup receipt. Fleet fan-out never
-collapses per-device failures into a false aggregate success.
+A Manifold Runtime Host application receipt records accepted command
+authorization only. It is not an owner acknowledgement, an effective result,
+or cleanup evidence. A dispatch acknowledgement is intermediate evidence.
+Completion requires the current owner result and any separately selected
+cleanup receipt. Fleet fan-out never collapses per-device failures into a
+false aggregate success.
+
+The pinned Runtime Host v4 retains command, lease-adoption, and
+derivative-revocation replay identities. Fleet's current command descriptors
+require no Runtime Host lease, so Fleet starts with no borrowed leases and
+does not manufacture administrative revocation or convergence state. Legacy
+Runtime Host v2 snapshots migrate through Manifold's explicit restart API.
+Future leased operations must preserve owner-issued revocation and
+fail-closed barrier evidence rather than recreating either in Fleet.
 
 A multi-device action uses an inspectable target snapshot plus per-target
 preflight. Aggregate counts are navigation into the per-target ledger, never a
@@ -272,6 +283,10 @@ download, staging, PackageInstaller launch, and wearer prompt remain
 non-Applied states. Only the pinned Rusty Quest accepted `install_commit`
 checkpoint for the exact package, ring, manifest digest, sequence, and version
 can advance the Hub to Applied.
+
+Terminal operation retention or archive is a separate cleanup concern.
+`install_commit` proves the effective package result but does not prove that
+temporary files, installer UI, claims, or retained Fleet evidence were cleaned.
 
 ## Kiosk and foreground control
 

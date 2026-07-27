@@ -150,6 +150,19 @@ The current implementation is split into:
   capability-family, normal 50-row presented keyboard, and 10/50/100-row
   off-screen layout checks.
 
+## Consolidation maturity
+
+The current source candidate pins every resolved Manifold crate to exact
+revision `ef1d40b8e0b7e7b47270509eddf53787c23b9fea`. Fleet consumes Runtime Host
+v4 and explicitly migrates retained v2 command/replay state without creating a
+lease, revocation, barrier, convergence result, or retaining-consumer
+acknowledgement. Manifold command application, effect-owner acknowledgement,
+effective result, and terminal cleanup remain separate evidence.
+
+This composition is a headless source candidate. Repository validation does
+not claim a GUI-attended pass, Quest/device behavior, signed Windows bundles,
+publication, or release availability. Those remain separately gated.
+
 The deterministic M1 negative-path harness runs four independent devices
 through sleep/wake aging, route loss/recovery, duplicate and stale check-ins,
 agent upgrade, old-epoch replay, and final canonical recovery. The exact

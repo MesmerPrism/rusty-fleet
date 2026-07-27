@@ -79,6 +79,9 @@ An owner acknowledgement proves `dispatched`, but never `applied`.
 `applied` requires the pinned Rusty Quest `install_commit` receipt for the
 expected package and rollout ring. Manifest admission, staging, download, an
 open installer UI, or an acknowledgement is not application proof.
+The effective install result also does not prove cleanup. Cleanup or archive
+must remain a separately owned fact with its own receipt when that lifecycle
+is implemented.
 
 ## Operator surfaces
 
