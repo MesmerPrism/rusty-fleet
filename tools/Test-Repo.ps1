@@ -765,6 +765,37 @@ function Test-TrackedTree {
     }
 }
 
+function Test-ReleaseCandidateDependencies {
+    $expectedManifoldRevision = "ef1d40b8e0b7e7b47270509eddf53787c23b9fea"
+    $workspace = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.toml") -Raw
+    $lock = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.lock") -Raw
+    $manifoldSourcePattern = (
+        'source = "git\+https://github\.com/MesmerPrism/rusty-manifold' +
+        '\?rev=([0-9a-f]{40})#([0-9a-f]{40})"'
+    )
+    $manifoldSources = [regex]::Matches($lock, $manifoldSourcePattern)
+
+    Assert-True -Condition ($manifoldSources.Count -eq 5) `
+        -Message "Release candidate must resolve exactly five Manifold packages."
+    foreach ($source in $manifoldSources) {
+        Assert-True -Condition (
+            $source.Groups[1].Value -eq $expectedManifoldRevision -and
+            $source.Groups[2].Value -eq $expectedManifoldRevision
+        ) -Message "Release candidate contains a mixed or unresolved Manifold revision."
+    }
+    Assert-True -Condition (
+        $workspace.Contains($expectedManifoldRevision) -and
+        -not $workspace.Contains("40c05b27a1c1f6c6990652802e16491bfc1fbc8b")
+    ) -Message "Cargo workspace does not exclusively pin the accepted Manifold provider."
+
+    Invoke-Cargo -Arguments @("tree", "--locked", "-p", "fleet-manifold-adapter")
+
+    $distributionValidation = Join-Path $repoRoot "tools/Test-WindowsDistribution.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $distributionValidation -PathType Leaf) `
+        -Message "Windows distribution validation entrypoint is missing."
+    & $distributionValidation
+}
+
 Push-Location -LiteralPath $repoRoot
 try {
     Test-RequiredFiles
@@ -813,6 +844,7 @@ try {
 
     if ($Tier -eq "Deep") {
         Test-TrackedTree
+        Test-ReleaseCandidateDependencies
     }
 
     Write-Host "Rusty Fleet $Tier validation passed."

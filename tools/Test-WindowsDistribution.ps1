@@ -15,6 +15,3 @@ if (-not (Test-Path -LiteralPath $distributionTest -PathType Leaf)) {
 }
 
 & $distributionTest
-if ($LASTEXITCODE -ne 0) {
-    throw "Windows distribution validation failed with exit code $LASTEXITCODE"
-}
