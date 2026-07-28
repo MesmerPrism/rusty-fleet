@@ -11,6 +11,13 @@
   cleanup/revocation plans. The current pinned capsule is explicitly
   quarantined as machine-bound developer evidence; supported distribution
   requires a separately owner-issued release capsule.
+- Added a public-safe, Fleet-owned, resumable two-Quest modern Wi-Fi ADB
+  acceptance transaction with strict private config, exact artifact pins,
+  attended Meta/reboot checkpoints, signed exact-shell proof lifecycle,
+  two-device isolation, cleanup truth, and host/synthetic validation.
+- Made Fleet icon provenance stable across LF, CRLF, and CR worktree
+  materialization while retaining the reviewed canonical SVG digest and
+  deterministic ICO bytes.
 - Added a fail-closed, revisioned provider capability catalog with shared local
   API, `fleetctl`, and WPF projections over exact hash-pinned
   `--describe-json` owner metadata.

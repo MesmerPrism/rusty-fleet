@@ -74,8 +74,20 @@ provider. Fleet and Manifold retain policy and command authority; private
 serial, endpoint, and pairing resolution stays in File Manager. Termux
 usability is projected only from an enrolled signed check-in carrying fresh
 exact `uid=2000(shell)` capability evidence, never from the provider receipt
-or a caller-submitted proof. See
+or a caller-submitted proof. The Hub adds a separate Fleet-owned verified
+admission that binds the proof to its enrolled key, canonical signed claims,
+accepted revisions, exact device/operation, and owner receipt. See
 [Quest Wi-Fi ADB control](docs/QUEST_WIFI_ADB_CONTROL.md).
+The separate
+[two-Quest attended acceptance transaction](docs/QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md)
+binds offline onboarding, File Manager profiles, the proof helper, signed
+Fleet state, two-device isolation, typed wearer/reboot checkpoints, and exact
+cleanup without putting private run inputs in this repository. Its host
+mutation journal is write-through, digest-chained, and never redispatches an
+interrupted unknown outcome. A pinned Agent Board wrapper supplies a private,
+run-bound reservation receipt for both exact Quest resources; the runner
+revalidates both leases before every mutation, retains them through cleanup,
+and exposes only a sanitized reservation disposition.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -275,6 +287,9 @@ Quest awake commands use that same loopback Hub and are documented in
 [Quest awake control](docs/QUEST_AWAKE_CONTROL.md).
 Quest Wi-Fi ADB commands use that same loopback Hub and are documented in
 [Quest Wi-Fi ADB control](docs/QUEST_WIFI_ADB_CONTROL.md).
+Live two-headset qualification uses the separately confirmed, resumable
+[two-Quest acceptance transaction](docs/QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md);
+generic repository tiers run only its host/synthetic tests.
 Windows host-hotspot commands and Console behavior use that same loopback Hub
 and are documented in
 [Windows Mobile Hotspot control](docs/WINDOWS_HOTSPOT_CONTROL.md).

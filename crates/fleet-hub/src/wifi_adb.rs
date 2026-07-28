@@ -104,6 +104,7 @@ impl FleetHub {
                 invocation: None,
                 receipt: None,
                 termux_proof: None,
+                termux_admission: None,
                 termux_usable: false,
                 failure_code: None,
                 updated_at_ms: plan.created_at_ms,

@@ -60,6 +60,16 @@ impl FleetOperationClient for MockClient {
         serde_json::to_value(self.operation.clone().expect("preview first"))
             .map_err(|error| CliFailure::new("serialization_failed", error.to_string()))
     }
+
+    fn list_quest_wifi_adb(&mut self) -> Result<serde_json::Value, CliFailure> {
+        serde_json::to_value(
+            self.operation
+                .clone()
+                .into_iter()
+                .collect::<Vec<QuestWifiAdbOperation>>(),
+        )
+        .map_err(|error| CliFailure::new("serialization_failed", error.to_string()))
+    }
 }
 
 fn operation(request: &QuestWifiAdbPreviewRequest) -> QuestWifiAdbOperation {
@@ -107,6 +117,7 @@ fn operation(request: &QuestWifiAdbPreviewRequest) -> QuestWifiAdbOperation {
             invocation: None,
             receipt: None,
             termux_proof: None,
+            termux_admission: None,
             termux_usable: false,
             failure_code: None,
             updated_at_ms: 1_000,
@@ -155,6 +166,10 @@ fn cli_exposes_every_typed_action_and_execute_get_parity() {
         )
         .expect("get");
         assert_eq!(fetched, executed);
+        let listed = execute_with_operation_client(vec!["wifi-adb-list".to_owned()], &mut client)
+            .expect("list");
+        assert_eq!(listed.as_array().expect("array").len(), 1);
+        assert_eq!(listed[0], executed);
     }
 }
 

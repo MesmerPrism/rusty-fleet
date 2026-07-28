@@ -8,9 +8,11 @@ repository.workspace = true
 description = "Versioned source-only contracts for Rusty Fleet."
 
 [dependencies]
+hex.workspace = true
 serde.workspace = true
 serde_jcs.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

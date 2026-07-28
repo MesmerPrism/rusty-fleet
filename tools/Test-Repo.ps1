@@ -481,6 +481,11 @@ function Test-SourceImplementation {
     Invoke-Cargo -Arguments @("fmt", "--all", "--", "--check")
     Invoke-Cargo -Arguments @("test", "--workspace", "--locked")
     & pwsh -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $repoRoot "tools/Test-FleetIconProvenance.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fleet icon line-ending provenance tests failed."
+    }
+    & pwsh -NoProfile -ExecutionPolicy Bypass `
         -File (Join-Path $repoRoot "tools/New-FleetIcon.ps1")
     if ($LASTEXITCODE -ne 0) {
         throw "Fleet icon provenance validation failed."
@@ -832,6 +837,10 @@ try {
     Test-SourceImplementation
     Test-WpfConsole
     Test-DatastreamPlanning
+    & (Join-Path $repoRoot "tools/Test-FleetWifiAdbTwoQuestAcceptance.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Two-Quest Wi-Fi ADB acceptance host tests failed."
+    }
     Invoke-Git diff --check
 
     if ($Tier -in @("Standard", "Deep")) {

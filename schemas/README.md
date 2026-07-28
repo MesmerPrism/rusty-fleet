@@ -66,6 +66,15 @@ Only the enrolled check-in authority may project fresh exact
 `uid=2000(shell)` evidence as usable; the provider receipt contains no Termux
 proof fields and no private target details.
 
+`rusty.fleet.wifi_adb_two_quest_run_config.v2.schema.json` defines the strict
+private input envelope for the resumable attended acceptance transaction.
+Committed examples contain placeholders only. Real paths, serials, Fleet
+device IDs, endpoints, pairing material, profiles, seeds, and run evidence
+remain outside this repository. Version 2 additionally pins the private Agent
+Board wrapper and bounds the duration of the exact two-Quest reservation
+bundle. Version 1 remains only as historical schema evidence and is rejected
+by the current runner.
+
 Do not copy Manifold, Quest, Kiosk, File Manager, or LSL owner schemas into
 this directory. Reference owner-issued artifacts or wrap them with a separately
 named product projection that preserves provenance and authority.

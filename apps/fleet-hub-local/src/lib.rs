@@ -1215,6 +1215,7 @@ pub fn router(state: LocalHubState) -> Router {
             "/fleet/v1/quest-wifi-adb/preview",
             post(preview_quest_wifi_adb),
         )
+        .route("/fleet/v1/quest-wifi-adb", get(quest_wifi_adb_operations))
         .route(
             "/fleet/v1/quest-wifi-adb/{operation_id}/execute",
             post(execute_quest_wifi_adb),
@@ -3069,6 +3070,25 @@ async fn quest_wifi_adb_status(
             api_error(StatusCode::NOT_FOUND, "operation_not_found", error)
         }
         Err(error) => api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation", error),
+    }
+}
+
+async fn quest_wifi_adb_operations(State(state): State<LocalHubState>) -> Response {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let runtime = state.runtime.lock().await;
+    match runtime
+        .adapter
+        .quest_wifi_adb_operations(&runtime.hub, now_ms)
+    {
+        Ok(operations) => Json(operations).into_response(),
+        Err(error) => api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_operation_set",
+            error,
+        ),
     }
 }
 

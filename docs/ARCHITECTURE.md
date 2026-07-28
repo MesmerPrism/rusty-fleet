@@ -369,6 +369,21 @@ an operation, and newer unavailable evidence, a disable receipt, expiry, or
 source-epoch change clears usability. No caller-facing proof ingress exists.
 See [Quest Wi-Fi ADB Control](QUEST_WIFI_ADB_CONTROL.md).
 
+The optional two-Quest acceptance orchestrator is Fleet-owned because it
+evaluates cross-device scheduling, signed check-ins, proof expiry, renewal,
+disable, reboot recovery, and isolation. It delegates private profile and APK
+effects to File Manager and fixed on-device preparation and proof to the
+Wireless ADB helper. Its plan is non-mutating, its state is caller-private and
+sanitized, and each resume performs one durable transition around explicit
+Termux-restart, wearer-approval, and attended-reboot checkpoints. See
+[Two-Quest Wi-Fi ADB Acceptance](QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md).
+The orchestrator also owns coordination safety: a pinned Agent Board wrapper
+must yield a private run/slot/device-bound lease for each exact Quest before
+Execute. Both leases are revalidated before every mutation, retained through
+partial cleanup, and released only after terminal cleanup is durably complete.
+Lease IDs, serials, resources, and deadlines never enter the public state
+projection.
+
 ## Identity and security
 
 - Enrollment produces a stable device identity and revocable operator grant.

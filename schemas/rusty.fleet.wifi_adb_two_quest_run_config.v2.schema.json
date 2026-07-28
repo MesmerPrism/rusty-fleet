@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.wifi_adb_two_quest_run_config.v2.schema.json",
+  "title": "Rusty Fleet private two-Quest Wi-Fi ADB acceptance run config v2",
+  "description": "Private operator input. Real instances, unlike public fixtures, contain local paths and device identifiers and must never be committed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "private_state_root",
+    "agent_board",
+    "source_commits",
+    "artifact_pins",
+    "onboarding",
+    "hub",
+    "devices",
+    "timing"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.wifi_adb_two_quest_run_config.v2"
+    },
+    "run_id": {
+      "$ref": "#/$defs/portableId"
+    },
+    "private_state_root": {
+      "$ref": "#/$defs/privatePath"
+    },
+    "agent_board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cli_path",
+        "cli_sha256",
+        "lease_duration_seconds"
+      ],
+      "properties": {
+        "cli_path": {
+          "$ref": "#/$defs/privatePath"
+        },
+        "cli_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "lease_duration_seconds": {
+          "type": "integer",
+          "minimum": 600,
+          "maximum": 28800
+        }
+      }
+    },
+    "source_commits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "questionable_file_manager",
+        "wireless_adb_helper"
+      ],
+      "properties": {
+        "questionable_file_manager": {
+          "const": "a6d8e88c9d65f642d0cbf74fc8b92c8f1cd19ae5"
+        },
+        "wireless_adb_helper": {
+          "const": "d800e5c7c5f8c77ad2bae52450f32092f3c92ace"
+        }
+      }
+    },
+    "artifact_pins": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "artifact_id": {
+            "enum": [
+              "adb",
+              "fleet-onboard",
+              "fleet-hub",
+              "fleetctl",
+              "questionable-file-manager",
+              "helper-operator",
+              "fleet-agent-apk",
+              "wireless-adb-helper-apk",
+              "termux-apk",
+              "kiosk-setup-helper-apk"
+            ]
+          },
+          "path": {
+            "$ref": "#/$defs/privatePath"
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "onboarding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_path",
+        "inventory_path"
+      ],
+      "properties": {
+        "request_path": {
+          "$ref": "#/$defs/privatePath"
+        },
+        "inventory_path": {
+          "$ref": "#/$defs/privatePath"
+        }
+      }
+    },
+    "hub": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config_path",
+        "operator_url",
+        "manage_firewall"
+      ],
+      "properties": {
+        "config_path": {
+          "$ref": "#/$defs/privatePath"
+        },
+        "operator_url": {
+          "type": "string",
+          "pattern": "^http://(?:127\\.0\\.0\\.1|\\[::1\\]):[1-9][0-9]{0,4}/?$",
+          "maxLength": 64
+        },
+        "manage_firewall": {
+          "type": "boolean"
+        }
+      }
+    },
+    "devices": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slot",
+          "device_id",
+          "identity_revision",
+          "usb_serial",
+          "qfm_enrollment_path",
+          "fleet_agent_profile_path",
+          "fleet_agent_seed_path"
+        ],
+        "properties": {
+          "slot": {
+            "enum": [
+              "device_a",
+              "device_b"
+            ]
+          },
+          "device_id": {
+            "$ref": "#/$defs/portableId"
+          },
+          "identity_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "usb_serial": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\s:]+$"
+          },
+          "qfm_enrollment_path": {
+            "$ref": "#/$defs/privatePath"
+          },
+          "fleet_agent_profile_path": {
+            "$ref": "#/$defs/privatePath"
+          },
+          "fleet_agent_seed_path": {
+            "$ref": "#/$defs/privatePath"
+          }
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_timeout_seconds",
+        "proof_timeout_seconds",
+        "expiry_timeout_seconds",
+        "reboot_timeout_seconds"
+      ],
+      "properties": {
+        "baseline_timeout_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 600
+        },
+        "proof_timeout_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 180
+        },
+        "expiry_timeout_seconds": {
+          "type": "integer",
+          "minimum": 61,
+          "maximum": 300
+        },
+        "reboot_timeout_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 600
+        }
+      }
+    }
+  },
+  "$defs": {
+    "portableId": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "privatePath": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 1024
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

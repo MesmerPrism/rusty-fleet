@@ -118,6 +118,7 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 ,"wifi-adb-preview ACTION DEVICE@IDENTITY_REVISION..."
                 ,"wifi-adb-execute OPERATION_ID PREVIEW_ID"
                 ,"wifi-adb-get OPERATION_ID"
+                ,"wifi-adb-list"
                 ,"hotspot-preview status|start|ensure|stop"
                 ,"hotspot-execute OPERATION_ID PREVIEW_ID"
                 ,"hotspot-get OPERATION_ID"
