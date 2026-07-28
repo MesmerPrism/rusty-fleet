@@ -138,6 +138,16 @@ function Invoke-ModeledJournaledCleanupStep {
     } $Context $State $Checks $Name $Operation
 }
 
+function Get-TestMutationHistorySummarySha256 {
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary] $Summary
+    )
+    return & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
+        param($InnerSummary)
+        Get-MutationHistorySummarySha256 -Summary $InnerSummary
+    } $Summary
+}
+
 $ownerFixtureRoot = Join-Path $PSScriptRoot "fixtures/adb-owner"
 $cleanManager = ConvertFrom-ClosedAdbManagerDump -Text (
     Get-Content -LiteralPath (
@@ -973,13 +983,31 @@ Send-Json -Value ([ordered]@{
     $roundTrip = Read-SanitizedState -Context $validated
     Assert-True (
         [string]$roundTrip.schema -ceq
-            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v5" -and
+            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v6" -and
         [string]$roundTrip.claims.installed -ceq "not_evaluated" -and
         [string]$roundTrip.claims.reachable -ceq "not_evaluated" -and
         $null -eq $roundTrip.agent_board_reservation -and
         @(Get-ChildItem -LiteralPath $config.private_state_root `
             -Filter "*.pending").Count -eq 0
     ) "Write-through state publication did not round-trip cleanly."
+
+    $legacyState = Copy-JsonValue $roundTrip
+    $legacyState.schema =
+        "rusty.fleet.wifi_adb_two_quest_acceptance_state.v5"
+    $legacyState.Remove("mutation_history_summary")
+    Write-Json -Path (
+        Join-Path $config.private_state_root "acceptance-state.json"
+    ) -Value $legacyState
+    $migratedState = Read-SanitizedState -Context $validated
+    Assert-True (
+        [string]$migratedState.schema -ceq
+            "rusty.fleet.wifi_adb_two_quest_acceptance_state.v6" -and
+        [long]$migratedState.mutation_history_summary.compacted_count -eq 0 -and
+        [string]$migratedState.mutation_history_summary.summary_sha256 -cmatch
+            '^[0-9a-f]{64}$'
+    ) "A valid v5 restart state did not migrate in memory to bounded v6 state."
+    Write-SanitizedState -Context $validated -State $migratedState
+    $roundTrip = Read-SanitizedState -Context $validated
 
     Assert-ThrowsCode -Code "agent_board_reservation_required" -Operation {
         Assert-AgentBoardReservation `
@@ -1405,6 +1433,232 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         [string]$repeatedFalseState.agent_board_reservation -ceq "released"
     ) "Repeated-false test leases did not terminalize after modeled recovery."
 
+    $mutationHistoryLimit = & (
+        Get-Module FleetWifiAdbTwoQuestAcceptance
+    ) {
+        $script:MutationHistoryRecentLimit
+    }
+    $compactionAttemptCount = [int]$mutationHistoryLimit + 12
+    $compactionBoardBefore =
+        Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    $compactionState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $compactionState
+    [void](Ensure-AgentBoardReservation `
+        -Context $validated -State $compactionState -AllowRepair)
+    [void](Assert-AgentBoardReservation `
+        -Context $validated -State $compactionState)
+    $compactionReceipt =
+        Get-Content -LiteralPath $privateReservationPath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    $compactionLeaseIds = @(
+        $compactionReceipt.leases | ForEach-Object {
+            [string]$_.lease_id
+        }
+    )
+    $compactionOwner = [ordered]@{
+        dispatch_count = 0
+        unsafe_effect_count = 0
+        effect_applied = $false
+        recovered = $false
+    }
+    $compactionOperation = {
+        $compactionOwner.dispatch_count =
+            [int]$compactionOwner.dispatch_count + 1
+        if (-not [bool]$compactionOwner.effect_applied) {
+            $compactionOwner.effect_applied = $true
+            $compactionOwner.unsafe_effect_count =
+                [int]$compactionOwner.unsafe_effect_count + 1
+        }
+        return [bool]$compactionOwner.recovered
+    }.GetNewClosure()
+    $compactionChecks = [ordered]@{
+        "device_a-final-readback" = $true
+        "device_b-final-readback" = $true
+    }
+    foreach ($attempt in 1..$compactionAttemptCount) {
+        Invoke-ModeledJournaledCleanupStep `
+            -Context $validated -State $compactionState `
+            -Checks $compactionChecks -Name "owner-compaction-retry" `
+            -Operation $compactionOperation
+    }
+    $compactionTruth = Get-CleanupTruth -Checks $compactionChecks
+    $compactionState.cleanup.checks = $compactionChecks
+    $compactionState.cleanup.status = $compactionTruth.Status
+    $compactionState.status = "cleanup_partial_failure"
+    $compactionState.phase = "cleanup"
+    Write-SanitizedState -Context $validated -State $compactionState
+
+    $compactionStatePath =
+        Join-Path $config.private_state_root "acceptance-state.json"
+    $compactionState = Read-SanitizedState -Context $validated
+    $compactedBeforeRecovery =
+        [long]$compactionAttemptCount - [long]$mutationHistoryLimit
+    Assert-True (
+        [int]$compactionOwner.dispatch_count -eq $compactionAttemptCount -and
+        [int]$compactionOwner.unsafe_effect_count -eq 1 -and
+        [string]$compactionState.cleanup.status -ceq "partial_failure" -and
+        $compactionState.cleanup.checks["owner-compaction-retry"] -eq
+            $false -and
+        [string]$compactionState.agent_board_reservation -ceq "bound" -and
+        $null -eq $compactionState.mutation -and
+        @($compactionState.mutation_history).Count -eq
+            $mutationHistoryLimit -and
+        [long]$compactionState.mutation_history_summary.compacted_count -eq
+            $compactedBeforeRecovery -and
+        [long]$compactionState.mutation_history_summary.first_ordinal -eq 1 -and
+        [long]$compactionState.mutation_history_summary.last_ordinal -eq
+            $compactedBeforeRecovery -and
+        [long]$compactionState.mutation_history_summary.terminal_count -eq
+            $compactedBeforeRecovery -and
+        [long]$compactionState.mutation_history_summary.cleanup_attempt_count -eq
+            $compactedBeforeRecovery -and
+        [long]$compactionState.mutation_history_summary.cleanup_partial_count -eq
+            $compactedBeforeRecovery -and
+        [string]$compactionState.mutation_history_summary.
+            records_commitment_sha256 -cne ("0" * 64) -and
+        [string]$compactionState.mutation_history_summary.
+            cleanup_key_outcome_sha256 -cne ("0" * 64) -and
+        (Get-Item -LiteralPath $compactionStatePath).Length -lt 1048576
+    ) "Repeated false cleanup attempts did not compact into a bounded restart state."
+
+    $compactionOwner.recovered = $true
+    $compactionChecks = [ordered]@{}
+    foreach ($entry in $compactionState.cleanup.checks.GetEnumerator()) {
+        $compactionChecks[[string]$entry.Key] = $entry.Value
+    }
+    [void](Assert-AgentBoardReservation `
+        -Context $validated -State $compactionState)
+    Invoke-ModeledJournaledCleanupStep `
+        -Context $validated -State $compactionState `
+        -Checks $compactionChecks -Name "owner-compaction-retry" `
+        -Operation $compactionOperation
+    $compactionTruth = Get-CleanupTruth -Checks $compactionChecks
+    $compactionState.cleanup.checks = $compactionChecks
+    $compactionState.cleanup.status = $compactionTruth.Status
+    $compactionState.status = "complete"
+    $compactionState.phase = "cleanup"
+    Write-SanitizedState -Context $validated -State $compactionState
+    [void](Release-AgentBoardReservation `
+        -Context $validated -State $compactionState)
+
+    $compactionState = Read-SanitizedState -Context $validated
+    $compactionReceipt =
+        Get-Content -LiteralPath $privateReservationPath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    $compactionBoardAfter =
+        Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    $compactionExternalLeases = @(
+        $compactionBoardAfter.leases | Where-Object {
+            [string]$_.id -cin $compactionLeaseIds
+        }
+    )
+    $compactionTotalRecords =
+        [long]$compactionState.mutation_history_summary.compacted_count +
+        [long]@($compactionState.mutation_history).Count
+    $boundedStatus = Invoke-FleetWifiAdbTwoQuestAcceptance `
+        -Action Status -RunConfig $configPath
+    $boundedStatusJson = $boundedStatus | ConvertTo-Json -Depth 16
+    $boundedStateJson =
+        Get-Content -LiteralPath $compactionStatePath -Raw
+    Assert-True (
+        [int]$compactionOwner.dispatch_count -eq
+            $compactionAttemptCount + 1 -and
+        [int]$compactionOwner.unsafe_effect_count -eq 1 -and
+        $compactionState.cleanup.checks["owner-compaction-retry"] -eq
+            $true -and
+        [string]$compactionState.cleanup.status -ceq "complete" -and
+        [string]$compactionState.status -ceq "complete" -and
+        [string]$compactionState.agent_board_reservation -ceq "released" -and
+        $null -eq $compactionState.mutation -and
+        $compactionTotalRecords -eq $compactionAttemptCount + 1 -and
+        @($compactionState.mutation_history).Count -eq
+            $mutationHistoryLimit -and
+        [long]$compactionState.mutation_history_summary.compacted_count -eq
+            $compactionAttemptCount + 1 - $mutationHistoryLimit -and
+        [string]$compactionReceipt.state -ceq "released" -and
+        @($compactionReceipt.leases).Count -eq 2 -and
+        @($compactionReceipt.leases | Where-Object {
+            [string]$_.status -ceq "released"
+        }).Count -eq 2 -and
+        [int]$compactionBoardAfter.reserve_count -eq
+            [int]$compactionBoardBefore.reserve_count + 2 -and
+        [int]$compactionBoardAfter.release_count -eq
+            [int]$compactionBoardBefore.release_count + 2 -and
+        $compactionExternalLeases.Count -eq 2 -and
+        @($compactionExternalLeases | Where-Object {
+            [string]$_.status -ceq "released"
+        }).Count -eq 2 -and
+        [string]$boundedStatus.schema -ceq
+            "rusty.fleet.wifi_adb_two_quest_status.v2" -and
+        [Text.Encoding]::UTF8.GetByteCount($boundedStatusJson) -lt 16384 -and
+        -not $boundedStatusJson.Contains(
+            "mutation_history", [StringComparison]::Ordinal) -and
+        -not $boundedStatusJson.Contains(
+            $devices[0].device_id, [StringComparison]::Ordinal) -and
+        -not $boundedStatusJson.Contains(
+            $devices[0].usb_serial, [StringComparison]::Ordinal) -and
+        $boundedStateJson.Length -lt 1048576 -and
+        -not $boundedStateJson.Contains(
+            $devices[0].device_id, [StringComparison]::Ordinal) -and
+        -not $boundedStateJson.Contains(
+            $devices[0].usb_serial, [StringComparison]::Ordinal)
+    ) "Compacted restart recovery did not complete, remain bounded, or release exactly two leases."
+
+    $validCompactionState = Copy-JsonValue $compactionState
+    $tamperedSummaryDigest = Copy-JsonValue $validCompactionState
+    $tamperedSummaryDigest.mutation_history_summary.summary_sha256 =
+        "f" * 64
+    Write-Json -Path $compactionStatePath -Value $tamperedSummaryDigest
+    Assert-ThrowsCode -Code "mutation_history_summary_invalid" -Operation {
+        Read-SanitizedState -Context $validated | Out-Null
+    }
+
+    $tamperedRecordsDigest = Copy-JsonValue $validCompactionState
+    $tamperedRecordsDigest.mutation_history_summary.
+        records_commitment_sha256 = "0" * 64
+    $tamperedRecordsDigest.mutation_history_summary.summary_sha256 =
+        Get-TestMutationHistorySummarySha256 `
+            -Summary $tamperedRecordsDigest.mutation_history_summary
+    Write-Json -Path $compactionStatePath -Value $tamperedRecordsDigest
+    Assert-ThrowsCode -Code "mutation_history_summary_invalid" -Operation {
+        Read-SanitizedState -Context $validated | Out-Null
+    }
+
+    $invalidSummaryOrdinal = Copy-JsonValue $validCompactionState
+    $invalidSummaryOrdinal.mutation_history_summary.last_ordinal =
+        [long]$invalidSummaryOrdinal.mutation_history_summary.last_ordinal + 1L
+    $invalidSummaryOrdinal.mutation_history_summary.summary_sha256 =
+        Get-TestMutationHistorySummarySha256 `
+            -Summary $invalidSummaryOrdinal.mutation_history_summary
+    Write-Json -Path $compactionStatePath -Value $invalidSummaryOrdinal
+    Assert-ThrowsCode -Code "mutation_history_summary_invalid" -Operation {
+        Read-SanitizedState -Context $validated | Out-Null
+    }
+
+    $reorderedRecentHistory = Copy-JsonValue $validCompactionState
+    $firstRecent = $reorderedRecentHistory.mutation_history[0]
+    $reorderedRecentHistory.mutation_history[0] =
+        $reorderedRecentHistory.mutation_history[1]
+    $reorderedRecentHistory.mutation_history[1] = $firstRecent
+    Write-Json -Path $compactionStatePath -Value $reorderedRecentHistory
+    Assert-ThrowsCode -Code "mutation_journal_invalid" -Operation {
+        Read-SanitizedState -Context $validated | Out-Null
+    }
+
+    $truncatedRecentHistory = Copy-JsonValue $validCompactionState
+    $truncatedRecentHistory.mutation_history = @(
+        $truncatedRecentHistory.mutation_history | Select-Object -Skip 1
+    )
+    Write-Json -Path $compactionStatePath -Value $truncatedRecentHistory
+    Assert-ThrowsCode -Code "mutation_history_bound_invalid" -Operation {
+        Read-SanitizedState -Context $validated | Out-Null
+    }
+    Write-Json -Path $compactionStatePath -Value $validCompactionState
+    $compactionState = Read-SanitizedState -Context $validated
+
     $modelState = New-SanitizedState `
         -Context $validated -Snapshots $syntheticSnapshots
     Write-SanitizedState -Context $validated -State $modelState
@@ -1554,6 +1808,9 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         "host_forward_count",
         "Get-QfmDirectLinkObservation",
         "Set-DurableMutationIsolationAfter",
+        "MutationHistoryRecentLimit",
+        "mutation_history_summary",
+        "mutation_history_summary_invalid",
         "Add-FinalCleanupReadback",
         "cleanup_exact_readback_confirmed"
     )) {

@@ -152,6 +152,11 @@ state, retain its cleanup evidence, and begin v5 with a fresh absent private
 state root and a v2 config. Do not copy or synthesize v5 fields. Older states
 retain their previously documented exact-checkout cleanup requirement.
 
+Acceptance state v6 adds bounded mutation-history compaction. A valid v5 state
+under the existing 1 MiB read limit is strictly validated, upgraded in memory,
+and written as v6 by the next mutating action; its journal records and final
+head remain unchanged. V4 and older states remain rejected.
+
 `Execute` and each `Resume` perform one durable transition. Both require
 `-ConfirmMutation`. Before Execute, the runner obtains fresh external
 reservations for both exact `quest:<usb-serial>` resources. The private receipt
@@ -255,10 +260,12 @@ cleanup truth, and only `bound`, `expired`, or `released` for Agent Board
 coordination. Lease IDs, resources, serials, owners, reasons, and deadlines
 remain solely in the private `agent-board-reservation.json` receipt. `Status`
 can downgrade a stale `bound` deadline to `expired` in its returned projection
-without mutating durable state or querying Board. Its schema
-rejects unknown and duplicate state fields. Before every write the runner
-rejects any configured path, serial, device ID, endpoint, enrollment path,
-profile path, seed path, or artifact path that appears in serialized state.
+without mutating durable state or querying Board. It returns a fixed-size v2
+projection containing bounded counts and digests, not the private resumable
+state or mutation records. The state schema rejects unknown and duplicate
+fields. Before every write the runner rejects any configured path, serial,
+device ID, endpoint, enrollment path, profile path, seed path, or artifact path
+that appears in serialized state and refuses a state larger than 1 MiB.
 
 Every runner-owned mutation is recorded and durably published before dispatch,
 then recorded as `sent_outcome_unknown` before the owner can acknowledge it,
@@ -274,11 +281,24 @@ Interruption leaves `prepared_not_sent` or
 `cleanup_required`. Cleanup closes it as `terminal`, and acceptance/cleanup
 receipts bind the final journal head.
 
+V6 retains the latest 64 terminal records exactly. Older records enter a
+chain-bound summary containing their count, first/last ordinals and
+timestamps, prior/final journal digests, confirmed/terminal and cleanup
+outcome counts, a cleanup-key/outcome commitment, and a commitment over every
+compacted record plus the preceding summary. The summary is self-hashed, its
+final digest anchors the retained suffix, and the ordinary journal head still
+commits the complete record sequence. Restart rejects summary tampering,
+invalid ordinals, suffix reorder or truncation, and noncanonical suffix
+lengths.
+
 Every cleanup effect has its own prepared, sent, confirmed or
 cleanup-required/terminal journal record and is persisted independently. On
 process restart an ambiguous cleanup record is terminalized without
 redispatch; cleanup continues to fresh final readback and reports partial or
-unknown truth instead of guessing the interrupted outcome.
+unknown truth instead of guessing the interrupted outcome. A durably false
+exact readback is different: the next Cleanup creates a new journal record and
+retries the idempotent exact cleanup owner. Only a durable Boolean `true`
+suppresses that step.
 
 State publication uses a randomized same-directory create-new file, content
 flush, reparse check, and Windows `MoveFileExW` with replace and write-through
@@ -361,7 +381,10 @@ single-slot repair, deadline-only status downgrade, pre-dispatch heartbeats,
 release-before-cleanup rejection, partial release retry, deterministic
 in-place/leaf/ancestor-junction/hardlink substitution attempts at the pinned
 wrapper launch boundary, durable false cleanup readback retry and repeated
-partial cleanup without duplicate unsafe effects, within-sample late
-listener/session, close/reopen, FD/state/PID/TCP6/right-edge churn,
-resume mismatch, partial cleanup truth, parser checks, and forbidden
-ADB/approval surfaces. It does not touch a device or claim a live pass.
+partial cleanup without duplicate unsafe effects, bounded-history overflow,
+v5 migration, restart/recovery and exact two-lease release, compacted-summary
+digest/ordinal tampering, retained-suffix reorder/truncation, bounded redacted
+Status output, within-sample late listener/session, close/reopen,
+FD/state/PID/TCP6/right-edge churn, resume mismatch, partial cleanup truth,
+parser checks, and forbidden ADB/approval surfaces. It does not touch a device
+or claim a live pass.

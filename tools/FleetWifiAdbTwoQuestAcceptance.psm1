@@ -462,7 +462,13 @@ public static class RustyFleetAcceptanceNativeV2
 }
 
 $script:ConfigSchema = "rusty.fleet.wifi_adb_two_quest_run_config.v2"
-$script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v5"
+$script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v6"
+$script:LegacyStateSchema =
+    "rusty.fleet.wifi_adb_two_quest_acceptance_state.v5"
+$script:MutationHistorySummarySchema =
+    "rusty.fleet.wifi_adb_two_quest_mutation_history_summary.v1"
+$script:MutationHistoryRecentLimit = 64
+$script:StateMaximumBytes = 1048576
 $script:AgentBoardReceiptSchema =
     "rusty.fleet.wifi_adb_two_quest_agent_board_receipt.v1"
 $script:AgentBoardExecutionRaceHook = $null
@@ -1371,6 +1377,9 @@ function Write-SanitizedState {
     $root = [IO.Path]::GetFullPath([string]$Context.Config.private_state_root)
     Assert-Condition (Test-Path -LiteralPath $root -PathType Container) `
         "state_root_missing" "The private state root has not been created by Preflight."
+    if ([string]$State.schema -ceq $script:StateSchema) {
+        Compress-MutationHistory -State $State
+    }
     $json = $State | ConvertTo-Json -Depth 32
     $privateValues = @(
         [string]$Context.Path,
@@ -1404,8 +1413,13 @@ function Write-SanitizedState {
     $path = Get-StatePath -Context $Context
     $temporary = Join-Path $root (
         ".acceptance-state-" + [guid]::NewGuid().ToString("N") + ".pending")
-    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(
-        $json + [Environment]::NewLine)
+    $serialized = $json + [Environment]::NewLine
+    $encoding = [Text.UTF8Encoding]::new($false)
+    Assert-Condition (
+        $encoding.GetByteCount($serialized) -le $script:StateMaximumBytes
+    ) "state_size_limit_exceeded" `
+        "Sanitized state exceeds its bounded durable-state limit."
+    $bytes = $encoding.GetBytes($serialized)
     $stream = [IO.FileStream]::new(
         $temporary,
         [IO.FileMode]::CreateNew,
@@ -1429,14 +1443,22 @@ function Write-SanitizedState {
 }
 
 function Assert-ValidSanitizedStateShape {
-    param([Parameter(Mandatory)][Collections.IDictionary] $State)
-    Assert-ExactProperties -Value $State -Required @(
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [switch] $LegacyV5
+    )
+    $required = @(
         "schema", "run_id_hash", "config_sha256", "status", "phase",
         "sequence", "checkpoint", "devices", "hub", "onboarding", "cleanup",
         "claims", "events", "mutation", "mutation_history",
         "journal_head_sha256", "final_receipt_sha256",
         "agent_board_reservation"
-    ) -Context "acceptance state"
+    )
+    if (-not $LegacyV5) {
+        $required += "mutation_history_summary"
+    }
+    Assert-ExactProperties -Value $State -Required $required `
+        -Context "acceptance state"
     Assert-Condition (
         $null -eq $State.agent_board_reservation -or
         @("bound", "expired", "released") -ccontains
@@ -1557,15 +1579,28 @@ function Read-SanitizedState {
     Assert-Condition (Test-Path -LiteralPath $path -PathType Leaf) `
         "state_missing" "Preflight has not created acceptance state."
     $state = (Read-StrictJsonFile -Path $path `
-            -Context "acceptance state" -MaximumBytes 1048576).Value
+            -Context "acceptance state" `
+            -MaximumBytes $script:StateMaximumBytes).Value
+    $legacy = [string]$state.schema -ceq $script:LegacyStateSchema
     Assert-Condition (
-        [string]$state.schema -ceq $script:StateSchema -and
+        (
+            [string]$state.schema -ceq $script:StateSchema -or
+            $legacy
+        ) -and
         [string]$state.config_sha256 -ceq [string]$Context.Sha256 -and
         [string]$state.run_id_hash -ceq
             (Get-BytesSha256 -Bytes ([Text.Encoding]::UTF8.GetBytes(
                 [string]$Context.Config.run_id)))
     ) "resume_config_mismatch" `
         "The private run config does not match this resumable state."
+    if ($legacy) {
+        Assert-ValidSanitizedStateShape -State $state -LegacyV5
+        Assert-MutationJournal -State $state -LegacyV5
+        $state.schema = $script:StateSchema
+        $state["mutation_history_summary"] =
+            New-MutationHistorySummary
+        Compress-MutationHistory -State $state
+    }
     Assert-ValidSanitizedStateShape -State $state
     Assert-MutationJournal -State $state
     return $state
@@ -2185,9 +2220,374 @@ function Get-MutationJournalSha256 {
         [Text.Encoding]::UTF8.GetBytes(($parts -join "`0")))
 }
 
-function Assert-MutationJournal {
+function Get-MutationHistorySummarySha256 {
+    param([Parameter(Mandatory)][Collections.IDictionary] $Summary)
+    $parts = @(
+        "rusty.fleet.wifi-adb-two-quest.mutation-history-summary.v1",
+        [string]$Summary.schema,
+        [string][long]$Summary.compaction_count,
+        [string][long]$Summary.compacted_count,
+        [string][long]$Summary.first_ordinal,
+        [string][long]$Summary.last_ordinal,
+        [string][long]$Summary.first_prepared_at_ms,
+        [string][long]$Summary.last_confirmed_at_ms,
+        [string]$Summary.prior_journal_sha256,
+        [string]$Summary.final_journal_sha256,
+        [string][long]$Summary.confirmed_count,
+        [string][long]$Summary.terminal_count,
+        [string][long]$Summary.cleanup_attempt_count,
+        [string][long]$Summary.cleanup_confirmed_count,
+        [string][long]$Summary.cleanup_partial_count,
+        [string][long]$Summary.cleanup_exception_count,
+        [string][long]$Summary.cleanup_other_terminal_count,
+        [string]$Summary.cleanup_key_outcome_sha256,
+        [string]$Summary.records_commitment_sha256,
+        [string]$Summary.previous_summary_sha256
+    )
+    return Get-BytesSha256 -Bytes (
+        [Text.Encoding]::UTF8.GetBytes(($parts -join "`0")))
+}
+
+function New-MutationHistorySummary {
+    $summary = [ordered]@{
+        schema = $script:MutationHistorySummarySchema
+        compaction_count = 0L
+        compacted_count = 0L
+        first_ordinal = 0L
+        last_ordinal = 0L
+        first_prepared_at_ms = 0L
+        last_confirmed_at_ms = 0L
+        prior_journal_sha256 = "0" * 64
+        final_journal_sha256 = "0" * 64
+        confirmed_count = 0L
+        terminal_count = 0L
+        cleanup_attempt_count = 0L
+        cleanup_confirmed_count = 0L
+        cleanup_partial_count = 0L
+        cleanup_exception_count = 0L
+        cleanup_other_terminal_count = 0L
+        cleanup_key_outcome_sha256 = "0" * 64
+        records_commitment_sha256 = "0" * 64
+        previous_summary_sha256 = "0" * 64
+        summary_sha256 = ""
+    }
+    $summary.summary_sha256 =
+        Get-MutationHistorySummarySha256 -Summary $summary
+    return $summary
+}
+
+function Assert-MutationHistorySummary {
+    param([Parameter(Mandatory)][Collections.IDictionary] $Summary)
+    Assert-ExactProperties -Value $Summary -Required @(
+        "schema", "compaction_count", "compacted_count",
+        "first_ordinal", "last_ordinal",
+        "first_prepared_at_ms", "last_confirmed_at_ms",
+        "prior_journal_sha256", "final_journal_sha256",
+        "confirmed_count", "terminal_count",
+        "cleanup_attempt_count", "cleanup_confirmed_count",
+        "cleanup_partial_count", "cleanup_exception_count",
+        "cleanup_other_terminal_count", "cleanup_key_outcome_sha256",
+        "records_commitment_sha256", "previous_summary_sha256",
+        "summary_sha256"
+    ) -Context "acceptance mutation history summary"
+    $hashPattern = '^[0-9a-f]{64}$'
+    $count = [long]$Summary.compacted_count
+    $cleanupOutcomeCount =
+        [long]$Summary.cleanup_confirmed_count +
+        [long]$Summary.cleanup_partial_count +
+        [long]$Summary.cleanup_exception_count +
+        [long]$Summary.cleanup_other_terminal_count
+    $valid = (
+        [string]$Summary.schema -ceq
+            $script:MutationHistorySummarySchema -and
+        [long]$Summary.compaction_count -ge 0 -and
+        $count -ge 0 -and
+        [long]$Summary.confirmed_count -ge 0 -and
+        [long]$Summary.terminal_count -ge 0 -and
+        [long]$Summary.cleanup_attempt_count -ge 0 -and
+        [long]$Summary.cleanup_confirmed_count -ge 0 -and
+        [long]$Summary.cleanup_partial_count -ge 0 -and
+        [long]$Summary.cleanup_exception_count -ge 0 -and
+        [long]$Summary.cleanup_other_terminal_count -ge 0 -and
+        [long]$Summary.confirmed_count +
+            [long]$Summary.terminal_count -eq $count -and
+        $cleanupOutcomeCount -eq
+            [long]$Summary.cleanup_attempt_count -and
+        [long]$Summary.cleanup_attempt_count -le $count -and
+        [string]$Summary.prior_journal_sha256 -cmatch $hashPattern -and
+        [string]$Summary.final_journal_sha256 -cmatch $hashPattern -and
+        [string]$Summary.cleanup_key_outcome_sha256 -cmatch $hashPattern -and
+        [string]$Summary.records_commitment_sha256 -cmatch $hashPattern -and
+        [string]$Summary.previous_summary_sha256 -cmatch $hashPattern -and
+        [string]$Summary.summary_sha256 -cmatch $hashPattern -and
+        [string]$Summary.summary_sha256 -ceq
+            (Get-MutationHistorySummarySha256 -Summary $Summary)
+    )
+    if ($count -eq 0) {
+        $valid = $valid -and (
+            [long]$Summary.compaction_count -eq 0 -and
+            [long]$Summary.first_ordinal -eq 0 -and
+            [long]$Summary.last_ordinal -eq 0 -and
+            [long]$Summary.first_prepared_at_ms -eq 0 -and
+            [long]$Summary.last_confirmed_at_ms -eq 0 -and
+            [string]$Summary.prior_journal_sha256 -ceq ("0" * 64) -and
+            [string]$Summary.final_journal_sha256 -ceq ("0" * 64) -and
+            [string]$Summary.cleanup_key_outcome_sha256 -ceq ("0" * 64) -and
+            [string]$Summary.records_commitment_sha256 -ceq ("0" * 64) -and
+            [string]$Summary.previous_summary_sha256 -ceq ("0" * 64)
+        )
+    } else {
+        $emptySummarySha256 =
+            [string](New-MutationHistorySummary).summary_sha256
+        $valid = $valid -and (
+            [long]$Summary.compaction_count -ge 1 -and
+            [long]$Summary.compaction_count -le $count -and
+            [long]$Summary.first_ordinal -eq 1 -and
+            [long]$Summary.last_ordinal -eq $count -and
+            [long]$Summary.first_prepared_at_ms -gt 0 -and
+            [long]$Summary.last_confirmed_at_ms -gt 0 -and
+            [string]$Summary.prior_journal_sha256 -ceq ("0" * 64) -and
+            [string]$Summary.final_journal_sha256 -cne ("0" * 64) -and
+            [string]$Summary.records_commitment_sha256 -cne ("0" * 64) -and
+            [string]$Summary.previous_summary_sha256 -cne ("0" * 64) -and
+            (
+                [long]$Summary.compaction_count -ne 1 -or
+                [string]$Summary.previous_summary_sha256 -ceq
+                    $emptySummarySha256
+            ) -and
+            (
+                (
+                    [long]$Summary.cleanup_attempt_count -eq 0 -and
+                    [string]$Summary.cleanup_key_outcome_sha256 -ceq
+                        ("0" * 64)
+                ) -or
+                (
+                    [long]$Summary.cleanup_attempt_count -gt 0 -and
+                    [string]$Summary.cleanup_key_outcome_sha256 -cne
+                        ("0" * 64)
+                )
+            )
+        )
+    }
+    Assert-Condition $valid "mutation_history_summary_invalid" `
+        "The compacted mutation-history commitment is invalid."
+}
+
+function Get-MutationTotalCount {
     param([Parameter(Mandatory)][Collections.IDictionary] $State)
-    $previous = "0" * 64
+    $compacted = if (
+        $State.Contains("mutation_history_summary") -and
+        $null -ne $State.mutation_history_summary
+    ) {
+        [long]$State.mutation_history_summary.compacted_count
+    } else {
+        0L
+    }
+    return $compacted + [long]@($State.mutation_history).Count
+}
+
+function Compress-MutationHistory {
+    param([Parameter(Mandatory)][Collections.IDictionary] $State)
+    if (
+        -not $State.Contains("mutation_history_summary") -or
+        $null -eq $State.mutation_history_summary
+    ) {
+        return
+    }
+    $history = @($State.mutation_history)
+    if ($history.Count -le $script:MutationHistoryRecentLimit) {
+        return
+    }
+    $summary = $State.mutation_history_summary
+    Assert-MutationHistorySummary -Summary $summary
+    $fullChainPrevious = if (
+        [long]$summary.compacted_count -eq 0
+    ) {
+        "0" * 64
+    } else {
+        [string]$summary.final_journal_sha256
+    }
+    foreach ($record in $history) {
+        Assert-Condition (
+            [string]$record.previous_journal_sha256 -ceq
+                $fullChainPrevious -and
+            [string]$record.journal_sha256 -ceq
+                (Get-MutationJournalSha256 -Mutation $record) -and
+            [string]$record.stage -cin @("confirmed", "terminal")
+        ) "mutation_journal_invalid" `
+            "The mutation-history chain is invalid before compaction."
+        $fullChainPrevious = [string]$record.journal_sha256
+    }
+    Assert-Condition (
+        [string]$State.journal_head_sha256 -ceq $fullChainPrevious
+    ) "mutation_journal_head_invalid" `
+        "The mutation-history head changed before compaction."
+    $compactCount = $history.Count - $script:MutationHistoryRecentLimit
+    $compacted = @($history | Select-Object -First $compactCount)
+    $remaining = @($history | Select-Object -Skip $compactCount)
+    $oldSummarySha256 = [string]$summary.summary_sha256
+    $oldRecordsCommitment =
+        [string]$summary.records_commitment_sha256
+    $oldCleanupCommitment =
+        [string]$summary.cleanup_key_outcome_sha256
+    $batchCommitment = "0" * 64
+    $cleanupBatchCommitment = "0" * 64
+    $cleanupBatchCount = 0L
+    $startOrdinal = [long]$summary.compacted_count + 1L
+    $ordinal = $startOrdinal
+    $expectedPrevious = if ([long]$summary.compacted_count -eq 0) {
+        "0" * 64
+    } else {
+        [string]$summary.final_journal_sha256
+    }
+    foreach ($record in $compacted) {
+        Assert-Condition (
+            [string]$record.previous_journal_sha256 -ceq $expectedPrevious -and
+            [string]$record.journal_sha256 -ceq
+                (Get-MutationJournalSha256 -Mutation $record) -and
+            [string]$record.stage -cin @("confirmed", "terminal")
+        ) "mutation_journal_invalid" `
+            "A mutation record could not enter the compacted commitment."
+        $batchCommitment = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes((@(
+                "rusty.fleet.wifi-adb-two-quest.compacted-record.v1",
+                $batchCommitment,
+                [string]$ordinal,
+                [string]$record.journal_sha256
+            ) -join "`0")))
+        if ([string]$record.stage -ceq "confirmed") {
+            $summary.confirmed_count =
+                [long]$summary.confirmed_count + 1L
+        } else {
+            $summary.terminal_count =
+                [long]$summary.terminal_count + 1L
+        }
+        if (
+            [string]$record.action_id -clike "acceptance.cleanup.*"
+        ) {
+            $summary.cleanup_attempt_count =
+                [long]$summary.cleanup_attempt_count + 1L
+            $cleanupBatchCount++
+            $cleanupBatchCommitment = Get-BytesSha256 -Bytes (
+                [Text.Encoding]::UTF8.GetBytes((@(
+                    "rusty.fleet.wifi-adb-two-quest.cleanup-outcome.v1",
+                    $cleanupBatchCommitment,
+                    [string]$ordinal,
+                    [string]$record.action_id,
+                    [string]$record.stage,
+                    [string]$record.reconciliation_code
+                ) -join "`0")))
+            if ([string]$record.stage -ceq "confirmed") {
+                $summary.cleanup_confirmed_count =
+                    [long]$summary.cleanup_confirmed_count + 1L
+            } elseif (
+                [string]$record.reconciliation_code -ceq
+                    "cleanup_step_partial_failure"
+            ) {
+                $summary.cleanup_partial_count =
+                    [long]$summary.cleanup_partial_count + 1L
+            } elseif (
+                [string]$record.reconciliation_code -ceq
+                    "cleanup_step_exception"
+            ) {
+                $summary.cleanup_exception_count =
+                    [long]$summary.cleanup_exception_count + 1L
+            } else {
+                $summary.cleanup_other_terminal_count =
+                    [long]$summary.cleanup_other_terminal_count + 1L
+            }
+        }
+        if ([long]$summary.compacted_count -eq 0 -and
+            $ordinal -eq $startOrdinal) {
+            $summary.first_ordinal = $ordinal
+            $summary.first_prepared_at_ms = [long]$record.prepared_at_ms
+            $summary.prior_journal_sha256 =
+                [string]$record.previous_journal_sha256
+        }
+        $summary.last_ordinal = $ordinal
+        $summary.last_confirmed_at_ms = [long]$record.confirmed_at_ms
+        $summary.final_journal_sha256 = [string]$record.journal_sha256
+        $expectedPrevious = [string]$record.journal_sha256
+        $ordinal++
+    }
+    $endOrdinal = $ordinal - 1L
+    $summary.records_commitment_sha256 = Get-BytesSha256 -Bytes (
+        [Text.Encoding]::UTF8.GetBytes((@(
+            "rusty.fleet.wifi-adb-two-quest.compaction-batch.v1",
+            $oldSummarySha256,
+            $oldRecordsCommitment,
+            [string]$startOrdinal,
+            [string]$endOrdinal,
+            $batchCommitment
+        ) -join "`0")))
+    if ($cleanupBatchCount -gt 0) {
+        $summary.cleanup_key_outcome_sha256 = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes((@(
+                "rusty.fleet.wifi-adb-two-quest.cleanup-compaction-batch.v1",
+                $oldSummarySha256,
+                $oldCleanupCommitment,
+                [string]$startOrdinal,
+                [string]$endOrdinal,
+                [string]$cleanupBatchCount,
+                $cleanupBatchCommitment
+            ) -join "`0")))
+    }
+    $summary.previous_summary_sha256 = $oldSummarySha256
+    $summary.compaction_count = [long]$summary.compaction_count + 1L
+    $summary.compacted_count =
+        [long]$summary.compacted_count + [long]$compacted.Count
+    $summary.summary_sha256 =
+        Get-MutationHistorySummarySha256 -Summary $summary
+    $State.mutation_history_summary = $summary
+    $State.mutation_history = $remaining
+}
+
+function Add-DurableMutationHistoryRecord {
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [Parameter(Mandatory)][Collections.IDictionary] $Record
+    )
+    Assert-Condition (
+        [string]$Record.previous_journal_sha256 -ceq
+            [string]$State.journal_head_sha256 -and
+        [string]$Record.journal_sha256 -ceq
+            (Get-MutationJournalSha256 -Mutation $Record) -and
+        [string]$Record.stage -cin @("confirmed", "terminal")
+    ) "mutation_journal_append_invalid" `
+        "Only the exact next terminal mutation record may enter history."
+    $State.mutation_history = @($State.mutation_history) + $Record
+    $State.journal_head_sha256 = [string]$Record.journal_sha256
+    Compress-MutationHistory -State $State
+}
+
+function Assert-MutationJournal {
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [switch] $LegacyV5
+    )
+    if ($LegacyV5) {
+        $previous = "0" * 64
+    } else {
+        Assert-MutationHistorySummary `
+            -Summary $State.mutation_history_summary
+        Assert-Condition (
+            @($State.mutation_history).Count -le
+                $script:MutationHistoryRecentLimit -and
+            (
+                [long]$State.mutation_history_summary.compacted_count -eq 0 -or
+                @($State.mutation_history).Count -eq
+                    $script:MutationHistoryRecentLimit
+            )
+        ) "mutation_history_bound_invalid" `
+            "The recent mutation-history suffix is not canonical."
+        $previous = if (
+            [long]$State.mutation_history_summary.compacted_count -eq 0
+        ) {
+            "0" * 64
+        } else {
+            [string]$State.mutation_history_summary.final_journal_sha256
+        }
+    }
     foreach ($record in @($State.mutation_history)) {
         Assert-Condition (
             [string]$record.previous_journal_sha256 -ceq $previous -and
@@ -2255,7 +2655,7 @@ function Start-DurableMutation {
         [void](Assert-AgentBoardReservation `
             -Context $Context -State $State)
     }
-    $ordinal = @($State.mutation_history).Count + 1
+    $ordinal = (Get-MutationTotalCount -State $State) + 1L
     $requestMaterial = "$($Context.Sha256)`0$Kind`0$Slot`0$ordinal"
     $mutationHash = Get-BytesSha256 -Bytes (
         [Text.Encoding]::UTF8.GetBytes($requestMaterial))
@@ -2380,8 +2780,7 @@ function Complete-DurableMutation {
     $State.mutation.journal_sha256 =
         Get-MutationJournalSha256 -Mutation $State.mutation
     Write-SanitizedState -Context $Context -State $State
-    $State.mutation_history = @($State.mutation_history) + $State.mutation
-    $State.journal_head_sha256 = [string]$State.mutation.journal_sha256
+    Add-DurableMutationHistoryRecord -State $State -Record $State.mutation
     $State.mutation = $null
     Write-SanitizedState -Context $Context -State $State
 }
@@ -2418,8 +2817,7 @@ function Complete-DurableMutationTerminal {
     $State.mutation.journal_sha256 =
         Get-MutationJournalSha256 -Mutation $State.mutation
     Write-SanitizedState -Context $Context -State $State
-    $State.mutation_history = @($State.mutation_history) + $State.mutation
-    $State.journal_head_sha256 = [string]$State.mutation.journal_sha256
+    Add-DurableMutationHistoryRecord -State $State -Record $State.mutation
     $State.mutation = $null
     Write-SanitizedState -Context $Context -State $State
 }
@@ -2434,8 +2832,8 @@ function Assert-NoAmbiguousMutation {
         return
     }
     if ([string]$State.mutation.stage -ceq "confirmed") {
-        $State.mutation_history = @($State.mutation_history) + $State.mutation
-        $State.journal_head_sha256 = [string]$State.mutation.journal_sha256
+        Add-DurableMutationHistoryRecord -State $State `
+            -Record $State.mutation
         $State.mutation = $null
         Write-SanitizedState -Context $Context -State $State
         return
@@ -2579,6 +2977,7 @@ function New-SanitizedState {
         checkpoint = $null
         mutation = $null
         mutation_history = @()
+        mutation_history_summary = (New-MutationHistorySummary)
         journal_head_sha256 = "0" * 64
         final_receipt_sha256 = "0" * 64
         agent_board_reservation = $null
@@ -6229,9 +6628,8 @@ function Invoke-AcceptanceCleanup {
             "cleanup-$($truth.Status)"
         $State.mutation.journal_sha256 =
             Get-MutationJournalSha256 -Mutation $State.mutation
-        $State.mutation_history = @($State.mutation_history) + $State.mutation
-        $State.journal_head_sha256 =
-            [string]$State.mutation.journal_sha256
+        Add-DurableMutationHistoryRecord -State $State `
+            -Record $State.mutation
         $State.mutation = $null
     }
     Add-StateEvent -State $State -Phase "cleanup" -Status $truth.Status `
@@ -6258,10 +6656,18 @@ function Get-SanitizedStatus {
     )
     if ($null -eq $State) {
         return [ordered]@{
-            schema = "rusty.fleet.wifi_adb_two_quest_status.v1"
+            schema = "rusty.fleet.wifi_adb_two_quest_status.v2"
             status = "not_started"
             phase = "plan"
+            sequence = 0
             checkpoint = $null
+            agent_board_reservation = $null
+            cleanup = [ordered]@{
+                attempted = $false
+                status = "not_started"
+                failed_count = 0
+                total_count = 0
+            }
             devices = @(
                 [ordered]@{ slot = "device_a"; state = "private" },
                 [ordered]@{ slot = "device_b"; state = "private" }
@@ -6272,9 +6678,62 @@ function Get-SanitizedStatus {
                 authorized = "not_evaluated"
                 effective = "not_evaluated"
             }
+            audit = [ordered]@{
+                event_count = 0
+                mutation_record_count = 0
+                compacted_record_count = 0
+                active_mutation = $false
+                journal_head_sha256 = "0" * 64
+                final_receipt_sha256 = "0" * 64
+            }
         }
     }
-    return $State
+    $cleanupValues = @($State.cleanup.checks.Values)
+    $failedCleanup = @(
+        $cleanupValues | Where-Object { $_ -ne $true }
+    ).Count
+    $checkpoint = if ($null -eq $State.checkpoint) {
+        $null
+    } else {
+        [ordered]@{
+            kind = [string]$State.checkpoint.kind
+            slot = [string]$State.checkpoint.slot
+            reason_code = [string]$State.checkpoint.reason_code
+        }
+    }
+    return [ordered]@{
+        schema = "rusty.fleet.wifi_adb_two_quest_status.v2"
+        status = [string]$State.status
+        phase = [string]$State.phase
+        sequence = [int]$State.sequence
+        checkpoint = $checkpoint
+        agent_board_reservation = $State.agent_board_reservation
+        cleanup = [ordered]@{
+            attempted = $State.cleanup.attempted -eq $true
+            status = [string]$State.cleanup.status
+            failed_count = $failedCleanup
+            total_count = $cleanupValues.Count
+        }
+        devices = @(
+            [ordered]@{ slot = "device_a"; state = "private" },
+            [ordered]@{ slot = "device_b"; state = "private" }
+        )
+        claims = [ordered]@{
+            installed = [string]$State.claims.installed
+            reachable = [string]$State.claims.reachable
+            authorized = [string]$State.claims.authorized
+            effective = [string]$State.claims.effective
+        }
+        audit = [ordered]@{
+            event_count = @($State.events).Count
+            mutation_record_count = Get-MutationTotalCount -State $State
+            compacted_record_count =
+                [long]$State.mutation_history_summary.compacted_count
+            active_mutation = $null -ne $State.mutation
+            journal_head_sha256 = [string]$State.journal_head_sha256
+            final_receipt_sha256 = [string]$State.final_receipt_sha256
+        }
+    }
 }
 
 function Invoke-FleetWifiAdbTwoQuestAcceptance {
