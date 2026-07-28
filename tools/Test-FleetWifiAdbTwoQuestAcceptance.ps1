@@ -15,6 +15,8 @@ if ($PSVersionTable.PSEdition -ne "Core" -or
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $PSScriptRoot "FleetWifiAdbTwoQuestAcceptance.psm1"
 $runnerPath = Join-Path $PSScriptRoot "Invoke-FleetWifiAdbTwoQuestAcceptance.ps1"
+$compactionRecoveryFixturePath = Join-Path $PSScriptRoot (
+    "fixtures/Invoke-FleetWifiAdbCompactionRecovery.ps1")
 Import-Module $modulePath -Force -DisableNameChecking
 
 function Assert-True {
@@ -1457,13 +1459,20 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
             [string]$_.lease_id
         }
     )
+    $compactionOwnerPath =
+        Join-Path $testRoot "compaction-owner-state.json"
     $compactionOwner = [ordered]@{
+        schema = "rusty.fleet.wifi_adb_compaction_test_owner.v1"
         dispatch_count = 0
         unsafe_effect_count = 0
         effect_applied = $false
         recovered = $false
     }
+    Write-Json -Path $compactionOwnerPath -Value $compactionOwner
     $compactionOperation = {
+        $compactionOwner =
+            Get-Content -LiteralPath $compactionOwnerPath -Raw |
+                ConvertFrom-Json -AsHashtable -Depth 8
         $compactionOwner.dispatch_count =
             [int]$compactionOwner.dispatch_count + 1
         if (-not [bool]$compactionOwner.effect_applied) {
@@ -1471,6 +1480,11 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
             $compactionOwner.unsafe_effect_count =
                 [int]$compactionOwner.unsafe_effect_count + 1
         }
+        [IO.File]::WriteAllText(
+            $compactionOwnerPath,
+            ($compactionOwner | ConvertTo-Json -Depth 8) +
+                [Environment]::NewLine,
+            [Text.UTF8Encoding]::new($false))
         return [bool]$compactionOwner.recovered
     }.GetNewClosure()
     $compactionChecks = [ordered]@{
@@ -1493,6 +1507,9 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
     $compactionStatePath =
         Join-Path $config.private_state_root "acceptance-state.json"
     $compactionState = Read-SanitizedState -Context $validated
+    $compactionOwner =
+        Get-Content -LiteralPath $compactionOwnerPath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 8
     $compactedBeforeRecovery =
         [long]$compactionAttemptCount - [long]$mutationHistoryLimit
     Assert-True (
@@ -1524,26 +1541,39 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
     ) "Repeated false cleanup attempts did not compact into a bounded restart state."
 
     $compactionOwner.recovered = $true
-    $compactionChecks = [ordered]@{}
-    foreach ($entry in $compactionState.cleanup.checks.GetEnumerator()) {
-        $compactionChecks[[string]$entry.Key] = $entry.Value
+    Write-Json -Path $compactionOwnerPath -Value $compactionOwner
+    $compactionRestart = Invoke-RunnerProcess -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $compactionRecoveryFixturePath,
+        "-ModulePath", $modulePath,
+        "-RunConfig", $configPath,
+        "-OwnerStatePath", $compactionOwnerPath,
+        "-CheckName", "owner-compaction-retry"
+    )
+    $compactionRestartDiagnostic = (
+        "exit=$($compactionRestart.ExitCode); " +
+        "stdout=$($compactionRestart.Stdout); " +
+        "stderr=$($compactionRestart.Stderr)"
+    ) -replace '(?i)[a-z]:\\[^\r\n]+', '<path>'
+    if ($compactionRestartDiagnostic.Length -gt 1024) {
+        $compactionRestartDiagnostic =
+            $compactionRestartDiagnostic.Substring(0, 1024)
     }
-    [void](Assert-AgentBoardReservation `
-        -Context $validated -State $compactionState)
-    Invoke-ModeledJournaledCleanupStep `
-        -Context $validated -State $compactionState `
-        -Checks $compactionChecks -Name "owner-compaction-retry" `
-        -Operation $compactionOperation
-    $compactionTruth = Get-CleanupTruth -Checks $compactionChecks
-    $compactionState.cleanup.checks = $compactionChecks
-    $compactionState.cleanup.status = $compactionTruth.Status
-    $compactionState.status = "complete"
-    $compactionState.phase = "cleanup"
-    Write-SanitizedState -Context $validated -State $compactionState
-    [void](Release-AgentBoardReservation `
-        -Context $validated -State $compactionState)
+    Assert-True (
+        $compactionRestart.ExitCode -eq 0 -and
+        [string]::IsNullOrEmpty($compactionRestart.Stderr)
+    ) (
+        "A fresh process could not recover the compacted cleanup state: " +
+        $compactionRestartDiagnostic)
+    $compactionRestartProof =
+        $compactionRestart.Stdout |
+            ConvertFrom-Json -AsHashtable -Depth 8
 
     $compactionState = Read-SanitizedState -Context $validated
+    $compactionOwner =
+        Get-Content -LiteralPath $compactionOwnerPath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 8
     $compactionReceipt =
         Get-Content -LiteralPath $privateReservationPath -Raw |
             ConvertFrom-Json -AsHashtable -Depth 16
@@ -1567,6 +1597,18 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         [int]$compactionOwner.dispatch_count -eq
             $compactionAttemptCount + 1 -and
         [int]$compactionOwner.unsafe_effect_count -eq 1 -and
+        [string]$compactionRestartProof.schema -ceq
+            "rusty.fleet.wifi_adb_compaction_recovery_fixture.v1" -and
+        [string]$compactionRestartProof.result -ceq "pass" -and
+        [string]$compactionRestartProof.status -ceq "complete" -and
+        [string]$compactionRestartProof.cleanup_status -ceq "complete" -and
+        [string]$compactionRestartProof.agent_board_reservation -ceq
+            "released" -and
+        [long]$compactionRestartProof.total_records -eq
+            $compactionAttemptCount + 1 -and
+        [long]$compactionRestartProof.recent_records -eq
+            $mutationHistoryLimit -and
+        [long]$compactionRestartProof.state_size_bytes -lt 1048576 -and
         $compactionState.cleanup.checks["owner-compaction-retry"] -eq
             $true -and
         [string]$compactionState.cleanup.status -ceq "complete" -and
@@ -1765,7 +1807,12 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         $cleanup.FailedCount -eq 1
     ) "Partial cleanup failure was not retained."
 
-    foreach ($file in @($modulePath, $runnerPath, $PSCommandPath)) {
+    foreach ($file in @(
+        $modulePath,
+        $runnerPath,
+        $compactionRecoveryFixturePath,
+        $PSCommandPath
+    )) {
         $tokens = $null
         $errors = $null
         [Management.Automation.Language.Parser]::ParseFile(
@@ -1777,6 +1824,7 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
     $trackedText = @(
         Get-Content -LiteralPath $modulePath -Raw
         Get-Content -LiteralPath $runnerPath -Raw
+        Get-Content -LiteralPath $compactionRecoveryFixturePath -Raw
         Get-Content -LiteralPath (
             Join-Path $repoRoot "docs/QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md"
         ) -Raw -ErrorAction SilentlyContinue
