@@ -978,6 +978,28 @@ Send-Json -Value ([ordered]@{
             termux_process_epoch_sha256 = "0" * 64
         }
     }
+    $nonSyntheticConfig = Copy-JsonValue $validated.Config
+    $nonSyntheticConfig.run_id = "wifi-adb-real"
+    $nonSyntheticContext = [pscustomobject]@{
+        Path = $validated.Path
+        Sha256 = $validated.Sha256
+        Config = $nonSyntheticConfig
+        Artifacts = $validated.Artifacts
+        AgentBoardChainIdentity = $validated.AgentBoardChainIdentity
+    }
+    $guardState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Assert-ThrowsCode -Code "modeled_projection_test_context_required" `
+        -Operation {
+            [void](Start-DurableMutation `
+                -Context $nonSyntheticContext -State $guardState `
+                -Kind "modeled-guard-negative" `
+                -ActionId "test.modeled.guard.negative" `
+                -OwnerId "modeled-owner" -ModeledNoDeviceProjection)
+        }
+    Assert-True ($null -eq $guardState.mutation) `
+        "A rejected modeled projection mutated durable state."
+
     New-Item -ItemType Directory -Path $config.private_state_root | Out-Null
     $modelState = New-SanitizedState `
         -Context $validated -Snapshots $syntheticSnapshots
@@ -1548,8 +1570,7 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         "-File", $compactionRecoveryFixturePath,
         "-ModulePath", $modulePath,
         "-RunConfig", $configPath,
-        "-OwnerStatePath", $compactionOwnerPath,
-        "-CheckName", "owner-compaction-retry"
+        "-OwnerStatePath", $compactionOwnerPath
     )
     $compactionRestartDiagnostic = (
         "exit=$($compactionRestart.ExitCode); " +

@@ -5,8 +5,7 @@
 param(
     [Parameter(Mandatory)][string] $ModulePath,
     [Parameter(Mandatory)][string] $RunConfig,
-    [Parameter(Mandatory)][string] $OwnerStatePath,
-    [Parameter(Mandatory)][string] $CheckName
+    [Parameter(Mandatory)][string] $OwnerStatePath
 )
 
 Set-StrictMode -Version Latest
@@ -69,7 +68,7 @@ $ownerOperation = {
         -Context $InnerContext -State $InnerState `
         -Checks $InnerChecks -Name $InnerName `
         -ModeledNoDeviceProjection -Operation $InnerOperation
-} $context $state $checks $CheckName $ownerOperation
+} $context $state $checks "owner-compaction-retry" $ownerOperation
 
 $truth = Get-CleanupTruth -Checks $checks
 if ([string]$truth.Status -cne "complete") {

@@ -2645,6 +2645,73 @@ function Assert-MutationJournal {
     }
 }
 
+function Assert-ModeledNoDeviceProjectionContext {
+    param([Parameter(Mandatory)][object] $Context)
+
+    $stateRoot = [IO.Path]::GetFullPath(
+        [string]$Context.Config.private_state_root)
+    $testRoot = [IO.Path]::GetFullPath((Split-Path -Parent $stateRoot))
+    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $pathPrefix = $testRoot + [IO.Path]::DirectorySeparatorChar
+    $devices = @($Context.Config.devices)
+    $deviceA = @($devices | Where-Object {
+        [string]$_.slot -ceq "device_a"
+    })
+    $deviceB = @($devices | Where-Object {
+        [string]$_.slot -ceq "device_b"
+    })
+    $agentBoardPath = [IO.Path]::GetFullPath(
+        [string]$Context.Config.agent_board.cli_path)
+    $allPrivateInputs = @(
+        $agentBoardPath,
+        [IO.Path]::GetFullPath(
+            [string]$Context.Config.onboarding.request_path),
+        [IO.Path]::GetFullPath(
+            [string]$Context.Config.onboarding.inventory_path),
+        [IO.Path]::GetFullPath(
+            [string]$Context.Config.hub.config_path)
+    )
+    foreach ($artifact in $Context.Artifacts.Values) {
+        $allPrivateInputs += [IO.Path]::GetFullPath([string]$artifact.Path)
+    }
+    foreach ($device in $devices) {
+        $allPrivateInputs += [IO.Path]::GetFullPath(
+            [string]$device.qfm_enrollment_path)
+        $allPrivateInputs += [IO.Path]::GetFullPath(
+            [string]$device.fleet_agent_profile_path)
+        $allPrivateInputs += [IO.Path]::GetFullPath(
+            [string]$device.fleet_agent_seed_path)
+    }
+
+    $valid = (
+        [string]$Context.Config.run_id -ceq "wifi-adb-synthetic" -and
+        (Split-Path -Leaf $testRoot) -like
+            "rusty-fleet-wifi-adb-acceptance-*" -and
+        $testRoot.StartsWith(
+            $temporaryRoot,
+            [StringComparison]::OrdinalIgnoreCase) -and
+        $stateRoot -ceq (Join-Path $testRoot "state") -and
+        $devices.Count -eq 2 -and
+        $deviceA.Count -eq 1 -and
+        $deviceB.Count -eq 1 -and
+        [string]$deviceA[0].device_id -ceq "device.synthetic.a" -and
+        [string]$deviceA[0].usb_serial -ceq "SYNTHETICa" -and
+        [string]$deviceB[0].device_id -ceq "device.synthetic.b" -and
+        [string]$deviceB[0].usb_serial -ceq "SYNTHETICb" -and
+        [string]$Context.Config.hub.operator_url -ceq
+            "http://127.0.0.1:18741" -and
+        $Context.Config.hub.manage_firewall -eq $false -and
+        (Split-Path -Leaf $agentBoardPath) -ceq "fake-agent-board.ps1" -and
+        @($allPrivateInputs | Where-Object {
+            -not $_.StartsWith(
+                $pathPrefix,
+                [StringComparison]::OrdinalIgnoreCase)
+        }).Count -eq 0
+    )
+    Assert-Condition $valid "modeled_projection_test_context_required" `
+        "A no-device modeled mutation is restricted to the closed synthetic test context."
+}
+
 function Start-DurableMutation {
     param(
         [Parameter(Mandatory)][object] $Context,
@@ -2664,7 +2731,9 @@ function Start-DurableMutation {
     )
     Assert-Condition ($null -eq $State.mutation) "mutation_already_active" `
         "A durable mutation must be reconciled before another can start."
-    if (-not $ModeledNoDeviceProjection) {
+    if ($ModeledNoDeviceProjection) {
+        Assert-ModeledNoDeviceProjectionContext -Context $Context
+    } else {
         [void](Assert-AgentBoardReservation `
             -Context $Context -State $State)
     }
