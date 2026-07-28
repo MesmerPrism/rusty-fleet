@@ -1,0 +1,18 @@
+{
+  "schema": "rusty.hostess.windows_hotspot.provider_receipt.v1",
+  "request_id": "hotspot-request-015f5e06a58b4df5",
+  "operation_id": "hotspot-operation-other",
+  "action": "stop",
+  "outcome": "verified",
+  "reason": "stop.readback_verified",
+  "observed_at_utc": "2026-07-27T14:29:31.0000000Z",
+  "capability_available": true,
+  "capability": "Enabled",
+  "operational_state": "Off",
+  "client_count": 0,
+  "max_client_count": 8,
+  "band": "FiveGigahertz",
+  "source_connectivity": "Internet",
+  "ownership_generation": null,
+  "ssid": "must-never-cross-this-contract"
+}

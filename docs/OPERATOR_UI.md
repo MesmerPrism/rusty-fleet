@@ -469,6 +469,40 @@ Cleanup is a first-class dimension. It may include session release, route
 closure, temporary-file removal, media-sink stop, prior-state restoration, and
 lease/concurrency release.
 
+### Windows host Mobile Hotspot presentation
+
+The hotspot pane appears before selected-device workflows in the bounded
+`Operations` region because it controls one Windows-host singleton, not the
+device batch. Its four typed actions are status, start, ensure, and stop.
+Every action uses explicit immutable-preview confirmation. Stop copy names
+exact Fleet ownership and warns that connected clients may be disconnected.
+
+The pane shows only sanitized readiness, ownership, eligibility, lifecycle,
+expiry, result, capability, operational state, client count, band, and source
+connectivity. External ownership is always labeled observe-only. A timed-out
+execute keeps the preview and directs the operator to refresh the durable
+operation; refresh is never described as a new live status read. Closing the
+projection explicitly says that it does not stop or release host work.
+
+### Quest awake-control presentation
+
+The awake-control review pane names all six modes instead of presenting one
+ambiguous toggle: status, bounded Meta hold (maximum eight hours), Windows
+watchdog, Quest watchdog, stop watchdogs, and restore normal. Duration and
+poll interval are visible frozen values. The Quest watchdog carries a visible
+“stops on reboot” note.
+
+`Stop watchdogs` explicitly says that current power/proximity settings remain
+unchanged. `Restore normal` explicitly says that it stops both watchdogs and
+then restores normal settings. Their buttons, confirmation text, receipts,
+and per-target outcomes remain distinct.
+
+Progress exposes stay-on, proximity, wake, Windows-watchdog,
+device-watchdog, settings-restored, and settings-left-unchanged facts
+independently. No “success” label is derived from ADB exit, a running process,
+or a single combined boolean. Provider absence disables action controls with
+a configuration reason but does not degrade ordinary monitoring.
+
 ## Empty, stale, and degraded behavior
 
 | Condition | Required projection |

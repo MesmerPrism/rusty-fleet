@@ -1,0 +1,12 @@
+ADB MANAGER STATE (dumpsys adb):
+{
+  debugging_manager={
+    connected_to_adb=true
+    user_keys=
+
+    keystore=<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+    <keyStore version="1">
+    </keyStore>
+
+  }
+}

@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- Added the standalone `fleet-onboard` offline onboarding generator with
+  deterministic confirmation-bound planning, exact pinned Rusty Quest
+  key-record invocation from a deny-rename retained path in a bounded Windows
+  Job Object, current-user-only create-new private output,
+  identity/ACL/link/hash-closed inventory, exact-handle rollback and cleanup,
+  owner-profile and real Hub-validator conformance, and separate
+  cleanup/revocation plans. The current pinned capsule is explicitly
+  quarantined as machine-bound developer evidence; supported distribution
+  requires a separately owner-issued release capsule.
+- Added a public-safe, Fleet-owned, resumable two-Quest modern Wi-Fi ADB
+  acceptance transaction with strict private config, exact artifact pins,
+  attended Meta/reboot checkpoints, signed exact-shell proof lifecycle,
+  two-device isolation, cleanup truth, and host/synthetic validation.
+- Made Fleet icon provenance stable across LF, CRLF, and CR worktree
+  materialization while retaining the reviewed canonical SVG digest and
+  deterministic ICO bytes.
+- Added a fail-closed, revisioned provider capability catalog with shared local
+  API, `fleetctl`, and WPF projections over exact hash-pinned
+  `--describe-json` owner metadata.
+- Added an optional independently bounded check-in-only LAN listener while
+  keeping local provider/operator routes on loopback.
+- Added a canonical generic Fleet SVG and deterministic multi-size Windows
+  application icon.
+
 All notable changes to Rusty Fleet will be documented here.
 
 The project follows Semantic Versioning once runtime releases begin.

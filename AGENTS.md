@@ -20,6 +20,18 @@ Use:
 
 Live device work is never implied by a source or documentation task.
 
+The Fleet-owned two-Quest Wi-Fi ADB acceptance runner is resumable and
+attended. Its Plan phase is completely non-mutating; Preflight creates private
+state only after strict source/artifact/config and read-only snapshot checks.
+Execute, Resume, attended-checkpoint confirmation, and Cleanup are distinct.
+Execute first acquires a private Agent Board bundle for both exact
+`quest:<serial>` resources. Resume and every durable mutation revalidate both
+leases; Cleanup repairs an expired slot when possible, retains the bundle
+through partial cleanup, and releases it only after complete terminal cleanup.
+Only `bound`, `expired`, or `released` may appear in sanitized state.
+Never automate Meta approval, restart the ADB daemon, persist raw owner output,
+or remove packages/profiles/processes that the run did not create.
+
 ## Read order
 
 1. `README.md`
@@ -42,12 +54,17 @@ Live device work is never implied by a source or documentation task.
   and the local API;
 - `crates/fleet-manifold-adapter`: exact pinned Manifold enrollment/status
   admission plus transactional signed-check-in projection and Runtime Host
-  command authority;
+  command authority; the current provider pin is
+  `ef1d40b8e0b7e7b47270509eddf53787c23b9fea`, and legacy Runtime Host v2 state
+  reaches v4 only through Manifold's explicit migration path;
 - `crates/fleet-kiosk-adapter`: signed bounded Kiosk direct-operator transport,
   effective receipt projection, and poll-only recovery;
+- `crates/fleet-package-updater-adapter`: exact immutable updater invocation
+  validation plus strict untrusted acknowledgement/effect validation behind
+  the separately authenticated local owner ingress;
 - `apps/fleet-hub-local`: explicit bounded local ingress, durable two-slot
-  runtime, saved-view/operation state, raw owner evidence, and canonical HTTP
-  projection adapter;
+  runtime, saved-view/operation state, raw owner evidence, bounded one-use
+  updater claims, and canonical HTTP projection adapter;
 - `crates/fleet-simulator`: synthetic fleet, mixed-freshness operator,
   deterministic M1 lifecycle, and damage scenarios;
 - `apps/fleetctl`: structured JSON CLI, saved-view parity, and the self-checking
@@ -59,7 +76,8 @@ Live device work is never implied by a source or documentation task.
   loopback-only local API projection;
 - `apps/fleet-console-wpf.tests`: package-free native DataGrid, UI Automation,
   watch-cursor/damage, stable-context/order, grouped virtualization, presented
-  keyboard, and 1,000-device scale validation;
+  keyboard, 10/50/100-row off-screen layout validation, and a normal 50-row
+  presented-window check;
 - `schemas`: versioned JSON Schema projection;
 - `fixtures`: small committed contracts and deterministic scenario manifests.
 
@@ -129,7 +147,9 @@ The detailed contract is [docs/OPERATOR_UI.md](docs/OPERATOR_UI.md).
   selection, query, accessibility, or virtualization behavior.
 - A WPF surface is not accepted from a four-device happy path; use the
   milestone's keyboard, UI Automation, high-contrast, scaling, and scale
-  fixtures.
+  fixtures. Treat 50 devices as the normal operator fixture and validate the
+  realistic 10-to-100-device window; larger deterministic datasets are
+  separate stress evidence and must not drive the default layout.
 
 ## Stacked milestone rule
 
@@ -207,6 +227,12 @@ authority rejects. Persist the matching Fleet and Manifold snapshots before
 acknowledging an accepted check-in; damaged state must recover from a valid
 prior slot or fail closed. Device source time is signed evidence; Hub received
 time is supplied by the ingress adapter.
+
+Fleet's current Runtime Host commands are lease-free. Do not reconstruct
+Manifold control leases, administrative revocation barriers, derivative
+convergence, or retaining-consumer acknowledgements in Fleet. A Manifold
+application receipt is command-authorization evidence, not an owner effect or
+cleanup receipt.
 
 Keep `AGENTS.md` concise. Put detailed procedures in linked docs or runbooks and
 update the nearest README/router plus relevant skills when ownership,

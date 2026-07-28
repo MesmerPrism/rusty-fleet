@@ -6,13 +6,21 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
-use fleet_contracts::{OperationExecuteRequest, OperationPreviewRequest};
+use fleet_contracts::{
+    AuthenticatedPackageUpdaterAcknowledgement, AuthenticatedPackageUpdaterReceipt,
+    OperationExecuteRequest, OperationPreviewRequest, PackageInstallReleaseExecuteRequest,
+    PackageInstallReleasePreviewRequest, PackageUpdaterClaimRequest, QuestAwakeExecuteRequest,
+    QuestAwakePreviewRequest, QuestWifiAdbExecuteRequest, QuestWifiAdbPreviewRequest,
+    WindowsHotspotExecuteRequest, WindowsHotspotPreviewRequest,
+};
 
 use crate::{CliFailure, FleetOperationClient};
 
 const DEFAULT_HUB_URL: &str = "http://127.0.0.1:8741";
 const HUB_URL_ENV: &str = "RUSTY_FLEET_HUB_URL";
+const PACKAGE_OWNER_TOKEN_ENV: &str = "RUSTY_FLEET_PACKAGE_OWNER_TOKEN";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const HOTSPOT_EXECUTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct LocalFleetOperationClient {
@@ -64,15 +72,46 @@ impl LocalFleetOperationClient {
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_token(method, path, body, None)
+    }
+
+    fn request_with_timeout(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        request_timeout: Duration,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_token_and_timeout(method, path, body, None, request_timeout)
+    }
+
+    fn request_with_token(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        bearer_token: Option<&str>,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_token_and_timeout(method, path, body, bearer_token, REQUEST_TIMEOUT)
+    }
+
+    fn request_with_token_and_timeout(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        bearer_token: Option<&str>,
+        request_timeout: Duration,
+    ) -> Result<serde_json::Value, CliFailure> {
         let body = body.unwrap_or_default();
-        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let deadline = Instant::now() + request_timeout;
         let mut stream = TcpStream::connect_timeout(&self.socket, REQUEST_TIMEOUT)
             .map_err(|error| transport_failure("connect", error))?;
         stream
-            .set_read_timeout(Some(REQUEST_TIMEOUT))
+            .set_read_timeout(Some(request_timeout))
             .map_err(|error| transport_failure("bound read", error))?;
         stream
-            .set_write_timeout(Some(REQUEST_TIMEOUT))
+            .set_write_timeout(Some(request_timeout))
             .map_err(|error| transport_failure("bound write", error))?;
         let mut wire = format!(
             "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
@@ -82,6 +121,18 @@ impl LocalFleetOperationClient {
         .into_bytes();
         if !body.is_empty() {
             wire.extend_from_slice(b"Content-Type: application/json\r\n");
+        }
+        if let Some(token) = bearer_token {
+            if token.len() < 32
+                || token.len() > 512
+                || token.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(CliFailure::new(
+                    "invalid_package_owner_token",
+                    "package owner token must contain 32..512 non-control bytes",
+                ));
+            }
+            wire.extend_from_slice(format!("Authorization: Bearer {token}\r\n").as_bytes());
         }
         wire.extend_from_slice(b"\r\n");
         wire.extend_from_slice(&body);
@@ -93,6 +144,19 @@ impl LocalFleetOperationClient {
 }
 
 impl FleetOperationClient for LocalFleetOperationClient {
+    fn get_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        self.request("GET", "/fleet/v1/provider-catalog", None)
+    }
+
+    fn refresh_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_timeout(
+            "POST",
+            "/fleet/v1/provider-catalog/refresh",
+            None,
+            Duration::from_secs(8),
+        )
+    }
+
     fn preview_operation(
         &mut self,
         request: &OperationPreviewRequest,
@@ -127,6 +191,257 @@ impl FleetOperationClient for LocalFleetOperationClient {
             "GET",
             &format!("/fleet/v1/operations/{}", encode_path_segment(operation_id)),
             None,
+        )
+    }
+
+    fn preview_package_install_release(
+        &mut self,
+        request: &PackageInstallReleasePreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            "/fleet/v1/package-install-releases/preview",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn execute_package_install_release(
+        &mut self,
+        request: &PackageInstallReleaseExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/execute",
+                encode_path_segment(&request.operation_id)
+            ),
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn get_package_install_release(
+        &mut self,
+        operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/package-install-releases/{}",
+                encode_path_segment(operation_id)
+            ),
+            None,
+        )
+    }
+
+    fn preview_quest_awake(
+        &mut self,
+        request: &QuestAwakePreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            "/fleet/v1/quest-awake/preview",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn execute_quest_awake(
+        &mut self,
+        request: &QuestAwakeExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            &format!(
+                "/fleet/v1/quest-awake/{}/execute",
+                encode_path_segment(&request.operation_id)
+            ),
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn get_quest_awake(&mut self, operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/quest-awake/{}",
+                encode_path_segment(operation_id)
+            ),
+            None,
+        )
+    }
+
+    fn preview_quest_wifi_adb(
+        &mut self,
+        request: &QuestWifiAdbPreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            "/fleet/v1/quest-wifi-adb/preview",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn execute_quest_wifi_adb(
+        &mut self,
+        request: &QuestWifiAdbExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            &format!(
+                "/fleet/v1/quest-wifi-adb/{}/execute",
+                encode_path_segment(&request.operation_id)
+            ),
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn get_quest_wifi_adb(&mut self, operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/quest-wifi-adb/{}",
+                encode_path_segment(operation_id)
+            ),
+            None,
+        )
+    }
+
+    fn list_quest_wifi_adb(&mut self) -> Result<serde_json::Value, CliFailure> {
+        self.request("GET", "/fleet/v1/quest-wifi-adb", None)
+    }
+
+    fn preview_windows_hotspot(
+        &mut self,
+        request: &WindowsHotspotPreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            "/fleet/v1/windows-hotspot/preview",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
+    fn execute_windows_hotspot(
+        &mut self,
+        request: &WindowsHotspotExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_timeout(
+            "POST",
+            &format!(
+                "/fleet/v1/windows-hotspot/{}/execute",
+                encode_path_segment(&request.operation_id)
+            ),
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+            HOTSPOT_EXECUTE_REQUEST_TIMEOUT,
+        )
+    }
+
+    fn get_windows_hotspot(&mut self, operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/windows-hotspot/{}",
+                encode_path_segment(operation_id)
+            ),
+            None,
+        )
+    }
+
+    fn claim_package_updater(
+        &mut self,
+        request: &PackageUpdaterClaimRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "POST",
+            "/fleet/v1/package-updater/claims",
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+            Some(&token),
+        )
+    }
+
+    fn peek_package_updater_offer(&mut self) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "GET",
+            "/fleet/v1/package-updater/offers",
+            None,
+            Some(&token),
+        )
+    }
+
+    fn submit_package_updater_acknowledgement(
+        &mut self,
+        operation_id: &str,
+        submission: &AuthenticatedPackageUpdaterAcknowledgement,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "POST",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/acknowledgements",
+                encode_path_segment(operation_id)
+            ),
+            Some(serde_json::to_vec(submission).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+            Some(&token),
+        )
+    }
+
+    fn submit_package_updater_receipt(
+        &mut self,
+        operation_id: &str,
+        submission: &AuthenticatedPackageUpdaterReceipt,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "POST",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/receipts",
+                encode_path_segment(operation_id)
+            ),
+            Some(serde_json::to_vec(submission).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+            Some(&token),
         )
     }
 }

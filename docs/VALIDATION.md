@@ -1,5 +1,13 @@
 # Validation
 
+Provider-catalog source tests cover exact contract/version/action/owner/receipt
+bindings, RFC3339 offsets and leap seconds, duplicate IDs, freshness drift,
+stale/future observations, executable vocabulary, artifact swaps, oversized
+and multiple-document output, path-free projections, snapshot invalidation,
+clock rollback, and check-in-listener route isolation. Generic repository
+tiers use only unconfigured/fake transports and never launch a configured live
+provider. The deterministic icon provenance check runs in Quick.
+
 ## Goal
 
 Validation should prove the boundary changed by the current work while avoiding
@@ -26,6 +34,11 @@ Quick is safe during normal editing and checks:
   stale-revision, agent-upgrade, old-epoch-replay, and exact-owner key-rotation
   behavior;
 - exact `fleetctl`/local-API projection parity;
+- exact Manifold revision convergence across model, peer, admission,
+  media-session, and Runtime Host dependencies; Runtime Host v2-to-v4 restart
+  migration must retain command replay state, initialize new revocation replay
+  sets empty, and invent no lease, revocation, barrier, convergence, owner
+  acknowledgement, effect result, or cleanup fact;
 - saved-view valid/damaged contracts, canonical ordering, optimistic
   revision conflict, durable restart restoration, HTTP CRUD, and structured
   `fleetctl` round-trip parity;
@@ -34,8 +47,36 @@ Quick is safe during normal editing and checks:
   parallel attempts, Manifold typed-digest/replay state, signed owner vectors,
   receipt-gated application, poll-only ambiguous-send recovery, raw-receipt
   rehash, nested two-slot fallback, strict HTTP routes, and CLI/API/WPF parity;
+- package install/release valid/damaged contracts, pinned attended-updater
+  owner, immutable release/package/ring and exact targets, Manifold
+  authorization, all-target `dispatch_ready` preparation independent of future
+  delivery parallelism, strict HTTP routes, durable restart, disabled-ingress
+  HTTP 501 rejection, independent owner authentication, one-use
+  claim/replay/expiry checks, 17+ attempt and restart-safe retained replay
+  authority, fail-closed replay-ledger exhaustion, shared logical-time GET/POST
+  offer selection, exact active/acknowledged capacity, stale-offer no-mutation,
+  bounded claim scheduling, exact claim/invocation digests, strict
+  acknowledgement/effective-receipt admission, and CLI/API projection parity;
+- Quest awake valid/damaged contracts, exact action/duration/interval/
+  generation bindings, eight-hour cap, distinct stop-versus-restore effects,
+  receipt-gated power/watchdog readbacks, pinned-provider response binding,
+  serial/boot-ID redaction, inert absent-provider behavior, and CLI/API
+  projection parity;
+- Quest Wi-Fi ADB valid/damaged contracts, modern-TLS versus classic-USB
+  separation, immutable exact targets, Manifold typed authorization,
+  pinned-provider receipt binding, absent-provider HTTP 501 behavior,
+  private-field rejection, CLI/API parity, and enrolled signed-check-in
+  capability reconciliation covering exact shell UID, freshness, mutation,
+  replay, other-device, unavailable supersession, expiry, disable, reboot,
+  and renewal;
+- Windows host-hotspot valid/damaged contracts, immutable host-singleton
+  preview/confirmation, exact Fleet ownership for stop, external observe-only
+  behavior, provider timeout and lost-response durable recovery, non-live
+  refresh wording, private-field rejection, and CLI/API/WPF projection parity;
 - stable .NET 10 WPF build plus the package-free native DataGrid validation
-  against the real 1,000-device Rust projection;
+  across off-screen 10/50/100-row layout windows cut from deterministic
+  50/250-device Rust projections, with the 50-device source projection as the
+  normal operator fixture and the only presented-window profile;
 - native grid/inspector UI Automation peers and names, grouped recycling
   virtualization, bounded realized rows, readable default column widths,
   stable view models, canonical search/freshness expressions and Hub-owned
@@ -100,8 +141,16 @@ with:
 
 Deep includes Standard and adds:
 
+- the offline onboarding closed-inventory, ACL, hard-link/reparse,
+  substitution-race, exact rollback, owner-profile/Hub-validator conformance,
+  and bounded Windows Job Object security suite;
 - tracked-file reconciliation and large/generated artifact checks;
 - architecture/authority/public-boundary review markers;
+- source-candidate dependency convergence and unsigned/non-publishable
+  Windows distribution eligibility;
+- signed-release metadata renewal with exact tag/commit/tree/policy and
+  closed-asset preflight, stale/replay/wrong-binding rejection, binary-free
+  Pages staging, and interrupted deployment resume;
 - any implementation-era full workspace, security, performance, or
   cross-repository checks registered by the active milestone.
 
@@ -132,6 +181,8 @@ Focused commands:
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --locked -p fleet-onboarding -p fleet-onboard
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-FleetOnboardingSecurity.ps1
 cargo run --locked -p fleetctl -- list 4
 cargo run --locked -p fleetctl -- detail sim-00001 4
 cargo run --locked -p fleetctl -- m1-lifecycle
@@ -146,6 +197,46 @@ The live M2 commands require an explicitly launched loopback Hub and private
 Kiosk configuration; see
 [M2 Kiosk Show Controls](M2_KIOSK_SHOW_CONTROLS.md). Repository tiers never
 contact Kiosk or a headset.
+
+The package source commands use the same explicit loopback Hub and are
+documented in [Package Install/Release](PACKAGE_INSTALL_RELEASE.md). Repository
+tiers exercise preview, confirmation, status, restart, disabled ingress,
+synthetic authenticated claims, replay/saturation, and synthetic owner evidence
+only. They do not contact the updater or a headset; neither `dispatch_ready`
+nor an owner claim is device evidence.
+
+Quest awake commands use the same explicit loopback Hub and are documented in
+[Quest Awake Control](QUEST_AWAKE_CONTROL.md). Repository tiers use a fake
+provider transport and synthetic readbacks only. They do not contact ADB,
+Meta tooling, or a headset, and they do not prove live watchdog persistence or
+restoration.
+
+Quest Wi-Fi ADB commands use the same explicit loopback Hub and are documented
+in [Quest Wi-Fi ADB Control](QUEST_WIFI_ADB_CONTROL.md). Repository tiers use a
+fake provider plus signed synthetic check-ins only. They do not contact ADB,
+Kiosk, Credential Manager, Termux, Meta tooling, or a headset.
+
+The Fleet-owned
+[two-Quest Wi-Fi ADB acceptance transaction](QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md)
+has a separate host/synthetic gate:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Test-FleetWifiAdbTwoQuestAcceptance.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Test-FleetIconProvenance.ps1
+```
+
+Quick runs that modeled host-conformance gate plus the integrated synthetic
+signed-Hub exact-operation/proof-consumption and process-restart fault gates
+without contacting a device. The host gate also models the private two-device
+Agent Board receipt, restart revalidation, wrong binding, expiry/repair,
+pre-dispatch heartbeats, partial release, and release-after-cleanup rule. The
+live phase remains an
+explicitly confirmed, serial-reserved Meta Quest workflow with attended wearer
+and reboot checkpoints plus complete cleanup truth.
+The icon provenance test proves LF, CRLF, and CR canonical source text bind to
+the same reviewed SHA-256 before the deterministic ICO check runs.
 
 For the M1 cross-owner source checkpoint, run the exact Rusty Quest owner
 surface separately:
@@ -209,6 +300,7 @@ WPF surface exists:
 | --- | ---: | ---: | ---: | ---: |
 | canonical condition/query/projection fixtures | required | focused | Standard | Deep |
 | deterministic 4/50/250/1k/5k datasets | required | affected profile | Standard | Deep |
+| Console 10/50/100-row off-screen layout window | not applicable | focused | Standard | regression |
 | Console/CLI/API membership and reason parity | contract only | focused | Standard | Deep |
 | keyboard and UI Automation regression | not applicable | focused | Standard | Standard |
 | Narrator, Accessibility Insights, high contrast, large text, scaling, multi-monitor | not applicable | defect-targeted spot check | informative current-settings check | cumulative full release gate |
@@ -220,6 +312,16 @@ Performance thresholds in the UI guide are candidates until a milestone
 records reference hardware, data profile, method, distribution, achieved
 result, and headroom. Do not convert a single fast run into a supported-scale
 claim.
+
+The WPF acceptance focus is a realistic 10-to-100-device fleet, with 50 as
+the normal fixture. The larger deterministic datasets continue to exercise
+contracts and stress behavior; they are not the normal operator layout target
+and do not expand the supported production-fleet claim.
+
+The v1 WPF receipt retains the generic `projection_rows`, `realized_rows`, and
+freshness-count fields as deprecated aliases for the 1,000-row stress sentinel
+because the existing repository gate consumes them. New evidence uses explicit
+`normal_*`, `operator_*`, and `stress_*` fields.
 
 Screenshot matrices detect layout drift but do not replace keyboard, UI
 Automation, screen-reader, or interaction tests.

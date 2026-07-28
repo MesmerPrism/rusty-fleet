@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Rusty Fleet"
+        Icon="Assets/rusty-fleet.ico"
         Width="1500"
         Height="900"
         MinWidth="1000"
@@ -89,6 +90,45 @@
                     <Button Content="Settings · planned"
                             IsEnabled="False"
                             HorizontalContentAlignment="Left" />
+                    <Separator Margin="2,14,2,8" />
+                    <TextBlock Text="Provider catalog"
+                               FontWeight="SemiBold"
+                               Margin="4,0,4,4" />
+                    <Button Content="Refresh metadata"
+                            Command="{Binding RefreshProviderCatalogCommand}"
+                            HorizontalContentAlignment="Left"
+                            AutomationProperties.Name="Refresh inert provider metadata"
+                            AutomationProperties.HelpText="Reads target-free provider descriptions. This does not authorize or activate a provider." />
+                    <Button Content="View current snapshot"
+                            Command="{Binding LoadProviderCatalogCommand}"
+                            HorizontalContentAlignment="Left"
+                            AutomationProperties.Name="View current provider metadata snapshot"
+                            AutomationProperties.HelpText="Reads the current Hub snapshot without launching or refreshing any provider." />
+                    <TextBlock Text="{Binding ProviderCatalogStatusText}"
+                               Margin="4,4"
+                               TextWrapping="Wrap"
+                               FontSize="11"
+                               AutomationProperties.Name="{Binding ProviderCatalogStatusText}" />
+                    <ItemsControl ItemsSource="{Binding ProviderCatalogEntries}"
+                                  Margin="4,2"
+                                  AutomationProperties.Name="Provider metadata states">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,0,0,6">
+                                    <TextBlock Text="{Binding CatalogId}"
+                                               TextWrapping="Wrap"
+                                               FontSize="11"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding State}"
+                                               FontSize="11" />
+                                    <TextBlock Text="{Binding Reason}"
+                                               TextWrapping="Wrap"
+                                               FontSize="10"
+                                               Opacity="0.75" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
                 </StackPanel>
                 <TextBlock DockPanel.Dock="Bottom"
                            Text="M1 local monitoring&#x0a;No ADB required"
@@ -282,17 +322,205 @@
                 </StackPanel>
             </Border>
 
-            <Border x:Name="OperationPane"
-                    Grid.Row="3"
-                    Padding="8"
-                    Margin="0,0,0,8"
-                    BorderThickness="1"
-                    BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
-                    AutomationProperties.Name="Kiosk show-controls operation"
-                    AutomationProperties.HelpText="Preview the exact selected device identity revisions, review server-owned eligibility, then explicitly confirm the immutable operation.">
-                <StackPanel>
-                    <DockPanel>
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+            <Expander x:Name="BatchOperationsExpander"
+                      Grid.Row="3"
+                      Header="Operations"
+                      IsExpanded="False"
+                      MaxHeight="180"
+                      Margin="0,0,0,8"
+                      AutomationProperties.Name="Operations"
+                      AutomationProperties.HelpText="Expands one Windows-host singleton workflow and selected-device batch workflows. Windows host controls are independent of selected devices.">
+                <ScrollViewer x:Name="BatchOperationsScrollViewer"
+                              MaxHeight="140"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Focusable="False"
+                              AutomationProperties.Name="Operations content">
+                    <StackPanel>
+                    <Border x:Name="WindowsHotspotOperationPane"
+                            Padding="8"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Windows host Mobile Hotspot operation"
+                            AutomationProperties.HelpText="This host-scoped singleton affects the Windows PC running Fleet Hub. It is independent of selected devices, displays only sanitized status facts, and never adopts or stops an externally owned hotspot.">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding WindowsHotspotInputLockText}"
+                                           FontStyle="Italic"
+                                           Opacity="0.75"
+                                           AutomationProperties.Name="{Binding WindowsHotspotInputLockText}" />
+                                <TextBlock Text="Windows host · Mobile Hotspot"
+                                           FontWeight="SemiBold" />
+                            </DockPanel>
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="Host-scoped singleton · does not use selected devices. An external active hotspot is observe-only; Fleet will not adopt or stop it."
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Windows Mobile Hotspot is a host-scoped singleton independent of selected devices. External hotspots are observe-only." />
+                            <Grid Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Action"
+                                           Margin="0,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <ComboBox x:Name="WindowsHotspotActionBox"
+                                          Grid.Column="1"
+                                          ItemsSource="{Binding WindowsHotspotActionOptions}"
+                                          SelectedItem="{Binding SelectedWindowsHotspotAction}"
+                                          DisplayMemberPath="Label"
+                                          IsEnabled="{Binding IsWindowsHotspotInputUnlocked}"
+                                          AutomationProperties.Name="Windows host Mobile Hotspot action"
+                                          AutomationProperties.HelpText="{Binding WindowsHotspotActionHelpText}" />
+                            </Grid>
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="{Binding WindowsHotspotActionHelpText}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding WindowsHotspotActionHelpText}" />
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="{Binding WindowsHotspotConfirmationText}"
+                                       TextWrapping="Wrap"
+                                       FontWeight="SemiBold"
+                                       AutomationProperties.Name="{Binding WindowsHotspotConfirmationText}" />
+                            <Grid Margin="0,5,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="{Binding WindowsHotspotSummaryText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="{Binding WindowsHotspotSummaryText}" />
+                                <WrapPanel Grid.Row="1"
+                                           Margin="0,4,0,0"
+                                           HorizontalAlignment="Right">
+                                    <Button x:Name="PreviewWindowsHotspotButton"
+                                            Content="Preview host action"
+                                            Command="{Binding PreviewWindowsHotspotCommand}"
+                                            AutomationProperties.Name="Preview Windows host Mobile Hotspot action"
+                                            AutomationProperties.HelpText="Creates an immutable host-scoped preview without changing the hotspot or using selected devices." />
+                                    <Button x:Name="ConfirmWindowsHotspotButton"
+                                            Content="{Binding WindowsHotspotConfirmButtonText}"
+                                            Command="{Binding ConfirmWindowsHotspotCommand}"
+                                            AutomationProperties.Name="Confirm the exact immutable Windows host Mobile Hotspot preview"
+                                            AutomationProperties.HelpText="{Binding WindowsHotspotConfirmationText}" />
+                                    <Button x:Name="RefreshWindowsHotspotButton"
+                                            Content="Refresh operation"
+                                            Command="{Binding RefreshWindowsHotspotCommand}"
+                                            AutomationProperties.Name="Refresh Windows host Mobile Hotspot operation"
+                                            AutomationProperties.HelpText="Reads the durable operation record. A fresh host readback requires a new Status preview and confirmation." />
+                                    <Button x:Name="DismissWindowsHotspotButton"
+                                            Content="Close view"
+                                            Command="{Binding DismissWindowsHotspotCommand}"
+                                            AutomationProperties.Name="Close Windows host Mobile Hotspot view"
+                                            AutomationProperties.HelpText="Clears only this Console view. It does not stop the hotspot or cancel or release host work." />
+                                </WrapPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding WindowsHotspotStatusText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding WindowsHotspotStatusText}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <Border x:Name="WindowsHotspotResultPane"
+                                    Margin="0,6,0,0"
+                                    Padding="6"
+                                    BorderThickness="1"
+                                    BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                                    DataContext="{Binding WindowsHotspotResult}"
+                                    AutomationProperties.Name="{Binding AccessibleName}"
+                                    AutomationProperties.HelpText="Sanitized host result containing only provider readiness, singleton availability, activity, ownership, eligibility, lifecycle, expiry, and bounded public readback facts.">
+                                <Border.Style>
+                                    <Style TargetType="{x:Type Border}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding}"
+                                                         Value="{x:Null}">
+                                                <Setter Property="Visibility"
+                                                        Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <UniformGrid Columns="4">
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Provider" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Provider}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Singleton lease" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Lease}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Activity" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Activity}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Ownership" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Ownership}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Eligibility" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Eligibility}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Lifecycle" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Lifecycle}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Preview expiry" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Expires}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Outcome" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Outcome}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Observed" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Observed}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Capability" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Capability}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Operational state" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding OperationalState}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Connected clients" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Clients}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Band" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Band}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Margin="4">
+                                        <TextBlock Text="Source connectivity" FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding SourceConnectivity}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </UniformGrid>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="OperationPane"
+                            Margin="0,8,0,0"
+                            Padding="8"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Kiosk show-controls operation"
+                            AutomationProperties.HelpText="Preview the exact selected device identity revisions, review server-owned eligibility, then explicitly confirm the immutable operation.">
+                        <StackPanel>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="{Binding OperationSummaryText}"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.Name="{Binding OperationSummaryText}" />
+                        <WrapPanel Grid.Row="1"
+                                   Margin="0,4,0,0"
+                                   HorizontalAlignment="Right">
                             <Button x:Name="PreviewKioskShowControlsButton"
                                     Content="Preview Show Kiosk controls"
                                     Command="{Binding PreviewKioskShowControlsCommand}"
@@ -310,13 +538,8 @@
                                     Content="Dismiss"
                                     Command="{Binding DismissOperationCommand}"
                                     AutomationProperties.Name="Dismiss operation projection" />
-                        </StackPanel>
-                        <TextBlock Text="{Binding OperationSummaryText}"
-                                   VerticalAlignment="Center"
-                                   FontWeight="SemiBold"
-                                   TextWrapping="Wrap"
-                                   AutomationProperties.Name="{Binding OperationSummaryText}" />
-                    </DockPanel>
+                        </WrapPanel>
+                    </Grid>
                     <TextBlock Text="{Binding OperationStatusText}"
                                Margin="0,4,0,0"
                                TextWrapping="Wrap"
@@ -373,8 +596,631 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </ScrollViewer>
-                </StackPanel>
-            </Border>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="QuestAwakeOperationPane"
+                            Margin="0,8,0,0"
+                            Padding="6"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Headset awake controls"
+                            AutomationProperties.HelpText="Preview exact selected identities, review per-device eligibility, then explicitly confirm. Meta keep-awake is bounded to eight hours. The Quest watchdog stops on reboot. Stopping watchdogs leaves awake settings unchanged; Restore normal is a separate action.">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding QuestAwakeInputLockText}"
+                                           FontStyle="Italic"
+                                           Opacity="0.75"
+                                           AutomationProperties.Name="{Binding QuestAwakeInputLockText}" />
+                                <TextBlock Text="Headset awake controls"
+                                           FontWeight="SemiBold" />
+                            </DockPanel>
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="The Meta option lasts up to 8 hours. The Quest watchdog stops when the headset reboots. Stop watchdogs leaves current awake settings in place; Restore normal changes them back."
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Awake control behavior: Meta keep-awake lasts up to eight hours. Quest watchdog stops on reboot. Stop watchdogs leaves settings in place. Restore normal changes them back." />
+                            <Grid Margin="0,6,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="80" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="70" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Action"
+                                           Margin="0,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <ComboBox x:Name="QuestAwakeActionBox"
+                                          Grid.Column="1"
+                                          ItemsSource="{Binding QuestAwakeActionOptions}"
+                                          SelectedItem="{Binding SelectedQuestAwakeAction}"
+                                          DisplayMemberPath="Label"
+                                          IsEnabled="{Binding IsQuestAwakeInputUnlocked}"
+                                          AutomationProperties.Name="Headset awake-control action"
+                                          AutomationProperties.HelpText="{Binding QuestAwakeActionHelpText}" />
+                                <TextBlock Grid.Column="2"
+                                           Text="Duration (min)"
+                                           Margin="12,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <TextBox x:Name="QuestAwakeDurationBox"
+                                         Grid.Column="3"
+                                         Text="{Binding QuestAwakeDurationMinutes, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsQuestAwakeInputLocked}"
+                                         AutomationProperties.Name="Keep-awake duration in minutes"
+                                         AutomationProperties.HelpText="Enter a whole number from 1 through 480 minutes. Eight hours is the maximum." />
+                                <TextBlock Grid.Column="4"
+                                           Text="Check every (sec)"
+                                           Margin="12,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <TextBox x:Name="QuestAwakeIntervalBox"
+                                         Grid.Column="5"
+                                         Text="{Binding QuestAwakeWatchdogIntervalSeconds, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsQuestAwakeInputLocked}"
+                                         AutomationProperties.Name="Watchdog check interval in seconds"
+                                         AutomationProperties.HelpText="Enter a whole number from 1 through 60 seconds." />
+                                <TextBlock Grid.Row="1"
+                                           Grid.Column="1"
+                                           Grid.ColumnSpan="5"
+                                           Margin="0,4,0,0"
+                                           Text="{Binding QuestAwakeActionHelpText}"
+                                           TextWrapping="Wrap"
+                                           Opacity="0.8"
+                                           AutomationProperties.Name="{Binding QuestAwakeActionHelpText}" />
+                            </Grid>
+                            <Grid Margin="0,6,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="{Binding QuestAwakeSummaryText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="{Binding QuestAwakeSummaryText}" />
+                                <WrapPanel Grid.Row="1"
+                                           Margin="0,4,0,0"
+                                           HorizontalAlignment="Right">
+                                    <Button x:Name="PreviewQuestAwakeButton"
+                                            Content="Preview awake controls"
+                                            Command="{Binding PreviewQuestAwakeCommand}"
+                                            AutomationProperties.Name="Preview awake controls for exact selected devices" />
+                                    <Button x:Name="ConfirmQuestAwakeButton"
+                                            Content="{Binding QuestAwakeConfirmationButtonText}"
+                                            Command="{Binding ConfirmQuestAwakeCommand}"
+                                            AutomationProperties.Name="Confirm the exact immutable headset awake-control preview"
+                                            AutomationProperties.HelpText="Runs only the displayed action for the exact eligible device identities in the immutable preview." />
+                                    <Button x:Name="RefreshQuestAwakeButton"
+                                            Content="Refresh results"
+                                            Command="{Binding RefreshQuestAwakeCommand}"
+                                            AutomationProperties.Name="Refresh headset awake-control results" />
+                                    <Button x:Name="DismissQuestAwakeButton"
+                                            Content="Close view"
+                                            Command="{Binding DismissQuestAwakeCommand}"
+                                            AutomationProperties.Name="Close headset awake-control view"
+                                            AutomationProperties.HelpText="Clears only this Console view. It does not stop a watchdog or restore settings." />
+                                </WrapPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding QuestAwakeStatusText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding QuestAwakeStatusText}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <DataGrid x:Name="QuestAwakeTargetsGrid"
+                                      ItemsSource="{Binding QuestAwakeTargets}"
+                                      Margin="0,6,0,0"
+                                      MaxHeight="180"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      CanUserReorderColumns="False"
+                                      CanUserResizeColumns="True"
+                                      CanUserSortColumns="False"
+                                      HeadersVisibility="Column"
+                                      GridLinesVisibility="Horizontal"
+                                      SelectionMode="Single"
+                                      SelectionUnit="FullRow"
+                                      IsReadOnly="True"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      ScrollViewer.CanContentScroll="True"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                      AutomationProperties.Name="Headset awake-control target results"
+                                      AutomationProperties.HelpText="Read-only per-target power, watchdog, and effective-result readbacks. No headset serials or private paths are shown.">
+                                <DataGrid.Style>
+                                    <Style TargetType="{x:Type DataGrid}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentQuestAwakeOperation}"
+                                                         Value="{x:Null}">
+                                                <Setter Property="Visibility"
+                                                        Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.Style>
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="{x:Type DataGridRow}">
+                                        <Setter Property="AutomationProperties.Name"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="AutomationProperties.HelpText"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="Focusable"
+                                                Value="True" />
+                                        <Setter Property="MinHeight"
+                                                Value="44" />
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="Device"
+                                                            Width="180">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding DeviceId}"
+                                                               FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding IdentityRevision, StringFormat={}Identity revision {0}}"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Eligibility / lifecycle"
+                                                            Width="145">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding Eligibility}" />
+                                                    <TextBlock Text="{Binding Lifecycle}"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Power readback"
+                                                        Binding="{Binding PowerReadback}"
+                                                        Width="2*" />
+                                    <DataGridTextColumn Header="Watchdog readback"
+                                                        Binding="{Binding WatchdogReadback}"
+                                                        Width="2*" />
+                                    <DataGridTextColumn Header="Result"
+                                                        Binding="{Binding Result}"
+                                                        Width="2*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="QuestWifiAdbOperationPane"
+                            Margin="0,8,0,0"
+                            Padding="6"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Quest Wireless ADB connectivity"
+                            AutomationProperties.HelpText="Preview exact selected identities, then confirm one typed action. Kiosk setting application does not prove wearer approval. A listener does not prove Termux usability. Only a current admitted signed shell proof can make Termux usable. Classic USB tcpip is a separate route.">
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding QuestWifiAdbInputLockText}"
+                                           FontStyle="Italic"
+                                           Opacity="0.75"
+                                           AutomationProperties.Name="{Binding QuestWifiAdbInputLockText}" />
+                                <TextBlock Text="Quest Wireless ADB connectivity"
+                                           FontWeight="SemiBold" />
+                            </DockPanel>
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="Fleet can deliver a Kiosk setting request, but it cannot accept or automate Meta's protected wearer prompt. Listener discovery and signed Termux shell proof are reported separately."
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="Fleet cannot automate Meta's protected wearer prompt. Kiosk setting, listener discovery, and signed Termux shell proof are separate facts." />
+                            <Grid Margin="0,6,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <RadioButton x:Name="QuestWifiAdbModernRouteButton"
+                                             Content="Modern Wireless ADB through Kiosk"
+                                             GroupName="QuestWifiAdbRoute"
+                                             IsChecked="{Binding IsQuestWifiAdbModernRoute, Mode=TwoWay}"
+                                             IsEnabled="{Binding IsQuestWifiAdbInputUnlocked}"
+                                             VerticalAlignment="Center"
+                                             AutomationProperties.Name="Use modern Wireless ADB through Kiosk"
+                                             AutomationProperties.HelpText="Modern TLS request and setting evidence. Protected wearer approval remains explicit and cannot be automated." />
+                                <ComboBox x:Name="QuestWifiAdbModernActionBox"
+                                          Grid.Column="1"
+                                          Margin="12,0,0,0"
+                                          ItemsSource="{Binding QuestWifiAdbModernActionOptions}"
+                                          SelectedItem="{Binding SelectedQuestWifiAdbModernAction}"
+                                          DisplayMemberPath="Label"
+                                          IsEnabled="{Binding IsQuestWifiAdbInputUnlocked}"
+                                          AutomationProperties.Name="Modern Wireless ADB action"
+                                          AutomationProperties.HelpText="{Binding QuestWifiAdbActionHelpText}" />
+                            </Grid>
+                            <Border Margin="0,6,0,0"
+                                    Padding="5"
+                                    BorderThickness="1"
+                                    BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                                    AutomationProperties.Name="Classic USB tcpip separate route">
+                                <StackPanel>
+                                    <RadioButton x:Name="QuestWifiAdbClassicRouteButton"
+                                                 Content="Classic tcpip from an existing USB ADB connection"
+                                                 GroupName="QuestWifiAdbRoute"
+                                                 IsChecked="{Binding IsQuestWifiAdbClassicRoute, Mode=TwoWay}"
+                                                 IsEnabled="{Binding IsQuestWifiAdbInputUnlocked}"
+                                                 AutomationProperties.Name="Use the separate classic USB tcpip route"
+                                                 AutomationProperties.HelpText="Requires an existing exact USB ADB connection. This is not modern TLS, a Kiosk setting, or proof of a protected Meta prompt." />
+                                    <TextBlock Margin="22,3,0,0"
+                                               Text="Separate classic route: no Kiosk setting and no wearer-approval claim."
+                                               TextWrapping="Wrap"
+                                               Opacity="0.8" />
+                                </StackPanel>
+                            </Border>
+                            <TextBlock Margin="0,5,0,0"
+                                       Text="{Binding QuestWifiAdbActionHelpText}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding QuestWifiAdbActionHelpText}" />
+                            <TextBlock Margin="0,4,0,0"
+                                       Text="{Binding QuestWifiAdbConfirmationText}"
+                                       TextWrapping="Wrap"
+                                       FontWeight="SemiBold"
+                                       AutomationProperties.Name="{Binding QuestWifiAdbConfirmationText}" />
+                            <Grid Margin="0,5,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="{Binding QuestWifiAdbSummaryText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="{Binding QuestWifiAdbSummaryText}" />
+                                <WrapPanel Grid.Row="1"
+                                           Margin="0,4,0,0"
+                                           HorizontalAlignment="Right">
+                                    <Button x:Name="PreviewQuestWifiAdbButton"
+                                            Content="Preview connectivity"
+                                            Command="{Binding PreviewQuestWifiAdbCommand}"
+                                            AutomationProperties.Name="Preview Quest Wireless ADB connectivity for exact selected devices" />
+                                    <Button x:Name="ConfirmQuestWifiAdbButton"
+                                            Content="{Binding QuestWifiAdbConfirmationButtonText}"
+                                            Command="{Binding ConfirmQuestWifiAdbCommand}"
+                                            AutomationProperties.Name="Confirm the exact immutable Quest connectivity preview"
+                                            AutomationProperties.HelpText="{Binding QuestWifiAdbConfirmationText}" />
+                                    <Button x:Name="RefreshQuestWifiAdbButton"
+                                            Content="Refresh results"
+                                            Command="{Binding RefreshQuestWifiAdbCommand}"
+                                            AutomationProperties.Name="Refresh Quest connectivity results" />
+                                    <Button x:Name="DismissQuestWifiAdbButton"
+                                            Content="Close view"
+                                            Command="{Binding DismissQuestWifiAdbCommand}"
+                                            AutomationProperties.Name="Close Quest connectivity view"
+                                            AutomationProperties.HelpText="Clears only this Console view. It does not disable Wireless ADB or change after-boot requests." />
+                                </WrapPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding QuestWifiAdbStatusText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding QuestWifiAdbStatusText}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <DataGrid x:Name="QuestWifiAdbTargetsGrid"
+                                      ItemsSource="{Binding QuestWifiAdbTargets}"
+                                      Margin="0,6,0,0"
+                                      MaxHeight="190"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      CanUserReorderColumns="False"
+                                      CanUserResizeColumns="True"
+                                      CanUserSortColumns="False"
+                                      HeadersVisibility="Column"
+                                      GridLinesVisibility="Horizontal"
+                                      SelectionMode="Single"
+                                      SelectionUnit="FullRow"
+                                      IsReadOnly="True"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      ScrollViewer.CanContentScroll="True"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                      AutomationProperties.Name="Quest connectivity target results"
+                                      AutomationProperties.HelpText="Read-only independent request-delivery, Kiosk-setting, wearer-approval, listener, and admitted signed Termux proof facts. No serials, credentials, pairing codes, or private paths are shown.">
+                                <DataGrid.Style>
+                                    <Style TargetType="{x:Type DataGrid}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentQuestWifiAdbOperation}"
+                                                         Value="{x:Null}">
+                                                <Setter Property="Visibility"
+                                                        Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.Style>
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="{x:Type DataGridRow}">
+                                        <Setter Property="AutomationProperties.Name"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="AutomationProperties.HelpText"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="Focusable"
+                                                Value="True" />
+                                        <Setter Property="MinHeight"
+                                                Value="44" />
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="Device"
+                                                            Width="175">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding DeviceId}"
+                                                               FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding IdentityRevision, StringFormat={}Identity revision {0}}"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Route / lifecycle"
+                                                            Width="165">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding Route}"
+                                                               TextWrapping="Wrap" />
+                                                    <TextBlock Opacity="0.75">
+                                                        <Run Text="{Binding Eligibility, Mode=OneWay}" />
+                                                        <Run Text=" · " />
+                                                        <Run Text="{Binding Lifecycle, Mode=OneWay}" />
+                                                    </TextBlock>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Request delivered"
+                                                        Binding="{Binding RequestDelivery}"
+                                                        Width="125" />
+                                    <DataGridTemplateColumn Header="Kiosk setting"
+                                                            Width="175">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding KioskSetting}"
+                                                               TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding AfterBoot}"
+                                                               TextWrapping="Wrap"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Wearer approval"
+                                                        Binding="{Binding WearerApproval}"
+                                                        Width="190" />
+                                    <DataGridTextColumn Header="Listener observed"
+                                                        Binding="{Binding Listener}"
+                                                        Width="190" />
+                                    <DataGridTextColumn Header="Signed Termux proof / freshness"
+                                                        Binding="{Binding Termux}"
+                                                        Width="260" />
+                                    <DataGridTextColumn Header="Result"
+                                                        Binding="{Binding Result}"
+                                                        Width="220" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="PackageOperationPane"
+                            Margin="0,8,0,0"
+                            Padding="6"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
+                            AutomationProperties.Name="Package install and release operation"
+                            AutomationProperties.HelpText="Preview the exact signed release and selected identities, then confirm preparation only. Authenticated updater ingress is unavailable, so Fleet does not claim dispatch or installation.">
+                        <Border.Resources>
+                            <Style x:Key="PackageInputTextBoxStyle"
+                                   TargetType="{x:Type TextBox}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsPackageInputLocked}"
+                                                 Value="True">
+                                        <Setter Property="Background"
+                                                Value="{DynamicResource {x:Static SystemColors.ControlBrushKey}}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Resources>
+                        <StackPanel>
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding PackageInputLockText}"
+                                           FontStyle="Italic"
+                                           Opacity="0.75"
+                                           AutomationProperties.Name="{Binding PackageInputLockText}" />
+                                <TextBlock Text="Package install/release"
+                                           FontWeight="SemiBold" />
+                            </DockPanel>
+                            <Grid Margin="0,5,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="100" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Signed manifest"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,6,0" />
+                                <TextBox x:Name="PackageManifestUrlBox"
+                                         Grid.Column="1"
+                                         Grid.ColumnSpan="3"
+                                         Style="{StaticResource PackageInputTextBoxStyle}"
+                                         Text="{Binding PackageManifestUrl, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsPackageInputLocked}"
+                                         AutomationProperties.Name="Signed package manifest HTTPS URL"
+                                         AutomationProperties.HelpText="Enter the credential-free HTTPS address of the signed package-update envelope. The field is locked while a preview is active; dismiss the preview to change it." />
+                                <TextBlock Grid.Row="1"
+                                           Text="Package"
+                                           VerticalAlignment="Center"
+                                           Margin="0,5,6,0" />
+                                <TextBox x:Name="PackageNameBox"
+                                         Grid.Row="1"
+                                         Grid.Column="1"
+                                         Margin="0,5,0,0"
+                                         Style="{StaticResource PackageInputTextBoxStyle}"
+                                         Text="{Binding PackageName, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsPackageInputLocked}"
+                                         AutomationProperties.Name="Expected Android package identity" />
+                                <TextBlock Grid.Row="1"
+                                           Grid.Column="2"
+                                           Text="Ring"
+                                           VerticalAlignment="Center"
+                                           Margin="10,5,6,0" />
+                                <TextBox x:Name="PackageRolloutRingBox"
+                                         Grid.Row="1"
+                                         Grid.Column="3"
+                                         Margin="0,5,0,0"
+                                         Style="{StaticResource PackageInputTextBoxStyle}"
+                                         Text="{Binding PackageRolloutRing, UpdateSourceTrigger=PropertyChanged}"
+                                         IsReadOnly="{Binding IsPackageInputLocked}"
+                                         AutomationProperties.Name="Expected package rollout ring" />
+                            </Grid>
+                            <Grid Margin="0,5,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="{Binding PackageOperationSummaryText}"
+                                           TextWrapping="Wrap"
+                                           AutomationProperties.Name="{Binding PackageOperationSummaryText}" />
+                                <WrapPanel Grid.Row="1"
+                                           Margin="0,4,0,0"
+                                           HorizontalAlignment="Right">
+                                    <Button x:Name="PreviewPackageInstallReleaseButton"
+                                            Content="Preview package"
+                                            Command="{Binding PreviewPackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Preview package install and release for exact selected devices" />
+                                    <Button x:Name="ConfirmPackageInstallReleaseButton"
+                                            Content="{Binding PackageConfirmationButtonText}"
+                                            Command="{Binding ConfirmPackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Confirm exact package preview for preparation"
+                                            AutomationProperties.HelpText="Prepares owner invocations only. It cannot approve Android PackageInstaller or claim package dispatch or installation." />
+                                    <Button x:Name="RefreshPackageInstallReleaseButton"
+                                            Content="Refresh package"
+                                            Command="{Binding RefreshPackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Refresh package operation results" />
+                                    <Button x:Name="DismissPackageInstallReleaseButton"
+                                            Content="Close view"
+                                            Command="{Binding DismissPackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Close package operation view"
+                                            AutomationProperties.HelpText="Clears only the local Console projection. It does not cancel or mutate the Fleet Hub operation." />
+                                </WrapPanel>
+                            </Grid>
+                            <TextBlock Text="{Binding PackageOperationStatusText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.Name="{Binding PackageOperationStatusText}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <DataGrid x:Name="PackageOperationTargetsGrid"
+                                      ItemsSource="{Binding PackageOperationTargets}"
+                                      Margin="0,6,0,0"
+                                      MaxHeight="180"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      CanUserReorderColumns="False"
+                                      CanUserResizeColumns="True"
+                                      CanUserSortColumns="False"
+                                      HeadersVisibility="Column"
+                                      GridLinesVisibility="Horizontal"
+                                      SelectionMode="Single"
+                                      SelectionUnit="FullRow"
+                                      IsReadOnly="True"
+                                      EnableRowVirtualization="True"
+                                      EnableColumnVirtualization="True"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      ScrollViewer.CanContentScroll="True"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                      AutomationProperties.Name="Package operation targets"
+                                      AutomationProperties.HelpText="Read-only exact-target package preparation evidence.">
+                                <DataGrid.Style>
+                                    <Style TargetType="{x:Type DataGrid}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentPackageOperation}"
+                                                         Value="{x:Null}">
+                                                <Setter Property="Visibility"
+                                                        Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.Style>
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="{x:Type DataGridRow}">
+                                        <Setter Property="AutomationProperties.Name"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="AutomationProperties.HelpText"
+                                                Value="{Binding AccessibleName}" />
+                                        <Setter Property="Focusable"
+                                                Value="True" />
+                                        <Setter Property="MinHeight"
+                                                Value="44" />
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="Device"
+                                                            Width="190">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding DeviceId}"
+                                                               FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding IdentityRevision, StringFormat={}Identity revision {0}}"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Eligibility"
+                                                        Binding="{Binding Eligibility}"
+                                                        Width="105" />
+                                    <DataGridTemplateColumn Header="Lifecycle / stage"
+                                                            Width="145">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Margin="4,2">
+                                                    <Run Text="{Binding Lifecycle, Mode=OneWay}" />
+                                                    <Run Text=" · " />
+                                                    <Run Text="{Binding Stage, Mode=OneWay}" />
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Evidence"
+                                                            Width="*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="4,2">
+                                                    <TextBlock Text="{Binding Message}"
+                                                               TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding OwnerDelivery}"
+                                                               TextWrapping="Wrap"
+                                                               Opacity="0.75" />
+                                                    <TextBlock Text="{Binding ReasonCode, StringFormat={}Reason {0}}"
+                                                               Opacity="0.75" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </StackPanel>
+                    </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Expander>
 
             <DataGrid x:Name="FleetGrid"
                       Grid.Row="4"

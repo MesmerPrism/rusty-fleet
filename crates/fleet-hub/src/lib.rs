@@ -20,9 +20,17 @@ use fleet_contracts::{
 };
 use serde::{Deserialize, Serialize};
 
+mod awake;
 mod kiosk;
+mod packages;
+mod wifi_adb;
+mod windows_hotspot;
 
+pub use awake::QuestAwakePreviewPlan;
 pub use kiosk::KioskShowControlsPreviewPlan;
+pub use packages::PackageInstallReleasePreviewPlan;
+pub use wifi_adb::QuestWifiAdbPreviewPlan;
+pub use windows_hotspot::WindowsHotspotPreviewPlan;
 
 const ROW_SCHEMA: &str = "rusty.fleet.device_row.v1";
 const INSPECTOR_SCHEMA: &str = "rusty.fleet.device_inspector.v1";
@@ -31,6 +39,10 @@ const SUMMARY_SCHEMA: &str = "rusty.fleet.summary.v1";
 const RESULT_SCHEMA: &str = "rusty.fleet.query_result.v1";
 const MAX_SAVED_VIEWS: usize = 128;
 const MAX_KIOSK_OPERATIONS: usize = 1_000;
+const MAX_PACKAGE_OPERATIONS: usize = 1_000;
+const MAX_AWAKE_OPERATIONS: usize = 1_000;
+const MAX_WIFI_ADB_OPERATIONS: usize = 1_000;
+const MAX_WINDOWS_HOTSPOT_OPERATIONS: usize = 1_000;
 
 const fn initial_saved_view_revision() -> u64 {
     1
@@ -163,6 +175,16 @@ pub struct FleetHubSnapshot {
     saved_views: BTreeMap<String, SavedView>,
     #[serde(default)]
     kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
+    #[serde(default)]
+    package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
+    #[serde(default)]
+    awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
+    #[serde(default)]
+    wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
+    #[serde(default)]
+    windows_hotspot_operations: BTreeMap<String, fleet_contracts::WindowsHotspotOperation>,
+    #[serde(default)]
+    windows_hotspot_observation: Option<windows_hotspot::WindowsHotspotObservedState>,
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +197,11 @@ pub struct FleetHub {
     saved_view_revision: u64,
     saved_views: BTreeMap<String, SavedView>,
     kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
+    package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
+    awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
+    wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
+    windows_hotspot_operations: BTreeMap<String, fleet_contracts::WindowsHotspotOperation>,
+    windows_hotspot_observation: Option<windows_hotspot::WindowsHotspotObservedState>,
 }
 
 impl FleetHub {
@@ -197,6 +224,11 @@ impl FleetHub {
             saved_view_revision: initial_saved_view_revision(),
             saved_views: BTreeMap::new(),
             kiosk_operations: BTreeMap::new(),
+            package_operations: BTreeMap::new(),
+            awake_operations: BTreeMap::new(),
+            wifi_adb_operations: BTreeMap::new(),
+            windows_hotspot_operations: BTreeMap::new(),
+            windows_hotspot_observation: None,
         }
     }
 
@@ -221,6 +253,17 @@ impl FleetHub {
     }
 
     #[must_use]
+    pub fn device_source_lineage(&self, device_id: &str) -> Option<(&str, u64, u64)> {
+        self.devices.get(device_id).map(|record| {
+            (
+                record.observation.source_epoch.as_str(),
+                record.observation.source_revision,
+                record.observation.identity.identity_revision,
+            )
+        })
+    }
+
+    #[must_use]
     pub fn snapshot(&self) -> FleetHubSnapshot {
         FleetHubSnapshot {
             schema: "rusty.fleet.hub_snapshot.v1".to_owned(),
@@ -232,6 +275,11 @@ impl FleetHub {
             saved_view_revision: self.saved_view_revision,
             saved_views: self.saved_views.clone(),
             kiosk_operations: self.kiosk_operations.clone(),
+            package_operations: self.package_operations.clone(),
+            awake_operations: self.awake_operations.clone(),
+            wifi_adb_operations: self.wifi_adb_operations.clone(),
+            windows_hotspot_operations: self.windows_hotspot_operations.clone(),
+            windows_hotspot_observation: self.windows_hotspot_observation.clone(),
         }
     }
 
@@ -350,6 +398,79 @@ impl FleetHub {
                 "Fleet Hub snapshot Kiosk operations are invalid or exceed their limit",
             ));
         }
+        if snapshot.package_operations.len() > MAX_PACKAGE_OPERATIONS
+            || snapshot
+                .package_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                })
+        {
+            return Err(HubError::new(
+                "snapshot_package_operations_invalid",
+                "Fleet Hub snapshot package operations are invalid or exceed their limit",
+            ));
+        }
+        if snapshot.awake_operations.len() > MAX_AWAKE_OPERATIONS
+            || snapshot
+                .awake_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                })
+        {
+            return Err(HubError::new(
+                "snapshot_awake_operations_invalid",
+                "Fleet Hub snapshot Quest awake operations are invalid or exceed their limit",
+            ));
+        }
+        if snapshot.wifi_adb_operations.len() > MAX_WIFI_ADB_OPERATIONS
+            || snapshot
+                .wifi_adb_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                })
+        {
+            return Err(HubError::new(
+                "snapshot_wifi_adb_operations_invalid",
+                "Fleet Hub snapshot Quest Wi-Fi ADB operations are invalid or exceed their limit",
+            ));
+        }
+        if snapshot.windows_hotspot_operations.len() > MAX_WINDOWS_HOTSPOT_OPERATIONS
+            || snapshot
+                .windows_hotspot_operations
+                .iter()
+                .any(|(operation_id, operation)| {
+                    operation_id != &operation.operation_id
+                        || operation.validate().is_err()
+                        || operation.preview.fleet_revision > snapshot.result_revision
+                })
+            || snapshot
+                .windows_hotspot_operations
+                .values()
+                .filter(|operation| {
+                    matches!(
+                        operation.lifecycle,
+                        CommandLifecycle::Accepted
+                            | CommandLifecycle::Dispatched
+                            | CommandLifecycle::Running
+                    )
+                })
+                .count()
+                > 1
+        {
+            return Err(HubError::new(
+                "snapshot_windows_hotspot_operations_invalid",
+                "Fleet Hub snapshot Windows hotspot state is invalid",
+            ));
+        }
         Ok(Self {
             policy,
             devices: snapshot.devices,
@@ -359,6 +480,11 @@ impl FleetHub {
             saved_view_revision: snapshot.saved_view_revision,
             saved_views: snapshot.saved_views,
             kiosk_operations: snapshot.kiosk_operations,
+            package_operations: snapshot.package_operations,
+            awake_operations: snapshot.awake_operations,
+            wifi_adb_operations: snapshot.wifi_adb_operations,
+            windows_hotspot_operations: snapshot.windows_hotspot_operations,
+            windows_hotspot_observation: snapshot.windows_hotspot_observation,
         })
     }
 

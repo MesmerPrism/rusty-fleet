@@ -47,6 +47,34 @@ public partial class MainWindow : Window
 
     public TextBox SavedViewNameControl => SavedViewNameBox;
 
+    public Expander BatchOperationsControl => BatchOperationsExpander;
+
+    public Expander OperationsControl => BatchOperationsExpander;
+
+    public ScrollViewer BatchOperationsScrollControl => BatchOperationsScrollViewer;
+
+    public ScrollViewer OperationsScrollControl => BatchOperationsScrollViewer;
+
+    public FrameworkElement WindowsHotspotOperationRegion =>
+        WindowsHotspotOperationPane;
+
+    public ComboBox WindowsHotspotActionControl => WindowsHotspotActionBox;
+
+    public Button PreviewWindowsHotspotControl =>
+        PreviewWindowsHotspotButton;
+
+    public Button ConfirmWindowsHotspotControl =>
+        ConfirmWindowsHotspotButton;
+
+    public Button RefreshWindowsHotspotControl =>
+        RefreshWindowsHotspotButton;
+
+    public Button DismissWindowsHotspotControl =>
+        DismissWindowsHotspotButton;
+
+    public FrameworkElement WindowsHotspotResultRegion =>
+        WindowsHotspotResultPane;
+
     public FrameworkElement KioskOperationRegion => OperationPane;
 
     public Button PreviewKioskShowControlsControl => PreviewKioskShowControlsButton;
@@ -56,6 +84,63 @@ public partial class MainWindow : Window
     public Button RefreshOperationControl => RefreshOperationButton;
 
     public Button DismissOperationControl => DismissOperationButton;
+
+    public FrameworkElement PackageOperationRegion => PackageOperationPane;
+
+    public TextBox PackageManifestUrlControl => PackageManifestUrlBox;
+
+    public TextBox PackageNameControl => PackageNameBox;
+
+    public TextBox PackageRolloutRingControl => PackageRolloutRingBox;
+
+    public Button PreviewPackageInstallReleaseControl => PreviewPackageInstallReleaseButton;
+
+    public Button ConfirmPackageInstallReleaseControl => ConfirmPackageInstallReleaseButton;
+
+    public Button RefreshPackageInstallReleaseControl => RefreshPackageInstallReleaseButton;
+
+    public Button DismissPackageInstallReleaseControl => DismissPackageInstallReleaseButton;
+
+    public DataGrid PackageOperationTargetsControl => PackageOperationTargetsGrid;
+
+    public FrameworkElement QuestAwakeOperationRegion => QuestAwakeOperationPane;
+
+    public ComboBox QuestAwakeActionControl => QuestAwakeActionBox;
+
+    public TextBox QuestAwakeDurationControl => QuestAwakeDurationBox;
+
+    public TextBox QuestAwakeIntervalControl => QuestAwakeIntervalBox;
+
+    public Button PreviewQuestAwakeControl => PreviewQuestAwakeButton;
+
+    public Button ConfirmQuestAwakeControl => ConfirmQuestAwakeButton;
+
+    public Button RefreshQuestAwakeControl => RefreshQuestAwakeButton;
+
+    public Button DismissQuestAwakeControl => DismissQuestAwakeButton;
+
+    public DataGrid QuestAwakeTargetsControl => QuestAwakeTargetsGrid;
+
+    public FrameworkElement QuestWifiAdbOperationRegion => QuestWifiAdbOperationPane;
+
+    public RadioButton QuestWifiAdbModernRouteControl =>
+        QuestWifiAdbModernRouteButton;
+
+    public ComboBox QuestWifiAdbModernActionControl =>
+        QuestWifiAdbModernActionBox;
+
+    public RadioButton QuestWifiAdbClassicRouteControl =>
+        QuestWifiAdbClassicRouteButton;
+
+    public Button PreviewQuestWifiAdbControl => PreviewQuestWifiAdbButton;
+
+    public Button ConfirmQuestWifiAdbControl => ConfirmQuestWifiAdbButton;
+
+    public Button RefreshQuestWifiAdbControl => RefreshQuestWifiAdbButton;
+
+    public Button DismissQuestWifiAdbControl => DismissQuestWifiAdbButton;
+
+    public DataGrid QuestWifiAdbTargetsControl => QuestWifiAdbTargetsGrid;
 
     public FrameworkElement InspectorRegion => InspectorPane;
 

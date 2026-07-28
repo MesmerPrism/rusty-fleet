@@ -1,0 +1,8 @@
+{
+  "schema": "rusty.fleet.windows_release_trust_policy.v1",
+  "publication_enabled": false,
+  "authorized_fleet_signer_thumbprints": [],
+  "authorized_hostess_signer_thumbprints": [],
+  "authorized_descriptor_signer_spki_sha256": [],
+  "status": "no_production_signing_authority_configured"
+}

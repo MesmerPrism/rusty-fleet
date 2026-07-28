@@ -1,0 +1,98 @@
+{
+  "schema": "rusty.fleet.package_install_release_operation.v1",
+  "operation_id": "package-operation-1",
+  "action_id": "packages.install-release",
+  "created_at_ms": 1000,
+  "preview": {
+    "schema": "rusty.fleet.package_install_release_preview.v1",
+    "preview_id": "package-preview-1",
+    "operation_id": "package-operation-1",
+    "action_id": "packages.install-release",
+    "created_at_ms": 1000,
+    "expires_at_ms": 61000,
+    "fleet_revision": 7,
+    "release": {
+      "kind": "manifest_url",
+      "manifest_url": "http://updates.example.invalid/alpha/envelope.json"
+    },
+    "expected_package_name": "org.example.kiosk",
+    "expected_rollout_ring": "alpha",
+    "owner_contract": {
+      "owner_repo_id": "rusty-quest-copy",
+      "capability_id": "rusty-quest.package-updater",
+      "manifest_envelope_schema": "rusty.quest.package_update_manifest_envelope.v1",
+      "receipt_schema": "rusty.quest.package_update_receipt.v1",
+      "install_mode": "attended_package_installer",
+      "application_proof": "effective_installed_version_receipt"
+    },
+    "targets": [
+      {
+        "device_id": "device.quest.1",
+        "identity_revision": 7,
+        "capability_id": "rusty-quest.package-updater",
+        "capability_evidence_revision": 11,
+        "capability_owner": "rusty-quest",
+        "support": "supported",
+        "enablement": "enabled",
+        "authorization": "authorized",
+        "reachability": "reachable",
+        "freshness": "current",
+        "observed_at_ms": 900,
+        "fresh_until_ms": 30000,
+        "evaluated_at_ms": 1001,
+        "eligible": true,
+        "reason_code": "ready",
+        "message": "Attended package updater is current and ready."
+      }
+    ]
+  },
+  "lifecycle": "applied",
+  "max_parallelism": 1,
+  "cleanup_required": false,
+  "targets": [
+    {
+      "device_id": "device.quest.1",
+      "identity_revision": 7,
+      "preflight": {
+        "device_id": "device.quest.1",
+        "identity_revision": 7,
+        "capability_id": "rusty-quest.package-updater",
+        "capability_evidence_revision": 11,
+        "capability_owner": "rusty-quest",
+        "support": "supported",
+        "enablement": "enabled",
+        "authorization": "authorized",
+        "reachability": "reachable",
+        "freshness": "current",
+        "observed_at_ms": 900,
+        "fresh_until_ms": 30000,
+        "evaluated_at_ms": 1001,
+        "eligible": true,
+        "reason_code": "ready",
+        "message": "Attended package updater is current and ready."
+      },
+      "lifecycle": "applied",
+      "stage": "applied",
+      "invocation": {
+        "schema": "rusty.fleet.package_updater_invocation.v1",
+        "operation_id": "package-operation-1",
+        "preview_id": "package-preview-1",
+        "device_id": "device.quest.1",
+        "identity_revision": 7,
+        "owner_action_request_id": "package-owner-1",
+        "release": {
+          "kind": "manifest_url",
+          "manifest_url": "http://updates.example.invalid/alpha/envelope.json"
+        },
+        "expected_package_name": "org.example.other",
+        "expected_rollout_ring": "alpha",
+        "expires_at_ms": 61000
+      },
+      "invocation_acknowledgement": null,
+      "effective_receipt": null,
+      "reason_code": "owner_effective_installed_version",
+      "message": "False application claim without owner proof",
+      "last_transition_ms": 1002
+    }
+  ]
+}

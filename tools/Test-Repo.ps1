@@ -213,7 +213,15 @@ function Test-RequiredFiles {
         "apps/fleet-hub-local/src/main.rs",
         "apps/fleetctl/Cargo.toml",
         "apps/fleetctl/src/lib.rs",
+        "apps/fleetctl/src/local_client.rs",
         "apps/fleetctl/src/main.rs",
+        "apps/fleetctl/src/operation.rs",
+        "apps/fleetctl/src/package_operation.rs",
+        "apps/fleetctl/src/quest_awake_operation.rs",
+        "apps/fleetctl/tests/package_commands.rs",
+        "apps/fleetctl/tests/quest_awake_commands.rs",
+        "apps/fleet-onboard/Cargo.toml",
+        "apps/fleet-onboard/src/main.rs",
         "apps/fleet-console-wpf/RustyFleet.FleetConsole.csproj",
         "apps/fleet-console-wpf/App.xaml",
         "apps/fleet-console-wpf/App.xaml.cs",
@@ -225,15 +233,33 @@ function Test-RequiredFiles {
         "apps/fleet-console-wpf/ViewModels/Commands.cs",
         "apps/fleet-console-wpf/ViewModels/DeviceViewModels.cs",
         "apps/fleet-console-wpf/ViewModels/FleetWorkspaceViewModel.cs",
+        "apps/fleet-console-wpf/ViewModels/OperationViewModels.cs",
+        "apps/fleet-console-wpf/Assets/rusty-fleet.ico",
+        "assets/branding/rusty-fleet.svg",
         "apps/fleet-console-wpf.tests/RustyFleet.FleetConsole.Tests.csproj",
         "apps/fleet-console-wpf.tests/Program.cs",
         "crates/fleet-contracts/Cargo.toml",
         "crates/fleet-contracts/src/checkin.rs",
+        "crates/fleet-contracts/src/awake.rs",
         "crates/fleet-contracts/src/lib.rs",
+        "crates/fleet-contracts/src/packages.rs",
         "crates/fleet-hub/Cargo.toml",
+        "crates/fleet-hub/src/awake.rs",
         "crates/fleet-hub/src/lib.rs",
+        "crates/fleet-hub/src/packages.rs",
+        "crates/fleet-hub/tests/quest_awake.rs",
         "crates/fleet-manifold-adapter/Cargo.toml",
         "crates/fleet-manifold-adapter/src/lib.rs",
+        "crates/fleet-onboarding/Cargo.toml",
+        "crates/fleet-onboarding/src/lib.rs",
+        "crates/fleet-onboarding-windows-kernel/Cargo.toml",
+        "crates/fleet-onboarding-windows-kernel/src/lib.rs",
+        "crates/fleet-package-updater-adapter/Cargo.toml",
+        "crates/fleet-package-updater-adapter/src/lib.rs",
+        "crates/fleet-provider-catalog/Cargo.toml",
+        "crates/fleet-provider-catalog/src/lib.rs",
+        "crates/fleet-quest-awake-adapter/Cargo.toml",
+        "crates/fleet-quest-awake-adapter/src/lib.rs",
         "crates/fleet-simulator/Cargo.toml",
         "crates/fleet-simulator/src/lib.rs",
         "fixtures/contracts/checkin-claims.valid.json",
@@ -245,13 +271,24 @@ function Test-RequiredFiles {
         "fixtures/contracts/saved-view.valid.json",
         "fixtures/contracts/saved-view.damaged.json",
         "fixtures/contracts/stream-descriptor.valid.json",
+        "fixtures/contracts/package-install-release-operation.valid.json",
+        "fixtures/contracts/package-install-release-operation.damaged.json",
+        "fixtures/contracts/quest-awake-operation.valid.json",
+        "fixtures/contracts/quest-awake-operation.damaged.json",
+        "fixtures/onboarding/offline-onboarding-request.example.json",
+        "fixtures/onboarding/rusty-quest-fleet-agent-profile.disabled.owner-de144.json",
         "fixtures/scenarios/scale-and-damage.v1.json",
         "schemas/rusty.fleet.checkin_claims.v1.schema.json",
         "schemas/rusty.fleet.checkin_signing_vector.v1.schema.json",
         "schemas/rusty.fleet.device_observation.v1.schema.json",
         "schemas/rusty.fleet.operation_ledger.v1.schema.json",
         "schemas/rusty.fleet.operator_projection.v1.schema.json",
+        "schemas/rusty.fleet.package_install_release_operation.v1.schema.json",
+        "schemas/rusty.fleet.quest_awake_operation.v1.schema.json",
         "schemas/rusty.fleet.query.v1.schema.json",
+        "schemas/rusty.fleet.offline_onboarding_request.v1.schema.json",
+        "schemas/rusty.fleet.offline_onboarding_plan.v1.schema.json",
+        "schemas/rusty.fleet.offline_onboarding_private_inventory.v1.schema.json",
         "schemas/rusty.fleet.signed_checkin.v1.schema.json",
         "schemas/rusty.fleet.stream_descriptor.v1.schema.json",
         "docs/ARCHITECTURE.md",
@@ -261,9 +298,14 @@ function Test-RequiredFiles {
         "docs/M0_GRAPH_AND_INSTRUCTION_REVIEW.md",
         "docs/M1_LOCAL_MONITORING.md",
         "docs/OPERATOR_UI.md",
+        "docs/PACKAGE_INSTALL_RELEASE.md",
+        "docs/QUEST_AWAKE_CONTROL.md",
         "docs/WORKFLOW.md",
         "docs/VALIDATION.md",
         "docs/PUBLIC_PRIVATE_BOUNDARY.md",
+        "docs/PROVIDER_CAPABILITY_CATALOG.md",
+        "tools/New-FleetIcon.ps1",
+        "tools/Test-FleetOnboardingSecurity.ps1",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
         "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
         "docs/decisions/0005-m1-checkin-authority.md",
@@ -393,9 +435,13 @@ function Test-SourceImplementation {
     foreach ($member in @(
         "apps/fleet-hub-local",
         "apps/fleetctl",
+        "apps/fleet-onboard",
         "crates/fleet-contracts",
         "crates/fleet-hub",
         "crates/fleet-manifold-adapter",
+        "crates/fleet-onboarding",
+        "crates/fleet-onboarding-windows-kernel",
+        "crates/fleet-provider-catalog",
         "crates/fleet-simulator"
     )) {
         Assert-True -Condition ($workspace.Contains("`"$member`"")) `
@@ -434,6 +480,16 @@ function Test-SourceImplementation {
 
     Invoke-Cargo -Arguments @("fmt", "--all", "--", "--check")
     Invoke-Cargo -Arguments @("test", "--workspace", "--locked")
+    & pwsh -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $repoRoot "tools/Test-FleetIconProvenance.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fleet icon line-ending provenance tests failed."
+    }
+    & pwsh -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $repoRoot "tools/New-FleetIcon.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fleet icon provenance validation failed."
+    }
 }
 
 function Test-PlanningInvariants {
@@ -741,6 +797,37 @@ function Test-TrackedTree {
     }
 }
 
+function Test-ReleaseCandidateDependencies {
+    $expectedManifoldRevision = "ef1d40b8e0b7e7b47270509eddf53787c23b9fea"
+    $workspace = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.toml") -Raw
+    $lock = Get-Content -LiteralPath (Join-Path $repoRoot "Cargo.lock") -Raw
+    $manifoldSourcePattern = (
+        'source = "git\+https://github\.com/MesmerPrism/rusty-manifold' +
+        '\?rev=([0-9a-f]{40})#([0-9a-f]{40})"'
+    )
+    $manifoldSources = [regex]::Matches($lock, $manifoldSourcePattern)
+
+    Assert-True -Condition ($manifoldSources.Count -eq 5) `
+        -Message "Release candidate must resolve exactly five Manifold packages."
+    foreach ($source in $manifoldSources) {
+        Assert-True -Condition (
+            $source.Groups[1].Value -eq $expectedManifoldRevision -and
+            $source.Groups[2].Value -eq $expectedManifoldRevision
+        ) -Message "Release candidate contains a mixed or unresolved Manifold revision."
+    }
+    Assert-True -Condition (
+        $workspace.Contains($expectedManifoldRevision) -and
+        -not $workspace.Contains("40c05b27a1c1f6c6990652802e16491bfc1fbc8b")
+    ) -Message "Cargo workspace does not exclusively pin the accepted Manifold provider."
+
+    Invoke-Cargo -Arguments @("tree", "--locked", "-p", "fleet-manifold-adapter")
+
+    $distributionValidation = Join-Path $repoRoot "tools/Test-WindowsDistribution.ps1"
+    Assert-True -Condition (Test-Path -LiteralPath $distributionValidation -PathType Leaf) `
+        -Message "Windows distribution validation entrypoint is missing."
+    & $distributionValidation
+}
+
 Push-Location -LiteralPath $repoRoot
 try {
     Test-RequiredFiles
@@ -750,6 +837,10 @@ try {
     Test-SourceImplementation
     Test-WpfConsole
     Test-DatastreamPlanning
+    & (Join-Path $repoRoot "tools/Test-FleetWifiAdbTwoQuestAcceptance.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Two-Quest Wi-Fi ADB acceptance host tests failed."
+    }
     Invoke-Git diff --check
 
     if ($Tier -in @("Standard", "Deep")) {
@@ -788,7 +879,13 @@ try {
     }
 
     if ($Tier -eq "Deep") {
+        & pwsh -NoProfile -ExecutionPolicy Bypass `
+            -File (Join-Path $repoRoot "tools/Test-FleetOnboardingSecurity.ps1")
+        if ($LASTEXITCODE -ne 0) {
+            throw "Offline Fleet onboarding security validation failed."
+        }
         Test-TrackedTree
+        Test-ReleaseCandidateDependencies
     }
 
     Write-Host "Rusty Fleet $Tier validation passed."

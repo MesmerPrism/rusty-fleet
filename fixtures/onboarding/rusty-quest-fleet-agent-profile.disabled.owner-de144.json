@@ -1,0 +1,22 @@
+{
+  "schema": "rusty.quest.fleet_agent_profile.v1",
+  "enabled": false,
+  "device_id": "quest.unenrolled.example",
+  "display_name": "Unenrolled Quest",
+  "model": "Quest",
+  "hardware_class": "standalone_xr",
+  "identity_revision": 1,
+  "expected_authority_revision": 1,
+  "status_revision": 1,
+  "source_revision": 1,
+  "source_epoch": "agent-epoch-disabled",
+  "key_id": "key.quest.unenrolled.v1",
+  "key_fingerprint": "fingerprint.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "trust_domain": "trust.local",
+  "checkin_ttl_ms": 60000,
+  "checkin_interval_ms": 15000,
+  "hub_endpoint": "http://192.0.2.10:8741/fleet/v1/checkins",
+  "tags": {
+    "fixture": "disabled"
+  }
+}

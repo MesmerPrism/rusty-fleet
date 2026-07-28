@@ -1,0 +1,20 @@
+{
+  "capability_id": "capability.quest-termux-loopback-adb-shell",
+  "support": "supported",
+  "enablement": "enabled",
+  "authorization": "authorized",
+  "reachability": "reachable",
+  "freshness": "current",
+  "evidence_revision": 17,
+  "observed_at_ms": 1999999990000,
+  "fresh_until_ms": 2000000020000,
+  "owner": "quest-termux-lab",
+  "reason": "loopback_tls_shell_uid_2000",
+  "proof_schema": "rusty.quest.loopback_adb_proof.v1",
+  "state": "available",
+  "route_mode": "modern_tls",
+  "discovery_mode": "tls_nsd",
+  "listener_discovered": true,
+  "shell_uid": "2000",
+  "owner_evidence_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

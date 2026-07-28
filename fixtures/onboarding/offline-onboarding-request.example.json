@@ -1,0 +1,36 @@
+{
+  "schema": "rusty.fleet.offline_onboarding_request.v1",
+  "output_root": "<absolute-new-private-output-root>",
+  "tool_manifest": "<absolute-pinned-key-record-manifest>",
+  "hub": {
+    "bind": "127.0.0.1:18440",
+    "checkin_bind": "192.0.2.10:18441",
+    "state_directory": "<absolute-private-hub-state-directory>",
+    "operator_id": "operator.example",
+    "request_id_prefix": "enrollment.example",
+    "credential_valid_from_ms": 1000000000000,
+    "credential_expires_at_ms": 1000003600000
+  },
+  "devices": [
+    {
+      "device_id": "device.example-001",
+      "display_name": "Example headset 001",
+      "model": "example-model",
+      "hardware_class": "example-class",
+      "identity_revision": 1,
+      "expected_authority_revision": 1,
+      "status_revision": 1,
+      "source_revision": 1,
+      "source_epoch": "epoch.example-001",
+      "key_id": "key.device.example-001",
+      "key_generation": 1,
+      "trust_domain": "trust.example",
+      "checkin_ttl_ms": 60000,
+      "checkin_interval_ms": 15000,
+      "hub_endpoint": "http://192.0.2.10:18441/fleet/v1/checkins",
+      "tags": {
+        "cohort": "example"
+      }
+    }
+  ]
+}

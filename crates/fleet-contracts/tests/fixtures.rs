@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use fleet_contracts::{
-    DeviceObservation, FleetCheckInClaims, FleetQuery, KioskShowControlsOperation, SavedView,
-    StreamDescriptor, ValidateContract,
+    DeviceObservation, FleetCheckInClaims, FleetQuery, KioskShowControlsOperation,
+    PackageInstallReleaseOperation, QuestAwakeOperation, SavedView, StreamDescriptor,
+    ValidateContract, WindowsHotspotProviderReceipt, WindowsHotspotProviderRequest,
 };
 
 #[test]
@@ -42,6 +43,30 @@ fn committed_valid_contract_fixtures_round_trip() {
     ))
     .expect("valid Kiosk show-controls JSON");
     assert!(kiosk_operation.validate().is_ok());
+
+    let package_operation: PackageInstallReleaseOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/package-install-release-operation.valid.json"
+    ))
+    .expect("valid package install/release JSON");
+    assert!(package_operation.validate().is_ok());
+
+    let awake_operation: QuestAwakeOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/quest-awake-operation.valid.json"
+    ))
+    .expect("valid Quest awake JSON");
+    assert!(awake_operation.validate().is_ok());
+
+    let hotspot_request: WindowsHotspotProviderRequest = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/windows-hotspot-provider-request.valid.json"
+    ))
+    .expect("valid Hostess hotspot request JSON");
+    assert!(hotspot_request.validate().is_ok());
+
+    let hotspot_receipt: WindowsHotspotProviderReceipt = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/windows-hotspot-provider-receipt.valid.json"
+    ))
+    .expect("valid Hostess hotspot receipt JSON");
+    assert!(hotspot_receipt.validate().is_ok());
 }
 
 #[test]
@@ -95,4 +120,57 @@ fn committed_damaged_observation_fails_closed() {
     assert!(codes.contains(&"invalid_revision".to_owned()));
     assert!(codes.contains(&"invalid_battery".to_owned()));
     assert!(codes.contains(&"required_text".to_owned()));
+}
+
+#[test]
+fn committed_damaged_package_operation_fails_closed() {
+    let operation: PackageInstallReleaseOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/package-install-release-operation.damaged.json"
+    ))
+    .expect("damaged package fixture remains syntactically valid JSON");
+    let codes = operation
+        .validate()
+        .expect_err("damaged package operation must fail")
+        .into_iter()
+        .map(|failure| failure.code)
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"invalid_manifest_url".to_owned()));
+    assert!(codes.contains(&"owner_contract_mismatch".to_owned()));
+    assert!(codes.contains(&"applied_without_effective_receipt".to_owned()));
+}
+
+#[test]
+fn committed_damaged_hotspot_receipt_rejects_private_fields() {
+    let damaged =
+        include_str!("../../../fixtures/contracts/windows-hotspot-provider-receipt.damaged.json");
+    assert!(serde_json::from_str::<WindowsHotspotProviderReceipt>(damaged).is_err());
+}
+
+#[test]
+fn committed_damaged_quest_awake_operation_fails_closed() {
+    let operation: QuestAwakeOperation = serde_json::from_str(include_str!(
+        "../../../fixtures/contracts/quest-awake-operation.damaged.json"
+    ))
+    .expect("damaged Quest awake fixture remains syntactically valid JSON");
+    let codes = operation
+        .validate()
+        .expect_err("damaged Quest awake operation must fail")
+        .into_iter()
+        .map(|failure| failure.code)
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"invalid_duration".to_owned()));
+    assert!(codes.contains(&"invalid_watchdog_interval".to_owned()));
+    assert!(codes.contains(&"owner_contract_mismatch".to_owned()));
+    assert!(codes.contains(&"receipt_binding_mismatch".to_owned()));
+    assert!(codes.contains(&"applied_without_effective_receipt".to_owned()));
+    let receipt_codes = operation.targets[0]
+        .receipt
+        .as_ref()
+        .expect("damaged receipt")
+        .validate()
+        .expect_err("optimistic receipt must fail")
+        .into_iter()
+        .map(|failure| failure.code)
+        .collect::<Vec<_>>();
+    assert!(receipt_codes.contains(&"readback_summary_mismatch".to_owned()));
 }

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use fleet_contracts::{
     KIOSK_SHOW_CONTROLS_ACTION_ID, KioskShowControlsOperation, OPERATION_EXECUTE_REQUEST_SCHEMA,
     OPERATION_PREVIEW_REQUEST_SCHEMA, OperationExecuteRequest, OperationPreviewRequest,
-    ValidateContract,
+    PackageInstallReleaseExecuteRequest, PackageInstallReleasePreviewRequest, ValidateContract,
 };
 
 use crate::CliFailure;
@@ -16,6 +16,20 @@ use crate::CliFailure;
 /// Responses remain raw JSON until this crate has decoded and validated the
 /// complete Kiosk show-controls operation contract.
 pub trait FleetOperationClient {
+    fn get_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "provider_catalog_client_required",
+            "the injected Fleet client does not support provider catalog metadata",
+        ))
+    }
+
+    fn refresh_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "provider_catalog_client_required",
+            "the injected Fleet client does not support provider catalog refresh",
+        ))
+    }
+
     fn preview_operation(
         &mut self,
         request: &OperationPreviewRequest,
@@ -27,12 +41,193 @@ pub trait FleetOperationClient {
     ) -> Result<serde_json::Value, CliFailure>;
 
     fn get_operation(&mut self, operation_id: &str) -> Result<serde_json::Value, CliFailure>;
+
+    fn preview_package_install_release(
+        &mut self,
+        _request: &PackageInstallReleasePreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_operation_client_required",
+            "the injected Fleet client does not support package operations",
+        ))
+    }
+
+    fn execute_package_install_release(
+        &mut self,
+        _request: &PackageInstallReleaseExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_operation_client_required",
+            "the injected Fleet client does not support package operations",
+        ))
+    }
+
+    fn get_package_install_release(
+        &mut self,
+        _operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_operation_client_required",
+            "the injected Fleet client does not support package operations",
+        ))
+    }
+
+    fn preview_quest_awake(
+        &mut self,
+        _request: &fleet_contracts::QuestAwakePreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_awake_client_required",
+            "the injected Fleet client does not support Quest awake operations",
+        ))
+    }
+
+    fn execute_quest_awake(
+        &mut self,
+        _request: &fleet_contracts::QuestAwakeExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_awake_client_required",
+            "the injected Fleet client does not support Quest awake operations",
+        ))
+    }
+
+    fn get_quest_awake(&mut self, _operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_awake_client_required",
+            "the injected Fleet client does not support Quest awake operations",
+        ))
+    }
+
+    fn preview_quest_wifi_adb(
+        &mut self,
+        _request: &fleet_contracts::QuestWifiAdbPreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_wifi_adb_client_required",
+            "the injected Fleet client does not support Quest Wi-Fi ADB operations",
+        ))
+    }
+
+    fn execute_quest_wifi_adb(
+        &mut self,
+        _request: &fleet_contracts::QuestWifiAdbExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_wifi_adb_client_required",
+            "the injected Fleet client does not support Quest Wi-Fi ADB operations",
+        ))
+    }
+
+    fn get_quest_wifi_adb(&mut self, _operation_id: &str) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_wifi_adb_client_required",
+            "the injected Fleet client does not support Quest Wi-Fi ADB operations",
+        ))
+    }
+
+    fn list_quest_wifi_adb(&mut self) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "quest_wifi_adb_client_required",
+            "the injected Fleet client does not support Quest Wi-Fi ADB operation listing",
+        ))
+    }
+
+    fn preview_windows_hotspot(
+        &mut self,
+        _request: &fleet_contracts::WindowsHotspotPreviewRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "windows_hotspot_client_required",
+            "the injected Fleet client does not support Windows hotspot operations",
+        ))
+    }
+
+    fn execute_windows_hotspot(
+        &mut self,
+        _request: &fleet_contracts::WindowsHotspotExecuteRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "windows_hotspot_client_required",
+            "the injected Fleet client does not support Windows hotspot operations",
+        ))
+    }
+
+    fn get_windows_hotspot(
+        &mut self,
+        _operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "windows_hotspot_client_required",
+            "the injected Fleet client does not support Windows hotspot operations",
+        ))
+    }
+
+    fn claim_package_updater(
+        &mut self,
+        _request: &fleet_contracts::PackageUpdaterClaimRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_owner_client_required",
+            "the injected Fleet client does not support package-owner ingress",
+        ))
+    }
+
+    fn peek_package_updater_offer(&mut self) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_owner_client_required",
+            "the injected Fleet client does not support package-owner ingress",
+        ))
+    }
+
+    fn submit_package_updater_acknowledgement(
+        &mut self,
+        _operation_id: &str,
+        _submission: &fleet_contracts::AuthenticatedPackageUpdaterAcknowledgement,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_owner_client_required",
+            "the injected Fleet client does not support package-owner ingress",
+        ))
+    }
+
+    fn submit_package_updater_receipt(
+        &mut self,
+        _operation_id: &str,
+        _submission: &fleet_contracts::AuthenticatedPackageUpdaterReceipt,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_owner_client_required",
+            "the injected Fleet client does not support package-owner ingress",
+        ))
+    }
 }
 
 pub fn is_operation_command(command: &str) -> bool {
     matches!(
         command,
-        "operation-preview" | "operation-execute" | "operation-get"
+        "provider-catalog"
+            | "provider-catalog-refresh"
+            | "operation-preview"
+            | "operation-execute"
+            | "operation-get"
+            | "package-preview"
+            | "package-execute"
+            | "package-get"
+            | "package-owner-claim"
+            | "package-owner-offer"
+            | "package-owner-ack"
+            | "package-owner-receipt"
+            | "awake-preview"
+            | "awake-execute"
+            | "awake-get"
+            | "wifi-adb-preview"
+            | "wifi-adb-execute"
+            | "wifi-adb-get"
+            | "wifi-adb-list"
+            | "hotspot-preview"
+            | "hotspot-execute"
+            | "hotspot-get"
     )
 }
 
@@ -44,11 +239,67 @@ pub(crate) fn execute_operation_command<C: FleetOperationClient + ?Sized>(
         Some("operation-preview") => preview(arguments, client),
         Some("operation-execute") => execute(arguments, client),
         Some("operation-get") => get(arguments, client),
+        Some("package-owner-claim") => package_owner_claim(arguments, client),
+        Some("package-owner-offer") => client.peek_package_updater_offer(),
+        Some("package-owner-ack") => package_owner_ack(arguments, client),
+        Some("package-owner-receipt") => package_owner_receipt(arguments, client),
         _ => Err(CliFailure::new(
             "unknown_command",
             "the requested operation command is unknown",
         )),
     }
+}
+
+fn package_owner_claim<C: FleetOperationClient + ?Sized>(
+    arguments: &[String],
+    client: &mut C,
+) -> Result<serde_json::Value, CliFailure> {
+    if arguments.len() != 6 {
+        return Err(CliFailure::new(
+            "unexpected_arguments",
+            "package-owner-claim requires OWNER_ID REQUEST_ID OPERATION_ID DEVICE_ID EXPECTED_INVOCATION_SHA256",
+        ));
+    }
+    let request = fleet_contracts::PackageUpdaterClaimRequest {
+        schema: fleet_contracts::PACKAGE_UPDATER_CLAIM_REQUEST_SCHEMA.to_owned(),
+        owner_id: arguments[1].clone(),
+        request_id: arguments[2].clone(),
+        operation_id: arguments[3].clone(),
+        device_id: arguments[4].clone(),
+        expected_invocation_sha256: arguments[5].clone(),
+    };
+    validate_request(&request, "invalid_package_owner_claim")?;
+    client.claim_package_updater(&request)
+}
+
+fn package_owner_ack<C: FleetOperationClient + ?Sized>(
+    arguments: &[String],
+    client: &mut C,
+) -> Result<serde_json::Value, CliFailure> {
+    if arguments.len() != 3 {
+        return Err(CliFailure::new(
+            "unexpected_arguments",
+            "package-owner-ack requires OPERATION_ID JSON",
+        ));
+    }
+    let submission = serde_json::from_str(&arguments[2])
+        .map_err(|error| CliFailure::new("invalid_package_owner_json", error.to_string()))?;
+    client.submit_package_updater_acknowledgement(&arguments[1], &submission)
+}
+
+fn package_owner_receipt<C: FleetOperationClient + ?Sized>(
+    arguments: &[String],
+    client: &mut C,
+) -> Result<serde_json::Value, CliFailure> {
+    if arguments.len() != 3 {
+        return Err(CliFailure::new(
+            "unexpected_arguments",
+            "package-owner-receipt requires OPERATION_ID JSON",
+        ));
+    }
+    let submission = serde_json::from_str(&arguments[2])
+        .map_err(|error| CliFailure::new("invalid_package_owner_json", error.to_string()))?;
+    client.submit_package_updater_receipt(&arguments[1], &submission)
 }
 
 fn preview<C: FleetOperationClient + ?Sized>(
@@ -161,7 +412,7 @@ fn get<C: FleetOperationClient + ?Sized>(
     Ok(raw)
 }
 
-fn parse_target(target: &str) -> Result<(String, u64), CliFailure> {
+pub(crate) fn parse_target(target: &str) -> Result<(String, u64), CliFailure> {
     let (device_id, revision) = target.rsplit_once('@').ok_or_else(|| {
         CliFailure::new(
             "invalid_target",
@@ -189,7 +440,7 @@ fn parse_target(target: &str) -> Result<(String, u64), CliFailure> {
     Ok((device_id.to_owned(), identity_revision))
 }
 
-fn validate_identifier(value: &str, name: &str) -> Result<(), CliFailure> {
+pub(crate) fn validate_identifier(value: &str, name: &str) -> Result<(), CliFailure> {
     if value.is_empty() || value.len() > 256 {
         return Err(CliFailure::new(
             "invalid_identifier",
@@ -199,7 +450,10 @@ fn validate_identifier(value: &str, name: &str) -> Result<(), CliFailure> {
     Ok(())
 }
 
-fn validate_request<T: ValidateContract>(request: &T, code: &str) -> Result<(), CliFailure> {
+pub(crate) fn validate_request<T: ValidateContract>(
+    request: &T,
+    code: &str,
+) -> Result<(), CliFailure> {
     request.validate().map_err(|failures| {
         CliFailure::new(
             code,
@@ -235,7 +489,7 @@ fn preview_targets(operation: &KioskShowControlsOperation) -> BTreeMap<String, u
         .collect()
 }
 
-fn violation_summary(failures: &[fleet_contracts::ContractViolation]) -> String {
+pub(crate) fn violation_summary(failures: &[fleet_contracts::ContractViolation]) -> String {
     failures
         .iter()
         .map(|failure| format!("{}@{}", failure.code, failure.path))

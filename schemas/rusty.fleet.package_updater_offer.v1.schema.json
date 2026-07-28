@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rusty-fleet.invalid/rusty.fleet.package_updater_offer.v1.schema.json",
+  "title": "Rusty Fleet package updater offer v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "owner_id", "operation_id", "device_id", "invocation_sha256"],
+  "properties": {
+    "schema": {"const": "rusty.fleet.package_updater_offer.v1"},
+    "owner_id": {"const": "rusty-quest.package-updater"},
+    "operation_id": {"$ref": "#/$defs/id"},
+    "device_id": {"$ref": "#/$defs/id"},
+    "invocation_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    }
+  }
+}

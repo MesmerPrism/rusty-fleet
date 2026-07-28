@@ -1,5 +1,32 @@
 # Architecture
 
+## Offline onboarding boundary
+
+Offline trust bootstrap is owned by the standalone `fleet-onboarding` engine
+and `fleet-onboard` CLI. The engine consumes one private operator request,
+validates the exact repository-generated Rusty Quest key-record tool manifest,
+and creates a confirmation-bound private bundle. Rusty Quest continues to own
+the profile and key-record schemas; Manifold continues to own enrollment and
+revocation. Fleet Hub, `fleetctl`, the local API, and WPF neither generate
+seeds nor execute key tools. See
+[Offline Fleet Onboarding](OFFLINE_ONBOARDING.md).
+
+The plan/read boundary is non-mutating. Apply is a current-user-only,
+create-new transaction with inventory-last evidence and retained object
+identities. Cleanup uses a closed enumeration and exact retained handles for
+only inventory-bound generated material; rollback never recursively deletes a
+path. Revocation remains an explicit authorization-owner workflow.
+No stage implies installation, enrollment, reachability, activation, health,
+or revocation.
+
+The local composition includes a fail-closed, metadata-only provider catalog.
+It consumes no descriptor-derived invocation data and shares one revisioned
+snapshot across API, CLI, and WPF projections. Provider/operator routes remain
+on the loopback listener. An optional independently bounded LAN listener mounts
+only the authenticated signed-check-in route while sharing the canonical Hub,
+Manifold admission, replay, and durable state. See
+[Provider Capability Catalog](PROVIDER_CAPABILITY_CATALOG.md).
+
 ## Decision
 
 Rusty Fleet is a dedicated Hostess/operator product. It is not a mode inside
@@ -239,14 +266,54 @@ sequenceDiagram
     H-->>O: per-device terminal projection
 ```
 
-A dispatch acknowledgement is intermediate evidence. Completion requires the
-current owner receipt and any selected cleanup receipt. Fleet fan-out never
-collapses per-device failures into a false aggregate success.
+A Manifold Runtime Host application receipt records accepted command
+authorization only. It is not an owner acknowledgement, an effective result,
+or cleanup evidence. A dispatch acknowledgement is intermediate evidence.
+Completion requires the current owner result and any separately selected
+cleanup receipt. Fleet fan-out never collapses per-device failures into a
+false aggregate success.
+
+The pinned Runtime Host v4 retains command, lease-adoption, and
+derivative-revocation replay identities. Fleet's current command descriptors
+require no Runtime Host lease, so Fleet starts with no borrowed leases and
+does not manufacture administrative revocation or convergence state. Legacy
+Runtime Host v2 snapshots migrate through Manifold's explicit restart API.
+Future leased operations must preserve owner-issued revocation and
+fail-closed barrier evidence rather than recreating either in Fleet.
 
 A multi-device action uses an inspectable target snapshot plus per-target
 preflight. Aggregate counts are navigation into the per-target ledger, never a
 replacement for it. Retry and cancellation create explicit lineage, and
 cleanup remains a separate terminal dimension.
+
+### Package install/release owner ingress
+
+The additive `packages.install-release` surface freezes a signed release
+reference, expected package/ring, exact identities, and the pinned Rusty Quest
+attended-updater contract. Fleet confirmation authorizes and durably prepares
+one invocation per eligible target. Preparation is `accepted` /
+`dispatch_ready`; it is neither transport dispatch nor application and does
+not consume owner-delivery parallelism.
+
+An explicitly configured private owner identity and bearer secret activate a
+separate authenticated ingress. The owner supplies a one-use request ID and
+claims the next exact immutable invocation. The durable claim binds owner,
+request, target, release, invocation digest, and a short expiry. Claim
+admission counts current nonterminal claims against the operation's frozen
+`max_parallelism`; restart restores the same claims and request replay remains
+rejected. Missing configuration leaves the route inert with HTTP 501.
+
+Acknowledgement and receipt submissions must bind the authenticated owner,
+claim, invocation digest, operation, target, identity revision, release, and
+owner action request. Acknowledgement proves only dispatch. Submission,
+download, staging, PackageInstaller launch, and wearer prompt remain
+non-Applied states. Only the pinned Rusty Quest accepted `install_commit`
+checkpoint for the exact package, ring, manifest digest, sequence, and version
+can advance the Hub to Applied.
+
+Terminal operation retention or archive is a separate cleanup concern.
+`install_commit` proves the effective package result but does not prove that
+temporary files, installer UI, claims, or retained Fleet evidence were cleaned.
 
 ## Kiosk and foreground control
 
@@ -268,6 +335,54 @@ after a neutral contract and second-consumer/conformance gate.
 
 Fleet Hub owns selection, fan-out, scheduling, and aggregation. File Manager
 owns individual file-operation semantics and device evidence.
+
+### Quest awake-control adapter
+
+The first shared ADB-backed utility is `quest.awake-control`. Fleet freezes the
+exact device identity, action, bounded duration, watchdog interval, and
+generation; Manifold authorizes that typed command; and a pinned
+QuestIonAble File Manager provider owns exact-serial ADB effects and readback.
+Private configuration is the only device-ID-to-serial authority. Without it,
+the capability is absent and inert while normal fleet monitoring continues.
+
+The bounded Meta proximity hold is capped at eight hours. Windows and on-device
+watchdogs are explicit modes, and the latter truthfully ends on reboot.
+Stopping watchdogs deliberately leaves settings unchanged; restoring normal
+power behavior is a separate action. Fleet admits Applied only from exact,
+fresh, action-specific readbacks and publishes neither serials, paths, raw
+commands, nor raw boot IDs. See
+[Quest Awake Control](QUEST_AWAKE_CONTROL.md).
+
+### Quest Wi-Fi ADB adapter
+
+`quest.wifi-adb-control` composes Fleet policy and scheduling, Manifold typed
+command authority, a pinned File Manager provider, Kiosk's supported
+same-signer setting helper, and a separate USB-only classic `tcpip` route.
+File Manager privately resolves serial, endpoint, and pairing material by
+Fleet device ID; none crosses the Fleet contract.
+
+Provider delivery, Kiosk setting application, protected wearer prompt state,
+listener discovery, and Termux loopback shell proof remain independent. File
+Manager cannot assert Termux usability. Only a fresh modern-TLS capability
+fact carried by an enrolled Ed25519-signed Fleet check-in can be reconciled to
+an operation, and newer unavailable evidence, a disable receipt, expiry, or
+source-epoch change clears usability. No caller-facing proof ingress exists.
+See [Quest Wi-Fi ADB Control](QUEST_WIFI_ADB_CONTROL.md).
+
+The optional two-Quest acceptance orchestrator is Fleet-owned because it
+evaluates cross-device scheduling, signed check-ins, proof expiry, renewal,
+disable, reboot recovery, and isolation. It delegates private profile and APK
+effects to File Manager and fixed on-device preparation and proof to the
+Wireless ADB helper. Its plan is non-mutating, its state is caller-private and
+sanitized, and each resume performs one durable transition around explicit
+Termux-restart, wearer-approval, and attended-reboot checkpoints. See
+[Two-Quest Wi-Fi ADB Acceptance](QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md).
+The orchestrator also owns coordination safety: a pinned Agent Board wrapper
+must yield a private run/slot/device-bound lease for each exact Quest before
+Execute. Both leases are revalidated before every mutation, retained through
+partial cleanup, and released only after terminal cleanup is durably complete.
+Lease IDs, serials, resources, and deadlines never enter the public state
+projection.
 
 ## Identity and security
 

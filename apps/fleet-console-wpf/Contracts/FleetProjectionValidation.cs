@@ -280,6 +280,204 @@ public static class FleetProjectionValidation
             "operation in-flight parallelism");
     }
 
+    public static void ValidatePackageInstallReleaseOperation(
+        PackageInstallReleaseOperation operation)
+    {
+        Require(
+            operation.Schema == "rusty.fleet.package_install_release_operation.v1" &&
+            IsBoundedText(operation.OperationId, 256) &&
+            operation.ActionId == PackageOperationActions.InstallRelease &&
+            operation.CreatedAtMs >= 0 &&
+            operation.MaxParallelism is >= 1 and <= 64 &&
+            !operation.CleanupRequired,
+            "package operation header");
+        Require(
+            operation.Lifecycle is "proposed" or "accepted" or "rejected",
+            "package operation owner-ingress boundary");
+
+        var preview = operation.Preview;
+        Require(
+            preview.Schema == "rusty.fleet.package_install_release_preview.v1" &&
+            IsBoundedText(preview.PreviewId, 256) &&
+            preview.OperationId == operation.OperationId &&
+            preview.ActionId == operation.ActionId &&
+            preview.CreatedAtMs == operation.CreatedAtMs &&
+            preview.ExpiresAtMs > preview.CreatedAtMs &&
+            preview.FleetRevision > 0 &&
+            IsAndroidPackageName(preview.ExpectedPackageName) &&
+            IsPortableIdentifier(preview.ExpectedRolloutRing, 128),
+            "package operation preview");
+        ValidatePackageRelease(preview.Release);
+        Require(
+            preview.OwnerContract.OwnerRepoId == "rusty-quest" &&
+            preview.OwnerContract.CapabilityId == "rusty-quest.package-updater" &&
+            preview.OwnerContract.ManifestEnvelopeSchema ==
+            "rusty.quest.package_update_manifest_envelope.v1" &&
+            preview.OwnerContract.ReceiptSchema ==
+            "rusty.quest.package_update_receipt.v1" &&
+            preview.OwnerContract.InstallMode == "attended_package_installer" &&
+            preview.OwnerContract.ApplicationProof ==
+            "effective_installed_version_receipt",
+            "package updater owner contract");
+        Require(
+            preview.Targets.Count is >= 1 and <= 10_000 &&
+            operation.Targets.Count == preview.Targets.Count,
+            "package operation target count");
+
+        string? priorDeviceId = null;
+        for (var index = 0; index < preview.Targets.Count; index++)
+        {
+            var preflight = preview.Targets[index];
+            var target = operation.Targets[index];
+            ValidatePackagePreflight(preflight, preview);
+            Require(
+                priorDeviceId is null ||
+                StringComparer.Ordinal.Compare(priorDeviceId, preflight.DeviceId) < 0,
+                "package operation target ordering");
+            priorDeviceId = preflight.DeviceId;
+            Require(
+                target.DeviceId == preflight.DeviceId &&
+                target.IdentityRevision == preflight.IdentityRevision &&
+                JsonSerializer.Serialize(target.Preflight, FleetJson.Options) ==
+                JsonSerializer.Serialize(preflight, FleetJson.Options) &&
+                target.LastTransitionMs >= operation.CreatedAtMs &&
+                IsPortableIdentifier(target.ReasonCode, 256) &&
+                IsBoundedText(target.Message, 1_024),
+                "package target binding");
+
+            if (!preflight.Eligible)
+            {
+                Require(
+                    target.Lifecycle == "rejected" &&
+                    target.Stage == "preflight_rejected" &&
+                    target.Invocation is null &&
+                    target.InvocationAcknowledgement is null &&
+                    target.EffectiveReceipt is null,
+                    "excluded package target");
+                continue;
+            }
+
+            if (target.Lifecycle == "proposed")
+            {
+                Require(
+                    target.Stage == "preview_ready" &&
+                    target.Invocation is null &&
+                    target.InvocationAcknowledgement is null &&
+                    target.EffectiveReceipt is null,
+                    "preview-ready package target");
+                continue;
+            }
+
+            Require(
+                target.Lifecycle == "accepted" &&
+                target.Stage is "approved" or "dispatch_ready" &&
+                target.InvocationAcknowledgement is null &&
+                target.EffectiveReceipt is null,
+                "accepted package target");
+            if (target.Stage == "approved")
+            {
+                Require(target.Invocation is null, "approved package target");
+            }
+            else
+            {
+                Require(
+                    target.Invocation is not null,
+                    "dispatch-ready package target invocation");
+                ValidatePackageInvocation(target.Invocation!, operation, target);
+            }
+        }
+
+        var eligible = operation.Targets
+            .Where(target => target.Preflight.Eligible)
+            .ToArray();
+        var expectedLifecycle = eligible.Length == 0
+            ? "rejected"
+            : eligible.Any(target => target.Lifecycle == "proposed")
+                ? "proposed"
+                : "accepted";
+        Require(
+            operation.Lifecycle == expectedLifecycle,
+            "package operation aggregate lifecycle");
+    }
+
+    private static void ValidatePackageRelease(PackageReleaseReference release)
+    {
+        if (release.Kind == "manifest_url")
+        {
+            Require(
+                release.ReleaseId is null &&
+                release.ManifestUrl is { Length: > 0 and <= 2_048 } &&
+                Uri.TryCreate(release.ManifestUrl, UriKind.Absolute, out var manifest) &&
+                manifest.Scheme == Uri.UriSchemeHttps &&
+                string.IsNullOrEmpty(manifest.UserInfo) &&
+                string.IsNullOrEmpty(manifest.Fragment),
+                "package manifest URL");
+            return;
+        }
+
+        Require(
+            release.Kind == "release_id" &&
+            release.ManifestUrl is null &&
+            release.ReleaseId is not null &&
+            IsPortablePathIdentifier(release.ReleaseId, 256),
+            "package release ID");
+    }
+
+    private static void ValidatePackagePreflight(
+        OperationTargetPreflight target,
+        PackageInstallReleasePreview preview)
+    {
+        Require(
+            IsBoundedText(target.DeviceId, 256) &&
+            target.IdentityRevision > 0 &&
+            target.CapabilityId == "rusty-quest.package-updater" &&
+            target.CapabilityEvidenceRevision > 0 &&
+            target.CapabilityOwner == "rusty-quest",
+            "package preflight identity and owner");
+        Require(
+            target.Support is "supported" or "unsupported" or "unknown" &&
+            target.Enablement is "enabled" or "disabled" or "unknown" &&
+            target.Authorization is
+                "authorized" or "unauthorized" or "restricted" or "unknown" &&
+            target.Reachability is
+                "reachable" or "disconnected" or "unavailable" or "unknown" &&
+            target.Freshness is "current" or "stale" or "unknown",
+            "package preflight capability facts");
+        Require(
+            target.FreshUntilMs >= target.ObservedAtMs &&
+            target.EvaluatedAtMs >= target.ObservedAtMs &&
+            target.EvaluatedAtMs >= preview.CreatedAtMs &&
+            target.EvaluatedAtMs <= preview.ExpiresAtMs,
+            "package preflight time window");
+        var expectedReason = ExpectedPreflightReason(target);
+        Require(
+            target.ReasonCode == expectedReason &&
+            target.Eligible == (expectedReason == "ready") &&
+            IsBoundedText(target.Message, 1_024),
+            "package preflight result");
+    }
+
+    private static void ValidatePackageInvocation(
+        PackageUpdaterInvocation invocation,
+        PackageInstallReleaseOperation operation,
+        PackageInstallTargetLedger target)
+    {
+        Require(
+            invocation.Schema == "rusty.fleet.package_updater_invocation.v1" &&
+            invocation.OperationId == operation.OperationId &&
+            invocation.PreviewId == operation.Preview.PreviewId &&
+            invocation.DeviceId == target.DeviceId &&
+            invocation.IdentityRevision == target.IdentityRevision &&
+            IsPortableIdentifier(invocation.OwnerActionRequestId, 256) &&
+            JsonSerializer.Serialize(invocation.Release, FleetJson.Options) ==
+            JsonSerializer.Serialize(operation.Preview.Release, FleetJson.Options) &&
+            invocation.ExpectedPackageName == operation.Preview.ExpectedPackageName &&
+            invocation.ExpectedRolloutRing == operation.Preview.ExpectedRolloutRing &&
+            invocation.ExpiresAtMs == operation.Preview.ExpiresAtMs,
+            "package updater invocation binding");
+        ValidatePackageRelease(invocation.Release);
+    }
+
     private static string DeriveOperationLifecycle(
         IReadOnlyList<OperationTargetResult> targets)
     {
@@ -793,6 +991,28 @@ public static class FleetProjectionValidation
 
     private static bool IsBoundedText(string value, int maximumLength) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= maximumLength;
+
+    private static bool IsPortableIdentifier(string value, int maximumLength) =>
+        value.Length is > 0 &&
+        value.Length <= maximumLength &&
+        value.All(character =>
+            char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-');
+
+    private static bool IsPortablePathIdentifier(string value, int maximumLength) =>
+        value.Length is > 0 &&
+        value.Length <= maximumLength &&
+        value.All(character =>
+            char.IsAsciiLetterOrDigit(character) ||
+            character is '.' or '_' or '-' or '/');
+
+    private static bool IsAndroidPackageName(string value) =>
+        value.Length is > 0 and <= 256 &&
+        value.Contains('.') &&
+        value.Split('.').All(segment =>
+            segment.Length > 0 &&
+            (char.IsAsciiLetter(segment[0]) || segment[0] == '_') &&
+            segment.All(character =>
+                char.IsAsciiLetterOrDigit(character) || character == '_'));
 
     private static bool IsOwnerRequestId(string value) =>
         value.Length is >= 8 and <= 64 &&

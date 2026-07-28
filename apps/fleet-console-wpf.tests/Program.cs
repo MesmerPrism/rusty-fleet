@@ -29,6 +29,8 @@ internal static class Program
         try
         {
             var repoRoot = ReadRepoRoot(arguments);
+            WindowsHotspotContractTests.Run();
+            ProviderCatalogContractTests.Run();
             var kioskOperationFixture = JsonSerializer.Deserialize<OperationLedger>(
                 File.ReadAllText(
                     Path.Combine(
@@ -61,11 +63,47 @@ internal static class Program
             Require(
                 damagedKioskOperationRejected,
                 "damaged Rust-owned Kiosk show-controls fixture was accepted");
+            var packageOperationFixture =
+                JsonSerializer.Deserialize<PackageInstallReleaseOperation>(
+                    File.ReadAllText(
+                        Path.Combine(
+                            repoRoot,
+                            "fixtures",
+                            "contracts",
+                            "package-install-release-operation.valid.json")),
+                    FleetJson.Options) ?? throw new JsonException(
+                    "Package install/release operation fixture was empty.");
+            FleetProjectionValidation.ValidatePackageInstallReleaseOperation(
+                packageOperationFixture);
+            var damagedPackageOperationRejected = false;
+            try
+            {
+                var damagedPackageOperation =
+                    JsonSerializer.Deserialize<PackageInstallReleaseOperation>(
+                        File.ReadAllText(
+                            Path.Combine(
+                                repoRoot,
+                                "fixtures",
+                                "contracts",
+                                "package-install-release-operation.damaged.json")),
+                        FleetJson.Options) ?? throw new JsonException(
+                        "Damaged package install/release operation fixture was empty.");
+                FleetProjectionValidation.ValidatePackageInstallReleaseOperation(
+                    damagedPackageOperation);
+            }
+            catch (InvalidOperationException)
+            {
+                damagedPackageOperationRejected = true;
+            }
+
+            Require(
+                damagedPackageOperationRejected,
+                "damaged Rust-owned package install/release fixture was accepted");
             var json = RunFleetctl(
                 repoRoot,
                 "operator-fixture",
                 "mixed-freshness",
-                "1000");
+                "50");
             var deserializeWatch = Stopwatch.StartNew();
             FleetQueryResult projection;
             FleetSummaryProjection fixtureSummary;
@@ -88,17 +126,20 @@ internal static class Program
             }
             deserializeWatch.Stop();
             Require(projection.Schema == "rusty.fleet.query_result.v1", "wrong query schema");
-            Require(projection.TotalCount == 1_000, "1,000-device projection was not loaded");
-            Require(projection.Rows.Count == 1_000, "query window is incomplete");
+            Require(projection.TotalCount == 50, "50-device projection was not loaded");
+            Require(projection.Rows.Count == 50, "query window is incomplete");
             Require(
                 fixtureSummary is
                 {
-                    Total: 1_000,
-                    Fresh: 500,
-                    Stale: 250,
-                    Offline: 250
+                    Total: 50,
+                    Fresh: 25,
+                    Stale: 13,
+                    Offline: 12
                 },
                 "mixed-freshness summary drifted");
+            ValidateRealisticScaleWindow(repoRoot, 10);
+            ValidateRealisticScaleWindow(repoRoot, 100);
+            var stressEvidence = ValidateVirtualizationStress(repoRoot);
             var downgradedRows = projection.Rows
                 .Where(row =>
                     row.Capabilities.Capabilities.TryGetValue(
@@ -107,7 +148,7 @@ internal static class Program
                     capability.Authorization == "unauthorized")
                 .ToArray();
             Require(
-                downgradedRows.Length == 125 &&
+                downgradedRows.Length == 6 &&
                 new DeviceRowViewModel(downgradedRows[0]).ControlText.Contains(
                     "Unauthorized",
                     StringComparison.Ordinal),
@@ -226,8 +267,8 @@ internal static class Program
             var viewModelWatch = Stopwatch.StartNew();
             workspace.InitializeAsync().GetAwaiter().GetResult();
             viewModelWatch.Stop();
-            Require(workspace.Rows.Count == 1_000, "view model did not retain full window");
-            Require(viewModelWatch.Elapsed < TimeSpan.FromSeconds(2), "1,000-row view model exceeded 2 seconds");
+            Require(workspace.Rows.Count == 50, "view model did not retain realistic fleet window");
+            Require(viewModelWatch.Elapsed < TimeSpan.FromSeconds(2), "50-row view model exceeded 2 seconds");
 
             var first = workspace.Rows[0];
             var batchScopeChanged = false;
@@ -516,6 +557,730 @@ internal static class Program
                     StringComparison.Ordinal),
                 "mismatched operation evidence did not fail closed");
 
+            operationWorkspace.ClearBatchSelectionCommand.Execute(null);
+            operationWorkspace.SelectAllVisibleCommand.Execute(null);
+            var packageIdentities = operationWorkspace.Rows.ToDictionary(
+                row => row.DeviceId,
+                row => row.Projection.Identity.IdentityRevision,
+                StringComparer.Ordinal);
+            var packageBatch = operationWorkspace.BatchSelectionText;
+            operationWorkspace.PackageManifestUrl =
+                "https://updates.example.invalid/alpha/envelope.json";
+            operationWorkspace.PackageName = "org.example.kiosk";
+            operationWorkspace.PackageRolloutRing = "alpha";
+            operationWorkspace.PreviewPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            var packagePreview = operationWorkspace.CurrentPackageOperation ??
+                                 throw new InvalidOperationException(
+                                     "package install/release preview was not projected");
+            Require(
+                operationSource.LastPackagePreviewRequest is { } packagePreviewRequest &&
+                packagePreviewRequest.Release.Kind == "manifest_url" &&
+                packagePreviewRequest.Release.ManifestUrl ==
+                operationWorkspace.PackageManifestUrl &&
+                packagePreviewRequest.ExpectedPackageName ==
+                operationWorkspace.PackageName &&
+                packagePreviewRequest.ExpectedRolloutRing ==
+                operationWorkspace.PackageRolloutRing &&
+                packagePreviewRequest.Targets.Count == 50 &&
+                packageIdentities.All(target =>
+                    packagePreviewRequest.Targets.TryGetValue(
+                        target.Key,
+                        out var identityRevision) &&
+                    identityRevision == target.Value),
+                "package preview did not bind the exact signed release and target identities");
+            Require(
+                operationWorkspace.IsPackageInputLocked &&
+                operationWorkspace.PackageInputLockText ==
+                "Locked to immutable preview" &&
+                operationWorkspace.CanConfirmPackageInstallRelease &&
+                operationWorkspace.ConfirmPackageInstallReleaseCommand.CanExecute(null) &&
+                operationWorkspace.PackageOperationSummaryText.Contains(
+                    operationWorkspace.PackageManifestUrl,
+                    StringComparison.Ordinal) &&
+                operationWorkspace.PackageOperationSummaryText.Contains(
+                    $"package {operationWorkspace.PackageName}",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.PackageOperationSummaryText.Contains(
+                    $"ring {operationWorkspace.PackageRolloutRing}",
+                    StringComparison.Ordinal),
+                "active package preview did not visibly lock and summarize its immutable release binding");
+            Require(
+                packagePreview.Targets.All(target =>
+                    target.Lifecycle == "proposed" &&
+                    target.Stage == "preview_ready" &&
+                    target.Invocation is null &&
+                    target.InvocationAcknowledgement is null &&
+                    target.EffectiveReceipt is null),
+                "package preview claimed owner delivery evidence");
+
+            operationWorkspace.ConfirmPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            var preparedPackage = operationWorkspace.CurrentPackageOperation ??
+                                  throw new InvalidOperationException(
+                                      "confirmed package operation was not projected");
+            Require(
+                operationSource.LastPackageExecuteRequest is { } packageExecuteRequest &&
+                packageExecuteRequest.OperationId == packagePreview.OperationId &&
+                packageExecuteRequest.PreviewId == packagePreview.Preview.PreviewId,
+                "package confirmation did not bind the immutable preview");
+            Require(
+                preparedPackage.Lifecycle == "accepted" &&
+                preparedPackage.MaxParallelism == 1 &&
+                preparedPackage.Targets.Count == 50 &&
+                preparedPackage.Targets.All(target =>
+                    target.Lifecycle == "accepted" &&
+                    target.Stage == "dispatch_ready" &&
+                    target.Invocation is not null &&
+                    target.InvocationAcknowledgement is null &&
+                    target.EffectiveReceipt is null) &&
+                operationWorkspace.PackageOperationTargets.All(target =>
+                    target.AccessibleName.Contains(
+                        "No package dispatch or installation is claimed",
+                        StringComparison.Ordinal)) &&
+                operationWorkspace.PackageOperationStatusText.Contains(
+                    "no package was dispatched or installed",
+                    StringComparison.Ordinal) &&
+                operationSource.PackageExecuteCount == 1 &&
+                !operationWorkspace.CanConfirmPackageInstallRelease &&
+                !operationWorkspace.ConfirmPackageInstallReleaseCommand.CanExecute(null) &&
+                operationWorkspace.PackageConfirmationButtonText ==
+                "Preparation accepted",
+                "package preparation exceeded owner authority or stranded a target");
+            Require(
+                operationWorkspace.SelectedDevice?.StableKey == operationSelected &&
+                operationWorkspace.BatchSelectionText == packageBatch &&
+                operationWorkspace.ActiveScopeText == operationScope &&
+                operationWorkspace.Rows.Select(row => row.StableKey)
+                    .SequenceEqual(operationStableKeys),
+                "package operation changed fleet context");
+
+            operationWorkspace.ConfirmPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationSource.PackageExecuteCount == 1 &&
+                operationWorkspace.PackageOperationStatusText.StartsWith(
+                    "Preparation is already accepted",
+                    StringComparison.Ordinal),
+                "accepted package preparation could be submitted twice");
+
+            var retainedPackageOperation = operationWorkspace.CurrentPackageOperation;
+            operationSource.DamageNextPackageOperationResponse = true;
+            operationWorkspace.RefreshPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedPackageOperation,
+                    operationWorkspace.CurrentPackageOperation) &&
+                operationWorkspace.PackageOperationStatusText.StartsWith(
+                    "Refresh failed · prior package projection retained",
+                    StringComparison.Ordinal),
+                "damaged package operation evidence did not fail closed");
+
+            operationWorkspace.ClearBatchSelectionCommand.Execute(null);
+            operationWorkspace.SelectedWindowsHotspotAction =
+                operationWorkspace.WindowsHotspotActionOptions.Single(option =>
+                    option.Action == WindowsHotspotActions.Start);
+            operationWorkspace.PreviewWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            var hotspotPreview =
+                operationWorkspace.CurrentWindowsHotspotOperation ??
+                throw new InvalidOperationException(
+                    "Windows host Mobile Hotspot preview was not projected");
+            Require(
+                operationWorkspace.WindowsHotspotActionOptions.Count == 4 &&
+                operationSource.LastWindowsHotspotPreviewRequest is
+                {
+                    ActionId: WindowsHotspotActions.ActionId,
+                    Action: WindowsHotspotActions.Start
+                } &&
+                operationWorkspace.BatchSelectionText.StartsWith(
+                    "0 selected",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.IsWindowsHotspotInputLocked &&
+                operationWorkspace.CanConfirmWindowsHotspot &&
+                operationWorkspace.WindowsHotspotConfirmationText.Contains(
+                    "will not adopt an external hotspot",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.WindowsHotspotSummaryText.Contains(
+                    "host-scoped singleton",
+                    StringComparison.Ordinal),
+                "host hotspot preview was device-scoped or did not freeze the typed action");
+
+            operationSource.ThrowAfterWindowsHotspotSettlement = true;
+            operationWorkspace.ConfirmWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    hotspotPreview,
+                    operationWorkspace.CurrentWindowsHotspotOperation) &&
+                operationSource.LastWindowsHotspotExecuteRequest is
+                { } hotspotExecute &&
+                hotspotExecute.OperationId == hotspotPreview.OperationId &&
+                hotspotExecute.PreviewId ==
+                hotspotPreview.Preview.PreviewId &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "may still settle",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "use Refresh",
+                    StringComparison.Ordinal),
+                "lost host-hotspot execute response did not retain the immutable preview and recovery path");
+
+            operationWorkspace.RefreshWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            var settledHotspot =
+                operationWorkspace.CurrentWindowsHotspotOperation ??
+                throw new InvalidOperationException(
+                    "settled Windows host Mobile Hotspot operation was not projected");
+            var hotspotResult =
+                operationWorkspace.WindowsHotspotResult ??
+                throw new InvalidOperationException(
+                    "Windows host Mobile Hotspot result was not projected");
+            var publicHotspotProjection =
+                operationWorkspace.WindowsHotspotSummaryText + " " +
+                operationWorkspace.WindowsHotspotStatusText + " " +
+                hotspotResult.AccessibleName;
+            Require(
+                settledHotspot.Lifecycle == "applied" &&
+                hotspotResult.Ownership == "None" &&
+                hotspotResult.OperationalState == "On" &&
+                hotspotResult.Outcome == "Verified" &&
+                hotspotResult.Clients.Contains(
+                    "1 of 8",
+                    StringComparison.Ordinal) &&
+                hotspotResult.Band == "5 GHz" &&
+                hotspotResult.SourceConnectivity == "Internet access" &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "Durable operation refreshed",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "does not perform a new live read",
+                    StringComparison.Ordinal) &&
+                !publicHotspotProjection.Contains(
+                    "hotspot-operation",
+                    StringComparison.Ordinal) &&
+                !publicHotspotProjection.Contains(
+                    "hotspot-preview",
+                    StringComparison.Ordinal) &&
+                !publicHotspotProjection.Contains(
+                    "hotspot-request",
+                    StringComparison.Ordinal) &&
+                !publicHotspotProjection.Contains(
+                    "generation",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !publicHotspotProjection.Contains(
+                    "ssid",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !publicHotspotProjection.Contains(
+                    "passphrase",
+                    StringComparison.OrdinalIgnoreCase),
+                "host-hotspot recovery or public projection lost durable semantics or exposed private evidence");
+
+            var retainedHotspot = operationWorkspace.CurrentWindowsHotspotOperation;
+            operationSource.DamageNextWindowsHotspotResponse = true;
+            operationWorkspace.RefreshWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedHotspot,
+                    operationWorkspace.CurrentWindowsHotspotOperation) &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "invalid hotspot projection",
+                    StringComparison.Ordinal) &&
+                !operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "preview_id",
+                    StringComparison.OrdinalIgnoreCase),
+                "damaged host-hotspot evidence was not rejected with bounded error copy");
+
+            operationWorkspace.DismissWindowsHotspot();
+            Require(
+                operationWorkspace.CurrentWindowsHotspotOperation is null &&
+                operationWorkspace.WindowsHotspotResult is null &&
+                operationSource.LastWindowsHotspotOperation?.Lifecycle ==
+                "applied" &&
+                operationWorkspace.WindowsHotspotStatusText.Contains(
+                    "no hotspot was stopped",
+                    StringComparison.Ordinal),
+                "dismissing the Console projection mutated or misrepresented host state");
+
+            operationSource.WindowsHotspotOwnership =
+                WindowsHotspotActions.OwnershipExternal;
+            operationWorkspace.SelectedWindowsHotspotAction =
+                operationWorkspace.WindowsHotspotActionOptions.Single(option =>
+                    option.Action == WindowsHotspotActions.Start);
+            operationWorkspace.PreviewWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationWorkspace.CurrentWindowsHotspotOperation is
+                {
+                    Lifecycle: "rejected"
+                } externalHotspot &&
+                externalHotspot.Preview.Preflight.ReasonCode ==
+                "external_hotspot_not_owned" &&
+                operationWorkspace.WindowsHotspotResult?.Ownership.Contains(
+                    "observe only",
+                    StringComparison.Ordinal) == true &&
+                !operationWorkspace.CanConfirmWindowsHotspot,
+                "external Windows hotspot was adopted or offered a mutating confirmation");
+
+            operationWorkspace.DismissWindowsHotspot();
+            operationSource.WindowsHotspotOwnership =
+                WindowsHotspotActions.OwnershipFleet;
+            operationWorkspace.SelectedWindowsHotspotAction =
+                operationWorkspace.WindowsHotspotActionOptions.Single(option =>
+                    option.Action == WindowsHotspotActions.Stop);
+            Require(
+                operationWorkspace.WindowsHotspotConfirmationText.Contains(
+                    "exact Fleet-owned",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.WindowsHotspotConfirmationText.Contains(
+                    "may disconnect connected clients",
+                    StringComparison.Ordinal),
+                "host hotspot stop confirmation did not name ownership and disconnection impact");
+            operationWorkspace.PreviewWindowsHotspotAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationWorkspace.CanConfirmWindowsHotspot &&
+                operationWorkspace.WindowsHotspotConfirmButtonText ==
+                "Confirm stop",
+                "exact Fleet-owned hotspot stop preview was not confirmable");
+            Require(
+                operationWorkspace.SelectedDevice?.StableKey ==
+                operationSelected &&
+                operationWorkspace.ActiveScopeText == operationScope &&
+                operationWorkspace.Rows.Select(row => row.StableKey)
+                    .SequenceEqual(operationStableKeys),
+                "host-scoped hotspot workflow changed fleet scope, inspector, or ordering");
+
+            operationWorkspace.SelectAllVisibleCommand.Execute(null);
+            operationWorkspace.SelectedQuestAwakeAction =
+                operationWorkspace.QuestAwakeActionOptions.Single(option =>
+                    option.Action == QuestAwakeActions.StartDeviceWatchdog);
+            operationWorkspace.QuestAwakeDurationMinutes = "481";
+            operationWorkspace.PreviewQuestAwakeAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationWorkspace.CurrentQuestAwakeOperation is null &&
+                operationSource.LastQuestAwakePreviewRequest is null &&
+                operationWorkspace.QuestAwakeStatusText.Contains(
+                    "1 through 480 minutes",
+                    StringComparison.Ordinal),
+                "awake-control duration above Meta's eight-hour bound was accepted");
+            operationWorkspace.QuestAwakeDurationMinutes = "480";
+            operationWorkspace.QuestAwakeWatchdogIntervalSeconds = "5";
+            operationWorkspace.PreviewQuestAwakeAsync()
+                .GetAwaiter()
+                .GetResult();
+            var awakePreview = operationWorkspace.CurrentQuestAwakeOperation ??
+                               throw new InvalidOperationException(
+                                   "awake-control preview was not projected");
+            Require(
+                operationSource.LastQuestAwakePreviewRequest is
+                {
+                    Action: QuestAwakeActions.StartDeviceWatchdog,
+                    DurationMs: QuestAwakeActions.MaximumDurationMs,
+                    WatchdogIntervalMs:
+                        QuestAwakeActions.DefaultWatchdogIntervalMs
+                } awakePreviewRequest &&
+                awakePreviewRequest.Targets.Count == 50 &&
+                packageIdentities.All(target =>
+                    awakePreviewRequest.Targets.TryGetValue(
+                        target.Key,
+                        out var identityRevision) &&
+                    identityRevision == target.Value) &&
+                operationWorkspace.IsQuestAwakeInputLocked &&
+                operationWorkspace.CanConfirmQuestAwake &&
+                operationWorkspace.QuestAwakeSummaryText.Contains(
+                    "Quest watchdog (stops on reboot)",
+                    StringComparison.Ordinal),
+                "awake-control preview did not freeze the exact action, policy, and target identities");
+
+            operationWorkspace.ConfirmQuestAwakeAsync()
+                .GetAwaiter()
+                .GetResult();
+            var appliedAwake = operationWorkspace.CurrentQuestAwakeOperation ??
+                               throw new InvalidOperationException(
+                                   "confirmed awake-control operation was not projected");
+            Require(
+                operationSource.LastQuestAwakeExecuteRequest is
+                { } awakeExecuteRequest &&
+                awakeExecuteRequest.OperationId == awakePreview.OperationId &&
+                awakeExecuteRequest.PreviewId ==
+                awakePreview.Preview.PreviewId &&
+                appliedAwake.Targets.All(target =>
+                    target.Lifecycle == "applied" &&
+                    target.Receipt is
+                    {
+                        Effective: true,
+                        DeviceWatchdogEffective: true,
+                        WindowsWatchdogEffective: false
+                    }) &&
+                operationWorkspace.QuestAwakeTargets.All(target =>
+                    target.WatchdogReadback.Contains(
+                        "stops on reboot",
+                        StringComparison.Ordinal) &&
+                    target.AccessibleName.Contains(
+                        "Power",
+                        StringComparison.OrdinalIgnoreCase)) &&
+                !operationWorkspace.CanConfirmQuestAwake &&
+                operationWorkspace.QuestAwakeConfirmationButtonText ==
+                "Confirmed",
+                "awake-control confirmation lost effective independent readbacks or allowed duplicate confirmation");
+
+            var retainedAwakeOperation =
+                operationWorkspace.CurrentQuestAwakeOperation;
+            operationSource.DamageNextQuestAwakeResponse = true;
+            operationWorkspace.RefreshQuestAwakeAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedAwakeOperation,
+                    operationWorkspace.CurrentQuestAwakeOperation) &&
+                operationWorkspace.QuestAwakeStatusText.StartsWith(
+                    "Refresh failed · prior awake-control projection retained",
+                    StringComparison.Ordinal),
+                "damaged awake-control identity evidence did not fail closed");
+            var nonStopOverrideNode = JsonNode.Parse(
+                JsonSerializer.Serialize(
+                    retainedAwakeOperation,
+                    FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "awake-control operation could not be cloned");
+            nonStopOverrideNode["targets"]![0]!["invocation"]![
+                "watchdog_generation"] = "unexpected-device-generation";
+            nonStopOverrideNode["targets"]![0]!["receipt"]![
+                "watchdog_generation"] = "unexpected-device-generation";
+            var nonStopOverride = JsonSerializer.Deserialize<QuestAwakeOperation>(
+                                      nonStopOverrideNode.ToJsonString(),
+                                      FleetJson.Options) ??
+                                  throw new InvalidOperationException(
+                                      "awake-control override damage could not be projected");
+            var nonStopOverrideRejected = false;
+            try
+            {
+                QuestAwakeProjectionValidation.ValidateOperation(
+                    nonStopOverride);
+            }
+            catch (InvalidOperationException)
+            {
+                nonStopOverrideRejected = true;
+            }
+
+            Require(
+                nonStopOverrideRejected,
+                "non-stop awake action accepted a watchdog generation outside the immutable preview");
+            Require(
+                operationWorkspace.QuestAwakeActionOptions.Any(option =>
+                    option.Action == QuestAwakeActions.StopWatchdogs &&
+                    option.Label.Contains(
+                        "settings remain",
+                        StringComparison.Ordinal)) &&
+                operationWorkspace.QuestAwakeActionOptions.Any(option =>
+                    option.Action == QuestAwakeActions.RestoreNormal) &&
+                operationWorkspace.QuestAwakeActionOptions.Any(option =>
+                    option.Action == QuestAwakeActions.StartWindowsWatchdog),
+                "awake-control modes did not keep stop, restore, and Windows watchdog actions separate");
+            var singleAwakeTarget = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal)
+            {
+                [operationFirst.DeviceId] =
+                    operationFirst.Projection.Identity.IdentityRevision
+            };
+            foreach (var action in new[]
+                     {
+                         QuestAwakeActions.StopWatchdogs,
+                         QuestAwakeActions.RestoreNormal
+                     })
+            {
+                var observedGeneration =
+                    action == QuestAwakeActions.StopWatchdogs
+                        ? "observed-device-watchdog-stop-0042"
+                        : "observed-device-watchdog-restore-0084";
+                operationSource.QuestAwakeInvocationGenerationOverride =
+                    observedGeneration;
+                var request = new QuestAwakePreviewRequest
+                {
+                    Action = action,
+                    Targets = singleAwakeTarget
+                };
+                var previewed = operationSource.PreviewQuestAwakeAsync(
+                        request,
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                var verified = operationSource.ExecuteQuestAwakeAsync(
+                        new QuestAwakeExecuteRequest
+                        {
+                            OperationId = previewed.OperationId,
+                            PreviewId = previewed.Preview.PreviewId
+                        },
+                        CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                QuestAwakeProjectionValidation.ValidateOperation(verified);
+                var verifiedTarget = verified.Targets.Single();
+                var awakeReceipt = verifiedTarget.Receipt ??
+                                   throw new InvalidOperationException(
+                                       "awake-control stop/restore receipt was absent");
+                Require(
+                    verified.Preview.WatchdogGeneration != observedGeneration &&
+                    verifiedTarget.Invocation?.WatchdogGeneration ==
+                    observedGeneration &&
+                    awakeReceipt.WatchdogGeneration == observedGeneration &&
+                    (action == QuestAwakeActions.StopWatchdogs
+                        ? awakeReceipt.SettingsLeftUnchanged &&
+                          !awakeReceipt.SettingsRestored &&
+                          !awakeReceipt.WindowsWatchdogEffective &&
+                          !awakeReceipt.DeviceWatchdogEffective
+                        : awakeReceipt.SettingsRestored &&
+                          !awakeReceipt.SettingsLeftUnchanged &&
+                          !awakeReceipt.WindowsWatchdogEffective &&
+                          !awakeReceipt.DeviceWatchdogEffective),
+                    "stop/restore did not bind the target-specific observed watchdog generation and separate receipt semantics");
+                if (action == QuestAwakeActions.RestoreNormal)
+                {
+                    operationSource.DamageNextQuestAwakeReceiptGeneration = true;
+                    var mismatched = operationSource.QuestAwakeAsync(
+                            verified.OperationId,
+                            CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                    var mismatchRejected = false;
+                    try
+                    {
+                        QuestAwakeProjectionValidation.ValidateOperation(
+                            mismatched);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        mismatchRejected = true;
+                    }
+
+                    Require(
+                        mismatchRejected,
+                        "awake-control receipt generation was not bound to its exact invocation generation");
+                }
+            }
+
+            operationWorkspace.DismissQuestWifiAdb();
+            operationWorkspace.SelectedQuestWifiAdbModernAction =
+                operationWorkspace.QuestWifiAdbModernActionOptions.Single(option =>
+                    option.Action == QuestWifiAdbActions.DisableWirelessAdb);
+            Require(
+                operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "may disconnect active tools",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "after-boot request is a separate setting",
+                    StringComparison.Ordinal) &&
+                operationWorkspace.QuestWifiAdbConfirmationButtonText ==
+                "Confirm disable Wireless ADB",
+                "destructive Wireless ADB confirmation copy was not explicit");
+            operationWorkspace.IsQuestWifiAdbClassicRoute = true;
+            Require(
+                operationWorkspace.SelectedQuestWifiAdbAction.Action ==
+                QuestWifiAdbActions.EnableClassicTcpipFromUsb &&
+                operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "separate classic",
+                    StringComparison.Ordinal) &&
+                !operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "accept",
+                    StringComparison.OrdinalIgnoreCase),
+                "classic USB tcpip was conflated with the modern Kiosk route");
+            operationWorkspace.SelectedQuestWifiAdbModernAction =
+                operationWorkspace.QuestWifiAdbModernActionOptions.Single(option =>
+                    option.Action == QuestWifiAdbActions.RequestWirelessAdb);
+            Require(
+                operationWorkspace.IsQuestWifiAdbModernRoute &&
+                operationWorkspace.QuestWifiAdbConfirmationText.Contains(
+                    "cannot accept or automate",
+                    StringComparison.Ordinal),
+                "modern Wireless ADB did not keep protected wearer approval explicit");
+
+            operationWorkspace.PreviewQuestWifiAdbAsync()
+                .GetAwaiter()
+                .GetResult();
+            var connectivityPreview =
+                operationWorkspace.CurrentQuestWifiAdbOperation ??
+                throw new InvalidOperationException(
+                    "Quest connectivity preview was not projected");
+            Require(
+                operationSource.LastQuestWifiAdbPreviewRequest is
+                {
+                    Action: QuestWifiAdbActions.RequestWirelessAdb
+                } connectivityRequest &&
+                connectivityRequest.Targets.Count == 50 &&
+                packageIdentities.All(target =>
+                    connectivityRequest.Targets.TryGetValue(
+                        target.Key,
+                        out var identityRevision) &&
+                    identityRevision == target.Value) &&
+                operationWorkspace.IsQuestWifiAdbInputLocked &&
+                operationWorkspace.CanConfirmQuestWifiAdb &&
+                operationWorkspace.QuestWifiAdbSummaryText.Contains(
+                    "Request Wireless ADB",
+                    StringComparison.Ordinal),
+                "Quest connectivity preview did not freeze the exact typed action and identities");
+
+            operationWorkspace.ConfirmQuestWifiAdbAsync()
+                .GetAwaiter()
+                .GetResult();
+            var appliedConnectivity =
+                operationWorkspace.CurrentQuestWifiAdbOperation ??
+                throw new InvalidOperationException(
+                    "confirmed Quest connectivity operation was not projected");
+            Require(
+                operationSource.LastQuestWifiAdbExecuteRequest is
+                { } connectivityExecute &&
+                connectivityExecute.OperationId ==
+                connectivityPreview.OperationId &&
+                connectivityExecute.PreviewId ==
+                connectivityPreview.Preview.PreviewId &&
+                appliedConnectivity.Targets.All(target =>
+                    target.Receipt is
+                    {
+                        RequestDelivered: true,
+                        KioskSettingApplied: true,
+                        WearerApproval: "pending",
+                        ListenerDiscovered: true,
+                        EffectApplied: true
+                    } &&
+                    target.TermuxUsable &&
+                    target.TermuxProof is
+                    {
+                        Available: true,
+                        ShellIdentity: "uid=2000(shell)"
+                    }) &&
+                operationWorkspace.QuestWifiAdbTargets.All(target =>
+                    target.RequestDelivery == "Delivered" &&
+                    target.KioskSetting == "Applied" &&
+                    target.WearerApproval.Contains(
+                        "wearer must approve in headset",
+                        StringComparison.Ordinal) &&
+                    target.Listener.Contains(
+                        "listener observed",
+                        StringComparison.Ordinal) &&
+                    target.Termux.Contains(
+                        "enrolled signed proof",
+                        StringComparison.Ordinal) &&
+                    target.Termux.Contains(
+                        "current until",
+                        StringComparison.Ordinal)),
+                "Quest connectivity independent evidence or signed Termux freshness was collapsed");
+
+            var retainedConnectivity =
+                operationWorkspace.CurrentQuestWifiAdbOperation;
+            operationSource.DamageNextQuestWifiAdbResponse = true;
+            operationWorkspace.RefreshQuestWifiAdbAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedConnectivity,
+                    operationWorkspace.CurrentQuestWifiAdbOperation) &&
+                operationWorkspace.QuestWifiAdbStatusText.StartsWith(
+                    "Refresh failed · prior connectivity projection retained",
+                    StringComparison.Ordinal),
+                "damaged Quest connectivity identity evidence did not fail closed");
+
+            var classicPreview = operationSource.PreviewQuestWifiAdbAsync(
+                    new QuestWifiAdbPreviewRequest
+                    {
+                        Action =
+                            QuestWifiAdbActions.EnableClassicTcpipFromUsb,
+                        Targets = singleAwakeTarget
+                    },
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            var classicApplied = operationSource.ExecuteQuestWifiAdbAsync(
+                    new QuestWifiAdbExecuteRequest
+                    {
+                        OperationId = classicPreview.OperationId,
+                        PreviewId = classicPreview.Preview.PreviewId
+                    },
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            QuestWifiAdbProjectionValidation.ValidateOperation(classicApplied);
+            var classicReceipt = classicApplied.Targets.Single().Receipt ??
+                                 throw new InvalidOperationException(
+                                     "classic connectivity receipt was absent");
+            Require(
+                classicReceipt.RouteMode == "classic_tcpip" &&
+                classicReceipt.RequestDelivered &&
+                !classicReceipt.KioskSettingApplied &&
+                classicReceipt.WearerApproval == "not_applicable" &&
+                classicReceipt.ListenerDiscovered &&
+                classicApplied.Targets.Single().TermuxProof is null &&
+                !classicApplied.Targets.Single().TermuxUsable,
+                "classic USB tcpip receipt claimed modern Kiosk, wearer, or Termux facts");
+
+            var falseTermuxNode = JsonNode.Parse(
+                JsonSerializer.Serialize(classicApplied, FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "classic connectivity operation could not be cloned");
+            falseTermuxNode["targets"]![0]!["termux_usable"] = true;
+            var falseTermux = JsonSerializer.Deserialize<QuestWifiAdbOperation>(
+                                  falseTermuxNode.ToJsonString(),
+                                  FleetJson.Options) ??
+                              throw new InvalidOperationException(
+                                  "false Termux operation could not be projected");
+            var falseTermuxRejected = false;
+            try
+            {
+                QuestWifiAdbProjectionValidation.ValidateOperation(falseTermux);
+            }
+            catch (InvalidOperationException)
+            {
+                falseTermuxRejected = true;
+            }
+
+            Require(
+                falseTermuxRejected,
+                "Termux usability was accepted without an admitted signed shell proof");
+            var automatedApprovalNode = JsonNode.Parse(
+                JsonSerializer.Serialize(
+                    appliedConnectivity,
+                    FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "modern connectivity operation could not be cloned");
+            automatedApprovalNode["targets"]![0]!["receipt"]![
+                "wearer_approval"] = "accepted";
+            var automatedApproval =
+                JsonSerializer.Deserialize<QuestWifiAdbOperation>(
+                    automatedApprovalNode.ToJsonString(),
+                    FleetJson.Options) ??
+                throw new InvalidOperationException(
+                    "automated-approval damage could not be projected");
+            var automatedApprovalRejected = false;
+            try
+            {
+                QuestWifiAdbProjectionValidation.ValidateOperation(
+                    automatedApproval);
+            }
+            catch (InvalidOperationException)
+            {
+                automatedApprovalRejected = true;
+            }
+
+            Require(
+                automatedApprovalRejected,
+                "provider receipt was allowed to claim protected wearer acceptance");
+
             var operationWindow = new MainWindow(operationWorkspace)
             {
                 ShowActivated = false,
@@ -524,10 +1289,57 @@ internal static class Program
                 Width = 1_500,
                 Height = 900
             };
+            Require(
+                !operationWindow.BatchOperationsControl.IsExpanded &&
+                AutomationProperties.GetName(
+                    operationWindow.BatchOperationsControl) == "Operations" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.BatchOperationsControl).Contains(
+                    "independent of selected devices",
+                    StringComparison.Ordinal),
+                "operations were not collapsed and neutrally labeled by default");
+            operationWindow.BatchOperationsControl.IsExpanded = true;
             var operationRoot = (FrameworkElement)operationWindow.Content;
             operationRoot.Measure(new Size(1_500, 900));
             operationRoot.Arrange(new Rect(0, 0, 1_500, 900));
             operationRoot.UpdateLayout();
+            Require(
+                AutomationProperties.GetName(
+                    operationWindow.WindowsHotspotOperationRegion) ==
+                "Windows host Mobile Hotspot operation" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.WindowsHotspotOperationRegion).Contains(
+                    "independent of selected devices",
+                    StringComparison.Ordinal) &&
+                operationWindow.WindowsHotspotActionControl.Items.Count == 4 &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewWindowsHotspotControl).Contains(
+                    "Windows host",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.PreviewWindowsHotspotControl).Contains(
+                    "without changing",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.ConfirmWindowsHotspotControl).Contains(
+                    "exact immutable",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.RefreshWindowsHotspotControl).Contains(
+                    "durable operation record",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.DismissWindowsHotspotControl).Contains(
+                    "does not stop the hotspot",
+                    StringComparison.Ordinal) &&
+                !operationWindow.WindowsHotspotActionControl.IsEnabled &&
+                operationWindow.WindowsHotspotResultRegion.Visibility ==
+                Visibility.Visible &&
+                !AutomationProperties.GetName(
+                    operationWindow.WindowsHotspotResultRegion).Contains(
+                    "generation",
+                    StringComparison.OrdinalIgnoreCase),
+                "Windows host hotspot controls lost host scope, immutable-preview, recovery, or sanitized-result semantics");
             Require(
                 AutomationProperties.GetName(operationWindow.KioskOperationRegion) ==
                 "Kiosk show-controls operation" &&
@@ -544,6 +1356,286 @@ internal static class Program
                 AutomationProperties.GetName(operationWindow.DismissOperationControl) ==
                 "Dismiss operation projection",
                 "kiosk operation controls were not visibly and accessibly exposed");
+            Require(
+                AutomationProperties.GetName(operationWindow.PackageOperationRegion) ==
+                "Package install and release operation" &&
+                AutomationProperties.GetName(
+                    operationWindow.PackageManifestUrlControl) ==
+                "Signed package manifest HTTPS URL" &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewPackageInstallReleaseControl).Contains(
+                    "exact selected devices",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.ConfirmPackageInstallReleaseControl).Contains(
+                    "exact package preview",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.ConfirmPackageInstallReleaseControl).Contains(
+                    "cannot approve Android PackageInstaller",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.RefreshPackageInstallReleaseControl) ==
+                "Refresh package operation results" &&
+                AutomationProperties.GetName(
+                    operationWindow.DismissPackageInstallReleaseControl) ==
+                "Close package operation view" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.DismissPackageInstallReleaseControl).Contains(
+                    "does not cancel",
+                    StringComparison.Ordinal) &&
+                operationWindow.PackageManifestUrlControl.IsReadOnly &&
+                operationWindow.PackageNameControl.IsReadOnly &&
+                operationWindow.PackageRolloutRingControl.IsReadOnly &&
+                operationWindow.ConfirmPackageInstallReleaseControl.Content?.ToString() ==
+                "Preparation accepted" &&
+                !operationWindow.ConfirmPackageInstallReleaseControl.IsEnabled,
+                "package operation controls were not visibly and accessibly bounded");
+            Require(
+                AutomationProperties.GetName(
+                    operationWindow.QuestAwakeOperationRegion) ==
+                "Headset awake controls" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestAwakeOperationRegion).Contains(
+                    "stops on reboot",
+                    StringComparison.Ordinal) &&
+                operationWindow.QuestAwakeActionControl.Items.Count == 6 &&
+                AutomationProperties.GetName(
+                    operationWindow.QuestAwakeDurationControl) ==
+                "Keep-awake duration in minutes" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestAwakeDurationControl).Contains(
+                    "480",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewQuestAwakeControl).Contains(
+                    "exact selected devices",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.ConfirmQuestAwakeControl).Contains(
+                    "immutable",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.RefreshQuestAwakeControl) ==
+                "Refresh headset awake-control results" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.DismissQuestAwakeControl).Contains(
+                    "does not stop a watchdog",
+                    StringComparison.Ordinal) &&
+                operationWindow.QuestAwakeDurationControl.IsReadOnly &&
+                operationWindow.QuestAwakeIntervalControl.IsReadOnly &&
+                !operationWindow.QuestAwakeActionControl.IsEnabled &&
+                !operationWindow.ConfirmQuestAwakeControl.IsEnabled,
+                "headset awake controls did not expose immutable-preview and safety boundaries");
+            var awakeGrid = operationWindow.QuestAwakeTargetsControl;
+            awakeGrid.BringIntoView();
+            operationRoot.UpdateLayout();
+            Require(
+                awakeGrid.Columns.Count == 5 &&
+                awakeGrid.IsReadOnly &&
+                awakeGrid.EnableRowVirtualization &&
+                awakeGrid.EnableColumnVirtualization &&
+                VirtualizingPanel.GetIsVirtualizing(awakeGrid) &&
+                VirtualizingPanel.GetVirtualizationMode(awakeGrid) ==
+                VirtualizationMode.Recycling &&
+                AutomationProperties.GetName(awakeGrid) ==
+                "Headset awake-control target results" &&
+                AutomationProperties.GetHelpText(awakeGrid).Contains(
+                    "No headset serials or private paths",
+                    StringComparison.Ordinal),
+                "awake-control target ledger lost bounded native DataGrid or privacy semantics");
+            Require(
+                AutomationProperties.GetName(
+                    operationWindow.QuestWifiAdbOperationRegion) ==
+                "Quest Wireless ADB connectivity" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestWifiAdbOperationRegion).Contains(
+                    "does not prove wearer approval",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestWifiAdbOperationRegion).Contains(
+                    "Only a current admitted signed shell proof",
+                    StringComparison.Ordinal) &&
+                operationWindow.QuestWifiAdbModernActionControl.Items.Count == 5 &&
+                AutomationProperties.GetName(
+                    operationWindow.QuestWifiAdbModernRouteControl).Contains(
+                    "modern Wireless ADB",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.QuestWifiAdbClassicRouteControl).Contains(
+                    "separate classic USB tcpip",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.QuestWifiAdbClassicRouteControl).Contains(
+                    "not modern TLS",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetName(
+                    operationWindow.PreviewQuestWifiAdbControl).Contains(
+                    "exact selected devices",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.ConfirmQuestWifiAdbControl).Contains(
+                    "cannot accept or automate",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.DismissQuestWifiAdbControl).Contains(
+                    "does not disable Wireless ADB",
+                    StringComparison.Ordinal) &&
+                !operationWindow.QuestWifiAdbModernActionControl.IsEnabled &&
+                !operationWindow.QuestWifiAdbModernRouteControl.IsEnabled &&
+                !operationWindow.QuestWifiAdbClassicRouteControl.IsEnabled &&
+                !operationWindow.ConfirmQuestWifiAdbControl.IsEnabled,
+                "Quest connectivity controls did not expose route, approval, and immutable-preview boundaries");
+            var connectivityGrid =
+                operationWindow.QuestWifiAdbTargetsControl;
+            connectivityGrid.BringIntoView();
+            operationRoot.UpdateLayout();
+            Require(
+                connectivityGrid.Columns.Count == 8 &&
+                connectivityGrid.IsReadOnly &&
+                connectivityGrid.EnableRowVirtualization &&
+                connectivityGrid.EnableColumnVirtualization &&
+                VirtualizingPanel.GetIsVirtualizing(connectivityGrid) &&
+                VirtualizingPanel.GetVirtualizationMode(connectivityGrid) ==
+                VirtualizationMode.Recycling &&
+                AutomationProperties.GetName(connectivityGrid) ==
+                "Quest connectivity target results" &&
+                AutomationProperties.GetHelpText(connectivityGrid).Contains(
+                    "independent request-delivery",
+                    StringComparison.Ordinal) &&
+                AutomationProperties.GetHelpText(connectivityGrid).Contains(
+                    "No serials, credentials, pairing codes, or private paths",
+                    StringComparison.Ordinal),
+                "Quest connectivity target ledger lost independent evidence, privacy, or native virtualization semantics");
+            var packageGrid = operationWindow.PackageOperationTargetsControl;
+            packageGrid.BringIntoView();
+            operationRoot.UpdateLayout();
+            Require(
+                packageGrid.Columns.Count == 4 &&
+                packageGrid.IsReadOnly &&
+                packageGrid.EnableRowVirtualization &&
+                packageGrid.EnableColumnVirtualization &&
+                VirtualizingPanel.GetIsVirtualizing(packageGrid) &&
+                VirtualizingPanel.GetVirtualizationMode(packageGrid) ==
+                VirtualizationMode.Recycling &&
+                AutomationProperties.GetName(packageGrid) ==
+                "Package operation targets",
+                "package target ledger lost native bounded DataGrid semantics");
+            var realizedPackageRows = CountVisualDescendants<DataGridRow>(packageGrid);
+            var firstPackageRow = FindVisualDescendant<DataGridRow>(packageGrid) ??
+                                  throw new InvalidOperationException(
+                                      "package target ledger did not realize a row");
+            var firstPackageTarget =
+                firstPackageRow.Item as PackageOperationTargetViewModel ??
+                throw new InvalidOperationException(
+                    "package target row projected the wrong item type");
+            var initialPackageRows = FindVisualDescendants<DataGridRow>(
+                packageGrid);
+            var initialPackageTargets = initialPackageRows.ToDictionary(
+                row => row,
+                row => row.Item as PackageOperationTargetViewModel ??
+                       throw new InvalidOperationException(
+                           "package target row projected the wrong item type"));
+            var firstPackagePeer = new DataGridRowAutomationPeer(firstPackageRow);
+            Require(
+                realizedPackageRows is > 0 and < 50 &&
+                AutomationProperties.GetName(firstPackageRow) ==
+                firstPackageTarget.AccessibleName &&
+                firstPackagePeer.GetName() == firstPackageTarget.AccessibleName,
+                "package target rows were not virtualized with device-specific UI Automation names");
+            Require(
+                firstPackageRow.Focusable,
+                "package target rows were not keyboard-focusable");
+            Require(
+                firstPackagePeer.GetAutomationControlType() ==
+                AutomationControlType.DataItem,
+                $"package target row exposed {firstPackagePeer.GetAutomationControlType()} instead of a native data-item peer");
+            Require(
+                firstPackageTarget.AccessibleName.Contains(
+                    "No package dispatch or installation is claimed.",
+                    StringComparison.Ordinal),
+                "package target row omitted the no-dispatch/no-install boundary");
+            var recycledNameVerified = false;
+            foreach (var targetIndex in new[] { 10, 20, 30, 40, 49 })
+            {
+                var target = operationWorkspace.PackageOperationTargets[targetIndex];
+                packageGrid.ScrollIntoView(target);
+                packageGrid.UpdateLayout();
+                foreach (var row in FindVisualDescendants<DataGridRow>(packageGrid))
+                {
+                    var currentTarget =
+                        row.Item as PackageOperationTargetViewModel ??
+                        throw new InvalidOperationException(
+                            "package target row projected the wrong item type");
+                    if (initialPackageTargets.TryGetValue(
+                            row,
+                            out var priorTarget) &&
+                        !ReferenceEquals(priorTarget, currentTarget))
+                    {
+                        Require(
+                            AutomationProperties.GetName(row) ==
+                            currentTarget.AccessibleName &&
+                            new DataGridRowAutomationPeer(row).GetName() ==
+                            currentTarget.AccessibleName,
+                            "a recycled package target row retained stale UI Automation evidence");
+                        recycledNameVerified = true;
+                    }
+
+                    initialPackageTargets[row] = currentTarget;
+                }
+            }
+
+            var lastPackageTarget = operationWorkspace.PackageOperationTargets[^1];
+            packageGrid.ScrollIntoView(lastPackageTarget);
+            packageGrid.UpdateLayout();
+            var lastPackageRow =
+                packageGrid.ItemContainerGenerator.ContainerFromItem(
+                    lastPackageTarget) as DataGridRow ??
+                throw new InvalidOperationException(
+                    "package target ledger did not realize the requested later row");
+            var lastPackagePeer = new DataGridRowAutomationPeer(lastPackageRow);
+            Require(
+                AutomationProperties.GetName(lastPackageRow) ==
+                lastPackageTarget.AccessibleName &&
+                lastPackagePeer.GetName() == lastPackageTarget.AccessibleName &&
+                recycledNameVerified,
+                "recycled package target rows retained stale UI Automation evidence");
+            operationWindow.Width = 1_000;
+            operationWindow.Height = 640;
+            operationRoot.Measure(new Size(1_000, 640));
+            operationRoot.Arrange(new Rect(0, 0, 1_000, 640));
+            ScrollElementIntoView(
+                operationWindow.ConfirmPackageInstallReleaseControl,
+                operationWindow.BatchOperationsScrollControl,
+                operationRoot);
+            var confirmationVisibleAtMinimum = IsFullyVisibleWithin(
+                operationWindow.ConfirmPackageInstallReleaseControl,
+                operationWindow.BatchOperationsScrollControl);
+            var confirmationOriginAtMinimum =
+                operationWindow.ConfirmPackageInstallReleaseControl
+                    .TransformToAncestor(
+                        operationWindow.BatchOperationsScrollControl)
+                    .Transform(new Point(0, 0));
+            ScrollElementIntoView(
+                packageGrid,
+                operationWindow.BatchOperationsScrollControl,
+                operationRoot);
+            var ledgerVisibleHeightAtMinimum = VisibleHeightWithin(
+                packageGrid,
+                operationWindow.BatchOperationsScrollControl);
+            Require(
+                operationWindow.BatchOperationsControl.ActualHeight <= 180 &&
+                operationWindow.BatchOperationsScrollControl.ScrollableHeight > 0,
+                $"expanded batch region was not bounded and scrollable: height {operationWindow.BatchOperationsControl.ActualHeight}, scrollable {operationWindow.BatchOperationsScrollControl.ScrollableHeight}");
+            Require(
+                operationWindow.FleetDataGrid.ActualHeight >= 80,
+                $"expanded batch region reduced the minimum-window fleet grid to {operationWindow.FleetDataGrid.ActualHeight}px");
+            Require(
+                confirmationVisibleAtMinimum,
+                $"the package confirmation control could not be brought into the minimum-window batch viewport: origin {confirmationOriginAtMinimum}, size {operationWindow.ConfirmPackageInstallReleaseControl.ActualWidth}x{operationWindow.ConfirmPackageInstallReleaseControl.ActualHeight}, visibility {operationWindow.ConfirmPackageInstallReleaseControl.Visibility}, viewport {operationWindow.BatchOperationsScrollControl.ActualWidth}x{operationWindow.BatchOperationsScrollControl.ActualHeight}, offset {operationWindow.BatchOperationsScrollControl.VerticalOffset}");
+            Require(
+                ledgerVisibleHeightAtMinimum >= 44,
+                $"the package target ledger exposed only {ledgerVisibleHeightAtMinimum}px in the minimum-window batch viewport");
             operationWindow.Close();
 
             var liveSource = new StaticFleetDataSource(
@@ -928,7 +2020,7 @@ internal static class Program
                 $"checkbox={batchCheckBox.IsChecked}, model={first.IsBatchSelected}");
 
             var realized = CountVisualDescendants<DataGridRow>(grid);
-            Require(realized is > 0 and < 250, "virtualized grid realized an invalid row set");
+            Require(realized is > 0 and < 50, "virtualized grid realized an invalid row set");
             var columnWidths = grid.Columns
                 .Select(column => Math.Round(column.ActualWidth, 1))
                 .ToArray();
@@ -996,13 +2088,23 @@ internal static class Program
             {
                 schema = "rusty.fleet.wpf_validation.v1",
                 result = "pass",
-                projection_rows = projection.Rows.Count,
+                projection_rows = stressEvidence.ProjectionRows,
+                legacy_generic_projection_fields =
+                    "deprecated stress aliases retained for repository-gate compatibility",
+                normal_projection_rows = projection.Rows.Count,
                 deserialization_ms = deserializeWatch.Elapsed.TotalMilliseconds,
                 view_model_ms = viewModelWatch.Elapsed.TotalMilliseconds,
                 window_ms = windowWatch.Elapsed.TotalMilliseconds,
-                realized_rows = realized,
+                realized_rows = stressEvidence.RealizedRows,
+                normal_realized_rows = realized,
                 grid_columns = grid.Columns.Count,
                 column_widths = columnWidths,
+                operator_offscreen_layout_row_matrix = new[] { 10, 50, 100 },
+                operator_source_fixture_matrix = new[] { 50, 50, 250 },
+                normal_window_rows = 50,
+                presented_window_exercised = presentWindow,
+                stress_projection_rows = stressEvidence.ProjectionRows,
+                stress_realized_rows = stressEvidence.RealizedRows,
                 native_datagrid = true,
                 recycling_virtualization = true,
                 native_automation_peer = true,
@@ -1021,10 +2123,18 @@ internal static class Program
                 watch_sync_accessible = true,
                 projection_identity_fail_closed = true,
                 mixed_freshness_fixture = true,
-                fresh_rows = fixtureSummary.Fresh,
-                stale_rows = fixtureSummary.Stale,
-                offline_rows = fixtureSummary.Offline,
-                capability_downgrade_rows = downgradedRows.Length,
+                fresh_rows = stressEvidence.Summary.Fresh,
+                stale_rows = stressEvidence.Summary.Stale,
+                offline_rows = stressEvidence.Summary.Offline,
+                capability_downgrade_rows = stressEvidence.DowngradedRows,
+                normal_fresh_rows = fixtureSummary.Fresh,
+                normal_stale_rows = fixtureSummary.Stale,
+                normal_offline_rows = fixtureSummary.Offline,
+                normal_capability_downgrade_rows = downgradedRows.Length,
+                stress_fresh_rows = stressEvidence.Summary.Fresh,
+                stress_stale_rows = stressEvidence.Summary.Stale,
+                stress_offline_rows = stressEvidence.Summary.Offline,
+                stress_capability_downgrade_rows = stressEvidence.DowngradedRows,
                 mixed_state_grammar = true,
                 canonical_scope = true,
                 canonical_sort = true,
@@ -1040,6 +2150,59 @@ internal static class Program
                 kiosk_show_controls_accessible = true,
                 kiosk_show_controls_fail_closed = true,
                 kiosk_show_controls_rust_fixture_aligned = true,
+                package_install_release_preview = true,
+                package_install_release_exact_release_and_targets = true,
+                package_install_release_explicit_confirmation = true,
+                package_install_release_dispatch_ready_only = true,
+                package_install_release_all_targets_prepared = true,
+                package_install_release_owner_ingress_unavailable = true,
+                package_install_release_single_shot = true,
+                package_install_release_accessible = true,
+                package_target_native_row_peer = true,
+                package_target_recycled_name = true,
+                package_target_rows_focusable = true,
+                package_install_release_fail_closed = true,
+                package_install_release_rust_fixture_aligned = true,
+                windows_hotspot_host_scoped = true,
+                windows_hotspot_exact_immutable_preview = true,
+                windows_hotspot_explicit_confirmation = true,
+                windows_hotspot_lost_response_recoverable = true,
+                windows_hotspot_durable_refresh_not_live = true,
+                windows_hotspot_external_observe_only = true,
+                windows_hotspot_exact_fleet_stop = true,
+                windows_hotspot_sanitized_projection = true,
+                windows_hotspot_accessible = true,
+                windows_hotspot_fail_closed = true,
+                quest_awake_preview = true,
+                quest_awake_exact_action_policy_and_targets = true,
+                quest_awake_eight_hour_bound = true,
+                quest_awake_explicit_confirmation = true,
+                quest_awake_independent_readbacks = true,
+                quest_awake_watchdog_modes_separate = true,
+                quest_awake_stop_and_restore_separate = true,
+                quest_awake_stop_restore_observed_generation = true,
+                quest_awake_non_stop_preview_generation_bound = true,
+                quest_awake_receipt_invocation_generation_bound = true,
+                quest_awake_accessible = true,
+                quest_awake_private_bindings_hidden = true,
+                quest_awake_fail_closed = true,
+                quest_wifi_adb_preview = true,
+                quest_wifi_adb_exact_action_and_targets = true,
+                quest_wifi_adb_explicit_confirmation = true,
+                quest_wifi_adb_destructive_copy = true,
+                quest_wifi_adb_request_delivery_independent = true,
+                quest_wifi_adb_kiosk_setting_independent = true,
+                quest_wifi_adb_wearer_approval_not_automated = true,
+                quest_wifi_adb_modern_listener_independent = true,
+                quest_wifi_adb_signed_termux_proof_current = true,
+                quest_wifi_adb_termux_without_proof_rejected = true,
+                quest_wifi_adb_classic_usb_route_separate = true,
+                quest_wifi_adb_accessible = true,
+                quest_wifi_adb_private_bindings_hidden = true,
+                quest_wifi_adb_fail_closed = true,
+                batch_operations_collapsed_by_default = true,
+                minimum_window_layout = true,
+                expanded_minimum_window_layout = true,
                 empty_scope_preserved = true,
                 grouped_virtualization = true,
                 stable_live_ordering = true,
@@ -1215,6 +2378,92 @@ internal static class Program
         return null;
     }
 
+    private static void ScrollElementIntoView(
+        FrameworkElement element,
+        ScrollViewer scrollViewer,
+        FrameworkElement layoutRoot)
+    {
+        var origin = element
+            .TransformToAncestor(scrollViewer)
+            .Transform(new Point(0, 0));
+        scrollViewer.ScrollToVerticalOffset(
+            Math.Max(0, scrollViewer.VerticalOffset + origin.Y - 4));
+        layoutRoot.UpdateLayout();
+    }
+
+    private static bool IsFullyVisibleWithin(
+        FrameworkElement element,
+        FrameworkElement ancestor)
+    {
+        if (element.Visibility != Visibility.Visible ||
+            element.ActualWidth <= 0 ||
+            element.ActualHeight <= 0)
+        {
+            return false;
+        }
+
+        var bounds = element
+            .TransformToAncestor(ancestor)
+            .TransformBounds(
+                new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        return bounds.Left >= 0 &&
+               bounds.Top >= 0 &&
+               bounds.Right <= ancestor.ActualWidth + 0.5 &&
+               bounds.Bottom <= ancestor.ActualHeight + 0.5;
+    }
+
+    private static double VisibleHeightWithin(
+        FrameworkElement element,
+        FrameworkElement ancestor)
+    {
+        if (element.Visibility != Visibility.Visible ||
+            element.ActualWidth <= 0 ||
+            element.ActualHeight <= 0)
+        {
+            return 0;
+        }
+
+        var bounds = element
+            .TransformToAncestor(ancestor)
+            .TransformBounds(
+                new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        var intersection = Rect.Intersect(
+            bounds,
+            new Rect(0, 0, ancestor.ActualWidth, ancestor.ActualHeight));
+        return intersection.IsEmpty ? 0 : intersection.Height;
+    }
+
+    private static IReadOnlyList<T> FindVisualDescendants<T>(
+        DependencyObject? parent)
+        where T : DependencyObject
+    {
+        var results = new List<T>();
+        CollectVisualDescendants(parent, results);
+        return results;
+    }
+
+    private static void CollectVisualDescendants<T>(
+        DependencyObject? parent,
+        ICollection<T> results)
+        where T : DependencyObject
+    {
+        if (parent is null)
+        {
+            return;
+        }
+
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match)
+            {
+                results.Add(match);
+            }
+
+            CollectVisualDescendants(child, results);
+        }
+    }
+
     private static int CountVisualDescendants<T>(DependencyObject? parent)
         where T : DependencyObject
     {
@@ -1236,6 +2485,159 @@ internal static class Program
         }
 
         return count;
+    }
+
+    private static (
+        int ProjectionRows,
+        int RealizedRows,
+        FleetSummaryProjection Summary,
+        int DowngradedRows) ValidateVirtualizationStress(string repoRoot)
+    {
+        var json = RunFleetctl(
+            repoRoot,
+            "operator-fixture",
+            "mixed-freshness",
+            "1000");
+        FleetQueryResult projection;
+        FleetSummaryProjection summary;
+        using (var document = JsonDocument.Parse(json))
+        {
+            projection = FleetJson.DeserializeQueryResult(
+                document.RootElement.GetProperty("query_result").GetRawText());
+            summary = JsonSerializer.Deserialize<FleetSummaryProjection>(
+                document.RootElement.GetProperty("summary").GetRawText(),
+                FleetJson.Options) ?? throw new JsonException(
+                "Fleet stress summary was empty.");
+        }
+
+        var source = new StaticFleetDataSource(
+            projection,
+            canonicalSummary: summary);
+        var workspace = new FleetWorkspaceViewModel(source);
+        workspace.InitializeAsync().GetAwaiter().GetResult();
+        var window = new MainWindow(workspace)
+        {
+            ShowActivated = false,
+            ShowInTaskbar = false,
+            WindowStyle = WindowStyle.None,
+            Width = 1_500,
+            Height = 900
+        };
+        var root = (FrameworkElement)window.Content;
+        root.Measure(new Size(1_500, 900));
+        root.Arrange(new Rect(0, 0, 1_500, 900));
+        root.UpdateLayout();
+        var realizedRows = CountVisualDescendants<DataGridRow>(
+            window.FleetDataGrid);
+        var downgradedRows = projection.Rows.Count(row =>
+            row.Capabilities.Capabilities.TryGetValue(
+                "participating_app_control",
+                out var capability) &&
+            capability.Authorization == "unauthorized");
+        Require(
+            projection.Rows.Count == 1_000 &&
+            summary is
+            {
+                Total: 1_000,
+                Fresh: 500,
+                Stale: 250,
+                Offline: 250
+            } &&
+            downgradedRows == 125 &&
+            realizedRows is > 0 and < 250 &&
+            VirtualizingPanel.GetIsVirtualizing(window.FleetDataGrid) &&
+            VirtualizingPanel.GetVirtualizationMode(window.FleetDataGrid) ==
+            VirtualizationMode.Recycling,
+            "the non-presented 1,000-row stress sentinel lost bounded virtualization");
+        window.Close();
+        return (
+            projection.Rows.Count,
+            realizedRows,
+            summary,
+            downgradedRows);
+    }
+
+    private static void ValidateRealisticScaleWindow(string repoRoot, int deviceCount)
+    {
+        var sourceFixtureCount = deviceCount <= 50 ? 50 : 250;
+        var json = RunFleetctl(
+            repoRoot,
+            "operator-fixture",
+            "mixed-freshness",
+            sourceFixtureCount.ToString(
+                System.Globalization.CultureInfo.InvariantCulture));
+        FleetQueryResult sourceProjection;
+        using (var document = JsonDocument.Parse(json))
+        {
+            sourceProjection = FleetJson.DeserializeQueryResult(
+                document.RootElement.GetProperty("query_result").GetRawText());
+        }
+
+        var projection = new FleetQueryResult
+        {
+            Schema = sourceProjection.Schema,
+            Query = sourceProjection.Query,
+            ResultRevision = sourceProjection.ResultRevision,
+            AsOfMs = sourceProjection.AsOfMs,
+            TotalCount = deviceCount,
+            WindowOffset = 0,
+            WindowCount = deviceCount,
+            Rows = sourceProjection.Rows.Take(deviceCount).ToArray()
+        };
+        Require(
+            projection.TotalCount == deviceCount &&
+            projection.Rows.Count == deviceCount,
+            $"{deviceCount}-device operator fixture was incomplete");
+        var source = new StaticFleetDataSource(projection);
+        var workspace = new FleetWorkspaceViewModel(source);
+        workspace.InitializeAsync().GetAwaiter().GetResult();
+        var window = new MainWindow(workspace)
+        {
+            ShowActivated = false,
+            ShowInTaskbar = false,
+            WindowStyle = WindowStyle.None,
+            Width = 1_500,
+            Height = 900
+        };
+        var root = (FrameworkElement)window.Content;
+        root.Measure(new Size(1_500, 900));
+        root.Arrange(new Rect(0, 0, 1_500, 900));
+        root.UpdateLayout();
+        var grid = window.FleetDataGrid;
+        var realized = CountVisualDescendants<DataGridRow>(grid);
+        Require(
+            grid.Items.Count == deviceCount &&
+            realized > 0 &&
+            (deviceCount < 100 || realized < deviceCount) &&
+            VirtualizingPanel.GetIsVirtualizing(grid) &&
+            VirtualizingPanel.GetVirtualizationMode(grid) ==
+            VirtualizationMode.Recycling,
+            $"{deviceCount}-device WPF scale fixture lost bounded recycling virtualization");
+        window.Close();
+
+        if (deviceCount == 10)
+        {
+            var minimumWindow = new MainWindow(workspace)
+            {
+                ShowActivated = false,
+                ShowInTaskbar = false,
+                WindowStyle = WindowStyle.None,
+                Width = 1_000,
+                Height = 640
+            };
+            var minimumRoot = (FrameworkElement)minimumWindow.Content;
+            minimumRoot.Measure(new Size(1_000, 640));
+            minimumRoot.Arrange(new Rect(0, 0, 1_000, 640));
+            minimumRoot.UpdateLayout();
+            Require(
+                !minimumWindow.BatchOperationsControl.IsExpanded &&
+                minimumWindow.FleetDataGrid.ActualHeight >= 120 &&
+                Grid.GetColumnSpan(minimumWindow.PackageManifestUrlControl) == 3 &&
+                Grid.GetRow(minimumWindow.PackageNameControl) == 1 &&
+                Grid.GetRow(minimumWindow.PackageRolloutRingControl) == 1,
+                "the declared minimum window lost its fleet workspace or responsive package layout");
+            minimumWindow.Close();
+        }
     }
 
     private static string RunFleetctl(string repoRoot, params string[] arguments)
@@ -1312,6 +2714,53 @@ internal static class Program
         public OperationLedger? LastOperation { get; private set; }
 
         public bool DamageNextOperationResponse { get; set; }
+
+        public PackageInstallReleasePreviewRequest? LastPackagePreviewRequest { get; private set; }
+
+        public PackageInstallReleaseExecuteRequest? LastPackageExecuteRequest { get; private set; }
+
+        public int PackageExecuteCount { get; private set; }
+
+        public PackageInstallReleaseOperation? LastPackageOperation { get; private set; }
+
+        public bool DamageNextPackageOperationResponse { get; set; }
+
+        public WindowsHotspotPreviewRequest? LastWindowsHotspotPreviewRequest { get; private set; }
+
+        public WindowsHotspotExecuteRequest? LastWindowsHotspotExecuteRequest { get; private set; }
+
+        public WindowsHotspotOperation? LastWindowsHotspotOperation { get; private set; }
+
+        public string WindowsHotspotOwnership { get; set; } =
+            WindowsHotspotActions.OwnershipNone;
+
+        public bool WindowsHotspotProviderReady { get; set; } = true;
+
+        public bool WindowsHotspotLeaseAvailable { get; set; } = true;
+
+        public bool DamageNextWindowsHotspotResponse { get; set; }
+
+        public bool ThrowAfterWindowsHotspotSettlement { get; set; }
+
+        public QuestAwakePreviewRequest? LastQuestAwakePreviewRequest { get; private set; }
+
+        public QuestAwakeExecuteRequest? LastQuestAwakeExecuteRequest { get; private set; }
+
+        public QuestAwakeOperation? LastQuestAwakeOperation { get; private set; }
+
+        public bool DamageNextQuestAwakeResponse { get; set; }
+
+        public bool DamageNextQuestAwakeReceiptGeneration { get; set; }
+
+        public string? QuestAwakeInvocationGenerationOverride { get; set; }
+
+        public QuestWifiAdbPreviewRequest? LastQuestWifiAdbPreviewRequest { get; private set; }
+
+        public QuestWifiAdbExecuteRequest? LastQuestWifiAdbExecuteRequest { get; private set; }
+
+        public QuestWifiAdbOperation? LastQuestWifiAdbOperation { get; private set; }
+
+        public bool DamageNextQuestWifiAdbResponse { get; set; }
 
         public Task<FleetQueryResult> QueryAsync(
             FleetQuery query,
@@ -1611,6 +3060,203 @@ internal static class Program
             return Task.FromResult(ReturnOperation());
         }
 
+        public Task<PackageInstallReleaseOperation> PreviewPackageInstallReleaseAsync(
+            PackageInstallReleasePreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastPackagePreviewRequest = request;
+            LastPackageOperation = CreatePackageOperation(request, prepared: false);
+            return Task.FromResult(ReturnPackageOperation());
+        }
+
+        public Task<PackageInstallReleaseOperation> ExecutePackageInstallReleaseAsync(
+            PackageInstallReleaseExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            PackageExecuteCount++;
+            LastPackageExecuteRequest = request;
+            if (LastPackageOperation is null ||
+                LastPackageOperation.OperationId != request.OperationId ||
+                LastPackageOperation.Preview.PreviewId != request.PreviewId ||
+                LastPackagePreviewRequest is null)
+            {
+                throw new InvalidOperationException(
+                    "package execute request did not match the synthetic preview");
+            }
+
+            LastPackageOperation = CreatePackageOperation(
+                LastPackagePreviewRequest,
+                prepared: true);
+            return Task.FromResult(ReturnPackageOperation());
+        }
+
+        public Task<PackageInstallReleaseOperation> PackageInstallReleaseAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastPackageOperation is null ||
+                LastPackageOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic package operation not found");
+            }
+
+            return Task.FromResult(ReturnPackageOperation());
+        }
+
+        public Task<WindowsHotspotOperation> PreviewWindowsHotspotAsync(
+            WindowsHotspotPreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastWindowsHotspotPreviewRequest = request;
+            LastWindowsHotspotOperation =
+                CreateWindowsHotspotOperation(request, executed: false);
+            return Task.FromResult(ReturnWindowsHotspotOperation());
+        }
+
+        public Task<WindowsHotspotOperation> ExecuteWindowsHotspotAsync(
+            WindowsHotspotExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastWindowsHotspotExecuteRequest = request;
+            if (LastWindowsHotspotOperation is null ||
+                LastWindowsHotspotPreviewRequest is null ||
+                LastWindowsHotspotOperation.OperationId != request.OperationId ||
+                LastWindowsHotspotOperation.Preview.PreviewId != request.PreviewId)
+            {
+                throw new InvalidOperationException(
+                    "host-hotspot execute request did not match the synthetic preview");
+            }
+
+            LastWindowsHotspotOperation = CreateWindowsHotspotOperation(
+                LastWindowsHotspotPreviewRequest,
+                executed: true);
+            if (ThrowAfterWindowsHotspotSettlement)
+            {
+                ThrowAfterWindowsHotspotSettlement = false;
+                throw new TaskCanceledException(
+                    "synthetic response lost after hotspot settlement");
+            }
+
+            return Task.FromResult(ReturnWindowsHotspotOperation());
+        }
+
+        public Task<WindowsHotspotOperation> WindowsHotspotAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastWindowsHotspotOperation is null ||
+                LastWindowsHotspotOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic host-hotspot operation not found");
+            }
+
+            return Task.FromResult(ReturnWindowsHotspotOperation());
+        }
+
+        public Task<QuestAwakeOperation> PreviewQuestAwakeAsync(
+            QuestAwakePreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastQuestAwakePreviewRequest = request;
+            LastQuestAwakeOperation = CreateQuestAwakeOperation(
+                request,
+                executed: false);
+            return Task.FromResult(ReturnQuestAwakeOperation());
+        }
+
+        public Task<QuestAwakeOperation> ExecuteQuestAwakeAsync(
+            QuestAwakeExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastQuestAwakeExecuteRequest = request;
+            if (LastQuestAwakeOperation is null ||
+                LastQuestAwakePreviewRequest is null ||
+                LastQuestAwakeOperation.OperationId != request.OperationId ||
+                LastQuestAwakeOperation.Preview.PreviewId != request.PreviewId)
+            {
+                throw new InvalidOperationException(
+                    "awake-control execute request did not match the synthetic preview");
+            }
+
+            LastQuestAwakeOperation = CreateQuestAwakeOperation(
+                LastQuestAwakePreviewRequest,
+                executed: true);
+            return Task.FromResult(ReturnQuestAwakeOperation());
+        }
+
+        public Task<QuestAwakeOperation> QuestAwakeAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastQuestAwakeOperation is null ||
+                LastQuestAwakeOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic awake-control operation not found");
+            }
+
+            return Task.FromResult(ReturnQuestAwakeOperation());
+        }
+
+        public Task<QuestWifiAdbOperation> PreviewQuestWifiAdbAsync(
+            QuestWifiAdbPreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastQuestWifiAdbPreviewRequest = request;
+            LastQuestWifiAdbOperation = CreateQuestWifiAdbOperation(
+                request,
+                executed: false);
+            return Task.FromResult(ReturnQuestWifiAdbOperation());
+        }
+
+        public Task<QuestWifiAdbOperation> ExecuteQuestWifiAdbAsync(
+            QuestWifiAdbExecuteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastQuestWifiAdbExecuteRequest = request;
+            if (LastQuestWifiAdbOperation is null ||
+                LastQuestWifiAdbPreviewRequest is null ||
+                LastQuestWifiAdbOperation.OperationId != request.OperationId ||
+                LastQuestWifiAdbOperation.Preview.PreviewId != request.PreviewId)
+            {
+                throw new InvalidOperationException(
+                    "connectivity execute request did not match the synthetic preview");
+            }
+
+            LastQuestWifiAdbOperation = CreateQuestWifiAdbOperation(
+                LastQuestWifiAdbPreviewRequest,
+                executed: true);
+            return Task.FromResult(ReturnQuestWifiAdbOperation());
+        }
+
+        public Task<QuestWifiAdbOperation> QuestWifiAdbAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastQuestWifiAdbOperation is null ||
+                LastQuestWifiAdbOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic connectivity operation not found");
+            }
+
+            return Task.FromResult(ReturnQuestWifiAdbOperation());
+        }
+
         private OperationLedger ReturnOperation()
         {
             var operation = LastOperation ??
@@ -1791,6 +3437,834 @@ internal static class Program
                 CleanupRequired = false,
                 Targets = targets
             };
+        }
+
+        private PackageInstallReleaseOperation CreatePackageOperation(
+            PackageInstallReleasePreviewRequest request,
+            bool prepared)
+        {
+            var canonicalIdentities = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal);
+            foreach (var target in request.Targets)
+            {
+                canonicalIdentities.Add(target.Key, target.Value);
+            }
+            var createdAt = Projection.AsOfMs;
+            var operationId = "operation-package-install-release-0001";
+            var previewId = "preview-package-install-release-0001";
+            var preflights = canonicalIdentities
+                .Select((identity, index) =>
+                    new OperationTargetPreflight
+                    {
+                        DeviceId = identity.Key,
+                        IdentityRevision = identity.Value,
+                        CapabilityId = "rusty-quest.package-updater",
+                        CapabilityEvidenceRevision = (ulong)(61 + index),
+                        CapabilityOwner = "rusty-quest",
+                        Support = "supported",
+                        Enablement = "enabled",
+                        Authorization = "authorized",
+                        Reachability = "reachable",
+                        Freshness = "current",
+                        ObservedAtMs = createdAt - 100,
+                        FreshUntilMs = createdAt + 30_000,
+                        EvaluatedAtMs = createdAt + 100,
+                        Eligible = true,
+                        ReasonCode = "ready",
+                        Message = "Attended package updater is current and ready."
+                    })
+                .ToArray();
+            var targets = preflights
+                .Select((preflight, index) =>
+                {
+                    var ownerRequestId = $"package-owner-{index + 1:D4}";
+                    return new PackageInstallTargetLedger
+                    {
+                        DeviceId = preflight.DeviceId,
+                        IdentityRevision = preflight.IdentityRevision,
+                        Preflight = preflight,
+                        Lifecycle = prepared ? "accepted" : "proposed",
+                        Stage = prepared ? "dispatch_ready" : "preview_ready",
+                        Invocation = prepared
+                            ? new PackageUpdaterInvocation
+                            {
+                                Schema = "rusty.fleet.package_updater_invocation.v1",
+                                OperationId = operationId,
+                                PreviewId = previewId,
+                                DeviceId = preflight.DeviceId,
+                                IdentityRevision = preflight.IdentityRevision,
+                                OwnerActionRequestId = ownerRequestId,
+                                Release = request.Release,
+                                ExpectedPackageName = request.ExpectedPackageName,
+                                ExpectedRolloutRing = request.ExpectedRolloutRing,
+                                ExpiresAtMs = createdAt + 60_000
+                            }
+                            : null,
+                        InvocationAcknowledgement = null,
+                        EffectiveReceipt = null,
+                        ReasonCode = prepared
+                            ? "owner_dispatch_ready"
+                            : "preview_ready",
+                        Message = prepared
+                            ? "Exact updater invocation is ready for delivery; application remains unproven"
+                            : "Target is ready for explicit confirmation",
+                        LastTransitionMs = createdAt + (prepared ? 200 : 100)
+                    };
+                })
+                .ToArray();
+            return new PackageInstallReleaseOperation
+            {
+                Schema = "rusty.fleet.package_install_release_operation.v1",
+                OperationId = operationId,
+                ActionId = PackageOperationActions.InstallRelease,
+                CreatedAtMs = createdAt,
+                Preview = new PackageInstallReleasePreview
+                {
+                    Schema = "rusty.fleet.package_install_release_preview.v1",
+                    PreviewId = previewId,
+                    OperationId = operationId,
+                    ActionId = PackageOperationActions.InstallRelease,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    Release = request.Release,
+                    ExpectedPackageName = request.ExpectedPackageName,
+                    ExpectedRolloutRing = request.ExpectedRolloutRing,
+                    OwnerContract = new PackageUpdaterOwnerContractBinding
+                    {
+                        OwnerRepoId = "rusty-quest",
+                        CapabilityId = "rusty-quest.package-updater",
+                        ManifestEnvelopeSchema =
+                            "rusty.quest.package_update_manifest_envelope.v1",
+                        ReceiptSchema = "rusty.quest.package_update_receipt.v1",
+                        InstallMode = "attended_package_installer",
+                        ApplicationProof = "effective_installed_version_receipt"
+                    },
+                    Targets = preflights
+                },
+                Lifecycle = prepared ? "accepted" : "proposed",
+                MaxParallelism = 1,
+                CleanupRequired = false,
+                Targets = targets
+            };
+        }
+
+        private WindowsHotspotOperation CreateWindowsHotspotOperation(
+            WindowsHotspotPreviewRequest request,
+            bool executed)
+        {
+            const string operationId = "hotspot-operation-0001";
+            const string previewId = "hotspot-preview-0001";
+            const string leaseGeneration = "hotspot-lease-generation-0001";
+            const string ownershipGeneration = "hotspot-owned-generation-0001";
+            var createdAt = Projection.AsOfMs;
+            var active =
+                WindowsHotspotOwnership != WindowsHotspotActions.OwnershipNone;
+            var observedGeneration =
+                WindowsHotspotOwnership == WindowsHotspotActions.OwnershipFleet
+                    ? ownershipGeneration
+                    : null;
+            var actionEligible = request.Action switch
+            {
+                WindowsHotspotActions.Status => true,
+                WindowsHotspotActions.Start or WindowsHotspotActions.Ensure =>
+                    WindowsHotspotOwnership !=
+                    WindowsHotspotActions.OwnershipExternal,
+                WindowsHotspotActions.Stop =>
+                    WindowsHotspotOwnership ==
+                    WindowsHotspotActions.OwnershipFleet,
+                _ => false
+            };
+            var eligible =
+                WindowsHotspotProviderReady &&
+                WindowsHotspotLeaseAvailable &&
+                actionEligible;
+            var reason = !WindowsHotspotProviderReady
+                ? "provider_unavailable"
+                : !WindowsHotspotLeaseAvailable
+                    ? "resource_leased"
+                    : WindowsHotspotOwnership ==
+                      WindowsHotspotActions.OwnershipExternal
+                        ? "external_hotspot_not_owned"
+                        : request.Action == WindowsHotspotActions.Stop &&
+                          !actionEligible
+                            ? "fleet_ownership_required"
+                            : "ready";
+            var lifecycle = eligible
+                ? executed ? "applied" : "proposed"
+                : "rejected";
+            var invocationGeneration = request.Action switch
+            {
+                WindowsHotspotActions.Ensure =>
+                    observedGeneration,
+                WindowsHotspotActions.Stop =>
+                    observedGeneration,
+                _ => null
+            };
+            var invocation = executed
+                ? new WindowsHotspotProviderRequest
+                {
+                    Schema =
+                        "rusty.hostess.windows_hotspot.provider_request.v1",
+                    RequestId = "hotspot-request-0001",
+                    OperationId = operationId,
+                    Action = request.Action,
+                    ExpiresAtUtc = DateTimeOffset
+                        .FromUnixTimeMilliseconds(createdAt + 60_000)
+                        .UtcDateTime
+                        .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"),
+                    TimeoutMs = 30_000,
+                    OwnershipGeneration = invocationGeneration
+                }
+                : null;
+            var receipt = executed
+                ? new WindowsHotspotProviderReceipt
+                {
+                    Schema =
+                        "rusty.hostess.windows_hotspot.provider_receipt.v1",
+                    RequestId = "hotspot-request-0001",
+                    OperationId = operationId,
+                    Action = request.Action,
+                    Outcome = WindowsHotspotActions.ResultVerified,
+                    Reason = "effective_readback_verified",
+                    ObservedAtUtc = DateTimeOffset
+                        .FromUnixTimeMilliseconds(createdAt + 300)
+                        .UtcDateTime
+                        .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"),
+                    CapabilityAvailable = true,
+                    Capability = "Available",
+                    OperationalState =
+                        request.Action == WindowsHotspotActions.Stop
+                            ? "Off"
+                            : request.Action == WindowsHotspotActions.Status
+                                ? active ? "On" : "Off"
+                                : "On",
+                    ClientCount = request.Action == WindowsHotspotActions.Stop
+                        ? 0u
+                        : 1u,
+                    MaxClientCount = 8,
+                    Band = "FiveGigahertz",
+                    SourceConnectivity = "Internet",
+                    OwnershipGeneration = request.Action switch
+                    {
+                        WindowsHotspotActions.Start or
+                        WindowsHotspotActions.Ensure =>
+                            ownershipGeneration,
+                        WindowsHotspotActions.Status =>
+                            observedGeneration,
+                        _ => null
+                    }
+                }
+                : null;
+
+            return new WindowsHotspotOperation
+            {
+                Schema = "rusty.fleet.windows_hotspot_operation.v1",
+                OperationId = operationId,
+                ActionId = WindowsHotspotActions.ActionId,
+                Lifecycle = lifecycle,
+                Preview = new WindowsHotspotPreview
+                {
+                    Schema = "rusty.fleet.windows_hotspot_preview.v1",
+                    PreviewId = previewId,
+                    OperationId = operationId,
+                    ActionId = WindowsHotspotActions.ActionId,
+                    ResourceId = WindowsHotspotActions.ResourceId,
+                    OwnerId = WindowsHotspotActions.OwnerId,
+                    Action = request.Action,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    Preflight = new WindowsHotspotPreflight
+                    {
+                        ProviderReady = WindowsHotspotProviderReady,
+                        LeaseAvailable = WindowsHotspotLeaseAvailable,
+                        Active = active,
+                        Ownership = WindowsHotspotOwnership,
+                        OwnershipGeneration = observedGeneration,
+                        Eligible = eligible,
+                        ReasonCode = reason,
+                        Message = eligible
+                            ? "Host-scoped hotspot operation is ready for explicit confirmation."
+                            : "Host-scoped hotspot operation is not eligible."
+                    }
+                },
+                ConfirmedAtMs = executed ? createdAt + 50 : null,
+                Lease = new WindowsHotspotLease
+                {
+                    Schema = "rusty.fleet.host_resource_lease.v1",
+                    LeaseId = "hotspot-lease-0001",
+                    ResourceId = WindowsHotspotActions.ResourceId,
+                    HolderOperationId = operationId,
+                    Generation = leaseGeneration,
+                    IssuedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000
+                },
+                Invocation = invocation,
+                Receipt = receipt,
+                FailureCode = eligible
+                    ? null
+                    : reason,
+                UpdatedAtMs = createdAt + (executed ? 300 : 10)
+            };
+        }
+
+        private WindowsHotspotOperation ReturnWindowsHotspotOperation()
+        {
+            var operation = LastWindowsHotspotOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic host-hotspot operation was not created");
+            if (!DamageNextWindowsHotspotResponse)
+            {
+                return operation;
+            }
+
+            DamageNextWindowsHotspotResponse = false;
+            var damaged = JsonNode.Parse(
+                JsonSerializer.Serialize(operation, FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "synthetic host-hotspot operation could not be cloned");
+            damaged["preview"]!["preview_id"] =
+                "hotspot-preview-damaged";
+            return JsonSerializer.Deserialize<WindowsHotspotOperation>(
+                       damaged.ToJsonString(),
+                       FleetJson.Options) ??
+                   throw new InvalidOperationException(
+                       "damaged host-hotspot operation could not be projected");
+        }
+
+        private QuestAwakeOperation CreateQuestAwakeOperation(
+            QuestAwakePreviewRequest request,
+            bool executed)
+        {
+            var identities = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal);
+            foreach (var target in request.Targets)
+            {
+                identities.Add(target.Key, target.Value);
+            }
+            var createdAt = Projection.AsOfMs;
+            var operationId = "awake-operation-0001";
+            var previewId = "awake-preview-0001";
+            var generation = "awake-generation-0001";
+            var invocationGeneration =
+                executed &&
+                (request.Action is
+                    QuestAwakeActions.StopWatchdogs or
+                    QuestAwakeActions.RestoreNormal) &&
+                QuestAwakeInvocationGenerationOverride is not null
+                    ? QuestAwakeInvocationGenerationOverride
+                    : generation;
+            var preflights = identities
+                .Select((identity, index) =>
+                    new QuestAwakeTargetPreflight
+                    {
+                        DeviceId = identity.Key,
+                        IdentityRevision = identity.Value,
+                        CapabilityId =
+                            "questionable-file-manager.quest-awake-provider",
+                        CapabilityEvidenceRevision = (ulong)(91 + index),
+                        CapabilityOwner = "questionable-file-manager",
+                        Support = "supported",
+                        Enablement = "enabled",
+                        Authorization = "authorized",
+                        Reachability = "reachable",
+                        Freshness = "current",
+                        ObservedAtMs = createdAt - 100,
+                        FreshUntilMs = createdAt + 30_000,
+                        EvaluatedAtMs = createdAt,
+                        Eligible = true,
+                        ReasonCode = "ready",
+                        Message = "Pinned headset awake provider is current and ready."
+                    })
+                .ToArray();
+            var targets = preflights
+                .Select((preflight, index) =>
+                {
+                    var requestId = $"fleetawake-{index + 1:D4}";
+                    var invocation = executed
+                        ? new QuestAwakeOwnerInvocation
+                        {
+                            Schema =
+                                "rusty.fleet.quest_awake_owner_invocation.v1",
+                            RequestId = requestId,
+                            OperationId = operationId,
+                            PreviewId = previewId,
+                            DeviceId = preflight.DeviceId,
+                            IdentityRevision = preflight.IdentityRevision,
+                            Action = request.Action,
+                            DurationMs = request.DurationMs,
+                            WatchdogIntervalMs = request.WatchdogIntervalMs,
+                            WatchdogGeneration = invocationGeneration,
+                            IssuedAtMs = createdAt + 100,
+                            ExpiresAtMs = createdAt + 60_000
+                        }
+                        : null;
+                    var receipt = executed
+                        ? CreateQuestAwakeReceipt(
+                            request,
+                            preflight,
+                            operationId,
+                            previewId,
+                            invocationGeneration,
+                            requestId,
+                            createdAt)
+                        : null;
+                    return new QuestAwakeTargetLedger
+                    {
+                        DeviceId = preflight.DeviceId,
+                        IdentityRevision = preflight.IdentityRevision,
+                        Preflight = preflight,
+                        Lifecycle = executed ? "applied" : "proposed",
+                        Invocation = invocation,
+                        Receipt = receipt,
+                        FailureCode = null,
+                        UpdatedAtMs = createdAt + (executed ? 300 : 10)
+                    };
+                })
+                .ToArray();
+            return new QuestAwakeOperation
+            {
+                Schema = "rusty.fleet.quest_awake_operation.v1",
+                OperationId = operationId,
+                ActionId = QuestAwakeActions.ActionId,
+                Lifecycle = executed ? "applied" : "proposed",
+                Preview = new QuestAwakePreview
+                {
+                    Schema = "rusty.fleet.quest_awake_preview.v1",
+                    PreviewId = previewId,
+                    OperationId = operationId,
+                    ActionId = QuestAwakeActions.ActionId,
+                    Action = request.Action,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    DurationMs = request.DurationMs,
+                    WatchdogIntervalMs = request.WatchdogIntervalMs,
+                    WatchdogGeneration = generation,
+                    Owner = new QuestAwakeOwnerBinding
+                    {
+                        OwnerRepoId = "questionable-file-manager",
+                        CapabilityId =
+                            "questionable-file-manager.quest-awake-provider",
+                        ProviderContract =
+                            "questionable.file_manager.fleet_awake_provider.v1",
+                        ReceiptSchema =
+                            "questionable.file_manager.quest_awake_receipt.v1",
+                        Transport = "pinned_local_subprocess",
+                        ApplicationProof =
+                            "fresh_effective_power_and_watchdog_readback"
+                    },
+                    Targets = preflights
+                },
+                ConfirmedAtMs = executed ? createdAt + 50 : null,
+                Targets = targets,
+                UpdatedAtMs = createdAt + (executed ? 300 : 10)
+            };
+        }
+
+        private static QuestAwakeOwnerReceipt CreateQuestAwakeReceipt(
+            QuestAwakePreviewRequest request,
+            QuestAwakeTargetPreflight preflight,
+            string operationId,
+            string previewId,
+            string generation,
+            string requestId,
+            long createdAt)
+        {
+            var keepAwake = request.Action is
+                QuestAwakeActions.ApplyBounded or
+                QuestAwakeActions.StartWindowsWatchdog or
+                QuestAwakeActions.StartDeviceWatchdog;
+            var windows =
+                request.Action == QuestAwakeActions.StartWindowsWatchdog;
+            var device =
+                request.Action == QuestAwakeActions.StartDeviceWatchdog;
+            var settingsLeft =
+                request.Action == QuestAwakeActions.StopWatchdogs;
+            var restored =
+                request.Action == QuestAwakeActions.RestoreNormal;
+            return new QuestAwakeOwnerReceipt
+            {
+                Schema = "questionable.file_manager.quest_awake_receipt.v1",
+                RequestId = requestId,
+                OperationId = operationId,
+                PreviewId = previewId,
+                DeviceId = preflight.DeviceId,
+                IdentityRevision = preflight.IdentityRevision,
+                Action = request.Action,
+                WatchdogGeneration = generation,
+                RequestedDurationMs = request.DurationMs,
+                RequestedWatchdogIntervalMs = request.WatchdogIntervalMs,
+                StayOnEffective = keepAwake,
+                ProximityHoldEffective = keepAwake,
+                WakeEffective = keepAwake,
+                WindowsWatchdogEffective = windows,
+                DeviceWatchdogEffective = device,
+                SettingsRestored = restored,
+                Effective = true,
+                SettingsLeftUnchanged = settingsLeft,
+                Outcome = request.Action == QuestAwakeActions.Status
+                    ? "Current awake state read"
+                    : "Requested awake state verified",
+                RepairCount = keepAwake ? 1u : 0u,
+                Power = new QuestAwakePowerReadback
+                {
+                    Wakefulness = keepAwake ? "awake" : "asleep",
+                    DisplayState = keepAwake ? "on" : "off",
+                    StayOn = keepAwake,
+                    AutoSleepDisabled = keepAwake,
+                    ProximityState = keepAwake ? "close" : "open",
+                    ProximityHoldDurationMs = keepAwake
+                        ? request.DurationMs
+                        : null,
+                    ProximityHoldRemainingMs = keepAwake
+                        ? request.DurationMs - 1_000
+                        : null,
+                    CapturedAtMs = createdAt + 300
+                },
+                DeviceWatchdog = new QuestAwakeWatchdogReadback
+                {
+                    ReportedActive = device,
+                    Fresh = device,
+                    Generation = device ? generation : string.Empty,
+                    BootIdSha256 = new string('b', 64),
+                    IntervalMs = device ? request.WatchdogIntervalMs : 0,
+                    LastPollMs = device ? createdAt + 250 : 0,
+                    ProximityRepairCount = device ? 1u : 0u,
+                    StayOnRepairCount = 0,
+                    WakeRepairCount = 0,
+                    LastAction = device ? "proximity repaired" : "inactive",
+                    LastError = string.Empty
+                },
+                EvidenceSha256 = new string('a', 64),
+                ObservedAtMs = createdAt + 300
+            };
+        }
+
+        private PackageInstallReleaseOperation ReturnPackageOperation()
+        {
+            var operation = LastPackageOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic package operation was not created");
+            if (!DamageNextPackageOperationResponse)
+            {
+                return operation;
+            }
+
+            DamageNextPackageOperationResponse = false;
+            var targets = operation.Targets.ToArray();
+            var first = targets[0];
+            targets[0] = new PackageInstallTargetLedger
+            {
+                DeviceId = first.DeviceId,
+                IdentityRevision = first.IdentityRevision + 1,
+                Preflight = first.Preflight,
+                Lifecycle = first.Lifecycle,
+                Stage = first.Stage,
+                Invocation = first.Invocation,
+                InvocationAcknowledgement = first.InvocationAcknowledgement,
+                EffectiveReceipt = first.EffectiveReceipt,
+                ReasonCode = first.ReasonCode,
+                Message = first.Message,
+                LastTransitionMs = first.LastTransitionMs
+            };
+            return new PackageInstallReleaseOperation
+            {
+                Schema = operation.Schema,
+                OperationId = operation.OperationId,
+                ActionId = operation.ActionId,
+                CreatedAtMs = operation.CreatedAtMs,
+                Preview = operation.Preview,
+                Lifecycle = operation.Lifecycle,
+                MaxParallelism = operation.MaxParallelism,
+                CleanupRequired = operation.CleanupRequired,
+                Targets = targets
+            };
+        }
+
+        private QuestAwakeOperation ReturnQuestAwakeOperation()
+        {
+            var operation = LastQuestAwakeOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic awake-control operation was not created");
+            if (DamageNextQuestAwakeReceiptGeneration)
+            {
+                DamageNextQuestAwakeReceiptGeneration = false;
+                var damaged = JsonNode.Parse(
+                    JsonSerializer.Serialize(operation, FleetJson.Options)) ??
+                    throw new InvalidOperationException(
+                        "synthetic awake-control operation could not be cloned");
+                damaged["targets"]![0]!["receipt"]!["watchdog_generation"] =
+                    "mismatched-observed-generation";
+                return JsonSerializer.Deserialize<QuestAwakeOperation>(
+                           damaged.ToJsonString(),
+                           FleetJson.Options) ??
+                       throw new InvalidOperationException(
+                           "damaged awake-control operation could not be projected");
+            }
+            if (!DamageNextQuestAwakeResponse)
+            {
+                return operation;
+            }
+
+            DamageNextQuestAwakeResponse = false;
+            var targets = operation.Targets.ToArray();
+            var first = targets[0];
+            targets[0] = new QuestAwakeTargetLedger
+            {
+                DeviceId = first.DeviceId,
+                IdentityRevision = first.IdentityRevision + 1,
+                Preflight = first.Preflight,
+                Lifecycle = first.Lifecycle,
+                Invocation = first.Invocation,
+                Receipt = first.Receipt,
+                FailureCode = first.FailureCode,
+                UpdatedAtMs = first.UpdatedAtMs
+            };
+            return new QuestAwakeOperation
+            {
+                Schema = operation.Schema,
+                OperationId = operation.OperationId,
+                ActionId = operation.ActionId,
+                Lifecycle = operation.Lifecycle,
+                Preview = operation.Preview,
+                ConfirmedAtMs = operation.ConfirmedAtMs,
+                Targets = targets,
+                UpdatedAtMs = operation.UpdatedAtMs
+            };
+        }
+
+        private QuestWifiAdbOperation CreateQuestWifiAdbOperation(
+            QuestWifiAdbPreviewRequest request,
+            bool executed)
+        {
+            var identities = new SortedDictionary<string, ulong>(
+                StringComparer.Ordinal);
+            foreach (var target in request.Targets)
+            {
+                identities.Add(target.Key, target.Value);
+            }
+
+            var createdAt = Projection.AsOfMs;
+            var operationId = "wifi-adb-operation-0001";
+            var previewId = "wifi-adb-preview-0001";
+            var preflights = identities
+                .Select((identity, index) =>
+                    new QuestWifiAdbTargetPreflight
+                    {
+                        DeviceId = identity.Key,
+                        IdentityRevision = identity.Value,
+                        CapabilityId =
+                            "questionable-file-manager.quest-wifi-adb-provider",
+                        CapabilityEvidenceRevision = (ulong)(121 + index),
+                        CapabilityOwner = "questionable-file-manager",
+                        Support = "supported",
+                        Enablement = "enabled",
+                        Authorization = "authorized",
+                        Reachability = "reachable",
+                        Freshness = "current",
+                        ObservedAtMs = createdAt - 100,
+                        FreshUntilMs = createdAt + 30_000,
+                        EvaluatedAtMs = createdAt,
+                        Eligible = true,
+                        ReasonCode = "ready",
+                        Message =
+                            "Pinned Quest connectivity provider is current and ready."
+                    })
+                .ToArray();
+            var targets = preflights
+                .Select((preflight, index) =>
+                {
+                    var requestId = $"fleetwifi-{index + 1:D4}";
+                    var invocation = executed
+                        ? new QuestWifiAdbOwnerInvocation
+                        {
+                            Schema =
+                                "rusty.fleet.quest_wifi_adb_owner_invocation.v1",
+                            RequestId = requestId,
+                            OperationId = operationId,
+                            PreviewId = previewId,
+                            DeviceId = preflight.DeviceId,
+                            IdentityRevision = preflight.IdentityRevision,
+                            Action = request.Action,
+                            IssuedAtMs = createdAt + 100,
+                            ExpiresAtMs = createdAt + 60_000
+                        }
+                        : null;
+                    var receipt = executed
+                        ? CreateQuestWifiAdbReceipt(
+                            request.Action,
+                            preflight,
+                            operationId,
+                            previewId,
+                            requestId,
+                            createdAt)
+                        : null;
+                    var proof = executed &&
+                                request.Action ==
+                                QuestWifiAdbActions.RequestWirelessAdb
+                        ? new QuestWifiAdbTermuxProof
+                        {
+                            Schema =
+                                "rusty.fleet.quest_wifi_adb_termux_proof.v1",
+                            ProofId = $"termux-proof-{index + 1:D4}",
+                            OwnerId = "quest-termux-lab.loopback-proof",
+                            DeviceId = preflight.DeviceId,
+                            IdentityRevision = preflight.IdentityRevision,
+                            SourceEpoch = "boot-epoch-connectivity-0001",
+                            SourceRevision = (ulong)(501 + index),
+                            RouteMode = "modern_tls",
+                            DiscoveryMode = "tls_nsd",
+                            ListenerDiscovered = true,
+                            ShellIdentity = "uid=2000(shell)",
+                            Available = true,
+                            EvidenceSha256 = new string('c', 64),
+                            ObservedAtMs = createdAt + 400,
+                            FreshUntilMs = createdAt + 60_400
+                        }
+                        : null;
+                    return new QuestWifiAdbTargetLedger
+                    {
+                        DeviceId = preflight.DeviceId,
+                        IdentityRevision = preflight.IdentityRevision,
+                        Preflight = preflight,
+                        Lifecycle = executed ? "applied" : "proposed",
+                        Invocation = invocation,
+                        Receipt = receipt,
+                        TermuxProof = proof,
+                        TermuxUsable = proof?.Available == true,
+                        FailureCode = null,
+                        UpdatedAtMs = createdAt + (proof is null ? 300 : 400)
+                    };
+                })
+                .ToArray();
+            return new QuestWifiAdbOperation
+            {
+                Schema = "rusty.fleet.quest_wifi_adb_operation.v1",
+                OperationId = operationId,
+                ActionId = QuestWifiAdbActions.ActionId,
+                Lifecycle = executed ? "applied" : "proposed",
+                Preview = new QuestWifiAdbPreview
+                {
+                    Schema = "rusty.fleet.quest_wifi_adb_preview.v1",
+                    PreviewId = previewId,
+                    OperationId = operationId,
+                    ActionId = QuestWifiAdbActions.ActionId,
+                    Action = request.Action,
+                    CreatedAtMs = createdAt,
+                    ExpiresAtMs = createdAt + 60_000,
+                    FleetRevision = Projection.ResultRevision,
+                    Owner = new QuestWifiAdbOwnerBinding
+                    {
+                        OwnerRepoId = "questionable-file-manager",
+                        CapabilityId =
+                            "questionable-file-manager.quest-wifi-adb-provider",
+                        ProviderContract =
+                            "questionable.file_manager.fleet_connectivity_provider.v1",
+                        ReceiptSchema =
+                            "questionable.file_manager.quest_wifi_adb_receipt.v1",
+                        Transport = "pinned_local_subprocess",
+                        PrivateTargetResolution =
+                            "provider_owned_credential_profile"
+                    },
+                    Targets = preflights
+                },
+                ConfirmedAtMs = executed ? createdAt + 50 : null,
+                Targets = targets,
+                UpdatedAtMs = createdAt +
+                              (executed &&
+                               request.Action ==
+                               QuestWifiAdbActions.RequestWirelessAdb
+                                  ? 400
+                                  : 300)
+            };
+        }
+
+        private static QuestWifiAdbOwnerReceipt CreateQuestWifiAdbReceipt(
+            string action,
+            QuestWifiAdbTargetPreflight preflight,
+            string operationId,
+            string previewId,
+            string requestId,
+            long createdAt)
+        {
+            var requestWireless =
+                action == QuestWifiAdbActions.RequestWirelessAdb;
+            var classic =
+                action == QuestWifiAdbActions.EnableClassicTcpipFromUsb;
+            var kiosk = !classic && action != QuestWifiAdbActions.Status;
+            return new QuestWifiAdbOwnerReceipt
+            {
+                Schema =
+                    "questionable.file_manager.quest_wifi_adb_receipt.v1",
+                RequestId = requestId,
+                OperationId = operationId,
+                PreviewId = previewId,
+                DeviceId = preflight.DeviceId,
+                IdentityRevision = preflight.IdentityRevision,
+                Action = action,
+                RouteMode = requestWireless
+                    ? "modern_tls"
+                    : classic
+                        ? "classic_tcpip"
+                        : "none",
+                RequestDelivered = true,
+                KioskSettingApplied = kiosk,
+                RequestAfterBootEnabled = action switch
+                {
+                    QuestWifiAdbActions.EnableRequestAfterBoot => true,
+                    QuestWifiAdbActions.DisableRequestAfterBoot => false,
+                    _ => null
+                },
+                WearerApproval = requestWireless
+                    ? "pending"
+                    : classic
+                        ? "not_applicable"
+                        : "unknown",
+                ListenerDiscovered = requestWireless || classic,
+                EffectApplied = true,
+                Outcome = action switch
+                {
+                    QuestWifiAdbActions.Status =>
+                        "Current connectivity facts read",
+                    QuestWifiAdbActions.RequestWirelessAdb =>
+                        "Wireless ADB requested; wearer approval remains pending",
+                    QuestWifiAdbActions.EnableRequestAfterBoot =>
+                        "After-boot request enabled",
+                    QuestWifiAdbActions.DisableRequestAfterBoot =>
+                        "After-boot request disabled",
+                    QuestWifiAdbActions.DisableWirelessAdb =>
+                        "Wireless ADB disabled",
+                    _ => "Classic USB tcpip listener observed"
+                },
+                EvidenceSha256 = new string('d', 64),
+                ObservedAtMs = createdAt + 300
+            };
+        }
+
+        private QuestWifiAdbOperation ReturnQuestWifiAdbOperation()
+        {
+            var operation = LastQuestWifiAdbOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic connectivity operation was not created");
+            if (!DamageNextQuestWifiAdbResponse)
+            {
+                return operation;
+            }
+
+            DamageNextQuestWifiAdbResponse = false;
+            var damaged = JsonNode.Parse(
+                JsonSerializer.Serialize(operation, FleetJson.Options)) ??
+                throw new InvalidOperationException(
+                    "synthetic connectivity operation could not be cloned");
+            damaged["targets"]![0]!["identity_revision"] =
+                operation.Targets[0].IdentityRevision + 1;
+            return JsonSerializer.Deserialize<QuestWifiAdbOperation>(
+                       damaged.ToJsonString(),
+                       FleetJson.Options) ??
+                   throw new InvalidOperationException(
+                       "damaged connectivity operation could not be projected");
         }
 
         private static KioskOwnerContractBinding CreateOwnerContract() =>

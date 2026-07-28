@@ -4,16 +4,31 @@
 //! Versioned source-only contracts shared by the Hub, simulator, CLI, and
 //! future operator projections.
 
+mod awake;
 mod capability;
 mod checkin;
 mod command;
 mod condition;
 mod identity;
 mod kiosk;
+mod packages;
 mod projection;
 mod query;
 mod stream;
+mod wifi_adb;
+mod windows_hotspot;
 
+pub use awake::{
+    QUEST_AWAKE_ACTION_ID, QUEST_AWAKE_CAPABILITY_ID, QUEST_AWAKE_DEFAULT_WATCHDOG_INTERVAL_MS,
+    QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA, QUEST_AWAKE_MAX_DURATION_MS,
+    QUEST_AWAKE_MAX_WATCHDOG_INTERVAL_MS, QUEST_AWAKE_MIN_DURATION_MS,
+    QUEST_AWAKE_MIN_WATCHDOG_INTERVAL_MS, QUEST_AWAKE_OPERATION_SCHEMA, QUEST_AWAKE_OWNER,
+    QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA, QUEST_AWAKE_PROVIDER_CONTRACT, QUEST_AWAKE_RECEIPT_SCHEMA,
+    QuestAwakeAction, QuestAwakeExecuteRequest, QuestAwakeOperation, QuestAwakeOwnerBinding,
+    QuestAwakeOwnerInvocation, QuestAwakeOwnerReceipt, QuestAwakePowerReadback, QuestAwakePreview,
+    QuestAwakePreviewRequest, QuestAwakeTargetLedger, QuestAwakeTargetPreflight,
+    QuestAwakeWatchdogReadback,
+};
 pub use capability::{
     AuthorizationState, CapabilitySnapshot, CapabilityState, EnablementState, FreshnessState,
     ReachabilityState, SupportState,
@@ -43,6 +58,23 @@ pub use kiosk::{
     OPERATION_EXECUTE_REQUEST_SCHEMA, OPERATION_PREVIEW_REQUEST_SCHEMA, OperationExecuteRequest,
     OperationPreviewRequest,
 };
+pub use packages::{
+    AuthenticatedPackageUpdaterAcknowledgement, AuthenticatedPackageUpdaterReceipt,
+    ConsumedPackageUpdaterClaimIdentity, MAX_CONSUMED_PACKAGE_OWNER_CLAIMS,
+    PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_INSTALL_PREVIEW_REQUEST_SCHEMA,
+    PACKAGE_UPDATE_MANIFEST_ENVELOPE_SCHEMA, PACKAGE_UPDATE_RECEIPT_SCHEMA,
+    PACKAGE_UPDATER_ACK_SCHEMA, PACKAGE_UPDATER_CAPABILITY_ID,
+    PACKAGE_UPDATER_CLAIM_REQUEST_SCHEMA, PACKAGE_UPDATER_CLAIM_SCHEMA,
+    PACKAGE_UPDATER_OFFER_SCHEMA, PACKAGE_UPDATER_OWNER, PACKAGE_UPDATER_RECEIPT_SUBMISSION_SCHEMA,
+    PACKAGES_INSTALL_RELEASE_ACTION_ID, PackageInstallReleaseExecuteRequest,
+    PackageInstallReleaseOperation, PackageInstallReleasePreview,
+    PackageInstallReleasePreviewRequest, PackageInstallStage, PackageInstallTargetLedger,
+    PackageInstallTargetPreflight, PackageReleaseReference, PackageUpdateCheckpoint,
+    PackageUpdateReceipt, PackageUpdateReceiptDecision, PackageUpdateReceiptStage,
+    PackageUpdaterClaim, PackageUpdaterClaimRequest, PackageUpdaterEffectiveReceipt,
+    PackageUpdaterInvocation, PackageUpdaterInvocationAcknowledgement, PackageUpdaterOffer,
+    PackageUpdaterOwnerContractBinding, PackageUpdaterReceiptSubmission,
+};
 pub use projection::{
     DeviceDetailProjection, DeviceInspectorProjection, DeviceRowProjection, FleetQueryResult,
     FleetSummaryProjection, NavigationRestoration, ProjectionFreshness, SavedView,
@@ -59,6 +91,28 @@ pub use stream::{
     QueueLimits, RecordingArtifact, RecordingArtifactState, SelectionMethod, SourceSelection,
     StreamDescriptor, StreamPlane, StreamSemantic, TimingCorrelation, TimingDomain,
     TimingTransform,
+};
+pub use wifi_adb::{
+    QUEST_WIFI_ADB_ACTION_ID, QUEST_WIFI_ADB_CAPABILITY_ID, QUEST_WIFI_ADB_EXECUTE_REQUEST_SCHEMA,
+    QUEST_WIFI_ADB_OPERATION_SCHEMA, QUEST_WIFI_ADB_OWNER, QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA,
+    QUEST_WIFI_ADB_PROVIDER_CONTRACT, QUEST_WIFI_ADB_RECEIPT_SCHEMA,
+    QUEST_WIFI_ADB_TERMUX_ADMISSION_SCHEMA, QUEST_WIFI_ADB_TERMUX_CAPABILITY_ID,
+    QUEST_WIFI_ADB_TERMUX_PROOF_OWNER, QUEST_WIFI_ADB_TERMUX_PROOF_SCHEMA, QuestWifiAdbAction,
+    QuestWifiAdbExecuteRequest, QuestWifiAdbOperation, QuestWifiAdbOwnerBinding,
+    QuestWifiAdbOwnerInvocation, QuestWifiAdbOwnerReceipt, QuestWifiAdbPreview,
+    QuestWifiAdbPreviewRequest, QuestWifiAdbRouteMode, QuestWifiAdbTargetLedger,
+    QuestWifiAdbTargetPreflight, QuestWifiAdbTermuxAdmission, QuestWifiAdbTermuxProof,
+    QuestWifiAdbWearerApproval, TERMUX_ADB_SHELL_IDENTITY,
+};
+pub use windows_hotspot::{
+    WINDOWS_HOTSPOT_ACTION_ID, WINDOWS_HOTSPOT_EXECUTE_REQUEST_SCHEMA,
+    WINDOWS_HOTSPOT_LEASE_SCHEMA, WINDOWS_HOTSPOT_OPERATION_SCHEMA, WINDOWS_HOTSPOT_OWNER,
+    WINDOWS_HOTSPOT_PREVIEW_REQUEST_SCHEMA, WINDOWS_HOTSPOT_PROVIDER_FILE,
+    WINDOWS_HOTSPOT_PROVIDER_RECEIPT_SCHEMA, WINDOWS_HOTSPOT_PROVIDER_REQUEST_SCHEMA,
+    WINDOWS_HOTSPOT_RESOURCE_ID, WindowsHotspotAction, WindowsHotspotExecuteRequest,
+    WindowsHotspotLease, WindowsHotspotOperation, WindowsHotspotOwnership, WindowsHotspotPreflight,
+    WindowsHotspotPreview, WindowsHotspotPreviewRequest, WindowsHotspotProviderReceipt,
+    WindowsHotspotProviderRequest, WindowsHotspotResult,
 };
 
 use serde::{Deserialize, Serialize};

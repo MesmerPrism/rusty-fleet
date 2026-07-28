@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MesmerPrism/rusty-fleet/schemas/rusty.hostess.windows_hotspot.provider_request.v1.schema.json",
+  "title": "Rusty Hostess Windows hotspot provider request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "request_id",
+    "operation_id",
+    "action",
+    "expires_at_utc",
+    "timeout_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.hostess.windows_hotspot.provider_request.v1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "action": {
+      "enum": ["status", "start", "ensure", "stop"]
+    },
+    "expires_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 120000
+    },
+    "ownership_generation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  }
+}

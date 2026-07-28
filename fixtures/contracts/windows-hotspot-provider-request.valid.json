@@ -1,0 +1,9 @@
+{
+  "schema": "rusty.hostess.windows_hotspot.provider_request.v1",
+  "request_id": "hotspot-request-015f5e06a58b4df5",
+  "operation_id": "hotspot-operation-f8a78df452465fd1",
+  "action": "stop",
+  "expires_at_utc": "2026-07-27T14:30:00.0000000Z",
+  "timeout_ms": 30000,
+  "ownership_generation": "8e51ad7cc3584994834198113a46daed"
+}

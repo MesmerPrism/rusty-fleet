@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path as FilePath, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -22,19 +22,50 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use fleet_contracts::{
+    AuthenticatedPackageUpdaterAcknowledgement, AuthenticatedPackageUpdaterReceipt,
     CommandLifecycle, FleetQuery, OperationExecuteRequest, OperationPreviewRequest,
+    PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_UPDATER_CLAIM_SCHEMA,
+    PackageInstallReleaseExecuteRequest, PackageInstallReleasePreviewRequest,
+    PackageReleaseReference, PackageUpdaterClaim, PackageUpdaterClaimRequest, PackageUpdaterOffer,
+    QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA, QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA,
+    QUEST_WIFI_ADB_EXECUTE_REQUEST_SCHEMA, QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA, QuestAwakeAction,
+    QuestAwakeExecuteRequest, QuestAwakeOwnerInvocation, QuestAwakePreviewRequest,
+    QuestWifiAdbAction, QuestWifiAdbExecuteRequest, QuestWifiAdbOperation,
+    QuestWifiAdbOwnerInvocation, QuestWifiAdbOwnerReceipt, QuestWifiAdbPreviewRequest,
     SavedViewMutationRequest, SignedFleetCheckIn, ValidateContract,
+    WINDOWS_HOTSPOT_EXECUTE_REQUEST_SCHEMA, WINDOWS_HOTSPOT_PREVIEW_REQUEST_SCHEMA,
+    WindowsHotspotExecuteRequest, WindowsHotspotPreviewRequest,
 };
-use fleet_hub::{FleetApi, FleetHub, FleetHubSnapshot, HubPolicy, KioskShowControlsPreviewPlan};
+use fleet_hub::{
+    FleetApi, FleetHub, FleetHubSnapshot, HubPolicy, KioskShowControlsPreviewPlan,
+    PackageInstallReleasePreviewPlan, QuestAwakePreviewPlan, QuestWifiAdbPreviewPlan,
+    WindowsHotspotPreviewPlan,
+};
 use fleet_kiosk_adapter::{
     AdapterError, FleetKioskAdapter, HttpMethod, KioskAdapterLimits, KioskHttpRequest,
     KioskHttpResponse, KioskShowControlsRequest, KioskTransport, RawOwnerReceiptEvidence,
     TransportRequestIdSource, sha256_hex, validate_kiosk_endpoint,
 };
+use fleet_manifold_adapter::QuestAwakeCommandAuthorization;
 use fleet_manifold_adapter::{
     FleetManifoldAdapter, FleetManifoldAdapterSnapshot, KioskShowControlsCommandAuthorization,
-    kiosk_manifold_request_id,
+    PackageInstallReleaseCommandAuthorization, QuestWifiAdbCommandAuthorization,
+    WindowsHotspotCommandAuthorization, kiosk_manifold_request_id, package_manifold_request_id,
+    quest_awake_manifold_request_id, quest_wifi_adb_manifold_request_id,
+    windows_hotspot_manifold_request_id,
 };
+use fleet_package_updater_adapter::{PackageUpdaterAdapterLimits, PackageUpdaterOwnerAdapter};
+use fleet_provider_catalog::{
+    CATALOG_SCHEMA, CONTRACT_SOURCE_COMMIT, CatalogState, ProviderCatalog, ProviderCatalogConfig,
+    ProviderCatalogEntry, ProviderCatalogProjection,
+};
+use fleet_quest_awake_adapter::{
+    QuestAwakeOwnerAdapter, QuestAwakePinnedArtifact, QuestAwakeProviderConfig,
+};
+use fleet_quest_connectivity_adapter::{
+    QuestConnectivityOwnerAdapter, QuestConnectivityProviderConfig,
+};
+use fleet_windows_hotspot_adapter::{WindowsHotspotOwnerAdapter, WindowsHotspotProviderConfig};
 use rusty_manifold_model::{DottedId, SchemaId};
 use rusty_manifold_peer::{
     ManifoldPeerCredentialRecord, ManifoldPeerCredentialStatus, ManifoldPeerEnrollmentAction,
@@ -42,7 +73,7 @@ use rusty_manifold_peer::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot, watch};
 use tokio::time::timeout;
 use tower::limit::GlobalConcurrencyLimitLayer;
 
@@ -51,12 +82,15 @@ const HEALTH_SCHEMA: &str = "rusty.fleet.local_hub_health.v1";
 const ERROR_SCHEMA: &str = "rusty.fleet.local_api_error.v1";
 const STATE_SCHEMA: &str = "rusty.fleet.local_hub_durable_state.v1";
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CONCURRENT_AWAKE_PROVIDER_CALLS: usize = 8;
+const MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS: usize = 8;
 const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHECKIN_BYTES: usize = 256 * 1024;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_SAVED_VIEW_BYTES: usize = 128 * 1024;
 const MAX_OPERATION_BYTES: usize = 128 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 64;
+const MAX_CONCURRENT_CHECKIN_LISTENER_REQUESTS: usize = 16;
 const RATE_WINDOW_MS: i64 = 10_000;
 const MAX_GLOBAL_CHECKINS_PER_WINDOW: usize = 4_096;
 const MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW: usize = 8;
@@ -64,9 +98,18 @@ const BODY_DEADLINE: Duration = Duration::from_secs(5);
 const OPERATION_PREVIEW_LIFETIME_MS: i64 = 60_000;
 const DEFAULT_OPERATION_PARALLELISM: u16 = 8;
 const DEFAULT_OPERATION_ATTEMPTS: u8 = 3;
+const PACKAGE_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
+const DEFAULT_PACKAGE_OPERATION_PARALLELISM: u16 = 8;
+const PACKAGE_OWNER_CLAIM_LIFETIME_MS: i64 = 60_000;
+const AWAKE_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
+const WIFI_ADB_OPERATION_PREVIEW_LIFETIME_MS: i64 = 15 * 60_000;
+const WINDOWS_HOTSPOT_PREVIEW_LIFETIME_MS: i64 = 5 * 60_000;
+const AWAKE_WATCHDOG_AUTHORIZATION_LIFETIME_MS: u64 = 15 * 60_000;
+const AWAKE_WATCHDOG_AUTHORIZATION_RENEWAL_MARGIN_MS: u64 = 30_000;
 
 static OPERATION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TRANSPORT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static AWAKE_AUTHORIZATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static TRANSPORT_BOOT_NAMESPACE: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +160,118 @@ pub struct ConfiguredKioskDirectOperator {
     pub pairing_key: String,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredPackageUpdaterOwner {
+    pub owner_id: String,
+    pub bearer_token: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredQuestAwakeTarget {
+    pub device_id: String,
+    pub serial: String,
+}
+
+impl std::fmt::Debug for ConfiguredQuestAwakeTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredQuestAwakeTarget")
+            .field("device_id", &self.device_id)
+            .field("serial", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredQuestAwakeProvider {
+    pub executable_path: PathBuf,
+    pub executable_sha256: String,
+    pub adb_executable_path: PathBuf,
+    pub adb_executable_sha256: String,
+    pub adb_support_artifacts: Vec<ConfiguredQuestAwakePinnedArtifact>,
+    pub private_stage_root: PathBuf,
+    pub targets: Vec<ConfiguredQuestAwakeTarget>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredQuestAwakePinnedArtifact {
+    pub source_path: PathBuf,
+    pub sha256: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredQuestConnectivityProvider {
+    pub executable_path: PathBuf,
+    pub executable_sha256: String,
+    pub private_stage_root: PathBuf,
+    pub targets: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfiguredWindowsHotspotProvider {
+    pub executable_path: PathBuf,
+    pub executable_sha256: String,
+    pub private_stage_root: PathBuf,
+}
+
+impl std::fmt::Debug for ConfiguredWindowsHotspotProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredWindowsHotspotProvider")
+            .field("executable_path", &"[private]")
+            .field("executable_sha256", &self.executable_sha256)
+            .field("private_stage_root", &"[private]")
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ConfiguredQuestConnectivityProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredQuestConnectivityProvider")
+            .field("executable_path", &"[private]")
+            .field("executable_sha256", &self.executable_sha256)
+            .field("private_stage_root", &"[private]")
+            .field("targets", &self.targets)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ConfiguredQuestAwakePinnedArtifact {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredQuestAwakePinnedArtifact")
+            .field("source_path", &"[private]")
+            .field("sha256", &self.sha256)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ConfiguredQuestAwakeProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredQuestAwakeProvider")
+            .field("executable_path", &"[private]")
+            .field("executable_sha256", &self.executable_sha256)
+            .field("adb_executable_path", &"[private]")
+            .field("adb_executable_sha256", &self.adb_executable_sha256)
+            .field("adb_support_artifacts", &self.adb_support_artifacts)
+            .field("private_stage_root", &"[private]")
+            .field("targets", &self.targets)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ConfiguredPackageUpdaterOwner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfiguredPackageUpdaterOwner")
+            .field("owner_id", &self.owner_id)
+            .field("bearer_token", &"[redacted]")
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for ConfiguredKioskDirectOperator {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -134,12 +289,26 @@ pub struct LocalHubConfig {
     pub bind: String,
     #[serde(default)]
     pub allow_non_loopback: bool,
+    #[serde(default)]
+    pub checkin_bind: Option<String>,
+    #[serde(default)]
+    pub allow_non_loopback_checkin: bool,
     pub state_directory: PathBuf,
     pub trusted_operator_ids: Vec<DottedId>,
     #[serde(default)]
     pub enrollments: Vec<ConfiguredEnrollment>,
     #[serde(default)]
     pub kiosk_direct_operators: Vec<ConfiguredKioskDirectOperator>,
+    #[serde(default)]
+    pub package_updater_owner: Option<ConfiguredPackageUpdaterOwner>,
+    #[serde(default)]
+    pub quest_awake_provider: Option<ConfiguredQuestAwakeProvider>,
+    #[serde(default)]
+    pub quest_connectivity_provider: Option<ConfiguredQuestConnectivityProvider>,
+    #[serde(default)]
+    pub windows_hotspot_provider: Option<ConfiguredWindowsHotspotProvider>,
+    #[serde(default)]
+    pub provider_catalog: Vec<ProviderCatalogConfig>,
     #[serde(default)]
     pub hub_policy: LocalHubPolicy,
 }
@@ -157,6 +326,43 @@ impl LocalHubConfig {
             return Err(
                 "non-loopback binding requires explicit allow_non_loopback=true".to_owned(),
             );
+        }
+        if self.package_updater_owner.is_some() && !bind.ip().is_loopback() {
+            return Err("package updater owner ingress requires a loopback bind".to_owned());
+        }
+        if self.quest_awake_provider.is_some() && !bind.ip().is_loopback() {
+            return Err("Quest awake provider requires a loopback Hub bind".to_owned());
+        }
+        if self.quest_connectivity_provider.is_some() && !bind.ip().is_loopback() {
+            return Err("Quest connectivity provider requires a loopback Hub bind".to_owned());
+        }
+        if self.windows_hotspot_provider.is_some() && !bind.ip().is_loopback() {
+            return Err("Windows hotspot provider requires a loopback Hub bind".to_owned());
+        }
+        if let Some(checkin_bind) = self.checkin_socket()? {
+            if checkin_bind == bind {
+                return Err("checkin_bind must not collide with the operator/API bind".to_owned());
+            }
+            if !checkin_bind.ip().is_loopback() && !self.allow_non_loopback_checkin {
+                return Err(
+                    "non-loopback checkin_bind requires explicit allow_non_loopback_checkin=true"
+                        .to_owned(),
+                );
+            }
+            if checkin_bind.ip().is_loopback()
+                || checkin_bind.ip().is_unspecified()
+                || checkin_bind.ip().is_multicast()
+                || checkin_bind.ip().to_string() == "255.255.255.255"
+            {
+                return Err(
+                    "checkin_bind requires one exact non-loopback unicast interface IP".to_owned(),
+                );
+            }
+        } else if self.allow_non_loopback_checkin {
+            return Err("allow_non_loopback_checkin requires an explicit checkin_bind".to_owned());
+        }
+        if !self.provider_catalog.is_empty() && !bind.ip().is_loopback() {
+            return Err("provider catalog requires a loopback Hub bind".to_owned());
         }
         if !self.state_directory.is_absolute() {
             return Err("state_directory must be an absolute private path".to_owned());
@@ -193,6 +399,114 @@ impl LocalHubConfig {
             validate_kiosk_endpoint(&direct_operator.endpoint)
                 .map_err(|error| format!("invalid Kiosk endpoint: {error}"))?;
         }
+        if let Some(owner) = &self.package_updater_owner
+            && (owner.owner_id != "rusty-quest.package-updater"
+                || owner.bearer_token.len() < 32
+                || owner.bearer_token.len() > 512)
+        {
+            return Err(
+                "package updater owner requires the pinned owner id and a 32..512 byte private bearer token"
+                    .to_owned(),
+            );
+        }
+        if let Some(provider) = &self.quest_awake_provider {
+            QuestAwakeProviderConfig {
+                executable_path: provider.executable_path.clone(),
+                executable_sha256: provider.executable_sha256.clone(),
+                adb_executable_path: provider.adb_executable_path.clone(),
+                adb_executable_sha256: provider.adb_executable_sha256.clone(),
+                adb_support_artifacts: provider
+                    .adb_support_artifacts
+                    .iter()
+                    .map(|artifact| QuestAwakePinnedArtifact {
+                        source_path: artifact.source_path.clone(),
+                        sha256: artifact.sha256.clone(),
+                    })
+                    .collect(),
+                private_stage_root: provider.private_stage_root.clone(),
+            }
+            .verify_artifacts()
+            .map_err(|error| format!("invalid Quest awake provider: {error}"))?;
+            if provider.targets.is_empty() || provider.targets.len() > 10_000 {
+                return Err(
+                    "Quest awake provider requires 1 through 10,000 exact target bindings"
+                        .to_owned(),
+                );
+            }
+            let mut devices = BTreeSet::new();
+            let mut serials = BTreeSet::new();
+            for target in &provider.targets {
+                if target.device_id.is_empty()
+                    || target.device_id.len() > 256
+                    || target.serial.is_empty()
+                    || target.serial.len() > 256
+                    || target
+                        .serial
+                        .bytes()
+                        .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+                    || !devices.insert(target.device_id.clone())
+                    || !serials.insert(target.serial.clone())
+                {
+                    return Err(
+                        "Quest awake target bindings require unique bounded device IDs and exact serials"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
+        if let Some(provider) = &self.quest_connectivity_provider {
+            QuestConnectivityProviderConfig {
+                executable_path: provider.executable_path.clone(),
+                executable_sha256: provider.executable_sha256.clone(),
+                private_stage_root: provider.private_stage_root.clone(),
+            }
+            .verify_artifact()
+            .map_err(|error| format!("invalid Quest connectivity provider: {error}"))?;
+            let unique = provider.targets.iter().collect::<BTreeSet<_>>();
+            if provider.targets.is_empty()
+                || provider.targets.len() > 10_000
+                || unique.len() != provider.targets.len()
+                || provider.targets.iter().any(|device_id| {
+                    device_id.is_empty()
+                        || device_id.len() > 256
+                        || device_id.bytes().any(|byte| {
+                            !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+                        })
+                })
+            {
+                return Err(
+                    "Quest connectivity provider requires 1 through 10,000 unique portable target IDs"
+                        .to_owned(),
+                );
+            }
+        }
+        if let Some(provider) = &self.windows_hotspot_provider {
+            WindowsHotspotProviderConfig {
+                executable_path: provider.executable_path.clone(),
+                executable_sha256: provider.executable_sha256.clone(),
+                private_stage_root: provider.private_stage_root.clone(),
+            }
+            .verify_artifact()
+            .map_err(|error| format!("invalid Windows hotspot provider: {error}"))?;
+        }
+        if self.provider_catalog.len() > 8 {
+            return Err("provider catalog accepts at most 8 configured slots".to_owned());
+        }
+        let mut catalog_ids = BTreeSet::new();
+        let mut provider_ids = BTreeSet::new();
+        for provider in &self.provider_catalog {
+            provider
+                .validate()
+                .map_err(|error| format!("invalid provider catalog entry: {}", error.code))?;
+            if !catalog_ids.insert(&provider.catalog_id)
+                || !provider_ids.insert(&provider.expected_provider_id)
+            {
+                return Err(
+                    "provider catalog slot and expected provider identities must be unique"
+                        .to_owned(),
+                );
+            }
+        }
         if self.hub_policy.stale_after_ms <= 0
             || self.hub_policy.offline_after_ms <= self.hub_policy.stale_after_ms
             || self.hub_policy.history_limit_per_device == 0
@@ -202,6 +516,49 @@ impl LocalHubConfig {
             return Err("hub policy limits must be positive and freshness ordered".to_owned());
         }
         Ok(bind)
+    }
+
+    /// Validate the complete offline configuration, including every proposed
+    /// enrollment, without opening the durable state directory.
+    ///
+    /// Offline bootstrap tooling must use this owner validator rather than
+    /// hand-asserting that generated JSON will be accepted at runtime.
+    pub fn validate_offline(&self, now_ms: i64) -> Result<SocketAddr, String> {
+        let bind = self.validate()?;
+        let now_unsigned =
+            u64::try_from(now_ms).map_err(|_| "current time must be nonnegative".to_owned())?;
+        let mut adapter = FleetManifoldAdapter::new(self.trusted_operator_ids.clone());
+        for enrollment in &self.enrollments {
+            let request = ManifoldPeerEnrollmentRequest {
+                schema_id: schema_id("rusty.manifold.peer.enrollment_request.v1")?,
+                request_id: enrollment.request_id.clone(),
+                expected_authority_revision: adapter.enrollment().authority_revision,
+                operator_id: enrollment.operator_id.clone(),
+                issued_at_ms: now_unsigned,
+                action: ManifoldPeerEnrollmentAction::Enroll {
+                    credential: enrollment.credential.clone(),
+                },
+            };
+            let receipt = adapter.apply_enrollment(&request, now_unsigned);
+            if !receipt.applied {
+                return Err(format!(
+                    "enrollment {} was rejected: {:?}",
+                    enrollment.request_id, receipt.rejection_reason
+                ));
+            }
+        }
+        Ok(bind)
+    }
+
+    fn checkin_socket(&self) -> Result<Option<SocketAddr>, String> {
+        self.checkin_bind
+            .as_ref()
+            .map(|value| {
+                value
+                    .parse::<SocketAddr>()
+                    .map_err(|error| format!("checkin_bind must be an IP socket address: {error}"))
+            })
+            .transpose()
     }
 }
 
@@ -213,6 +570,32 @@ struct RuntimeState {
     kiosk_direct_operators: BTreeMap<String, ConfiguredKioskDirectOperator>,
     owner_receipts: BTreeMap<String, RawOwnerReceiptEvidence>,
     inflight_kiosk_targets: BTreeSet<(String, String)>,
+    package_updater_adapter: PackageUpdaterOwnerAdapter,
+    package_updater_owner: Option<ConfiguredPackageUpdaterOwner>,
+    quest_awake_provider: Option<ConfiguredQuestAwakeProvider>,
+    quest_awake_adapter: QuestAwakeOwnerAdapter,
+    inflight_awake_targets: BTreeSet<(String, String)>,
+    windows_awake_watchdogs: BTreeMap<String, WindowsAwakeWatchdogControl>,
+    awake_provider_slots: Arc<Semaphore>,
+    awake_device_slots: BTreeMap<String, Arc<Semaphore>>,
+    quest_connectivity_provider: Option<ConfiguredQuestConnectivityProvider>,
+    quest_connectivity_adapter: QuestConnectivityOwnerAdapter,
+    inflight_connectivity_targets: BTreeSet<(String, String)>,
+    connectivity_provider_slots: Arc<Semaphore>,
+    connectivity_device_slots: BTreeMap<String, Arc<Semaphore>>,
+    windows_hotspot_provider: Option<ConfiguredWindowsHotspotProvider>,
+    inflight_windows_hotspot_operations: BTreeSet<String>,
+    provider_catalog_configs: Vec<ProviderCatalogConfig>,
+    provider_catalog_snapshot: ProviderCatalogProjection,
+    provider_catalog_refresh_inflight: bool,
+    provider_catalog_last_refresh_ms: Option<i64>,
+}
+
+#[derive(Clone)]
+struct WindowsAwakeWatchdogControl {
+    generation: String,
+    cancel: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -468,6 +851,22 @@ fn restore_state_candidate(
             }
         }
     }
+    for operation in restored_hub.package_operations() {
+        for target in operation.targets {
+            if let Some(invocation) = target.invocation
+                && !restored_adapter.has_applied_package_authorization(
+                    &operation.operation_id,
+                    &target.device_id,
+                    &invocation.owner_action_request_id,
+                )
+            {
+                return Err(format!(
+                    "package operation {} target {} lacks applied Manifold authority",
+                    operation.operation_id, target.device_id
+                ));
+            }
+        }
+    }
     for operation in restored_hub.kiosk_operations() {
         for target in operation.targets {
             if let Some(receipt) = target.effective_receipt {
@@ -529,10 +928,12 @@ pub struct LocalHubState {
 
 impl LocalHubState {
     pub fn from_config(config: &LocalHubConfig, now_ms: i64) -> Result<Self, String> {
-        config.validate()?;
+        config.validate_offline(now_ms)?;
+        let mut adapter = FleetManifoldAdapter::new(config.trusted_operator_ids.clone());
+        // `validate_offline` proved the same ordered enrollments. Reapply them
+        // to the runtime adapter that will be paired with durable Hub state.
         let now_unsigned =
             u64::try_from(now_ms).map_err(|_| "current time must be nonnegative".to_owned())?;
-        let mut adapter = FleetManifoldAdapter::new(config.trusted_operator_ids.clone());
         for enrollment in &config.enrollments {
             let request = ManifoldPeerEnrollmentRequest {
                 schema_id: schema_id("rusty.manifold.peer.enrollment_request.v1")?,
@@ -546,10 +947,7 @@ impl LocalHubState {
             };
             let receipt = adapter.apply_enrollment(&request, now_unsigned);
             if !receipt.applied {
-                return Err(format!(
-                    "enrollment {} was rejected: {:?}",
-                    enrollment.request_id, receipt.rejection_reason
-                ));
+                return Err("offline-validated enrollment changed before runtime apply".to_owned());
             }
         }
         let mut hub = FleetHub::new(config.hub_policy.clone().into());
@@ -576,6 +974,52 @@ impl LocalHubState {
                 kiosk_direct_operators,
                 owner_receipts,
                 inflight_kiosk_targets: BTreeSet::new(),
+                package_updater_adapter: PackageUpdaterOwnerAdapter::new(
+                    PackageUpdaterAdapterLimits::default(),
+                )
+                .map_err(|error| format!("invalid package updater adapter limits: {error}"))?,
+                package_updater_owner: config.package_updater_owner.clone(),
+                quest_awake_provider: config.quest_awake_provider.clone(),
+                quest_awake_adapter: QuestAwakeOwnerAdapter::default(),
+                inflight_awake_targets: BTreeSet::new(),
+                windows_awake_watchdogs: BTreeMap::new(),
+                awake_provider_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_AWAKE_PROVIDER_CALLS)),
+                awake_device_slots: config
+                    .quest_awake_provider
+                    .as_ref()
+                    .map(|provider| {
+                        provider
+                            .targets
+                            .iter()
+                            .map(|target| (target.device_id.clone(), Arc::new(Semaphore::new(1))))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                quest_connectivity_provider: config.quest_connectivity_provider.clone(),
+                quest_connectivity_adapter: QuestConnectivityOwnerAdapter::default(),
+                inflight_connectivity_targets: BTreeSet::new(),
+                connectivity_provider_slots: Arc::new(Semaphore::new(
+                    MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS,
+                )),
+                connectivity_device_slots: config
+                    .quest_connectivity_provider
+                    .as_ref()
+                    .map(|provider| {
+                        provider
+                            .targets
+                            .iter()
+                            .map(|device_id| (device_id.clone(), Arc::new(Semaphore::new(1))))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                windows_hotspot_provider: config.windows_hotspot_provider.clone(),
+                inflight_windows_hotspot_operations: BTreeSet::new(),
+                provider_catalog_configs: config.provider_catalog.clone(),
+                provider_catalog_snapshot: initial_provider_catalog_snapshot(
+                    &config.provider_catalog,
+                ),
+                provider_catalog_refresh_inflight: false,
+                provider_catalog_last_refresh_ms: None,
             })),
         })
     }
@@ -630,6 +1074,77 @@ impl From<StrictOperationPreviewRequest> for OperationPreviewRequest {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictPackageInstallReleasePreviewRequest {
+    schema: String,
+    action_id: String,
+    release: PackageReleaseReference,
+    expected_package_name: String,
+    expected_rollout_ring: String,
+    #[serde(deserialize_with = "deserialize_unique_targets")]
+    targets: BTreeMap<String, u64>,
+}
+
+impl From<StrictPackageInstallReleasePreviewRequest> for PackageInstallReleasePreviewRequest {
+    fn from(value: StrictPackageInstallReleasePreviewRequest) -> Self {
+        Self {
+            schema: value.schema,
+            action_id: value.action_id,
+            release: value.release,
+            expected_package_name: value.expected_package_name,
+            expected_rollout_ring: value.expected_rollout_ring,
+            targets: value.targets,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictQuestAwakePreviewRequest {
+    schema: String,
+    action_id: String,
+    action: QuestAwakeAction,
+    duration_ms: u32,
+    watchdog_interval_ms: u32,
+    #[serde(deserialize_with = "deserialize_unique_targets")]
+    targets: BTreeMap<String, u64>,
+}
+
+impl From<StrictQuestAwakePreviewRequest> for QuestAwakePreviewRequest {
+    fn from(value: StrictQuestAwakePreviewRequest) -> Self {
+        Self {
+            schema: value.schema,
+            action_id: value.action_id,
+            action: value.action,
+            duration_ms: value.duration_ms,
+            watchdog_interval_ms: value.watchdog_interval_ms,
+            targets: value.targets,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictQuestWifiAdbPreviewRequest {
+    schema: String,
+    action_id: String,
+    action: QuestWifiAdbAction,
+    #[serde(deserialize_with = "deserialize_unique_targets")]
+    targets: BTreeMap<String, u64>,
+}
+
+impl From<StrictQuestWifiAdbPreviewRequest> for QuestWifiAdbPreviewRequest {
+    fn from(value: StrictQuestWifiAdbPreviewRequest) -> Self {
+        Self {
+            schema: value.schema,
+            action_id: value.action_id,
+            action: value.action,
+            targets: value.targets,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct OwnerWork {
     request: KioskShowControlsRequest,
@@ -645,6 +1160,11 @@ fn default_watch_limit() -> usize {
 pub fn router(state: LocalHubState) -> Router {
     Router::new()
         .route("/fleet/v1/health", get(health))
+        .route("/fleet/v1/provider-catalog", get(provider_catalog))
+        .route(
+            "/fleet/v1/provider-catalog/refresh",
+            post(refresh_provider_catalog),
+        )
         .route("/fleet/v1/checkins", post(checkin))
         .route("/fleet/v1/query", post(query_devices))
         .route("/fleet/v1/summary", get(summary))
@@ -654,6 +1174,68 @@ pub fn router(state: LocalHubState) -> Router {
             post(execute_operation),
         )
         .route("/fleet/v1/operations/{operation_id}", get(operation_status))
+        .route(
+            "/fleet/v1/package-install-releases/preview",
+            post(preview_package_install_release),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/execute",
+            post(execute_package_install_release),
+        )
+        .route(
+            "/fleet/v1/package-updater/claims",
+            post(claim_package_updater_work),
+        )
+        .route(
+            "/fleet/v1/package-updater/offers",
+            get(peek_package_updater_offer),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/acknowledgements",
+            post(acknowledge_package_install_release),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/receipts",
+            post(apply_package_install_release_receipt),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}",
+            get(package_install_release_status),
+        )
+        .route("/fleet/v1/quest-awake/preview", post(preview_quest_awake))
+        .route(
+            "/fleet/v1/quest-awake/{operation_id}/execute",
+            post(execute_quest_awake),
+        )
+        .route(
+            "/fleet/v1/quest-awake/{operation_id}",
+            get(quest_awake_status),
+        )
+        .route(
+            "/fleet/v1/quest-wifi-adb/preview",
+            post(preview_quest_wifi_adb),
+        )
+        .route("/fleet/v1/quest-wifi-adb", get(quest_wifi_adb_operations))
+        .route(
+            "/fleet/v1/quest-wifi-adb/{operation_id}/execute",
+            post(execute_quest_wifi_adb),
+        )
+        .route(
+            "/fleet/v1/quest-wifi-adb/{operation_id}",
+            get(quest_wifi_adb_status),
+        )
+        .route(
+            "/fleet/v1/windows-hotspot/preview",
+            post(preview_windows_hotspot),
+        )
+        .route(
+            "/fleet/v1/windows-hotspot/{operation_id}/execute",
+            post(execute_windows_hotspot),
+        )
+        .route(
+            "/fleet/v1/windows-hotspot/{operation_id}",
+            get(windows_hotspot_status),
+        )
         .route("/fleet/v1/saved-views", get(saved_views))
         .route(
             "/fleet/v1/saved-views/{view_id}",
@@ -668,17 +1250,63 @@ pub fn router(state: LocalHubState) -> Router {
         .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
 }
 
+/// Check-in-only ingress for enrolled devices on an explicitly opted-in
+/// listener. No operator, owner, catalog, query, or operation route is mounted.
+pub fn checkin_router(state: LocalHubState) -> Router {
+    Router::new()
+        .route("/fleet/v1/checkins", post(checkin))
+        .with_state(state)
+        .layer(GlobalConcurrencyLimitLayer::new(
+            MAX_CONCURRENT_CHECKIN_LISTENER_REQUESTS,
+        ))
+}
+
 pub async fn serve(config: LocalHubConfig) -> Result<(), String> {
     let bind = config.validate()?;
+    let checkin_bind = config.checkin_socket()?;
     let state = LocalHubState::from_config(&config, unix_time_ms()?)?;
     schedule_recovered_owner_work(state.clone()).await?;
+    schedule_recovered_awake_work(state.clone()).await?;
+    schedule_recovered_connectivity_work(state.clone()).await?;
+    schedule_recovered_windows_hotspot_work(state.clone()).await?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|error| format!("failed to bind {bind}: {error}"))?;
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown_signal())
+    let Some(checkin_bind) = checkin_bind else {
+        return axum::serve(listener, router(state))
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .map_err(|error| format!("local Hub server failed: {error}"));
+    };
+    let checkin_listener = tokio::net::TcpListener::bind(checkin_bind)
         .await
-        .map_err(|error| format!("local Hub server failed: {error}"))
+        .map_err(|error| format!("failed to bind check-in listener {checkin_bind}: {error}"))?;
+    let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_sender.send(true);
+    });
+    let mut operator_shutdown = shutdown_receiver.clone();
+    let mut checkin_shutdown = shutdown_receiver;
+    let operator =
+        axum::serve(listener, router(state.clone())).with_graceful_shutdown(async move {
+            while !*operator_shutdown.borrow() {
+                if operator_shutdown.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    let checkins =
+        axum::serve(checkin_listener, checkin_router(state)).with_graceful_shutdown(async move {
+            while !*checkin_shutdown.borrow() {
+                if checkin_shutdown.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    tokio::try_join!(operator, checkins)
+        .map(|_| ())
+        .map_err(|error| format!("local Hub listener failed: {error}"))
 }
 
 pub fn load_config(path: &std::path::Path) -> Result<LocalHubConfig, String> {
@@ -718,6 +1346,121 @@ async fn health(State(state): State<LocalHubState>) -> Response {
         },
     })
     .into_response()
+}
+
+async fn provider_catalog(State(state): State<LocalHubState>) -> Response {
+    let runtime = state.runtime.lock().await;
+    (
+        StatusCode::OK,
+        Json(runtime.provider_catalog_snapshot.clone()),
+    )
+        .into_response()
+}
+
+async fn refresh_provider_catalog(State(state): State<LocalHubState>) -> Response {
+    let started_at_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let configs = {
+        let mut runtime = state.runtime.lock().await;
+        if runtime.provider_catalog_refresh_inflight {
+            return api_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "provider_catalog_refresh_saturated",
+                "one bounded provider catalog refresh is already running",
+            );
+        }
+        if runtime
+            .provider_catalog_last_refresh_ms
+            .is_some_and(|last| started_at_ms <= last)
+        {
+            runtime.provider_catalog_snapshot = failed_provider_catalog_snapshot(
+                &runtime.provider_catalog_configs,
+                runtime.provider_catalog_snapshot.revision.saturating_add(1),
+                "provider-catalog-clock-rollback",
+            );
+            return api_error(
+                StatusCode::CONFLICT,
+                "provider_catalog_clock_rollback",
+                "provider catalog refresh rejected a non-advancing host clock",
+            );
+        }
+        runtime.provider_catalog_refresh_inflight = true;
+        runtime.provider_catalog_snapshot = failed_provider_catalog_snapshot(
+            &runtime.provider_catalog_configs,
+            runtime.provider_catalog_snapshot.revision.saturating_add(1),
+            "provider-catalog-refresh-in-progress",
+        );
+        runtime.provider_catalog_configs.clone()
+    };
+    let result =
+        tokio::task::spawn_blocking(move || ProviderCatalog::default().inspect_all(&configs)).await;
+    let completed_at_ms = unix_time_ms().ok();
+    let mut runtime = state.runtime.lock().await;
+    runtime.provider_catalog_refresh_inflight = false;
+    match result {
+        Ok(mut projection) if completed_at_ms.is_some_and(|value| value >= started_at_ms) => {
+            let completed_at_ms = completed_at_ms.unwrap_or(started_at_ms);
+            projection.revision = runtime.provider_catalog_snapshot.revision.saturating_add(1);
+            projection.refreshed_at_ms = Some(completed_at_ms);
+            runtime.provider_catalog_last_refresh_ms = Some(completed_at_ms);
+            runtime.provider_catalog_snapshot = projection.clone();
+            (StatusCode::OK, Json(projection)).into_response()
+        }
+        _ => {
+            runtime.provider_catalog_snapshot = failed_provider_catalog_snapshot(
+                &runtime.provider_catalog_configs,
+                runtime.provider_catalog_snapshot.revision.saturating_add(1),
+                "provider-catalog-refresh-failed",
+            );
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "provider_catalog_task_failed",
+                "provider catalog refresh did not complete",
+            )
+        }
+    }
+}
+
+fn initial_provider_catalog_snapshot(
+    configs: &[ProviderCatalogConfig],
+) -> ProviderCatalogProjection {
+    failed_provider_catalog_snapshot(configs, 1, "provider-catalog-not-refreshed")
+}
+
+fn failed_provider_catalog_snapshot(
+    configs: &[ProviderCatalogConfig],
+    revision: u64,
+    configured_reason: &str,
+) -> ProviderCatalogProjection {
+    ProviderCatalogProjection {
+        schema: CATALOG_SCHEMA,
+        contract_source_commit: CONTRACT_SOURCE_COMMIT,
+        entries: configs
+            .iter()
+            .map(|config| ProviderCatalogEntry {
+                catalog_id: config.catalog_id.clone(),
+                state: if config.executable_path.is_none() && config.executable_sha256.is_none() {
+                    CatalogState::Unconfigured
+                } else {
+                    CatalogState::Unavailable
+                },
+                reason: if config.executable_path.is_none() && config.executable_sha256.is_none() {
+                    "provider-not-configured".to_owned()
+                } else {
+                    configured_reason.to_owned()
+                },
+                descriptor: None,
+                metadata_only: true,
+                authorizes_execution: false,
+            })
+            .collect(),
+        metadata_only: true,
+        authorizes_execution: false,
+        revision,
+        refreshed_at_ms: None,
+    }
 }
 
 async fn checkin(State(state): State<LocalHubState>, request: Request) -> Response {
@@ -1136,6 +1879,1510 @@ async fn operation_status(
     }
 }
 
+async fn preview_package_install_release(
+    State(state): State<LocalHubState>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "package operation previews").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let request = match serde_json::from_slice::<StrictPackageInstallReleasePreviewRequest>(&bytes)
+    {
+        Ok(value) => PackageInstallReleasePreviewRequest::from(value),
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_operation_preview_json",
+                format!("package operation preview is not valid strict JSON: {error}"),
+            );
+        }
+    };
+    if let Err(failures) = request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_package_operation_preview",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    if let Some(existing) = runtime
+        .hub
+        .package_operations()
+        .into_iter()
+        .find(|operation| {
+            operation.preview.fleet_revision == runtime.hub.result_revision()
+                && operation.preview.expires_at_ms >= now_ms
+                && operation.preview.release == request.release
+                && operation.preview.expected_package_name == request.expected_package_name
+                && operation.preview.expected_rollout_ring == request.expected_rollout_ring
+                && operation
+                    .preview
+                    .targets
+                    .iter()
+                    .map(|target| (target.device_id.clone(), target.identity_revision))
+                    .collect::<BTreeMap<_, _>>()
+                    == request.targets
+        })
+    {
+        return Json(existing).into_response();
+    }
+    let expires_at_ms = match now_ms.checked_add(PACKAGE_OPERATION_PREVIEW_LIFETIME_MS) {
+        Some(value) => value,
+        None => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "package operation preview expiry overflowed",
+            );
+        }
+    };
+    let (operation_id, preview_id) = package_operation_ids(&request, now_ms);
+    let mut candidate_hub = runtime.hub.clone();
+    let operation =
+        match candidate_hub.preview_package_install_release(PackageInstallReleasePreviewPlan {
+            operation_id,
+            preview_id,
+            request,
+            created_at_ms: now_ms,
+            expires_at_ms,
+            max_parallelism: DEFAULT_PACKAGE_OPERATION_PARALLELISM,
+        }) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(operation).into_response()
+}
+
+async fn execute_package_install_release(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "package operation execution").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let execute = match serde_json::from_slice::<PackageInstallReleaseExecuteRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_operation_execute_json",
+                format!("package operation execution is not valid JSON: {error}"),
+            );
+        }
+    };
+    if execute.schema != PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA
+        || operation_id != execute.operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_identity_mismatch",
+            "package operation path, schema, and payload identity must match",
+        );
+    }
+    if let Err(failures) = execute.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_package_operation_execute",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let now_unsigned = match u64::try_from(now_ms) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "current time must be nonnegative",
+            );
+        }
+    };
+    let mut runtime = state.runtime.lock().await;
+    let existing = match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    if existing.preview.preview_id != execute.preview_id {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_operation_preview_conflict",
+            "execute request does not bind the stored immutable package preview",
+        );
+    }
+    if existing.lifecycle != CommandLifecycle::Proposed {
+        return Json(existing).into_response();
+    }
+    let eligible_devices = existing
+        .targets
+        .iter()
+        .filter(|target| target.preflight.eligible)
+        .map(|target| target.device_id.clone())
+        .collect::<Vec<_>>();
+    if eligible_devices.is_empty() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_has_no_eligible_targets",
+            "the immutable preview contains no eligible package-updater targets",
+        );
+    }
+    let mut candidate_hub = runtime.hub.clone();
+    let mut candidate_adapter = runtime.adapter.clone();
+    let mut operation = match candidate_hub.confirm_package_install_release(
+        &operation_id,
+        &execute.preview_id,
+        now_ms,
+    ) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let expires_unsigned = match u64::try_from(operation.preview.expires_at_ms) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_operation_expiry_invalid",
+                "package operation expiry is not representable",
+            );
+        }
+    };
+    for device_id in eligible_devices {
+        let Some(target) = operation
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+        else {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "package_operation_target_missing",
+                "confirmed package operation omitted a frozen target",
+            );
+        };
+        let owner_action_request_id =
+            package_owner_action_request_id(&operation.operation_id, &device_id);
+        let manifold_request_id = package_manifold_request_id(
+            &operation.operation_id,
+            &device_id,
+            &owner_action_request_id,
+        );
+        if let Err(error) = candidate_adapter.authorize_package_install_release(
+            &PackageInstallReleaseCommandAuthorization {
+                manifold_request_id,
+                owner_action_request_id: owner_action_request_id.clone(),
+                requester_id: "operator.fleet.local".to_owned(),
+                operation_id: operation.operation_id.clone(),
+                preview_id: operation.preview.preview_id.clone(),
+                device_id: device_id.clone(),
+                identity_revision: target.identity_revision,
+                release: operation.preview.release.clone(),
+                expected_package_name: operation.preview.expected_package_name.clone(),
+                expected_rollout_ring: operation.preview.expected_rollout_ring.clone(),
+                issued_at_ms: now_unsigned,
+                expires_at_ms: expires_unsigned,
+            },
+            now_unsigned,
+        ) {
+            return api_error(StatusCode::CONFLICT, "manifold_command_rejected", error);
+        }
+        operation = match candidate_hub.prepare_package_install_release_invocation(
+            &operation.operation_id,
+            &device_id,
+            owner_action_request_id,
+            now_ms,
+        ) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+        let Some(invocation) = operation
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+            .and_then(|target| target.invocation.clone())
+        else {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "package_invocation_missing",
+                "package dispatch preparation omitted its exact owner invocation",
+            );
+        };
+        if let Err(error) = runtime
+            .package_updater_adapter
+            .prepare_invocation(invocation, now_ms)
+        {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_invocation_invalid",
+                error.to_string(),
+            );
+        }
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) =
+        state_store.persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+    {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    *adapter = candidate_adapter;
+    Json(operation).into_response()
+}
+
+async fn claim_package_updater_work(
+    State(state): State<LocalHubState>,
+    request: Request,
+) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
+    let bytes = match strict_json_body(request, MAX_OPERATION_BYTES, "package updater claim").await
+    {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let claim_request = match serde_json::from_slice::<PackageUpdaterClaimRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_claim_json",
+                error.to_string(),
+            );
+        }
+    };
+    if let Err(failures) = claim_request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_package_claim",
+            format_contract_failures(&failures),
+        );
+    }
+    if configured_owner
+        .as_ref()
+        .is_none_or(|owner| owner.owner_id != claim_request.owner_id)
+    {
+        return api_error(
+            StatusCode::UNAUTHORIZED,
+            "package_owner_identity_mismatch",
+            "authenticated package owner identity does not match the claim",
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let mut candidate_hub = runtime.hub.clone();
+    match candidate_hub.expire_package_updater_claims(now_ms) {
+        Ok(_) => {}
+        Err(error) => return hub_operation_error(error),
+    }
+    let selected = candidate_hub.select_package_updater_offer(now_ms);
+    let Some(invocation) = selected else {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_claim_offer_stale",
+            "the claimed package offer is no longer selectable",
+        );
+    };
+    let invocation_sha256 = json_sha256(&invocation);
+    if claim_request.operation_id != invocation.operation_id
+        || claim_request.device_id != invocation.device_id
+        || !constant_time_equal(
+            claim_request.expected_invocation_sha256.as_bytes(),
+            invocation_sha256.as_bytes(),
+        )
+    {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_claim_offer_mismatch",
+            "claim request does not match the current package offer",
+        );
+    }
+    if !runtime.adapter.has_applied_package_authorization(
+        &invocation.operation_id,
+        &invocation.device_id,
+        &invocation.owner_action_request_id,
+    ) {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_manifold_authority_unavailable",
+            "the exact prepared invocation no longer has retained Manifold command authority",
+        );
+    }
+    let release_sha256 = json_sha256(&invocation.release);
+    let target_sha256 = json_sha256(&(invocation.device_id.as_str(), invocation.identity_revision));
+    let claim_id = format!(
+        "package-claim-{}",
+        &sha256_hex(
+            format!(
+                "{}:{}:{}",
+                claim_request.owner_id, claim_request.request_id, invocation_sha256
+            )
+            .as_bytes()
+        )[..32]
+    );
+    let claim = PackageUpdaterClaim {
+        schema: PACKAGE_UPDATER_CLAIM_SCHEMA.to_owned(),
+        claim_id,
+        owner_id: claim_request.owner_id,
+        request_id: claim_request.request_id,
+        claimed_at_ms: now_ms,
+        expires_at_ms: invocation
+            .expires_at_ms
+            .min(now_ms.saturating_add(PACKAGE_OWNER_CLAIM_LIFETIME_MS)),
+        invocation_sha256,
+        release_sha256,
+        target_sha256,
+        invocation,
+    };
+    if let Err(error) = candidate_hub.offer_package_updater_claim(claim.clone(), now_ms) {
+        return hub_operation_error(error);
+    }
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        hub,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(claim).into_response()
+}
+
+async fn peek_package_updater_offer(
+    State(state): State<LocalHubState>,
+    request: Request,
+) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let runtime = state.runtime.lock().await;
+    let offer = runtime
+        .hub
+        .select_package_updater_offer(now_ms)
+        .map(|invocation| PackageUpdaterOffer {
+            schema: fleet_contracts::PACKAGE_UPDATER_OFFER_SCHEMA.to_owned(),
+            owner_id: configured_owner
+                .as_ref()
+                .expect("authenticated owner")
+                .owner_id
+                .clone(),
+            operation_id: invocation.operation_id.clone(),
+            device_id: invocation.device_id.clone(),
+            invocation_sha256: json_sha256(&invocation),
+        });
+    Json(serde_json::json!({
+        "schema": "rusty.fleet.package_updater_offer_result.v1",
+        "offer": offer
+    }))
+    .into_response()
+}
+
+fn authenticate_package_updater(
+    headers: &HeaderMap,
+    configured: Option<&ConfiguredPackageUpdaterOwner>,
+) -> Result<(), Box<Response>> {
+    let Some(configured) = configured else {
+        return Err(Box::new(api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "package_owner_authenticated_ingress_unavailable",
+            "package updater owner ingress is disabled without explicit private configuration",
+        )));
+    };
+    let supplied = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if supplied.is_none_or(|token| {
+        let supplied_digest = Sha256::digest(token.as_bytes());
+        let configured_digest = Sha256::digest(configured.bearer_token.as_bytes());
+        !constant_time_equal(supplied_digest.as_slice(), configured_digest.as_slice())
+    }) {
+        return Err(Box::new(api_error(
+            StatusCode::UNAUTHORIZED,
+            "package_owner_authentication_failed",
+            "package updater owner authentication failed",
+        )));
+    }
+    Ok(())
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
+fn json_sha256<T: Serialize>(value: &T) -> String {
+    let bytes = serde_json::to_vec(value).expect("contract serialization is infallible");
+    format!("sha256:{}", sha256_hex(&bytes))
+}
+
+async fn acknowledge_package_install_release(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
+    let bytes = match strict_json_body(
+        request,
+        MAX_OPERATION_BYTES,
+        "package updater acknowledgement",
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let submission =
+        match serde_json::from_slice::<AuthenticatedPackageUpdaterAcknowledgement>(&bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_package_acknowledgement_json",
+                    format!("package updater acknowledgement is not valid JSON: {error}"),
+                );
+            }
+        };
+    if submission.schema != "rusty.fleet.authenticated_package_updater_acknowledgement.v1"
+        || operation_id != submission.acknowledgement.operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_identity_mismatch",
+            "package operation path and acknowledgement identity must match",
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let binding_exists = operation.targets.iter().any(|target| {
+        target.device_id == submission.acknowledgement.device_id
+            && target.owner_claim.as_ref().is_some_and(|claim| {
+                claim.claim_id == submission.claim_id
+                    && claim.owner_id == submission.owner_id
+                    && constant_time_equal(
+                        claim.invocation_sha256.as_bytes(),
+                        submission.invocation_sha256.as_bytes(),
+                    )
+                    && claim.expires_at_ms > now_ms
+            })
+    });
+    if !binding_exists {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_acknowledgement_binding_mismatch",
+            "acknowledgement does not bind a prepared package invocation",
+        );
+    }
+    let target = operation
+        .targets
+        .iter()
+        .find(|target| target.device_id == submission.acknowledgement.device_id)
+        .expect("binding check found target");
+    let invocation = target.invocation.as_ref().expect("claim binds invocation");
+    let acknowledgement = match runtime
+        .package_updater_adapter
+        .validate_untrusted_acknowledgement(invocation, submission.acknowledgement, now_ms)
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_acknowledgement_invalid",
+                error.to_string(),
+            );
+        }
+    };
+    let mut candidate_hub = runtime.hub.clone();
+    let updated = match candidate_hub
+        .admit_authenticated_package_updater_acknowledgement(acknowledgement, now_ms)
+    {
+        Ok(value) => value,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        hub,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(updated).into_response()
+}
+
+async fn apply_package_install_release_receipt(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "package updater receipt").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let submission = match serde_json::from_slice::<AuthenticatedPackageUpdaterReceipt>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_receipt_json",
+                format!("package updater receipt is not valid JSON: {error}"),
+            );
+        }
+    };
+    if submission.schema != "rusty.fleet.authenticated_package_updater_receipt.v1"
+        || operation_id != submission.effective_receipt.operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_identity_mismatch",
+            "package operation path and receipt identity must match",
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let binding_exists = operation.targets.iter().any(|target| {
+        target.device_id == submission.effective_receipt.device_id
+            && target.owner_claim.as_ref().is_some_and(|claim| {
+                claim.claim_id == submission.claim_id
+                    && claim.owner_id == submission.owner_id
+                    && constant_time_equal(
+                        claim.invocation_sha256.as_bytes(),
+                        submission.invocation_sha256.as_bytes(),
+                    )
+                    && target
+                        .invocation_acknowledgement
+                        .as_ref()
+                        .is_some_and(|ack| {
+                            ack.accepted
+                                && ack.operation_id == submission.effective_receipt.operation_id
+                                && ack.device_id == submission.effective_receipt.device_id
+                                && ack.owner_action_request_id
+                                    == submission.effective_receipt.owner_action_request_id
+                        })
+            })
+    });
+    if !binding_exists {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_receipt_binding_mismatch",
+            "receipt does not bind a prepared package invocation",
+        );
+    }
+    let target = operation
+        .targets
+        .iter()
+        .find(|target| target.device_id == submission.effective_receipt.device_id)
+        .expect("binding check found target");
+    let invocation = target.invocation.as_ref().expect("claim binds invocation");
+    let receipt = match runtime
+        .package_updater_adapter
+        .validate_untrusted_effective_receipt(invocation, submission.effective_receipt, now_ms)
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_receipt_invalid",
+                error.to_string(),
+            );
+        }
+    };
+    let mut candidate_hub = runtime.hub.clone();
+    let updated = match candidate_hub.admit_authenticated_package_updater_receipt(receipt, now_ms) {
+        Ok(value) => value,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        hub,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(updated).into_response()
+}
+
+async fn package_install_release_status(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => Json(operation).into_response(),
+        Err(error) => hub_operation_error(error),
+    }
+}
+
+#[derive(Clone)]
+struct AwakeOwnerWork {
+    invocation: QuestAwakeOwnerInvocation,
+    serial: String,
+    provider: QuestAwakeProviderConfig,
+    authorization_expires_at_ms: u64,
+}
+
+async fn preview_quest_awake(State(state): State<LocalHubState>, request: Request) -> Response {
+    let bytes = match strict_json_body(request, MAX_OPERATION_BYTES, "Quest awake previews").await {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let request = match serde_json::from_slice::<StrictQuestAwakePreviewRequest>(&bytes) {
+        Ok(value) => QuestAwakePreviewRequest::from(value),
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_awake_preview_json",
+                format!("Quest awake preview is not valid strict JSON: {error}"),
+            );
+        }
+    };
+    if request.schema != QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_awake_preview",
+            "Quest awake preview schema is not supported",
+        );
+    }
+    if let Err(failures) = request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_awake_preview",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let Some(provider) = runtime.quest_awake_provider.as_ref() else {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "awake_provider_unavailable",
+            "Quest awake provider is disabled until private exact-target configuration is supplied",
+        );
+    };
+    let provider_ready_devices = provider
+        .targets
+        .iter()
+        .map(|target| target.device_id.clone())
+        .collect::<BTreeSet<_>>();
+    if let Some(existing) = runtime
+        .hub
+        .quest_awake_operations()
+        .into_iter()
+        .find(|operation| {
+            operation.preview.fleet_revision == runtime.hub.result_revision()
+                && operation.preview.expires_at_ms >= now_ms
+                && operation.preview.action == request.action
+                && operation.preview.duration_ms == request.duration_ms
+                && operation.preview.watchdog_interval_ms == request.watchdog_interval_ms
+                && operation
+                    .preview
+                    .targets
+                    .iter()
+                    .map(|target| (target.device_id.clone(), target.identity_revision))
+                    .collect::<BTreeMap<_, _>>()
+                    == request.targets
+        })
+    {
+        return Json(existing).into_response();
+    }
+    let expires_at_ms = match now_ms.checked_add(AWAKE_OPERATION_PREVIEW_LIFETIME_MS) {
+        Some(value) => value,
+        None => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "Quest awake preview expiry overflowed",
+            );
+        }
+    };
+    let (operation_id, preview_id, watchdog_generation) = awake_operation_ids(&request, now_ms);
+    let mut candidate_hub = runtime.hub.clone();
+    let operation = match candidate_hub.preview_quest_awake(QuestAwakePreviewPlan {
+        operation_id,
+        preview_id,
+        watchdog_generation,
+        request,
+        created_at_ms: now_ms,
+        expires_at_ms,
+        provider_ready_devices,
+    }) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(operation).into_response()
+}
+
+async fn execute_quest_awake(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes = match strict_json_body(request, MAX_OPERATION_BYTES, "Quest awake execution").await
+    {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    let execute = match serde_json::from_slice::<QuestAwakeExecuteRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_awake_execute_json",
+                format!("Quest awake execution is not valid JSON: {error}"),
+            );
+        }
+    };
+    if execute.schema != QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA || execute.operation_id != operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "awake_operation_identity_mismatch",
+            "Quest awake operation path, schema, and payload identity must match",
+        );
+    }
+    if let Err(failures) = execute.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_awake_execute",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    if runtime.quest_awake_provider.is_none() {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "awake_provider_unavailable",
+            "Quest awake provider is disabled until private exact-target configuration is supplied",
+        );
+    }
+    let existing = match runtime.hub.quest_awake_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    if existing.preview.preview_id != execute.preview_id {
+        return api_error(
+            StatusCode::CONFLICT,
+            "awake_preview_conflict",
+            "execute request does not bind the immutable Quest awake preview",
+        );
+    }
+    if existing.lifecycle != CommandLifecycle::Proposed {
+        return Json(existing).into_response();
+    }
+    let mut candidate_hub = runtime.hub.clone();
+    let operation =
+        match candidate_hub.confirm_quest_awake(&operation_id, &execute.preview_id, now_ms) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    drop(runtime);
+    schedule_pending_awake_work(state.clone(), &operation_id).await;
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.quest_awake_operation(&operation_id) {
+        Ok(updated) => Json(updated).into_response(),
+        Err(_) => Json(operation).into_response(),
+    }
+}
+
+async fn quest_awake_status(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.quest_awake_operation(&operation_id) {
+        Ok(operation) => Json(operation).into_response(),
+        Err(error) => hub_operation_error(error),
+    }
+}
+
+#[derive(Clone)]
+struct ConnectivityOwnerWork {
+    invocation: QuestWifiAdbOwnerInvocation,
+    provider: QuestConnectivityProviderConfig,
+}
+
+enum ConnectivityOwnerWorkFailure {
+    InvocationExpired,
+    ProviderInvocation,
+}
+
+async fn preview_quest_wifi_adb(State(state): State<LocalHubState>, request: Request) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "Quest Wi-Fi ADB previews").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let request = match serde_json::from_slice::<StrictQuestWifiAdbPreviewRequest>(&bytes) {
+        Ok(value) => QuestWifiAdbPreviewRequest::from(value),
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_wifi_adb_preview_json",
+                format!("Quest Wi-Fi ADB preview is not valid strict JSON: {error}"),
+            );
+        }
+    };
+    if request.schema != QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_wifi_adb_preview",
+            "Quest Wi-Fi ADB preview schema is not supported",
+        );
+    }
+    if let Err(failures) = request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_wifi_adb_preview",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let Some(provider) = runtime.quest_connectivity_provider.as_ref() else {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "wifi_adb_provider_unavailable",
+            "Quest connectivity provider is disabled until private pinned configuration is supplied",
+        );
+    };
+    let provider_ready_devices = provider.targets.iter().cloned().collect::<BTreeSet<_>>();
+    if let Some(existing) = runtime
+        .hub
+        .quest_wifi_adb_operations()
+        .into_iter()
+        .find(|operation| {
+            operation.preview.fleet_revision == runtime.hub.result_revision()
+                && operation.preview.expires_at_ms >= now_ms
+                && operation.preview.action == request.action
+                && operation
+                    .preview
+                    .targets
+                    .iter()
+                    .map(|target| (target.device_id.clone(), target.identity_revision))
+                    .collect::<BTreeMap<_, _>>()
+                    == request.targets
+        })
+    {
+        return Json(existing).into_response();
+    }
+    let Some(expires_at_ms) = now_ms.checked_add(WIFI_ADB_OPERATION_PREVIEW_LIFETIME_MS) else {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "clock_error",
+            "Quest Wi-Fi ADB preview expiry overflowed",
+        );
+    };
+    let (operation_id, preview_id) = wifi_adb_operation_ids(&request, now_ms);
+    let mut candidate_hub = runtime.hub.clone();
+    let operation = match candidate_hub.preview_quest_wifi_adb(QuestWifiAdbPreviewPlan {
+        operation_id,
+        preview_id,
+        request,
+        created_at_ms: now_ms,
+        expires_at_ms,
+        provider_ready_devices,
+    }) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(operation).into_response()
+}
+
+async fn execute_quest_wifi_adb(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "Quest Wi-Fi ADB execution").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let execute = match serde_json::from_slice::<QuestWifiAdbExecuteRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_wifi_adb_execute_json",
+                format!("Quest Wi-Fi ADB execution is not valid JSON: {error}"),
+            );
+        }
+    };
+    if execute.schema != QUEST_WIFI_ADB_EXECUTE_REQUEST_SCHEMA
+        || execute.operation_id != operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "wifi_adb_operation_identity_mismatch",
+            "Quest Wi-Fi ADB operation path, schema, and payload identity must match",
+        );
+    }
+    if let Err(failures) = execute.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_wifi_adb_execute",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    if runtime.quest_connectivity_provider.is_none() {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "wifi_adb_provider_unavailable",
+            "Quest connectivity provider is disabled until private pinned configuration is supplied",
+        );
+    }
+    let existing = match runtime.hub.quest_wifi_adb_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    if existing.preview.preview_id != execute.preview_id {
+        return api_error(
+            StatusCode::CONFLICT,
+            "wifi_adb_preview_conflict",
+            "execute request does not bind the immutable Quest Wi-Fi ADB preview",
+        );
+    }
+    if existing.lifecycle != CommandLifecycle::Proposed {
+        return Json(existing).into_response();
+    }
+    let mut candidate_hub = runtime.hub.clone();
+    let operation =
+        match candidate_hub.confirm_quest_wifi_adb(&operation_id, &execute.preview_id, now_ms) {
+            Ok(operation) => operation,
+            Err(error) => return hub_operation_error(error),
+        };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    drop(runtime);
+    schedule_pending_connectivity_work(state.clone(), &operation_id).await;
+    let runtime = state.runtime.lock().await;
+    match runtime
+        .adapter
+        .quest_wifi_adb_operation(&runtime.hub, &operation_id, now_ms)
+    {
+        Ok(updated) => Json(updated).into_response(),
+        Err(_) => Json(operation).into_response(),
+    }
+}
+
+async fn quest_wifi_adb_status(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let runtime = state.runtime.lock().await;
+    match runtime
+        .adapter
+        .quest_wifi_adb_operation(&runtime.hub, &operation_id, now_ms)
+    {
+        Ok(operation) => Json(operation).into_response(),
+        Err(error) if error.contains("not found") => {
+            api_error(StatusCode::NOT_FOUND, "operation_not_found", error)
+        }
+        Err(error) => api_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation", error),
+    }
+}
+
+async fn quest_wifi_adb_operations(State(state): State<LocalHubState>) -> Response {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let runtime = state.runtime.lock().await;
+    match runtime
+        .adapter
+        .quest_wifi_adb_operations(&runtime.hub, now_ms)
+    {
+        Ok(operations) => Json(operations).into_response(),
+        Err(error) => api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_operation_set",
+            error,
+        ),
+    }
+}
+
+async fn preview_windows_hotspot(State(state): State<LocalHubState>, request: Request) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "Windows hotspot previews").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let request = match serde_json::from_slice::<WindowsHotspotPreviewRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_windows_hotspot_preview_json",
+                format!("Windows hotspot preview is not strict JSON: {error}"),
+            );
+        }
+    };
+    if request.schema != WINDOWS_HOTSPOT_PREVIEW_REQUEST_SCHEMA {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_windows_hotspot_preview",
+            "Windows hotspot preview schema is not supported",
+        );
+    }
+    if let Err(failures) = request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_windows_hotspot_preview",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let provider_ready = runtime.windows_hotspot_provider.is_some();
+    if let Some(existing) = runtime
+        .hub
+        .windows_hotspot_operations()
+        .into_iter()
+        .find(|operation| {
+            operation.lifecycle == CommandLifecycle::Proposed
+                && operation.preview.expires_at_ms >= now_ms
+                && operation.preview.action == request.action
+        })
+    {
+        return Json(existing).into_response();
+    }
+    let expires_at_ms = match now_ms.checked_add(WINDOWS_HOTSPOT_PREVIEW_LIFETIME_MS) {
+        Some(value) => value,
+        None => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clock_error",
+                "Windows hotspot preview expiry overflowed",
+            );
+        }
+    };
+    let (operation_id, preview_id, lease_id, generation) =
+        windows_hotspot_operation_ids(&request, now_ms);
+    let mut candidate_hub = runtime.hub.clone();
+    let operation = match candidate_hub.preview_windows_hotspot(WindowsHotspotPreviewPlan {
+        operation_id,
+        preview_id,
+        lease_id,
+        generation,
+        request,
+        created_at_ms: now_ms,
+        expires_at_ms,
+        provider_ready,
+    }) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(operation).into_response()
+}
+
+async fn execute_windows_hotspot(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "Windows hotspot execution").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let execute = match serde_json::from_slice::<WindowsHotspotExecuteRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_windows_hotspot_execute_json",
+                format!("Windows hotspot execution is not strict JSON: {error}"),
+            );
+        }
+    };
+    if execute.schema != WINDOWS_HOTSPOT_EXECUTE_REQUEST_SCHEMA
+        || execute.operation_id != operation_id
+        || execute.validate().is_err()
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "windows_hotspot_operation_identity_mismatch",
+            "operation path, schema, and immutable preview identity must match",
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let (provider, invocation) = {
+        let mut runtime = state.runtime.lock().await;
+        let Some(configured) = runtime.windows_hotspot_provider.clone() else {
+            return api_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "windows_hotspot_provider_unavailable",
+                "Hostess hotspot provider is disabled until private pinned configuration is supplied",
+            );
+        };
+        let mut candidate_hub = runtime.hub.clone();
+        candidate_hub.recover_windows_hotspot(now_ms);
+        let existing = match candidate_hub.windows_hotspot_operation(&operation_id) {
+            Ok(value) => value,
+            Err(error) => return hub_operation_error(error),
+        };
+        if existing.preview.preview_id != execute.preview_id {
+            return api_error(
+                StatusCode::CONFLICT,
+                "windows_hotspot_preview_conflict",
+                "execute request does not bind the immutable preview",
+            );
+        }
+        if matches!(
+            existing.lifecycle,
+            CommandLifecycle::Applied
+                | CommandLifecycle::Failed
+                | CommandLifecycle::Expired
+                | CommandLifecycle::Rejected
+        ) {
+            return Json(existing).into_response();
+        }
+        if runtime
+            .inflight_windows_hotspot_operations
+            .contains(&operation_id)
+        {
+            return api_error(
+                StatusCode::CONFLICT,
+                "windows_hotspot_operation_inflight",
+                "this host-scoped operation is already invoking Hostess",
+            );
+        }
+        let mut operation = if existing.lifecycle == CommandLifecycle::Proposed {
+            match candidate_hub.confirm_windows_hotspot(&operation_id, &execute.preview_id, now_ms)
+            {
+                Ok(value) => value,
+                Err(error) => return hub_operation_error(error),
+            }
+        } else {
+            existing
+        };
+        let mut candidate_adapter = runtime.adapter.clone();
+        if operation.lifecycle == CommandLifecycle::Accepted {
+            let request_id = windows_hotspot_provider_request_id(&operation, now_ms);
+            operation = match candidate_hub.prepare_windows_hotspot_invocation(
+                &operation_id,
+                request_id,
+                now_ms,
+            ) {
+                Ok(value) => value,
+                Err(error) => return hub_operation_error(error),
+            };
+            let invocation = operation
+                .invocation
+                .as_ref()
+                .expect("prepared hotspot invocation");
+            let lease = operation.lease.as_ref().expect("prepared hotspot lease");
+            let manifold_request_id = windows_hotspot_manifold_request_id(
+                &operation.operation_id,
+                &lease.lease_id,
+                &invocation.request_id,
+            );
+            if let Err(error) = candidate_adapter.authorize_windows_hotspot(
+                &WindowsHotspotCommandAuthorization {
+                    manifold_request_id,
+                    owner_action_request_id: invocation.request_id.clone(),
+                    requester_id: "operator.fleet.local".to_owned(),
+                    operation_id: operation.operation_id.clone(),
+                    preview_id: operation.preview.preview_id.clone(),
+                    lease_id: lease.lease_id.clone(),
+                    lease_generation: lease.generation.clone(),
+                    action: invocation.action,
+                    ownership_generation: invocation.ownership_generation.clone(),
+                    issued_at_ms: u64::try_from(now_ms).unwrap_or(0),
+                    expires_at_ms: u64::try_from(operation.preview.expires_at_ms).unwrap_or(0),
+                },
+                u64::try_from(now_ms).unwrap_or(0),
+            ) {
+                return api_error(
+                    StatusCode::FORBIDDEN,
+                    "windows_hotspot_authorization_rejected",
+                    error,
+                );
+            }
+        }
+        let invocation = match operation.invocation.clone() {
+            Some(value) => value,
+            None => {
+                return api_error(
+                    StatusCode::CONFLICT,
+                    "windows_hotspot_invocation_missing",
+                    "confirmed operation has no exact provider invocation",
+                );
+            }
+        };
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            ..
+        } = &mut *runtime;
+        if let Err(error) =
+            state_store.persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+        {
+            return api_error(
+                StatusCode::INSUFFICIENT_STORAGE,
+                "durable_state_failed",
+                error,
+            );
+        }
+        *hub = candidate_hub;
+        *adapter = candidate_adapter;
+        runtime
+            .inflight_windows_hotspot_operations
+            .insert(operation_id.clone());
+        (
+            WindowsHotspotProviderConfig {
+                executable_path: configured.executable_path,
+                executable_sha256: configured.executable_sha256,
+                private_stage_root: configured.private_stage_root,
+            },
+            invocation,
+        )
+    };
+    match spawn_windows_hotspot_owner_work(state, operation_id, provider, invocation, now_ms).await
+    {
+        Ok(Ok(operation)) => Json(operation).into_response(),
+        Ok(Err(error)) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "windows_hotspot_settlement_failed",
+            error,
+        ),
+        Err(_) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "windows_hotspot_settlement_lost",
+            "detached hotspot settlement task ended without a durable result",
+        ),
+    }
+}
+
+async fn windows_hotspot_status(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.windows_hotspot_operation(&operation_id) {
+        Ok(operation) => Json(operation).into_response(),
+        Err(error) => api_error(
+            StatusCode::NOT_FOUND,
+            "operation_not_found",
+            error.to_string(),
+        ),
+    }
+}
+
 async fn summary(State(state): State<LocalHubState>) -> Response {
     let now_ms = match unix_time_ms() {
         Ok(value) => value,
@@ -1404,6 +3651,115 @@ fn operation_ids(request: &OperationPreviewRequest, now_ms: i64) -> (String, Str
     )
 }
 
+fn package_operation_ids(
+    request: &PackageInstallReleasePreviewRequest,
+    now_ms: i64,
+) -> (String, String) {
+    let sequence = OPERATION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.package.operation.v1\0");
+    digest.update(serde_json::to_vec(request).unwrap_or_default());
+    digest.update(now_ms.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    let suffix = hex::encode(digest.finalize());
+    (
+        format!("package-operation-{}", &suffix[..32]),
+        format!("package-preview-{}", &suffix[32..64]),
+    )
+}
+
+fn awake_operation_ids(
+    request: &QuestAwakePreviewRequest,
+    now_ms: i64,
+) -> (String, String, String) {
+    let sequence = OPERATION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-awake.operation.v1\0");
+    digest.update(serde_json::to_vec(request).unwrap_or_default());
+    digest.update(now_ms.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    let suffix = hex::encode(digest.finalize());
+    (
+        format!("awake-operation-{}", &suffix[..24]),
+        format!("awake-preview-{}", &suffix[24..48]),
+        format!("awake-generation-{}", &suffix[48..64]),
+    )
+}
+
+fn wifi_adb_operation_ids(request: &QuestWifiAdbPreviewRequest, now_ms: i64) -> (String, String) {
+    let sequence = OPERATION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-wifi-adb.operation.v1\0");
+    digest.update(serde_json::to_vec(request).unwrap_or_default());
+    digest.update(now_ms.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    let suffix = hex::encode(digest.finalize());
+    (
+        format!("wifi-adb-operation-{}", &suffix[..32]),
+        format!("wifi-adb-preview-{}", &suffix[32..64]),
+    )
+}
+
+fn windows_hotspot_operation_ids(
+    request: &WindowsHotspotPreviewRequest,
+    now_ms: i64,
+) -> (String, String, String, String) {
+    let sequence = OPERATION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.windows-hotspot.operation.v1\0");
+    digest.update(serde_json::to_vec(request).unwrap_or_default());
+    digest.update(now_ms.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    let suffix = hex::encode(digest.finalize());
+    (
+        format!("hotspot-operation-{}", &suffix[..24]),
+        format!("hotspot-preview-{}", &suffix[16..40]),
+        format!("hotspot-lease-{}", &suffix[24..48]),
+        format!("hotspot-generation-{}", &suffix[40..64]),
+    )
+}
+
+fn windows_hotspot_provider_request_id(
+    operation: &fleet_contracts::WindowsHotspotOperation,
+    now_ms: i64,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.windows-hotspot.provider-request.v1\0");
+    digest.update(operation.operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(operation.preview.preview_id.as_bytes());
+    digest.update([0]);
+    digest.update(now_ms.to_le_bytes());
+    format!("hotspot-request-{}", &hex::encode(digest.finalize())[..32])
+}
+
+fn package_owner_action_request_id(operation_id: &str, device_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.package.owner-action.v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(device_id.as_bytes());
+    format!("fleetpkg-{}", &hex::encode(digest.finalize())[..32])
+}
+
+fn awake_owner_action_request_id(operation_id: &str, device_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-awake.owner-action.v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(device_id.as_bytes());
+    format!("fleetawake-{}", &hex::encode(digest.finalize())[..32])
+}
+
+fn wifi_adb_owner_action_request_id(operation_id: &str, device_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-wifi-adb.owner-action.v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update([0]);
+    digest.update(device_id.as_bytes());
+    format!("fleetwifi-{}", &hex::encode(digest.finalize())[..32])
+}
+
 fn owner_action_request_id(operation_id: &str, device_id: &str, attempt: u8) -> String {
     let mut digest = Sha256::new();
     digest.update(b"rusty.fleet.kiosk.owner-action.v1\0");
@@ -1437,14 +3793,1188 @@ fn hub_operation_error(error: fleet_hub::HubError) -> Response {
         "kiosk_operation_not_found" | "kiosk_target_not_found" => {
             (StatusCode::NOT_FOUND, "operation_not_found")
         }
+        "package_operation_not_found" | "package_target_not_found" => {
+            (StatusCode::NOT_FOUND, "operation_not_found")
+        }
+        "awake_operation_not_found" | "awake_target_not_found" => {
+            (StatusCode::NOT_FOUND, "operation_not_found")
+        }
+        "wifi_adb_operation_not_found" | "wifi_adb_target_not_found" => {
+            (StatusCode::NOT_FOUND, "operation_not_found")
+        }
+        "windows_hotspot_operation_not_found" => (StatusCode::NOT_FOUND, "operation_not_found"),
         "kiosk_preview_mismatch"
         | "kiosk_operation_id_conflict"
         | "kiosk_preview_expired"
         | "kiosk_target_changed_since_preview"
-        | "kiosk_target_identity_changed" => (StatusCode::CONFLICT, "operation_conflict"),
+        | "kiosk_target_identity_changed"
+        | "package_preview_mismatch"
+        | "package_operation_id_conflict"
+        | "package_preview_expired"
+        | "package_target_changed_since_preview"
+        | "package_target_identity_changed"
+        | "awake_preview_conflict"
+        | "awake_operation_id_conflict"
+        | "awake_preview_expired"
+        | "awake_target_identity_changed"
+        | "awake_capability_changed"
+        | "wifi_adb_preview_conflict"
+        | "wifi_adb_operation_id_conflict"
+        | "wifi_adb_preview_expired"
+        | "wifi_adb_target_identity_changed"
+        | "wifi_adb_capability_changed" => (StatusCode::CONFLICT, "operation_conflict"),
         _ => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_operation"),
     };
     api_error(status, code, error.to_string())
+}
+
+async fn schedule_pending_connectivity_work(state: LocalHubState, operation_id: &str) {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let now_unsigned = match u64::try_from(now_ms) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let mut runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.quest_wifi_adb_operation(operation_id) {
+        Ok(operation) => operation,
+        Err(_) => return,
+    };
+    let Some(configured) = runtime.quest_connectivity_provider.clone() else {
+        return;
+    };
+    let provider = QuestConnectivityProviderConfig {
+        executable_path: configured.executable_path,
+        executable_sha256: configured.executable_sha256,
+        private_stage_root: configured.private_stage_root,
+    };
+    let configured_targets = configured.targets.into_iter().collect::<BTreeSet<_>>();
+    let slots = connectivity_dispatch_slots(runtime.inflight_connectivity_targets.len());
+    let expires_unsigned = match u64::try_from(operation.preview.expires_at_ms) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let pending = operation
+        .targets
+        .iter()
+        .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+        .map(|target| (target.device_id.clone(), target.identity_revision))
+        .collect::<Vec<_>>();
+    let mut candidate_hub = runtime.hub.clone();
+    if now_ms >= operation.preview.expires_at_ms {
+        for (device_id, _) in pending {
+            let _ = candidate_hub.fail_quest_wifi_adb_target(
+                operation_id,
+                &device_id,
+                "provider_invocation_expired".to_owned(),
+                now_ms,
+            );
+        }
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            ..
+        } = &mut *runtime;
+        if state_store
+            .persist(&candidate_hub, adapter, owner_receipts, now_ms)
+            .is_ok()
+        {
+            *hub = candidate_hub;
+        }
+        return;
+    }
+    if slots == 0 {
+        return;
+    }
+    let (prepared_hub, candidate_adapter, work) = prepare_pending_connectivity_batch(
+        &runtime.hub,
+        &runtime.adapter,
+        &operation,
+        &configured_targets,
+        &runtime.inflight_connectivity_targets,
+        &provider,
+        now_ms,
+        now_unsigned,
+        expires_unsigned,
+    );
+    candidate_hub = prepared_hub;
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        inflight_connectivity_targets,
+        ..
+    } = &mut *runtime;
+    if state_store
+        .persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+        .is_err()
+    {
+        return;
+    }
+    *hub = candidate_hub;
+    *adapter = candidate_adapter;
+    for item in &work {
+        inflight_connectivity_targets.insert((
+            item.invocation.operation_id.clone(),
+            item.invocation.device_id.clone(),
+        ));
+    }
+    drop(runtime);
+    for item in work {
+        spawn_connectivity_owner_work(state.clone(), item);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_pending_connectivity_batch(
+    hub: &FleetHub,
+    adapter: &FleetManifoldAdapter,
+    operation: &QuestWifiAdbOperation,
+    configured_targets: &BTreeSet<String>,
+    inflight_targets: &BTreeSet<(String, String)>,
+    provider: &QuestConnectivityProviderConfig,
+    now_ms: i64,
+    now_unsigned: u64,
+    expires_unsigned: u64,
+) -> (FleetHub, FleetManifoldAdapter, Vec<ConnectivityOwnerWork>) {
+    let mut candidate_hub = hub.clone();
+    let mut candidate_adapter = adapter.clone();
+    let slots = connectivity_dispatch_slots(inflight_targets.len());
+    let pending = operation
+        .targets
+        .iter()
+        .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+        .map(|target| (target.device_id.clone(), target.identity_revision));
+    let mut work = Vec::new();
+    for (device_id, identity_revision) in pending {
+        if work.len() >= slots {
+            break;
+        }
+        if !configured_targets.contains(&device_id) {
+            let _ = candidate_hub.fail_quest_wifi_adb_target(
+                &operation.operation_id,
+                &device_id,
+                "provider_target_unconfigured".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        if inflight_targets
+            .iter()
+            .any(|(_, candidate_device)| candidate_device == &device_id)
+        {
+            let _ = candidate_hub.fail_quest_wifi_adb_target(
+                &operation.operation_id,
+                &device_id,
+                "connectivity_control_conflict".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        let owner_action_request_id =
+            wifi_adb_owner_action_request_id(&operation.operation_id, &device_id);
+        let manifold_request_id = quest_wifi_adb_manifold_request_id(
+            &operation.operation_id,
+            &device_id,
+            &owner_action_request_id,
+        );
+        if candidate_adapter
+            .authorize_quest_wifi_adb(
+                &QuestWifiAdbCommandAuthorization {
+                    manifold_request_id,
+                    owner_action_request_id: owner_action_request_id.clone(),
+                    requester_id: "operator.fleet.local".to_owned(),
+                    operation_id: operation.operation_id.clone(),
+                    preview_id: operation.preview.preview_id.clone(),
+                    device_id: device_id.clone(),
+                    identity_revision,
+                    action: operation.preview.action,
+                    issued_at_ms: now_unsigned,
+                    expires_at_ms: expires_unsigned,
+                },
+                now_unsigned,
+            )
+            .is_err()
+        {
+            let _ = candidate_hub.fail_quest_wifi_adb_target(
+                &operation.operation_id,
+                &device_id,
+                "manifold_command_rejected".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        let updated = match candidate_hub.prepare_quest_wifi_adb_invocation(
+            &operation.operation_id,
+            &device_id,
+            owner_action_request_id,
+            now_ms,
+        ) {
+            Ok(updated) => updated,
+            Err(_) => continue,
+        };
+        let Some(invocation) = updated
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+            .and_then(|target| target.invocation.clone())
+        else {
+            continue;
+        };
+        if candidate_hub
+            .mark_quest_wifi_adb_dispatched(&operation.operation_id, &device_id, now_ms)
+            .is_err()
+        {
+            continue;
+        }
+        work.push(ConnectivityOwnerWork {
+            invocation,
+            provider: provider.clone(),
+        });
+    }
+    (candidate_hub, candidate_adapter, work)
+}
+
+fn spawn_connectivity_owner_work(state: LocalHubState, work: ConnectivityOwnerWork) {
+    tokio::spawn(async move {
+        let operation_id = work.invocation.operation_id.clone();
+        let device_id = work.invocation.device_id.clone();
+        let (device_slot, provider_slots, adapter) = {
+            let runtime = state.runtime.lock().await;
+            (
+                runtime.connectivity_device_slots.get(&device_id).cloned(),
+                Arc::clone(&runtime.connectivity_provider_slots),
+                runtime.quest_connectivity_adapter.clone(),
+            )
+        };
+        let result = match device_slot {
+            Some(device_slot) => match device_slot.try_acquire_owned() {
+                Ok(_device_permit) => match provider_slots.try_acquire_owned() {
+                    Ok(_provider_permit) => {
+                        let provider = work.provider.clone();
+                        let invocation = work.invocation.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let invocation_started_at_ms = unix_time_ms()
+                                .map_err(|_| ConnectivityOwnerWorkFailure::ProviderInvocation)?;
+                            if connectivity_invocation_expired(
+                                &invocation,
+                                invocation_started_at_ms,
+                            ) {
+                                return Err(ConnectivityOwnerWorkFailure::InvocationExpired);
+                            }
+                            adapter
+                                .invoke(&provider, &invocation)
+                                .map_err(|_| ConnectivityOwnerWorkFailure::ProviderInvocation)
+                        })
+                        .await
+                        .map_err(|_| ConnectivityOwnerWorkFailure::ProviderInvocation)
+                        .and_then(|result| result)
+                    }
+                    Err(_) => Err(ConnectivityOwnerWorkFailure::ProviderInvocation),
+                },
+                Err(_) => Err(ConnectivityOwnerWorkFailure::ProviderInvocation),
+            },
+            None => Err(ConnectivityOwnerWorkFailure::ProviderInvocation),
+        };
+        let now_ms = unix_time_ms().unwrap_or(work.invocation.issued_at_ms);
+        let mut runtime = state.runtime.lock().await;
+        let mut candidate_hub = runtime.hub.clone();
+        let settled = settle_connectivity_owner_result(
+            &mut candidate_hub,
+            &operation_id,
+            &device_id,
+            result,
+            now_ms,
+        )
+        .is_ok();
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            inflight_connectivity_targets,
+            ..
+        } = &mut *runtime;
+        let persisted = settled
+            && state_store
+                .persist(&candidate_hub, adapter, owner_receipts, now_ms)
+                .is_ok();
+        if persisted {
+            *hub = candidate_hub;
+        }
+        inflight_connectivity_targets.remove(&(operation_id, device_id));
+        drop(runtime);
+        if persisted {
+            let _ = schedule_recovered_connectivity_work(state).await;
+        }
+    });
+}
+
+fn settle_connectivity_owner_result(
+    hub: &mut FleetHub,
+    operation_id: &str,
+    device_id: &str,
+    result: Result<QuestWifiAdbOwnerReceipt, ConnectivityOwnerWorkFailure>,
+    now_ms: i64,
+) -> Result<(), String> {
+    let failure_code = match result {
+        Ok(receipt) => match hub.apply_quest_wifi_adb_receipt(receipt, now_ms) {
+            Ok(_) => return Ok(()),
+            Err(_) => "provider_receipt_rejected",
+        },
+        Err(ConnectivityOwnerWorkFailure::InvocationExpired) => "provider_invocation_expired",
+        Err(ConnectivityOwnerWorkFailure::ProviderInvocation) => "provider_invocation_failed",
+    };
+    hub.fail_quest_wifi_adb_target(operation_id, device_id, failure_code.to_owned(), now_ms)
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "Quest connectivity terminal settlement failed with code {}",
+                error.code
+            )
+        })
+}
+
+fn connectivity_dispatch_slots(inflight: usize) -> usize {
+    MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS.saturating_sub(inflight)
+}
+
+fn connectivity_invocation_expired(invocation: &QuestWifiAdbOwnerInvocation, now_ms: i64) -> bool {
+    now_ms >= invocation.expires_at_ms
+}
+
+async fn schedule_recovered_connectivity_work(state: LocalHubState) -> Result<(), String> {
+    let now_ms = unix_time_ms()?;
+    let mut recovered = Vec::new();
+    {
+        let mut runtime = state.runtime.lock().await;
+        let Some(configured) = runtime.quest_connectivity_provider.clone() else {
+            return Ok(());
+        };
+        let provider = QuestConnectivityProviderConfig {
+            executable_path: configured.executable_path,
+            executable_sha256: configured.executable_sha256,
+            private_stage_root: configured.private_stage_root,
+        };
+        let configured_targets = configured.targets.into_iter().collect::<BTreeSet<_>>();
+        let operations = runtime.hub.quest_wifi_adb_operations();
+        let mut candidate_hub = runtime.hub.clone();
+        let mut changed = false;
+        let mut remaining_slots =
+            connectivity_dispatch_slots(runtime.inflight_connectivity_targets.len());
+        let mut reserved = runtime.inflight_connectivity_targets.clone();
+        for operation in operations {
+            for target in operation
+                .targets
+                .into_iter()
+                .filter(|target| target.lifecycle == CommandLifecycle::Dispatched)
+            {
+                let Some(invocation) = target.invocation else {
+                    continue;
+                };
+                if connectivity_invocation_expired(&invocation, now_ms) {
+                    candidate_hub
+                        .fail_quest_wifi_adb_target(
+                            &operation.operation_id,
+                            &target.device_id,
+                            "provider_invocation_expired".to_owned(),
+                            now_ms,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    changed = true;
+                    continue;
+                }
+                if !configured_targets.contains(&target.device_id) {
+                    candidate_hub
+                        .fail_quest_wifi_adb_target(
+                            &operation.operation_id,
+                            &target.device_id,
+                            "provider_target_unconfigured".to_owned(),
+                            now_ms,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    changed = true;
+                    continue;
+                }
+                if remaining_slots == 0
+                    || reserved
+                        .iter()
+                        .any(|(_, candidate_device)| candidate_device == &target.device_id)
+                {
+                    continue;
+                }
+                let key = (operation.operation_id.clone(), target.device_id.clone());
+                reserved.insert(key.clone());
+                recovered.push((
+                    key,
+                    ConnectivityOwnerWork {
+                        invocation,
+                        provider: provider.clone(),
+                    },
+                ));
+                remaining_slots -= 1;
+            }
+        }
+        if changed {
+            let RuntimeState {
+                hub,
+                adapter,
+                state_store,
+                owner_receipts,
+                ..
+            } = &mut *runtime;
+            state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms)?;
+            *hub = candidate_hub;
+        }
+        for (key, _) in &recovered {
+            runtime.inflight_connectivity_targets.insert(key.clone());
+        }
+    }
+    for (_, work) in recovered {
+        spawn_connectivity_owner_work(state.clone(), work);
+    }
+    let pending_operation_ids = {
+        let runtime = state.runtime.lock().await;
+        runtime
+            .hub
+            .quest_wifi_adb_operations()
+            .into_iter()
+            .filter(|operation| {
+                operation
+                    .targets
+                    .iter()
+                    .any(|target| target.lifecycle == CommandLifecycle::Accepted)
+            })
+            .map(|operation| operation.operation_id)
+            .collect::<Vec<_>>()
+    };
+    for operation_id in pending_operation_ids {
+        schedule_pending_connectivity_work(state.clone(), &operation_id).await;
+    }
+    Ok(())
+}
+
+async fn schedule_recovered_windows_hotspot_work(state: LocalHubState) -> Result<(), String> {
+    let now_ms = unix_time_ms()?;
+    let work = {
+        let mut runtime = state.runtime.lock().await;
+        let mut candidate_hub = runtime.hub.clone();
+        candidate_hub.recover_windows_hotspot(now_ms);
+        let configured = runtime.windows_hotspot_provider.clone();
+        let work = configured.and_then(|configured| {
+            candidate_hub
+                .windows_hotspot_operations()
+                .into_iter()
+                .find(|operation| {
+                    operation.lifecycle == CommandLifecycle::Dispatched
+                        && operation.preview.expires_at_ms >= now_ms
+                        && operation.invocation.is_some()
+                })
+                .and_then(|operation| {
+                    operation.invocation.map(|invocation| {
+                        (
+                            operation.operation_id,
+                            WindowsHotspotProviderConfig {
+                                executable_path: configured.executable_path,
+                                executable_sha256: configured.executable_sha256,
+                                private_stage_root: configured.private_stage_root,
+                            },
+                            invocation,
+                        )
+                    })
+                })
+        });
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            ..
+        } = &mut *runtime;
+        state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms)?;
+        *hub = candidate_hub;
+        if let Some((operation_id, _, _)) = &work {
+            runtime
+                .inflight_windows_hotspot_operations
+                .insert(operation_id.clone());
+        }
+        work
+    };
+    if let Some((operation_id, provider, invocation)) = work {
+        drop(spawn_windows_hotspot_owner_work(
+            state,
+            operation_id,
+            provider,
+            invocation,
+            now_ms,
+        ));
+    }
+    Ok(())
+}
+
+fn spawn_windows_hotspot_owner_work(
+    state: LocalHubState,
+    operation_id: String,
+    provider: WindowsHotspotProviderConfig,
+    invocation: fleet_contracts::WindowsHotspotProviderRequest,
+    fallback_now_ms: i64,
+) -> oneshot::Receiver<Result<fleet_contracts::WindowsHotspotOperation, String>> {
+    spawn_windows_hotspot_owner_work_with_clock(
+        state,
+        operation_id,
+        provider,
+        invocation,
+        fallback_now_ms,
+        unix_time_ms,
+    )
+}
+
+fn spawn_windows_hotspot_owner_work_with_clock<C>(
+    state: LocalHubState,
+    operation_id: String,
+    provider: WindowsHotspotProviderConfig,
+    invocation: fleet_contracts::WindowsHotspotProviderRequest,
+    fallback_now_ms: i64,
+    settlement_clock: C,
+) -> oneshot::Receiver<Result<fleet_contracts::WindowsHotspotOperation, String>>
+where
+    C: FnOnce() -> Result<i64, String> + Send + 'static,
+{
+    let (sender, receiver) = oneshot::channel();
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            WindowsHotspotOwnerAdapter::default().invoke(&provider, &invocation)
+        })
+        .await;
+        let now_ms = settlement_clock().unwrap_or(fallback_now_ms);
+        let mut runtime = state.runtime.lock().await;
+        runtime
+            .inflight_windows_hotspot_operations
+            .remove(&operation_id);
+        let mut candidate_hub = runtime.hub.clone();
+        let transition = match result {
+            Ok(Ok(receipt)) => match candidate_hub.apply_windows_hotspot_receipt(receipt, now_ms) {
+                Ok(operation) => Ok(operation),
+                Err(_) => candidate_hub.fail_windows_hotspot_operation(
+                    &operation_id,
+                    "provider_receipt_rejected".to_owned(),
+                    now_ms,
+                ),
+            },
+            Ok(Err(error)) => candidate_hub.fail_windows_hotspot_operation(
+                &operation_id,
+                format!("provider_{}", error.code),
+                now_ms,
+            ),
+            Err(_) => candidate_hub.fail_windows_hotspot_operation(
+                &operation_id,
+                "provider_worker_failed".to_owned(),
+                now_ms,
+            ),
+        };
+        let operation = match transition {
+            Ok(operation) => operation,
+            Err(error) => {
+                let _ = sender.send(Err(format!(
+                    "hotspot settlement transition failed with code {}",
+                    error.code
+                )));
+                return;
+            }
+        };
+        let RuntimeState {
+            hub,
+            adapter,
+            state_store,
+            owner_receipts,
+            ..
+        } = &mut *runtime;
+        if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+            let _ = sender.send(Err(error));
+            return;
+        }
+        *hub = candidate_hub;
+        let _ = sender.send(Ok(operation));
+    });
+    receiver
+}
+
+async fn schedule_pending_awake_work(state: LocalHubState, operation_id: &str) {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let now_unsigned = match u64::try_from(now_ms) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let mut runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.quest_awake_operation(operation_id) {
+        Ok(operation) => operation,
+        Err(_) => return,
+    };
+    let pending = operation
+        .targets
+        .iter()
+        .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+        .map(|target| (target.device_id.clone(), target.identity_revision))
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return;
+    }
+    let slots = 8usize.saturating_sub(
+        runtime
+            .inflight_awake_targets
+            .iter()
+            .filter(|(candidate_operation, _)| candidate_operation == operation_id)
+            .count(),
+    );
+    if slots == 0 {
+        return;
+    }
+    let Some(configured) = runtime.quest_awake_provider.clone() else {
+        return;
+    };
+    let provider = QuestAwakeProviderConfig {
+        executable_path: configured.executable_path.clone(),
+        executable_sha256: configured.executable_sha256.clone(),
+        adb_executable_path: configured.adb_executable_path.clone(),
+        adb_executable_sha256: configured.adb_executable_sha256.clone(),
+        adb_support_artifacts: configured
+            .adb_support_artifacts
+            .iter()
+            .map(|artifact| QuestAwakePinnedArtifact {
+                source_path: artifact.source_path.clone(),
+                sha256: artifact.sha256.clone(),
+            })
+            .collect(),
+        private_stage_root: configured.private_stage_root.clone(),
+    };
+    let serials = configured
+        .targets
+        .into_iter()
+        .map(|target| (target.device_id, target.serial))
+        .collect::<BTreeMap<_, _>>();
+    let expires_unsigned = match u64::try_from(operation.preview.expires_at_ms) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let mut candidate_hub = runtime.hub.clone();
+    let mut candidate_adapter = runtime.adapter.clone();
+    let mut work = Vec::new();
+    let mut controls = Vec::new();
+    for (device_id, identity_revision) in pending.into_iter().take(slots) {
+        let Some(serial) = serials.get(&device_id).cloned() else {
+            let _ = candidate_hub.fail_quest_awake_target(
+                operation_id,
+                &device_id,
+                "provider_target_unconfigured".to_owned(),
+                now_ms,
+            );
+            continue;
+        };
+        let active_windows_watchdog = runtime
+            .windows_awake_watchdogs
+            .get(&device_id)
+            .is_some_and(|control| !control.cancel.load(Ordering::Acquire));
+        let device_has_inflight_awake_work = runtime
+            .inflight_awake_targets
+            .iter()
+            .any(|(_, candidate_device)| candidate_device == &device_id);
+        let may_supersede_windows_watchdog = matches!(
+            operation.preview.action,
+            QuestAwakeAction::StopWatchdogs | QuestAwakeAction::RestoreNormal
+        ) && active_windows_watchdog;
+        if (active_windows_watchdog
+            && !matches!(
+                operation.preview.action,
+                QuestAwakeAction::StopWatchdogs | QuestAwakeAction::RestoreNormal
+            ))
+            || (device_has_inflight_awake_work && !may_supersede_windows_watchdog)
+        {
+            let _ = candidate_hub.fail_quest_awake_target(
+                operation_id,
+                &device_id,
+                "awake_control_conflict".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        let owner_action_request_id = awake_owner_action_request_id(operation_id, &device_id);
+        let (watchdog_generation, watchdog_generation_override) = if matches!(
+            operation.preview.action,
+            QuestAwakeAction::StopWatchdogs | QuestAwakeAction::RestoreNormal
+        ) {
+            let generation = latest_reported_device_watchdog_generation(&runtime.hub, &device_id)
+                .unwrap_or_else(|| "no-known-device-watchdog".to_owned());
+            (generation.clone(), Some(generation))
+        } else {
+            (operation.preview.watchdog_generation.clone(), None)
+        };
+        let manifold_request_id =
+            quest_awake_manifold_request_id(operation_id, &device_id, &owner_action_request_id);
+        if candidate_adapter
+            .authorize_quest_awake(
+                &QuestAwakeCommandAuthorization {
+                    manifold_request_id,
+                    owner_action_request_id: owner_action_request_id.clone(),
+                    requester_id: "operator.fleet.local".to_owned(),
+                    operation_id: operation_id.to_owned(),
+                    preview_id: operation.preview.preview_id.clone(),
+                    device_id: device_id.clone(),
+                    identity_revision,
+                    action: operation.preview.action,
+                    duration_ms: operation.preview.duration_ms,
+                    watchdog_interval_ms: operation.preview.watchdog_interval_ms,
+                    watchdog_generation,
+                    issued_at_ms: now_unsigned,
+                    expires_at_ms: expires_unsigned,
+                },
+                now_unsigned,
+            )
+            .is_err()
+        {
+            let _ = candidate_hub.fail_quest_awake_target(
+                operation_id,
+                &device_id,
+                "manifold_command_rejected".to_owned(),
+                now_ms,
+            );
+            continue;
+        }
+        let updated = match candidate_hub.prepare_quest_awake_invocation_with_watchdog_generation(
+            operation_id,
+            &device_id,
+            owner_action_request_id,
+            watchdog_generation_override,
+            now_ms,
+        ) {
+            Ok(updated) => updated,
+            Err(_) => continue,
+        };
+        let invocation = match updated
+            .targets
+            .iter()
+            .find(|target| target.device_id == device_id)
+            .and_then(|target| target.invocation.clone())
+        {
+            Some(invocation) => invocation,
+            None => continue,
+        };
+        if candidate_hub
+            .mark_quest_awake_dispatched(operation_id, &device_id, now_ms)
+            .is_err()
+        {
+            continue;
+        }
+        if operation.preview.action == QuestAwakeAction::StartWindowsWatchdog {
+            let control = WindowsAwakeWatchdogControl {
+                generation: operation.preview.watchdog_generation.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                running: Arc::new(AtomicBool::new(true)),
+            };
+            controls.push((device_id.clone(), control));
+        }
+        work.push(AwakeOwnerWork {
+            invocation,
+            serial,
+            provider: provider.clone(),
+            authorization_expires_at_ms: expires_unsigned,
+        });
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        inflight_awake_targets,
+        windows_awake_watchdogs,
+        ..
+    } = &mut *runtime;
+    if state_store
+        .persist(&candidate_hub, &candidate_adapter, owner_receipts, now_ms)
+        .is_err()
+    {
+        return;
+    }
+    *hub = candidate_hub;
+    *adapter = candidate_adapter;
+    for item in &work {
+        inflight_awake_targets.insert((
+            item.invocation.operation_id.clone(),
+            item.invocation.device_id.clone(),
+        ));
+    }
+    for (device_id, control) in &controls {
+        windows_awake_watchdogs.insert(device_id.clone(), control.clone());
+    }
+    drop(runtime);
+    for item in work {
+        if item.invocation.action == QuestAwakeAction::StartWindowsWatchdog {
+            spawn_windows_awake_watchdog(state.clone(), item);
+        } else {
+            spawn_awake_owner_work(state.clone(), item);
+        }
+    }
+}
+
+fn latest_reported_device_watchdog_generation(hub: &FleetHub, device_id: &str) -> Option<String> {
+    hub.quest_awake_operations()
+        .into_iter()
+        .flat_map(|operation| operation.targets)
+        .filter(|target| target.device_id == device_id)
+        .filter_map(|target| target.receipt)
+        .filter(|receipt| {
+            receipt.device_watchdog.reported_active
+                && !receipt.device_watchdog.generation.is_empty()
+        })
+        .max_by_key(|receipt| receipt.observed_at_ms)
+        .map(|receipt| receipt.device_watchdog.generation)
+}
+
+fn spawn_awake_owner_work(state: LocalHubState, work: AwakeOwnerWork) {
+    tokio::spawn(async move {
+        let operation_id = work.invocation.operation_id.clone();
+        let device_id = work.invocation.device_id.clone();
+        if matches!(
+            work.invocation.action,
+            QuestAwakeAction::StopWatchdogs | QuestAwakeAction::RestoreNormal
+        ) && !stop_windows_awake_watchdog(&state, &device_id).await
+        {
+            commit_awake_owner_result(
+                &state,
+                &work,
+                Err("Windows awake watchdog did not stop before the safety deadline".to_owned()),
+            )
+            .await;
+            let mut runtime = state.runtime.lock().await;
+            runtime
+                .inflight_awake_targets
+                .remove(&(operation_id.clone(), device_id));
+            drop(runtime);
+            schedule_pending_awake_work(state.clone(), &operation_id).await;
+            return;
+        }
+        let adapter = {
+            let runtime = state.runtime.lock().await;
+            runtime.quest_awake_adapter.clone()
+        };
+        let result = match acquire_awake_provider_slots(&state, &work.invocation.device_id).await {
+            Ok(_permits) => {
+                let invocation = work.invocation.clone();
+                let serial = work.serial.clone();
+                let provider = work.provider.clone();
+                tokio::task::spawn_blocking(move || {
+                    adapter.invoke(&provider, &invocation, &serial, false)
+                })
+                .await
+                .map_err(|error| format!("Quest awake provider worker could not join: {error}"))
+                .and_then(|result| result.map_err(|error| error.to_string()))
+            }
+            Err(error) => Err(error),
+        };
+        commit_awake_owner_result(&state, &work, result).await;
+        let mut runtime = state.runtime.lock().await;
+        runtime
+            .inflight_awake_targets
+            .remove(&(operation_id.clone(), device_id));
+        drop(runtime);
+        schedule_pending_awake_work(state.clone(), &operation_id).await;
+    });
+}
+
+fn spawn_windows_awake_watchdog(state: LocalHubState, work: AwakeOwnerWork) {
+    tokio::spawn(async move {
+        let operation_id = work.invocation.operation_id.clone();
+        let device_id = work.invocation.device_id.clone();
+        let generation = work.invocation.watchdog_generation.clone();
+        let control = {
+            let runtime = state.runtime.lock().await;
+            runtime.windows_awake_watchdogs.get(&device_id).cloned()
+        };
+        let Some(control) = control else {
+            return;
+        };
+        let mut consecutive_failures = 0u8;
+        let mut authorization_expires_at_ms = work.authorization_expires_at_ms;
+        loop {
+            if control.cancel.load(Ordering::Acquire) {
+                break;
+            }
+            let now_ms = match unix_time_ms().and_then(|value| {
+                u64::try_from(value).map_err(|_| "current time is negative".to_owned())
+            }) {
+                Ok(value) => value,
+                Err(error) => {
+                    commit_awake_owner_result(&state, &work, Err(error)).await;
+                    break;
+                }
+            };
+            if authorization_expires_at_ms
+                <= now_ms.saturating_add(AWAKE_WATCHDOG_AUTHORIZATION_RENEWAL_MARGIN_MS)
+            {
+                match renew_windows_awake_authorization(&state, &work, now_ms).await {
+                    Ok(expires_at_ms) => authorization_expires_at_ms = expires_at_ms,
+                    Err(error) => {
+                        commit_awake_owner_result(&state, &work, Err(error)).await;
+                        break;
+                    }
+                }
+            }
+            let adapter = {
+                let runtime = state.runtime.lock().await;
+                runtime.quest_awake_adapter.clone()
+            };
+            let Some(_permits) = acquire_awake_provider_slots_until_cancelled(
+                &state,
+                &work.invocation.device_id,
+                &control.cancel,
+            )
+            .await
+            else {
+                break;
+            };
+            let invocation = work.invocation.clone();
+            let serial = work.serial.clone();
+            let provider = work.provider.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                adapter.invoke(&provider, &invocation, &serial, true)
+            })
+            .await
+            .map_err(|error| format!("Windows awake watchdog worker could not join: {error}"))
+            .and_then(|result| result.map_err(|error| error.to_string()));
+            drop(_permits);
+            if result.is_ok() {
+                consecutive_failures = 0;
+                commit_awake_owner_result(&state, &work, result).await;
+            } else {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                if consecutive_failures >= 3 {
+                    commit_awake_owner_result(&state, &work, result).await;
+                }
+            }
+            if consecutive_failures >= 3 {
+                break;
+            }
+            let interval = Duration::from_millis(u64::from(work.invocation.watchdog_interval_ms));
+            let mut elapsed = Duration::ZERO;
+            while elapsed < interval && !control.cancel.load(Ordering::Acquire) {
+                let step = (interval - elapsed).min(Duration::from_millis(100));
+                tokio::time::sleep(step).await;
+                elapsed += step;
+            }
+        }
+        control.running.store(false, Ordering::Release);
+        let mut runtime = state.runtime.lock().await;
+        if runtime
+            .windows_awake_watchdogs
+            .get(&device_id)
+            .is_some_and(|current| current.generation == generation)
+        {
+            runtime.windows_awake_watchdogs.remove(&device_id);
+        }
+        runtime
+            .inflight_awake_targets
+            .remove(&(operation_id, device_id));
+    });
+}
+
+async fn commit_awake_owner_result(
+    state: &LocalHubState,
+    work: &AwakeOwnerWork,
+    result: Result<fleet_contracts::QuestAwakeOwnerReceipt, String>,
+) {
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let mut runtime = state.runtime.lock().await;
+    let mut candidate_hub = runtime.hub.clone();
+    let transition = match result {
+        Ok(receipt) => candidate_hub.apply_quest_awake_receipt(receipt, now_ms),
+        Err(error) => candidate_hub.fail_quest_awake_target(
+            &work.invocation.operation_id,
+            &work.invocation.device_id,
+            format!("provider_failed_{}", short_error_digest(&error)),
+            now_ms,
+        ),
+    };
+    if transition.is_err() {
+        return;
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    if state_store
+        .persist(&candidate_hub, adapter, owner_receipts, now_ms)
+        .is_ok()
+    {
+        *hub = candidate_hub;
+    }
+}
+
+async fn renew_windows_awake_authorization(
+    state: &LocalHubState,
+    work: &AwakeOwnerWork,
+    now_ms: u64,
+) -> Result<u64, String> {
+    let expires_at_ms = now_ms
+        .checked_add(AWAKE_WATCHDOG_AUTHORIZATION_LIFETIME_MS)
+        .ok_or_else(|| "Windows awake authorization expiry overflowed".to_owned())?;
+    let sequence = AWAKE_AUTHORIZATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let owner_action_request_id =
+        awake_authorization_renewal_id(&work.invocation, now_ms, sequence);
+    let manifold_request_id = quest_awake_manifold_request_id(
+        &work.invocation.operation_id,
+        &work.invocation.device_id,
+        &owner_action_request_id,
+    );
+    let mut runtime = state.runtime.lock().await;
+    let mut candidate_adapter = runtime.adapter.clone();
+    candidate_adapter.authorize_quest_awake(
+        &QuestAwakeCommandAuthorization {
+            manifold_request_id,
+            owner_action_request_id,
+            requester_id: "operator.fleet.local".to_owned(),
+            operation_id: work.invocation.operation_id.clone(),
+            preview_id: work.invocation.preview_id.clone(),
+            device_id: work.invocation.device_id.clone(),
+            identity_revision: work.invocation.identity_revision,
+            action: work.invocation.action,
+            duration_ms: work.invocation.duration_ms,
+            watchdog_interval_ms: work.invocation.watchdog_interval_ms,
+            watchdog_generation: work.invocation.watchdog_generation.clone(),
+            issued_at_ms: now_ms,
+            expires_at_ms,
+        },
+        now_ms,
+    )?;
+    let candidate_hub = runtime.hub.clone();
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        ..
+    } = &mut *runtime;
+    state_store
+        .persist(
+            &candidate_hub,
+            &candidate_adapter,
+            owner_receipts,
+            i64::try_from(now_ms)
+                .map_err(|_| "Windows awake authorization time is not representable".to_owned())?,
+        )
+        .map_err(|error| format!("cannot persist renewed Windows awake authorization: {error}"))?;
+    *adapter = candidate_adapter;
+    Ok(expires_at_ms)
+}
+
+fn awake_authorization_renewal_id(
+    invocation: &QuestAwakeOwnerInvocation,
+    now_ms: u64,
+    sequence: u64,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rusty.fleet.quest-awake.authorization-renewal.v1\0");
+    for value in [
+        invocation.request_id.as_bytes(),
+        invocation.watchdog_generation.as_bytes(),
+        &now_ms.to_be_bytes(),
+        &sequence.to_be_bytes(),
+    ] {
+        digest.update(value);
+        digest.update([0]);
+    }
+    format!(
+        "awake-authorization-renewal-{}",
+        &hex::encode(digest.finalize())[..32]
+    )
+}
+
+async fn stop_windows_awake_watchdog(state: &LocalHubState, device_id: &str) -> bool {
+    let control = {
+        let runtime = state.runtime.lock().await;
+        runtime.windows_awake_watchdogs.get(device_id).cloned()
+    };
+    let Some(control) = control else {
+        return true;
+    };
+    control.cancel.store(true, Ordering::Release);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
+    while control.running.load(Ordering::Acquire) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    !control.running.load(Ordering::Acquire)
+}
+
+async fn acquire_awake_provider_slots(
+    state: &LocalHubState,
+    device_id: &str,
+) -> Result<(OwnedSemaphorePermit, OwnedSemaphorePermit), String> {
+    let (device_slot, provider_slots) = {
+        let runtime = state.runtime.lock().await;
+        let device_slot = runtime
+            .awake_device_slots
+            .get(device_id)
+            .cloned()
+            .ok_or_else(|| "Quest awake target has no configured device gate".to_owned())?;
+        (device_slot, Arc::clone(&runtime.awake_provider_slots))
+    };
+    let device_permit = device_slot
+        .acquire_owned()
+        .await
+        .map_err(|_| "Quest awake device gate is closed".to_owned())?;
+    let provider_permit = provider_slots
+        .acquire_owned()
+        .await
+        .map_err(|_| "Quest awake provider concurrency gate is closed".to_owned())?;
+    Ok((device_permit, provider_permit))
+}
+
+async fn acquire_awake_provider_slots_until_cancelled(
+    state: &LocalHubState,
+    device_id: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
+    let (device_slot, provider_slots) = {
+        let runtime = state.runtime.lock().await;
+        (
+            runtime.awake_device_slots.get(device_id)?.clone(),
+            Arc::clone(&runtime.awake_provider_slots),
+        )
+    };
+    let device_permit = acquire_slot_until_cancelled(device_slot, cancel).await?;
+    let provider_permit = acquire_slot_until_cancelled(provider_slots, cancel).await?;
+    Some((device_permit, provider_permit))
+}
+
+async fn acquire_slot_until_cancelled(
+    slot: Arc<Semaphore>,
+    cancel: &Arc<AtomicBool>,
+) -> Option<OwnedSemaphorePermit> {
+    tokio::select! {
+        permit = slot.acquire_owned() => permit.ok(),
+        () = wait_for_awake_cancellation(cancel) => None,
+    }
+}
+
+async fn wait_for_awake_cancellation(cancel: &Arc<AtomicBool>) {
+    while !cancel.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn short_error_digest(value: &str) -> String {
+    hex::encode(Sha256::digest(value.as_bytes()))[..16].to_owned()
 }
 
 fn spawn_owner_work(state: LocalHubState, work: OwnerWork) {
@@ -1844,6 +5374,190 @@ async fn schedule_recovered_owner_work(state: LocalHubState) -> Result<(), Strin
     Ok(())
 }
 
+async fn schedule_recovered_awake_work(state: LocalHubState) -> Result<(), String> {
+    let now_ms = unix_time_ms()?;
+    let mut runtime = state.runtime.lock().await;
+    let operations = runtime.hub.quest_awake_operations();
+    let recoverable_exists = operations.iter().any(|operation| {
+        operation.confirmed_at_ms.is_some()
+            && operation.targets.iter().any(|target| {
+                matches!(
+                    target.lifecycle,
+                    CommandLifecycle::Accepted
+                        | CommandLifecycle::Dispatched
+                        | CommandLifecycle::Running
+                ) || (operation.preview.action == QuestAwakeAction::StartWindowsWatchdog
+                    && target.lifecycle == CommandLifecycle::Applied
+                    && target
+                        .receipt
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.effective))
+            })
+    });
+    if !recoverable_exists {
+        return Ok(());
+    }
+    let configured = runtime.quest_awake_provider.clone().ok_or_else(|| {
+        "recovered Quest awake work requires private provider configuration".to_owned()
+    })?;
+    let provider = QuestAwakeProviderConfig {
+        executable_path: configured.executable_path,
+        executable_sha256: configured.executable_sha256,
+        adb_executable_path: configured.adb_executable_path,
+        adb_executable_sha256: configured.adb_executable_sha256,
+        adb_support_artifacts: configured
+            .adb_support_artifacts
+            .into_iter()
+            .map(|artifact| QuestAwakePinnedArtifact {
+                source_path: artifact.source_path,
+                sha256: artifact.sha256,
+            })
+            .collect(),
+        private_stage_root: configured.private_stage_root,
+    };
+    let serials = configured
+        .targets
+        .into_iter()
+        .map(|target| (target.device_id, target.serial))
+        .collect::<BTreeMap<_, _>>();
+    let mut latest_mutating_intent = BTreeMap::<String, (i64, String)>::new();
+    for operation in &operations {
+        let Some(confirmed_at_ms) = operation.confirmed_at_ms else {
+            continue;
+        };
+        if operation.preview.action == QuestAwakeAction::Status {
+            continue;
+        }
+        for target in operation
+            .targets
+            .iter()
+            .filter(|target| target.preflight.eligible)
+        {
+            let candidate = (confirmed_at_ms, operation.operation_id.clone());
+            if latest_mutating_intent
+                .get(&target.device_id)
+                .is_none_or(|current| current < &candidate)
+            {
+                latest_mutating_intent.insert(target.device_id.clone(), candidate);
+            }
+        }
+    }
+    let mut candidate_hub = runtime.hub.clone();
+    let mut pending_operation_ids = BTreeSet::new();
+    let mut work = Vec::<(bool, AwakeOwnerWork)>::new();
+    for operation in &operations {
+        if operation.confirmed_at_ms.is_none() {
+            continue;
+        }
+        for target in operation
+            .targets
+            .iter()
+            .filter(|target| target.preflight.eligible)
+        {
+            let active_windows_receipt = operation.preview.action
+                == QuestAwakeAction::StartWindowsWatchdog
+                && target.lifecycle == CommandLifecycle::Applied
+                && target
+                    .receipt
+                    .as_ref()
+                    .is_some_and(|receipt| receipt.effective);
+            let nonterminal = matches!(
+                target.lifecycle,
+                CommandLifecycle::Accepted
+                    | CommandLifecycle::Dispatched
+                    | CommandLifecycle::Running
+            );
+            if !nonterminal && !active_windows_receipt {
+                continue;
+            }
+            let is_latest = operation.preview.action == QuestAwakeAction::Status
+                || latest_mutating_intent
+                    .get(&target.device_id)
+                    .is_some_and(|(_, operation_id)| operation_id == &operation.operation_id);
+            if !is_latest {
+                if nonterminal {
+                    candidate_hub
+                        .fail_quest_awake_target(
+                            &operation.operation_id,
+                            &target.device_id,
+                            "superseded_during_recovery".to_owned(),
+                            now_ms,
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                continue;
+            }
+            let serial = serials.get(&target.device_id).cloned().ok_or_else(|| {
+                format!(
+                    "recovered Quest awake target {} lacks exact serial configuration",
+                    target.device_id
+                )
+            })?;
+            if target.lifecycle == CommandLifecycle::Accepted {
+                pending_operation_ids.insert(operation.operation_id.clone());
+                continue;
+            }
+            let invocation = target.invocation.clone().ok_or_else(|| {
+                format!(
+                    "recovered Quest awake target {} lacks its exact durable invocation",
+                    target.device_id
+                )
+            })?;
+            work.push((
+                operation.preview.action == QuestAwakeAction::StartWindowsWatchdog,
+                AwakeOwnerWork {
+                    invocation,
+                    serial,
+                    provider: provider.clone(),
+                    authorization_expires_at_ms: 0,
+                },
+            ));
+        }
+    }
+    let RuntimeState {
+        hub,
+        adapter,
+        state_store,
+        owner_receipts,
+        inflight_awake_targets,
+        windows_awake_watchdogs,
+        ..
+    } = &mut *runtime;
+    state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms)?;
+    *hub = candidate_hub;
+    for (is_windows_watchdog, item) in &work {
+        let key = (
+            item.invocation.operation_id.clone(),
+            item.invocation.device_id.clone(),
+        );
+        if !inflight_awake_targets.insert(key) {
+            continue;
+        }
+        if *is_windows_watchdog {
+            windows_awake_watchdogs.insert(
+                item.invocation.device_id.clone(),
+                WindowsAwakeWatchdogControl {
+                    generation: item.invocation.watchdog_generation.clone(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    running: Arc::new(AtomicBool::new(true)),
+                },
+            );
+        }
+    }
+    drop(runtime);
+    for (is_windows_watchdog, item) in work {
+        if is_windows_watchdog {
+            spawn_windows_awake_watchdog(state.clone(), item);
+        } else {
+            spawn_awake_owner_work(state.clone(), item);
+        }
+    }
+    for operation_id in pending_operation_ids {
+        schedule_pending_awake_work(state.clone(), &operation_id).await;
+    }
+    Ok(())
+}
+
 struct AtomicTransportRequestIds;
 
 impl TransportRequestIdSource for AtomicTransportRequestIds {
@@ -2208,7 +5922,7 @@ fn schema_id(value: &str) -> Result<SchemaId, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2220,9 +5934,19 @@ mod tests {
     use fleet_contracts::{
         AuthorizationState, CHECKIN_SIGNATURE_ALGORITHM, CapabilityState, CommandLifecycle,
         EnablementState, FleetCheckInClaims, FleetQuery, FreshnessState, NavigationRestoration,
-        ReachabilityState, SavedView, SavedViewMutationRequest, SignedFleetCheckIn, SupportState,
+        QUEST_WIFI_ADB_ACTION_ID, QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA,
+        QUEST_WIFI_ADB_RECEIPT_SCHEMA, QuestWifiAdbAction, QuestWifiAdbOwnerInvocation,
+        QuestWifiAdbOwnerReceipt, QuestWifiAdbPreviewRequest, QuestWifiAdbRouteMode,
+        QuestWifiAdbWearerApproval, ReachabilityState, SavedView, SavedViewMutationRequest,
+        SignedFleetCheckIn, SupportState,
     };
-    use fleet_simulator::ScenarioBuilder;
+    use fleet_hub::{FleetHub, HubPolicy, ObservationDecision, QuestWifiAdbPreviewPlan};
+    use fleet_provider_catalog::{
+        ActionKind, AuthenticationRequirement, ExpectedAction, ExpectedCapability,
+        ProviderCatalogConfig,
+    };
+    use fleet_quest_connectivity_adapter::QuestConnectivityProviderConfig;
+    use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
     use rusty_manifold_model::{DottedId, Revision, SchemaId};
     use rusty_manifold_peer::{
         ManifoldPeerAvailability, ManifoldPeerCredentialAlgorithm, ManifoldPeerCredentialRecord,
@@ -2234,12 +5958,226 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        ConfiguredEnrollment, ConfiguredKioskDirectOperator, IngressRateLimiter, LocalHubConfig,
-        LocalHubState, MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, RuntimeState, router,
-        schedule_recovered_owner_work, state_slot_path, transport_request_id, unix_time_ms,
+        CatalogState, ConfiguredEnrollment, ConfiguredKioskDirectOperator,
+        ConfiguredPackageUpdaterOwner, ConfiguredQuestAwakePinnedArtifact,
+        ConfiguredQuestAwakeProvider, ConfiguredQuestAwakeTarget, ConnectivityOwnerWorkFailure,
+        FleetManifoldAdapter, IngressRateLimiter, LocalHubConfig, LocalHubState,
+        MAX_CHECKINS_PER_CREDENTIAL_PER_WINDOW, MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS,
+        RuntimeState, checkin_router, connectivity_dispatch_slots, connectivity_invocation_expired,
+        prepare_pending_connectivity_batch, router, schedule_recovered_owner_work,
+        settle_connectivity_owner_result, spawn_windows_hotspot_owner_work_with_clock,
+        state_slot_path, transport_request_id, unix_time_ms,
     };
 
     static STATE_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn offline_validator_matches_runtime_enrollment_acceptance() {
+        let now_ms = BASE_TIME_MS;
+        let signing_key = SigningKey::from_bytes(&[41_u8; 32]);
+        let (config, _) = config(&signing_key, now_ms);
+        assert!(config.validate_offline(now_ms).is_ok());
+        assert!(LocalHubState::from_config(&config, now_ms).is_ok());
+        fs::remove_dir_all(&config.state_directory).expect("remove state directory");
+
+        let mut damaged = config;
+        damaged.enrollments[0].credential.public_key_sha256 = format!("sha256:{}", "00".repeat(32));
+        assert!(damaged.validate().is_ok());
+        assert!(damaged.validate_offline(now_ms).is_err());
+        assert!(LocalHubState::from_config(&damaged, now_ms).is_err());
+    }
+
+    #[test]
+    fn offline_validator_accepts_exact_dual_ingress_and_rejects_bind_damage() {
+        let now_ms = BASE_TIME_MS;
+        let signing_key = SigningKey::from_bytes(&[42_u8; 32]);
+        let (mut config, _) = config(&signing_key, now_ms);
+        config.checkin_bind = Some("192.0.2.10:18742".to_owned());
+        config.allow_non_loopback_checkin = true;
+        assert!(config.validate_offline(now_ms).is_ok());
+
+        for damaged_bind in [
+            "127.0.0.1:18742",
+            "0.0.0.0:18742",
+            "224.0.0.1:18742",
+            "255.255.255.255:18742",
+        ] {
+            let mut damaged = config.clone();
+            damaged.checkin_bind = Some(damaged_bind.to_owned());
+            assert!(
+                damaged.validate_offline(now_ms).is_err(),
+                "{damaged_bind} must fail closed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn checkin_listener_mounts_only_authenticated_checkin_ingress() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[19_u8; 32]);
+        let (mut config, key_id) = config(&signing_key, now_ms);
+        config.checkin_bind = Some("192.0.2.10:18742".to_owned());
+        assert!(config.validate().is_err());
+        config.allow_non_loopback_checkin = true;
+        assert!(config.validate().is_ok());
+        config.checkin_bind = Some(config.bind.clone());
+        assert!(config.validate().is_err());
+        config.checkin_bind = Some("192.0.2.10:18742".to_owned());
+
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("valid dual ingress");
+        let app = checkin_router(state);
+        for (method, path, expected) in [
+            ("GET", "/fleet/v1/health", StatusCode::NOT_FOUND),
+            ("GET", "/fleet/v1/provider-catalog", StatusCode::NOT_FOUND),
+            (
+                "POST",
+                "/fleet/v1/provider-catalog/refresh",
+                StatusCode::NOT_FOUND,
+            ),
+            ("POST", "/fleet/v1/query", StatusCode::NOT_FOUND),
+            (
+                "POST",
+                "/fleet/v1/operations/preview",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "GET",
+                "/fleet/v1/package-updater/offers",
+                StatusCode::NOT_FOUND,
+            ),
+            ("POST", "/fleet/v1/checkins/", StatusCode::NOT_FOUND),
+            ("POST", "/Fleet/v1/checkins", StatusCode::NOT_FOUND),
+            ("POST", "/fleet/v1/%63heckins", StatusCode::NOT_FOUND),
+            (
+                "OPTIONS",
+                "/fleet/v1/checkins",
+                StatusCode::METHOD_NOT_ALLOWED,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(json_method_request(method, path, Vec::new()))
+                .await
+                .expect("isolated route response");
+            assert_eq!(response.status(), expected, "{method} {path}");
+        }
+        let wrong_method = app
+            .clone()
+            .oneshot(json_method_request("GET", "/fleet/v1/checkins", Vec::new()))
+            .await
+            .expect("method response");
+        assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let accepted = app
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+        fs::remove_dir_all(state_directory).expect("remove state directory");
+    }
+
+    #[tokio::test]
+    async fn provider_catalog_reads_snapshot_and_refreshes_without_retaining_prior_metadata() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[20_u8; 32]);
+        let (mut config, _) = config(&signing_key, now_ms);
+        config.provider_catalog = vec![ProviderCatalogConfig {
+            catalog_id: "quest-connectivity".to_owned(),
+            executable_path: None,
+            executable_sha256: None,
+            expected_provider_id: "questionable-file-manager.quest-connectivity-provider"
+                .to_owned(),
+            expected_provider_version: "1.0.0".to_owned(),
+            expected_capabilities: vec![ExpectedCapability {
+                id: "questionable-file-manager.quest-connectivity.wireless-adb".to_owned(),
+                contract_versions: vec![
+                    "questionable.file_manager.quest_connectivity.provider_request.v1".to_owned(),
+                ],
+                actions: vec![ExpectedAction {
+                    id: "request_wireless_adb".to_owned(),
+                    kind: ActionKind::Effect,
+                    authentication_requirements: vec![
+                        AuthenticationRequirement::ProcessAccessControl,
+                        AuthenticationRequirement::CallerAuthorityExternal,
+                        AuthenticationRequirement::ExactTargetBinding,
+                    ],
+                }],
+                effect_owner: "rusty-kiosk.wireless-adb".to_owned(),
+                receipt_schema: "questionable.file_manager.quest_connectivity.provider_receipt.v1"
+                    .to_owned(),
+            }],
+        }];
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("catalog config");
+        let app = router(state.clone());
+        let snapshot = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/fleet/v1/provider-catalog")
+                    .body(Body::empty())
+                    .expect("snapshot request"),
+            )
+            .await
+            .expect("snapshot response");
+        assert_eq!(snapshot.status(), StatusCode::OK);
+        let snapshot_json: Value = serde_json::from_slice(
+            &to_bytes(snapshot.into_body(), 64 * 1024)
+                .await
+                .expect("snapshot body"),
+        )
+        .expect("snapshot JSON");
+        assert_eq!(snapshot_json["revision"], 1);
+        assert_eq!(snapshot_json["entries"][0]["state"], "unconfigured");
+        assert!(snapshot_json["entries"][0].get("descriptor").is_none());
+
+        let refreshed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/fleet/v1/provider-catalog/refresh")
+                    .body(Body::empty())
+                    .expect("refresh request"),
+            )
+            .await
+            .expect("refresh response");
+        assert_eq!(refreshed.status(), StatusCode::OK);
+        let refreshed_json: Value = serde_json::from_slice(
+            &to_bytes(refreshed.into_body(), 64 * 1024)
+                .await
+                .expect("refresh body"),
+        )
+        .expect("refresh JSON");
+        assert_eq!(refreshed_json["revision"], 3);
+        assert_eq!(refreshed_json["entries"][0]["state"], "unconfigured");
+        assert_eq!(refreshed_json["authorizes_execution"], false);
+        assert_eq!(refreshed_json["metadata_only"], true);
+
+        state.runtime.lock().await.provider_catalog_last_refresh_ms = Some(i64::MAX);
+        let rollback = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/fleet/v1/provider-catalog/refresh")
+                    .body(Body::empty())
+                    .expect("rollback request"),
+            )
+            .await
+            .expect("rollback response");
+        assert_eq!(rollback.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            state.runtime.lock().await.provider_catalog_snapshot.entries[0].state,
+            CatalogState::Unconfigured
+        );
+        fs::remove_dir_all(state_directory).expect("remove state directory");
+    }
 
     #[tokio::test]
     async fn signed_checkin_query_and_replay_share_one_authority() {
@@ -2381,6 +6319,349 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quest_awake_routes_are_strict_and_inert_without_private_provider() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let (config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let app = router(LocalHubState::from_config(&config, now_ms).expect("valid config"));
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let identity_revision = signed.claims.observation.identity.identity_revision;
+        let accepted = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let request = serde_json::json!({
+            "schema": "rusty.fleet.quest_awake_preview_request.v1",
+            "action_id": "quest.awake-control",
+            "action": "apply_bounded",
+            "duration_ms": 28_800_000,
+            "watchdog_interval_ms": 5_000,
+            "targets": {"device.quest.1": identity_revision}
+        });
+        let unavailable = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/quest-awake/preview",
+                serde_json::to_vec(&request).expect("awake preview JSON"),
+            ))
+            .await
+            .expect("awake preview response");
+        assert_eq!(unavailable.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let mut oversized_duration = request.clone();
+        oversized_duration["duration_ms"] = serde_json::json!(28_800_001);
+        let rejected = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/quest-awake/preview",
+                serde_json::to_vec(&oversized_duration).expect("oversized preview JSON"),
+            ))
+            .await
+            .expect("oversized preview response");
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let mut unknown_field = request;
+        unknown_field["serial"] = serde_json::json!("must-not-cross-public-api");
+        let rejected = app
+            .oneshot(json_request(
+                "/fleet/v1/quest-awake/preview",
+                serde_json::to_vec(&unknown_field).expect("unknown-field preview JSON"),
+            ))
+            .await
+            .expect("strict preview response");
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn quest_wifi_adb_routes_are_strict_inert_and_expose_no_proof_submission() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[17_u8; 32]);
+        let (config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let app = router(LocalHubState::from_config(&config, now_ms).expect("valid config"));
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let identity_revision = signed.claims.observation.identity.identity_revision;
+        let accepted = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let request = serde_json::json!({
+            "schema": "rusty.fleet.quest_wifi_adb_preview_request.v1",
+            "action_id": "quest.wifi-adb-control",
+            "action": "request_wireless_adb",
+            "targets": {"device.quest.1": identity_revision}
+        });
+        let unavailable = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/quest-wifi-adb/preview",
+                serde_json::to_vec(&request).expect("Wi-Fi ADB preview JSON"),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(unavailable.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let mut private_field = request;
+        private_field["serial"] = serde_json::json!("must-not-cross-public-api");
+        let rejected = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/quest-wifi-adb/preview",
+                serde_json::to_vec(&private_field).expect("strict preview JSON"),
+            ))
+            .await
+            .expect("strict preview response");
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+
+        let no_proof_ingress = app
+            .oneshot(json_request(
+                "/fleet/v1/quest-wifi-adb/proofs",
+                serde_json::to_vec(&serde_json::json!({"shape": "must-not-be-authority"}))
+                    .expect("proof JSON"),
+            ))
+            .await
+            .expect("missing proof route response");
+        assert_eq!(
+            no_proof_ingress.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "the operation read route must not accept proof writes"
+        );
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[test]
+    fn rejected_connectivity_receipts_fail_the_dispatched_target_without_leaking_reason() {
+        for damage in ["late", "future", "binding"] {
+            let (mut hub, operation_id, device_id, mut receipt) =
+                dispatched_wifi_adb_receipt_fixture();
+            let now_ms = BASE_TIME_MS + 4;
+            match damage {
+                "late" => receipt.observed_at_ms = BASE_TIME_MS + 60_001,
+                "future" => receipt.observed_at_ms = BASE_TIME_MS + 40_000,
+                "binding" => receipt.request_id = "request.wifi.other".to_owned(),
+                _ => unreachable!("bounded test cases"),
+            }
+            settle_connectivity_owner_result(
+                &mut hub,
+                &operation_id,
+                &device_id,
+                Ok(receipt),
+                if damage == "late" {
+                    BASE_TIME_MS + 60_001
+                } else {
+                    now_ms
+                },
+            )
+            .expect("receipt rejection becomes a terminal sanitized failure");
+            let operation = hub
+                .quest_wifi_adb_operation(&operation_id)
+                .expect("settled operation");
+            let target = &operation.targets[0];
+            assert_eq!(target.lifecycle, CommandLifecycle::Failed, "{damage}");
+            assert_eq!(
+                target.failure_code.as_deref(),
+                Some("provider_receipt_rejected"),
+                "{damage}"
+            );
+            assert!(target.receipt.is_none(), "{damage}");
+        }
+    }
+
+    #[test]
+    fn connectivity_batch_dispatches_only_eight_then_fills_the_freed_slot() {
+        let mut hub = FleetHub::new(HubPolicy::default());
+        let mut targets = BTreeMap::new();
+        for mut observation in ScenarioBuilder::new(9).build().initial {
+            observation.source_time_ms = BASE_TIME_MS;
+            observation.received_time_ms = 0;
+            targets.insert(
+                observation.identity.device_id.clone(),
+                observation.identity.identity_revision,
+            );
+            assert!(matches!(
+                hub.accept_observation(observation, BASE_TIME_MS),
+                ObservationDecision::Accepted { .. }
+            ));
+        }
+        let configured_targets = targets.keys().cloned().collect::<BTreeSet<_>>();
+        let operation = hub
+            .preview_quest_wifi_adb(QuestWifiAdbPreviewPlan {
+                operation_id: "operation.wifi.nine-targets".to_owned(),
+                preview_id: "preview.wifi.nine-targets".to_owned(),
+                request: QuestWifiAdbPreviewRequest {
+                    schema: QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA.to_owned(),
+                    action_id: QUEST_WIFI_ADB_ACTION_ID.to_owned(),
+                    action: QuestWifiAdbAction::Status,
+                    targets,
+                },
+                created_at_ms: BASE_TIME_MS,
+                expires_at_ms: BASE_TIME_MS + 60_000,
+                provider_ready_devices: configured_targets.clone(),
+            })
+            .expect("nine-target preview");
+        let operation = hub
+            .confirm_quest_wifi_adb(
+                &operation.operation_id,
+                &operation.preview.preview_id,
+                BASE_TIME_MS + 1,
+            )
+            .expect("confirm nine-target preview");
+        let provider = QuestConnectivityProviderConfig {
+            executable_path: PathBuf::from("provider.exe"),
+            executable_sha256: "11".repeat(32),
+            private_stage_root: PathBuf::from("private-stage"),
+        };
+        let adapter = FleetManifoldAdapter::new(vec![dotted("operator.fleet.local")]);
+        let (mut dispatched_hub, dispatched_adapter, work) = prepare_pending_connectivity_batch(
+            &hub,
+            &adapter,
+            &operation,
+            &configured_targets,
+            &BTreeSet::new(),
+            &provider,
+            BASE_TIME_MS + 2,
+            u64::try_from(BASE_TIME_MS + 2).expect("positive time"),
+            u64::try_from(BASE_TIME_MS + 60_000).expect("positive expiry"),
+        );
+        assert_eq!(work.len(), MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS);
+        let dispatched = dispatched_hub
+            .quest_wifi_adb_operation(&operation.operation_id)
+            .expect("bounded dispatch");
+        assert_eq!(
+            dispatched
+                .targets
+                .iter()
+                .filter(|target| target.lifecycle == CommandLifecycle::Dispatched)
+                .count(),
+            MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS
+        );
+        assert_eq!(
+            dispatched
+                .targets
+                .iter()
+                .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+                .count(),
+            1
+        );
+
+        let completed = &work[0].invocation;
+        dispatched_hub
+            .fail_quest_wifi_adb_target(
+                &completed.operation_id,
+                &completed.device_id,
+                "provider_invocation_failed".to_owned(),
+                BASE_TIME_MS + 3,
+            )
+            .expect("complete one occupied slot");
+        let inflight = work
+            .iter()
+            .skip(1)
+            .map(|item| {
+                (
+                    item.invocation.operation_id.clone(),
+                    item.invocation.device_id.clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let operation = dispatched_hub
+            .quest_wifi_adb_operation(&operation.operation_id)
+            .expect("one queued target remains");
+        let (refilled_hub, _, refilled) = prepare_pending_connectivity_batch(
+            &dispatched_hub,
+            &dispatched_adapter,
+            &operation,
+            &configured_targets,
+            &inflight,
+            &provider,
+            BASE_TIME_MS + 4,
+            u64::try_from(BASE_TIME_MS + 4).expect("positive time"),
+            u64::try_from(BASE_TIME_MS + 60_000).expect("positive expiry"),
+        );
+        assert_eq!(refilled.len(), 1);
+        let refilled_operation = refilled_hub
+            .quest_wifi_adb_operation(&operation.operation_id)
+            .expect("refilled operation");
+        assert_eq!(
+            refilled_operation
+                .targets
+                .iter()
+                .filter(|target| target.lifecycle == CommandLifecycle::Accepted)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn connectivity_dispatch_budget_has_no_waiting_overflow_and_expiry_is_inclusive() {
+        assert_eq!(
+            connectivity_dispatch_slots(0),
+            MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS
+        );
+        assert_eq!(
+            connectivity_dispatch_slots(MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS - 1),
+            1
+        );
+        assert_eq!(
+            connectivity_dispatch_slots(MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS),
+            0
+        );
+        assert_eq!(
+            connectivity_dispatch_slots(MAX_CONCURRENT_CONNECTIVITY_PROVIDER_CALLS + 1),
+            0
+        );
+        let invocation = QuestWifiAdbOwnerInvocation {
+            schema: "rusty.fleet.quest_wifi_adb_owner_invocation.v1".to_owned(),
+            request_id: "request.wifi.expiry".to_owned(),
+            operation_id: "operation.wifi.expiry".to_owned(),
+            preview_id: "preview.wifi.expiry".to_owned(),
+            device_id: "device.quest.expiry".to_owned(),
+            identity_revision: 1,
+            action: QuestWifiAdbAction::Status,
+            issued_at_ms: BASE_TIME_MS,
+            expires_at_ms: BASE_TIME_MS + 10,
+        };
+        assert!(!connectivity_invocation_expired(
+            &invocation,
+            BASE_TIME_MS + 9
+        ));
+        assert!(connectivity_invocation_expired(
+            &invocation,
+            BASE_TIME_MS + 10
+        ));
+        let (mut hub, operation_id, device_id, _) = dispatched_wifi_adb_receipt_fixture();
+        settle_connectivity_owner_result(
+            &mut hub,
+            &operation_id,
+            &device_id,
+            Err(ConnectivityOwnerWorkFailure::InvocationExpired),
+            BASE_TIME_MS + 60_000,
+        )
+        .expect("expired invocation becomes terminal");
+        let operation = hub
+            .quest_wifi_adb_operation(&operation_id)
+            .expect("expired operation");
+        assert_eq!(operation.targets[0].lifecycle, CommandLifecycle::Failed);
+        assert_eq!(
+            operation.targets[0].failure_code.as_deref(),
+            Some("provider_invocation_expired")
+        );
+    }
+
+    #[tokio::test]
     async fn saved_view_routes_preserve_revision_and_durable_restoration() {
         let now_ms = unix_time_ms().expect("current time");
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
@@ -2476,6 +6757,119 @@ mod tests {
             .await
             .expect("get response");
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
+    async fn hotspot_settlement_survives_dropped_receiver_and_clock_failure() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[21_u8; 32]);
+        let (config, _) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
+        let operation_id = "hotspot-operation-detached".to_owned();
+        {
+            let mut runtime = state.runtime.lock().await;
+            runtime
+                .hub
+                .preview_windows_hotspot(fleet_hub::WindowsHotspotPreviewPlan {
+                    operation_id: operation_id.clone(),
+                    preview_id: "hotspot-preview-detached".to_owned(),
+                    lease_id: "hotspot-lease-detached".to_owned(),
+                    generation: "hotspot-generation-detached".to_owned(),
+                    request: fleet_contracts::WindowsHotspotPreviewRequest {
+                        schema: fleet_contracts::WINDOWS_HOTSPOT_PREVIEW_REQUEST_SCHEMA.to_owned(),
+                        action_id: fleet_contracts::WINDOWS_HOTSPOT_ACTION_ID.to_owned(),
+                        action: fleet_contracts::WindowsHotspotAction::Status,
+                    },
+                    created_at_ms: now_ms,
+                    expires_at_ms: now_ms + 60_000,
+                    provider_ready: true,
+                })
+                .expect("preview");
+            runtime
+                .hub
+                .confirm_windows_hotspot(&operation_id, "hotspot-preview-detached", now_ms + 1)
+                .expect("confirm");
+            runtime
+                .hub
+                .prepare_windows_hotspot_invocation(
+                    &operation_id,
+                    "hotspot-request-detached".to_owned(),
+                    now_ms + 2,
+                )
+                .expect("prepare invocation");
+            runtime
+                .inflight_windows_hotspot_operations
+                .insert(operation_id.clone());
+        }
+        let provider_root = state_directory.join("missing-provider");
+        let receiver = spawn_windows_hotspot_owner_work_with_clock(
+            state.clone(),
+            operation_id.clone(),
+            fleet_windows_hotspot_adapter::WindowsHotspotProviderConfig {
+                executable_path: provider_root.join("rusty-hostess-hotspot-provider.exe"),
+                executable_sha256: "a".repeat(64),
+                private_stage_root: state_directory.join("private-stages"),
+            },
+            state
+                .runtime
+                .lock()
+                .await
+                .hub
+                .windows_hotspot_operation(&operation_id)
+                .expect("prepared operation")
+                .invocation
+                .expect("invocation"),
+            now_ms + 2,
+            || Err("injected clock failure".to_owned()),
+        );
+        drop(receiver);
+
+        for _ in 0..100 {
+            let settled = {
+                let runtime = state.runtime.lock().await;
+                runtime
+                    .hub
+                    .windows_hotspot_operation(&operation_id)
+                    .expect("operation")
+                    .lifecycle
+                    == CommandLifecycle::Failed
+            };
+            if settled {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let runtime = state.runtime.lock().await;
+        let operation = runtime
+            .hub
+            .windows_hotspot_operation(&operation_id)
+            .expect("settled operation");
+        assert_eq!(operation.lifecycle, CommandLifecycle::Failed);
+        assert_eq!(
+            operation.failure_code.as_deref(),
+            Some("provider_provider_unavailable")
+        );
+        assert!(
+            !runtime
+                .inflight_windows_hotspot_operations
+                .contains(&operation_id)
+        );
+        drop(runtime);
+
+        let restored =
+            LocalHubState::from_config(&config, now_ms + 3).expect("durable settled state");
+        let restored_runtime = restored.runtime.lock().await;
+        assert_eq!(
+            restored_runtime
+                .hub
+                .windows_hotspot_operation(&operation_id)
+                .expect("restored operation")
+                .lifecycle,
+            CommandLifecycle::Failed
+        );
+        drop(restored_runtime);
         fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
@@ -2690,6 +7084,254 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn package_routes_persist_dispatch_ready_and_reject_untrusted_owner_evidence() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[11_u8; 32]);
+        let (mut config, key_id) = config(&signing_key, now_ms);
+        let state_directory = config.state_directory.clone();
+        let state = LocalHubState::from_config(&config, now_ms).expect("valid config");
+        let app = router(state.clone());
+        let signed = signed_checkin(&signing_key, key_id.as_str(), now_ms, 1);
+        let identity_revision = signed.claims.observation.identity.identity_revision;
+        let accepted = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/checkins",
+                serde_json::to_vec(&signed).expect("signed JSON"),
+            ))
+            .await
+            .expect("check-in response");
+        assert_eq!(accepted.status(), StatusCode::OK);
+
+        let preview_request = serde_json::json!({
+            "schema": "rusty.fleet.package_install_release_preview_request.v1",
+            "action_id": "packages.install-release",
+            "release": {
+                "kind": "manifest_url",
+                "manifest_url": "https://updates.example.invalid/alpha/envelope.json"
+            },
+            "expected_package_name": "io.github.mesmerprism.rustykiosk",
+            "expected_rollout_ring": "alpha",
+            "targets": {"device.quest.1": identity_revision}
+        });
+        let preview = app
+            .clone()
+            .oneshot(json_request(
+                "/fleet/v1/package-install-releases/preview",
+                serde_json::to_vec(&preview_request).expect("preview JSON"),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(preview.status(), StatusCode::OK);
+        let preview_json: Value = serde_json::from_slice(
+            &to_bytes(preview.into_body(), 256 * 1024)
+                .await
+                .expect("preview body"),
+        )
+        .expect("preview JSON");
+        assert_eq!(preview_json["lifecycle"], "proposed");
+        assert_eq!(preview_json["targets"][0]["stage"], "preview_ready");
+
+        let operation_id = preview_json["operation_id"]
+            .as_str()
+            .expect("operation ID")
+            .to_owned();
+        let preview_id = preview_json["preview"]["preview_id"]
+            .as_str()
+            .expect("preview ID")
+            .to_owned();
+        let execute_request = serde_json::json!({
+            "schema": "rusty.fleet.package_install_release_execute_request.v1",
+            "operation_id": operation_id,
+            "preview_id": preview_id
+        });
+        let execute = app
+            .clone()
+            .oneshot(json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/execute"),
+                serde_json::to_vec(&execute_request).expect("execute JSON"),
+            ))
+            .await
+            .expect("execute response");
+        assert_eq!(execute.status(), StatusCode::OK);
+        let execute_json: Value = serde_json::from_slice(
+            &to_bytes(execute.into_body(), 256 * 1024)
+                .await
+                .expect("execute body"),
+        )
+        .expect("execute JSON");
+        assert_eq!(execute_json["lifecycle"], "accepted");
+        assert_eq!(execute_json["targets"][0]["stage"], "dispatch_ready");
+        assert!(
+            execute_json["targets"][0]["invocation"]
+                .as_object()
+                .is_some()
+        );
+        let owner_action_request_id =
+            execute_json["targets"][0]["invocation"]["owner_action_request_id"]
+                .as_str()
+                .expect("owner request")
+                .to_owned();
+
+        let acknowledgement = serde_json::json!({
+            "schema": "rusty.fleet.package_updater_invocation_acknowledgement.v1",
+            "operation_id": operation_id,
+            "device_id": "device.quest.1",
+            "owner_action_request_id": owner_action_request_id,
+            "accepted": true,
+            "code": "accepted",
+            "acknowledged_at_ms": now_ms + 2
+        });
+        let rejected = app
+            .clone()
+            .oneshot(json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/acknowledgements"),
+                serde_json::to_vec(&acknowledgement).expect("acknowledgement JSON"),
+            ))
+            .await
+            .expect("acknowledgement response");
+        assert_eq!(rejected.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let receipt = serde_json::json!({
+            "schema": "rusty.fleet.package_updater_receipt_submission.v1",
+            "effective_receipt": {
+                "schema": "rusty.fleet.package_updater_effective_receipt.v1",
+                "operation_id": operation_id,
+                "device_id": "device.quest.1",
+                "identity_revision": identity_revision,
+                "owner_action_request_id": owner_action_request_id,
+                "updater_receipt": {
+                    "schema": "rusty.quest.package_update_receipt.v1",
+                    "stage": "install_commit",
+                    "decision": "accepted",
+                    "code": "installed",
+                    "observed_at_ms": now_ms + 2,
+                    "envelope_sha256": format!("sha256:{}", "b".repeat(64)),
+                    "signed_manifest_sha256": digest,
+                    "key_id": "release-key-1",
+                    "manifest_id": "release-15",
+                    "package_name": "io.github.mesmerprism.rustykiosk",
+                    "rollout_ring": "alpha",
+                    "sequence": 15,
+                    "version_code": 15,
+                    "prior_checkpoint": null,
+                    "accepted_checkpoint": {
+                        "package_name": "io.github.mesmerprism.rustykiosk",
+                        "rollout_ring": "alpha",
+                        "sequence": 15,
+                        "version_code": 15,
+                        "signed_manifest_sha256": digest
+                    },
+                    "state_changed": true
+                },
+                "wrapped_at_ms": now_ms + 2
+            }
+        });
+        let rejected_receipt = app
+            .clone()
+            .oneshot(json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/receipts"),
+                serde_json::to_vec(&receipt).expect("receipt JSON"),
+            ))
+            .await
+            .expect("receipt response");
+        assert_eq!(rejected_receipt.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/fleet/v1/package-install-releases/{operation_id}"))
+                    .body(Body::empty())
+                    .expect("status request"),
+            )
+            .await
+            .expect("status response");
+        let status_json: Value = serde_json::from_slice(
+            &to_bytes(status.into_body(), 256 * 1024)
+                .await
+                .expect("status body"),
+        )
+        .expect("status JSON");
+        assert_eq!(status_json["lifecycle"], "accepted");
+        assert_eq!(status_json["targets"][0]["stage"], "dispatch_ready");
+        drop(app);
+        drop(state);
+
+        config.package_updater_owner = Some(ConfiguredPackageUpdaterOwner {
+            owner_id: "rusty-quest.package-updater".to_owned(),
+            bearer_token: "owner-token-that-is-at-least-thirty-two-bytes".to_owned(),
+        });
+        let restored =
+            LocalHubState::from_config(&config, now_ms + 3).expect("restore package operation");
+        let restored_app = router(restored.clone());
+        let offered_invocation = restored
+            .runtime
+            .lock()
+            .await
+            .hub
+            .package_operation(&operation_id)
+            .expect("restored package operation")
+            .targets[0]
+            .invocation
+            .clone()
+            .expect("prepared invocation");
+        let claim_body = serde_json::to_vec(&serde_json::json!({
+            "schema": "rusty.fleet.package_updater_claim_request.v1",
+            "owner_id": "rusty-quest.package-updater",
+            "request_id": "owner-claim-request-1",
+            "operation_id": operation_id,
+            "device_id": offered_invocation.device_id,
+            "expected_invocation_sha256": super::json_sha256(&offered_invocation)
+        }))
+        .expect("claim JSON");
+        let claim_response = restored_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/fleet/v1/package-updater/claims")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CONTENT_LENGTH, claim_body.len().to_string())
+                    .header(
+                        header::AUTHORIZATION,
+                        "Bearer owner-token-that-is-at-least-thirty-two-bytes",
+                    )
+                    .body(Body::from(claim_body))
+                    .expect("claim request"),
+            )
+            .await
+            .expect("claim response");
+        assert_eq!(claim_response.status(), StatusCode::OK);
+        let claim_json: Value = serde_json::from_slice(
+            &to_bytes(claim_response.into_body(), 256 * 1024)
+                .await
+                .expect("claim body"),
+        )
+        .expect("claim response JSON");
+        assert_eq!(claim_json["owner_id"], "rusty-quest.package-updater");
+        assert_eq!(
+            claim_json["invocation"]["owner_action_request_id"],
+            owner_action_request_id
+        );
+        let restored_operation = restored
+            .runtime
+            .lock()
+            .await
+            .hub
+            .package_operation(&operation_id)
+            .expect("restored package operation");
+        assert_eq!(restored_operation.lifecycle, CommandLifecycle::Accepted);
+        assert_eq!(
+            serde_json::to_value(restored_operation.targets[0].stage).expect("stage JSON"),
+            serde_json::json!("dispatch_ready")
+        );
+        assert!(restored_operation.targets[0].owner_claim.is_some());
+        fs::remove_dir_all(state_directory).expect("remove test state directory");
+    }
+
+    #[tokio::test]
     async fn startup_resumes_durable_accepted_targets_without_reconfirmation() {
         let now_ms = unix_time_ms().expect("current time");
         let signing_key = SigningKey::from_bytes(&[10_u8; 32]);
@@ -2843,6 +7485,16 @@ mod tests {
         assert!(config.validate().is_err());
         config.allow_non_loopback = true;
         assert!(config.validate().is_ok());
+        config.package_updater_owner = Some(ConfiguredPackageUpdaterOwner {
+            owner_id: "rusty-quest.package-updater".to_owned(),
+            bearer_token: "owner-token-that-is-at-least-thirty-two-bytes".to_owned(),
+        });
+        assert_eq!(
+            config
+                .validate()
+                .expect_err("owner ingress is loopback-only"),
+            "package updater owner ingress requires a loopback bind"
+        );
     }
 
     #[test]
@@ -2867,6 +7519,136 @@ mod tests {
         assert!(first.len() <= 64);
     }
 
+    #[test]
+    fn package_owner_secret_comparison_is_equal_length_constant_time_and_debug_is_redacted() {
+        assert!(super::constant_time_equal(&[7_u8; 32], &[7_u8; 32]));
+        assert!(!super::constant_time_equal(&[7_u8; 32], &[8_u8; 32]));
+        assert!(!super::constant_time_equal(&[7_u8; 31], &[7_u8; 32]));
+        let owner = ConfiguredPackageUpdaterOwner {
+            owner_id: "rusty-quest.package-updater".to_owned(),
+            bearer_token: "a-private-owner-token-that-must-not-appear".to_owned(),
+        };
+        let debug = format!("{owner:?}");
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains(&owner.bearer_token));
+    }
+
+    #[test]
+    fn quest_awake_private_artifacts_are_pinned_and_debug_redacted() {
+        let now_ms = unix_time_ms().expect("current time");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let (mut config, _) = config(&signing_key, now_ms);
+        let artifact_root = test_state_directory();
+        fs::create_dir_all(&artifact_root).expect("create private artifact root");
+        let provider = artifact_root.join("questionable-file-manager-awake-provider.exe");
+        let adb = artifact_root.join("adb.exe");
+        let adb_win_api = artifact_root.join("AdbWinApi.dll");
+        let adb_win_usb_api = artifact_root.join("AdbWinUsbApi.dll");
+        fs::write(&provider, b"provider-test-artifact").expect("write provider");
+        fs::write(&adb, b"adb-test-artifact").expect("write adb");
+        fs::write(&adb_win_api, b"adb-win-api-test-artifact").expect("write ADB API DLL");
+        fs::write(&adb_win_usb_api, b"adb-win-usb-api-test-artifact")
+            .expect("write ADB USB API DLL");
+        config.quest_awake_provider = Some(ConfiguredQuestAwakeProvider {
+            executable_path: provider.clone(),
+            executable_sha256: hex::encode(Sha256::digest(b"provider-test-artifact")),
+            adb_executable_path: adb.clone(),
+            adb_executable_sha256: hex::encode(Sha256::digest(b"adb-test-artifact")),
+            adb_support_artifacts: vec![
+                ConfiguredQuestAwakePinnedArtifact {
+                    source_path: adb_win_api.clone(),
+                    sha256: hex::encode(Sha256::digest(b"adb-win-api-test-artifact")),
+                },
+                ConfiguredQuestAwakePinnedArtifact {
+                    source_path: adb_win_usb_api.clone(),
+                    sha256: hex::encode(Sha256::digest(b"adb-win-usb-api-test-artifact")),
+                },
+            ],
+            private_stage_root: artifact_root.join("stage"),
+            targets: vec![ConfiguredQuestAwakeTarget {
+                device_id: "device.quest.1".to_owned(),
+                serial: "private-serial-123".to_owned(),
+            }],
+        });
+        config.validate().expect("valid pinned awake provider");
+        let debug = format!("{:?}", config.quest_awake_provider);
+        assert!(!debug.contains("private-serial-123"));
+        assert!(!debug.contains(provider.to_string_lossy().as_ref()));
+        assert!(!debug.contains(adb.to_string_lossy().as_ref()));
+        assert!(!debug.contains(adb_win_api.to_string_lossy().as_ref()));
+        assert!(!debug.contains(adb_win_usb_api.to_string_lossy().as_ref()));
+
+        config
+            .quest_awake_provider
+            .as_mut()
+            .expect("provider")
+            .executable_sha256 = "0".repeat(64);
+        assert!(config.validate().is_err());
+        fs::remove_dir_all(artifact_root).expect("remove artifact root");
+    }
+
+    fn dispatched_wifi_adb_receipt_fixture() -> (FleetHub, String, String, QuestWifiAdbOwnerReceipt)
+    {
+        let observation = ScenarioBuilder::new(1).build().initial.remove(0);
+        let device_id = observation.identity.device_id.clone();
+        let identity_revision = observation.identity.identity_revision;
+        let mut hub = FleetHub::new(HubPolicy::default());
+        assert!(matches!(
+            hub.accept_observation(observation, BASE_TIME_MS),
+            ObservationDecision::Accepted { .. }
+        ));
+        let operation = hub
+            .preview_quest_wifi_adb(QuestWifiAdbPreviewPlan {
+                operation_id: "operation.wifi.receipt-settlement".to_owned(),
+                preview_id: "preview.wifi.receipt-settlement".to_owned(),
+                request: QuestWifiAdbPreviewRequest {
+                    schema: QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA.to_owned(),
+                    action_id: QUEST_WIFI_ADB_ACTION_ID.to_owned(),
+                    action: QuestWifiAdbAction::RequestWirelessAdb,
+                    targets: BTreeMap::from([(device_id.clone(), identity_revision)]),
+                },
+                created_at_ms: BASE_TIME_MS,
+                expires_at_ms: BASE_TIME_MS + 60_000,
+                provider_ready_devices: BTreeSet::from([device_id.clone()]),
+            })
+            .expect("Wi-Fi ADB preview");
+        hub.confirm_quest_wifi_adb(
+            &operation.operation_id,
+            &operation.preview.preview_id,
+            BASE_TIME_MS + 1,
+        )
+        .expect("confirm Wi-Fi ADB");
+        hub.prepare_quest_wifi_adb_invocation(
+            &operation.operation_id,
+            &device_id,
+            "request.wifi.receipt-settlement".to_owned(),
+            BASE_TIME_MS + 2,
+        )
+        .expect("prepare Wi-Fi ADB invocation");
+        hub.mark_quest_wifi_adb_dispatched(&operation.operation_id, &device_id, BASE_TIME_MS + 3)
+            .expect("dispatch Wi-Fi ADB invocation");
+        let receipt = QuestWifiAdbOwnerReceipt {
+            schema: QUEST_WIFI_ADB_RECEIPT_SCHEMA.to_owned(),
+            request_id: "request.wifi.receipt-settlement".to_owned(),
+            operation_id: operation.operation_id.clone(),
+            preview_id: operation.preview.preview_id,
+            device_id: device_id.clone(),
+            identity_revision,
+            action: QuestWifiAdbAction::RequestWirelessAdb,
+            route_mode: QuestWifiAdbRouteMode::ModernTls,
+            request_delivered: true,
+            kiosk_setting_applied: true,
+            request_after_boot_enabled: None,
+            wearer_approval: QuestWifiAdbWearerApproval::Pending,
+            listener_discovered: false,
+            effect_applied: true,
+            outcome: "wireless_adb_request_applied".to_owned(),
+            evidence_sha256: "11".repeat(32),
+            observed_at_ms: BASE_TIME_MS + 4,
+        };
+        (hub, operation.operation_id, device_id, receipt)
+    }
+
     fn config(signing_key: &SigningKey, now_ms: i64) -> (LocalHubConfig, DottedId) {
         let public_key = signing_key.verifying_key().to_bytes();
         let digest = hex::encode(Sha256::digest(public_key));
@@ -2878,6 +7660,8 @@ mod tests {
                 schema: "rusty.fleet.local_hub_config.v1".to_owned(),
                 bind: "127.0.0.1:8741".to_owned(),
                 allow_non_loopback: false,
+                checkin_bind: None,
+                allow_non_loopback_checkin: false,
                 state_directory: test_state_directory(),
                 trusted_operator_ids: vec![operator_id.clone()],
                 enrollments: vec![ConfiguredEnrollment {
@@ -2900,6 +7684,11 @@ mod tests {
                     },
                 }],
                 kiosk_direct_operators: Vec::new(),
+                package_updater_owner: None,
+                quest_awake_provider: None,
+                quest_connectivity_provider: None,
+                windows_hotspot_provider: None,
+                provider_catalog: Vec::new(),
                 hub_policy: Default::default(),
             },
             key_id,
@@ -2964,6 +7753,23 @@ mod tests {
                 observed_at_ms: now_ms,
                 fresh_until_ms: now_ms + 60_000,
                 owner: "rusty-kiosk".to_owned(),
+                reason: "owner_ready".to_owned(),
+                extensions: BTreeMap::new(),
+            },
+        );
+        observation.capabilities.capabilities.insert(
+            "rusty-quest.package-updater".to_owned(),
+            CapabilityState {
+                capability_id: "rusty-quest.package-updater".to_owned(),
+                support: SupportState::Supported,
+                enablement: EnablementState::Enabled,
+                authorization: AuthorizationState::Authorized,
+                reachability: ReachabilityState::Reachable,
+                freshness: FreshnessState::Current,
+                evidence_revision: revision,
+                observed_at_ms: now_ms,
+                fresh_until_ms: now_ms + 60_000,
+                owner: "rusty-quest".to_owned(),
                 reason: "owner_ready".to_owned(),
                 extensions: BTreeMap::new(),
             },

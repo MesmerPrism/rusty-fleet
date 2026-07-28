@@ -27,8 +27,8 @@ structured `fleetctl detail` parity and a keyboard-accessible full-device
 detail surface with overview, status, capability, work, stream, and retained
 condition-history tabs; returning preserves the exact fleet scope, selection,
 scroll anchor, and stable identity. Its package-free
-1,000-device and presented-window
-keyboard/UI Automation checks pass. The automated host-side source stack has
+10/50/100-row off-screen layout/virtualization checks and normal 50-row
+presented-window keyboard/UI Automation checks pass. The automated host-side source stack has
 also passed Quick, Standard, Deep, workflow-contract, and exact Quest-owner
 `Host` validation; see the
 [M1 consolidation readiness record](docs/M1_CONSOLIDATION_READINESS.md).
@@ -41,6 +41,53 @@ scheduling, durable same-request recovery, and Console/CLI/API parity. It does
 not require ADB and remains inert without private Kiosk endpoint/key
 configuration. See the
 [M2 Kiosk show-controls guide](docs/M2_KIOSK_SHOW_CONTROLS.md).
+
+The additive package stack now exposes
+`packages.install-release` through the same local API, `fleetctl`, and WPF
+Console. It freezes a signed release reference and exact device identities,
+then prepares every eligible updater invocation after explicit confirmation.
+When and only when private updater-owner configuration is present, the
+authenticated owner can claim one exact invocation through the durable bounded
+scheduler and return bound acknowledgement or effective install evidence.
+That owner ingress is loopback-only even when the general Hub configuration
+permits a non-loopback bind; it is a source-side admission surface, not an
+updater transport or client.
+Claims and acknowledgements never prove installation; only the exact accepted
+`install_commit` receipt advances a target to Applied. The ingress remains
+disabled by default. See the
+[package install/release checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
+
+The additive Quest awake-control stack exposes the bounded Meta development
+hold (maximum eight hours), explicit Windows and on-device watchdog modes, and
+separate stop-watchdogs and restore-normal actions. Fleet owns immutable target
+policy and scheduling, Manifold owns command authorization, and a pinned
+QuestIonAble File Manager provider owns exact-serial ADB effects and readback.
+The surface is inert without separately SHA-256-pinned provider and `adb.exe`
+artifacts plus private exact-device bindings, and public receipts contain no
+serials or paths. See
+[Quest awake control](docs/QUEST_AWAKE_CONTROL.md).
+
+The additive Quest Wi-Fi ADB stack exposes Kiosk-backed modern wireless
+debugging requests, after-boot request policy, explicit disable, and a
+separate classic USB `tcpip` action through a pinned QuestIonAble File Manager
+provider. Fleet and Manifold retain policy and command authority; private
+serial, endpoint, and pairing resolution stays in File Manager. Termux
+usability is projected only from an enrolled signed check-in carrying fresh
+exact `uid=2000(shell)` capability evidence, never from the provider receipt
+or a caller-submitted proof. The Hub adds a separate Fleet-owned verified
+admission that binds the proof to its enrolled key, canonical signed claims,
+accepted revisions, exact device/operation, and owner receipt. See
+[Quest Wi-Fi ADB control](docs/QUEST_WIFI_ADB_CONTROL.md).
+The separate
+[two-Quest attended acceptance transaction](docs/QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md)
+binds offline onboarding, File Manager profiles, the proof helper, signed
+Fleet state, two-device isolation, typed wearer/reboot checkpoints, and exact
+cleanup without putting private run inputs in this repository. Its host
+mutation journal is write-through, digest-chained, and never redispatches an
+interrupted unknown outcome. A pinned Agent Board wrapper supplies a private,
+run-bound reservation receipt for both exact Quest resources; the runner
+revalidates both leases before every mutation, retains them through cleanup,
+and exposes only a sanitized reservation disposition.
 
 The accepted operator-information architecture uses a dense virtualized fleet
 table, a persistent selected-device inspector, independent timestamped status
@@ -85,22 +132,80 @@ The current implementation is split into:
   application, replay, and audit state;
 - `fleet-kiosk-adapter`: bounded no-redirect signed Kiosk status, invoke, and
   result transport with owner-vector parity and poll-only restart recovery;
+- `fleet-package-updater-adapter`: bounded invocation and untrusted
+  owner-evidence validation for the pinned attended Rusty Quest updater,
+  without Android or evidence-admission authority;
+- `fleet-quest-awake-adapter`: pinned local File Manager provider execution,
+  exact invocation/receipt validation, and public readback projection without
+  serial or path disclosure;
+- `fleet-quest-connectivity-adapter`: pinned local File Manager connectivity
+  provider execution and strict sanitized receipt binding, with no private
+  target details or Termux authority;
 - `fleet-hub-local`: explicit bounded HTTP check-in ingress plus health,
   query, summary, inspect, detail, watch, saved-view, and operation projections
   over the same Hub and fully validated two-slot durable envelope;
 - `fleet-simulator`: reproducible 4, 50, 250, 1,000, and 5,000-device
   datasets, a canonical mixed-freshness operator fixture, and damage/lifecycle
   mutations;
-- `fleetctl`: structured JSON list/inspect/detail/watch projections and
-  saved-view parity fixtures over the same in-process API;
+- `fleetctl`: structured JSON list/inspect/detail/watch projections,
+  saved-view parity fixtures, package, Quest awake, Quest connectivity, and
+  Windows host-hotspot preview/execute/get commands over the same loopback
+  local API;
 - `fleet-console-wpf`: a native WPF `DataGrid`, visible canonical
   scope/sort/grouping, revisioned saved-view controls, stable live-order
   application, bounded monotonic watch synchronization, distinct inspection
-  and batch selection, and a persistent selected-device inspector plus
-  full-device detail over the canonical local API;
+  and batch selection, a host-scoped Windows Mobile Hotspot pane, and a
+  persistent selected-device inspector plus full-device detail over the
+  canonical local API;
 - `fleet-console-wpf.tests`: package-free native UI Automation,
   watch-cursor/reset/damage, grouped virtualization, stable-context/order,
-  capability-family, presented keyboard, and 1,000-device checks.
+  capability-family, normal 50-row presented keyboard, and 10/50/100-row
+  off-screen layout checks.
+- `fleet-onboarding` and `fleet-onboard`: a standalone, offline,
+  confirmation-bound generator for new current-user-only Fleet Agent
+  profiles, seeds, public key records, and Hub enrollment configuration. Its
+  pinned developer-evidence tool runs from a deny-rename retained path inside
+  a bounded Windows Job Object, and rollback/cleanup use a closed
+  retained-handle inventory. The current portable Rusty Quest capsule is
+  explicitly pre-build-snapshot, unproven source binding usable only by exact
+  artifact hash, and development-only; distribution still requires a
+  separately signed owner-issued release capsule. The generator neither
+  installs nor enrolls devices and is
+  documented in
+  [Offline Fleet Onboarding](docs/OFFLINE_ONBOARDING.md).
+
+## Consolidation maturity
+
+The current source candidate pins every resolved Manifold crate to exact
+revision `ef1d40b8e0b7e7b47270509eddf53787c23b9fea`. Fleet consumes Runtime Host
+v4 and explicitly migrates retained v2 command/replay state without creating a
+lease, revocation, barrier, convergence result, or retaining-consumer
+acknowledgement. Manifold command application, effect-owner acknowledgement,
+effective result, and terminal cleanup remain separate evidence.
+
+This composition is a headless source candidate. Repository validation does
+not claim a GUI-attended pass, Quest/device behavior, signed Windows bundles,
+publication, or release availability. Those remain separately gated.
+
+The Windows distribution source now composes exactly five inert components,
+including `fleet-onboard`, into a deterministic validated ZIP and embeds it in
+the generic-icon `RustyFleet-Setup.exe`. Setup exposes exact no-change
+`--plan --json` automation plus a visible zero-argument guided install. QFM
+may verify and launch that Setup through the v2 signed-descriptor handoff, but
+Fleet owns composition, installation, updates, and rollback metadata. Pages
+is the documentation authority and, once the protected metadata deployment
+exists, will host short-lived signed `release.json`; immutable binaries belong
+only to GitHub Releases. No supported download or metadata deployment is
+claimed until the protected workflows produce and independently validate one.
+
+The Pages handoff is renewable rather than release-run-only: a protected
+12-hour workflow revalidates the exact visible ten-asset GitHub Release,
+tag/commit/tree, tagged trust policy, Authenticode identities, and descriptor
+SPKI before signing fresh 23-hour metadata. It deploys only the human site,
+descriptor, receipt, public SPKI, and a relative hash-bound renewal handoff;
+Setup and archives remain GitHub Release assets. The workflow is inert until
+its explicit deployment-enable variable, reviewed public pins, exact release
+identity, and protected descriptor key are configured.
 
 The deterministic M1 negative-path harness runs four independent devices
 through sleep/wake aging, route loss/recovery, duplicate and stale check-ins,
@@ -135,12 +240,16 @@ bounded dependency, authority, activation, and instruction audit.
    sufficient check.
 7. Review the
    [M2 Kiosk show-controls authority and recovery boundary](docs/M2_KIOSK_SHOW_CONTROLS.md).
+8. Review the
+   [package install/release source boundary](docs/PACKAGE_INSTALL_RELEASE.md).
+9. Review the
+   [Quest awake-control boundary](docs/QUEST_AWAKE_CONTROL.md).
 
-The current source stack is the first M2 participating-app operation:
-`kiosk.show-controls`. Dedicated private planning owns its iteration state;
-the public repository contains the coherent contract, Hub, Manifold, Kiosk,
-local API, CLI, WPF, and negative-path implementation without embedding
-private planning evidence.
+The current source stack contains the first M2 participating-app operation,
+`kiosk.show-controls`, plus the additive `packages.install-release`
+preparation checkpoint. Dedicated private planning owns iteration state; the
+public repository contains only coherent contracts, source, sanitized
+fixtures, and negative-path validation.
 
 ## Source workflow
 
@@ -181,6 +290,24 @@ private config. Durable state additionally requires an absolute private
 [M1 runtime guide](docs/M1_LOCAL_MONITORING.md).
 The M2 operation commands use the explicit loopback Hub and are documented in
 the [M2 guide](docs/M2_KIOSK_SHOW_CONTROLS.md).
+Package commands use that same loopback Hub and are documented in the
+[package checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
+Quest awake commands use that same loopback Hub and are documented in
+[Quest awake control](docs/QUEST_AWAKE_CONTROL.md).
+Quest Wi-Fi ADB commands use that same loopback Hub and are documented in
+[Quest Wi-Fi ADB control](docs/QUEST_WIFI_ADB_CONTROL.md).
+Live two-headset qualification uses the separately confirmed, resumable
+[two-Quest acceptance transaction](docs/QUEST_WIFI_ADB_TWO_QUEST_ACCEPTANCE.md);
+generic repository tiers run only its host/synthetic tests.
+Windows host-hotspot commands and Console behavior use that same loopback Hub
+and are documented in
+[Windows Mobile Hotspot control](docs/WINDOWS_HOTSPOT_CONTROL.md).
+Inert owner-provider metadata uses an explicit fail-closed refresh and a
+Hub-owned snapshot shared by the local API, `fleetctl`, and Console; see the
+[provider capability catalog](docs/PROVIDER_CAPABILITY_CATALOG.md). That guide
+also documents the optional check-in-only LAN listener which lets enrolled
+Fleet Agents report signed evidence while all provider/operator routes remain
+loopback-only.
 
 Build and exercise the native WPF projection against the real deterministic
 Rust query result:
@@ -228,8 +355,11 @@ restart have passed with private evidence and complete device cleanup. M1
 now also has its native WPF table/inspector, canonical scope/sort/grouping,
 Hub-owned saved-view persistence/restoration, stable-context behavior,
 explicit queued live ordering, and automated
-1,000-device virtualization/UI Automation baseline over a mixed
-500-fresh/250-stale/250-offline canonical projection. A real presented-window
+10/50/100-row off-screen layout/virtualization coverage, with a normal
+50-device mixed 25-fresh/13-stale/12-offline projection and a separate
+50-row presented-window keyboard/UI Automation pass. Larger generated
+fleets remain separate stress evidence rather than the default Console design
+target. A real presented-window
 pass verifies search, grid, batch, and inspector keyboard focus. Its
 self-checking lifecycle projection and exact-owner key-rotation gate cover the
 remaining Fleet-owned deterministic lifecycle cases. M1 is functionally
@@ -242,7 +372,11 @@ Milestone 7 release gate after the full operator workflow exists. The completed
 M1 evidence and exact boundary are recorded in
 [M1 Consolidation Readiness](docs/M1_CONSOLIDATION_READINESS.md).
 The source-only M2 Kiosk slice is implemented and device-free validation is
-green; a live owner/device proof remains a separate explicit gate.
+green; a live owner/device proof remains a separate explicit gate. The package
+source stack now includes disabled-by-default authenticated updater ingress and
+durable bounded owner claims. Live updater/device proof, attended wearer
+behavior, and WPF activation of post-claim controls remain separate explicit
+gates.
 
 ## License
 

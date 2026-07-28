@@ -303,6 +303,13 @@ remains inert without private direct-operator configuration. Live Quest
 validation is a separately authorized later unit and is not inferred from the
 source checkpoint.
 
+An additive package source checkpoint is documented in
+[Package Install/Release](PACKAGE_INSTALL_RELEASE.md). It reuses the same
+immutable target, explicit confirmation, Manifold authorization, durable
+ledger, and Console/CLI/API projection principles while preserving Rusty Quest
+package authority. It ends at `dispatch_ready`; authenticated updater ingress
+and live delivery are a separately authorized owner/device unit.
+
 ### Acceptance
 
 - Transport acknowledgement never appears as applied completion.
@@ -342,6 +349,13 @@ base agent.
   partial transfer, cancellation, insufficient space, and cleanup scenarios.
 - Evaluate on-device ADB loopback only as a separate opt-in privileged adapter
   with explicit threat model and grant.
+
+The first bounded utility slice is
+[Quest Awake Control](QUEST_AWAKE_CONTROL.md). It adds an eight-hour maximum
+Meta development hold, explicit Windows and Quest watchdog modes, and separate
+stop-versus-restore actions through the pinned File Manager provider. It does
+not add general shell execution or ADB dependence to base monitoring, and it
+remains inert without private provider and exact-device bindings.
 
 ### Acceptance
 

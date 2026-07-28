@@ -10,6 +10,16 @@ namespace RustyFleet.FleetConsole.Services;
 
 public interface IFleetDataSource
 {
+    Task<ProviderCatalogProjection> ProviderCatalogAsync(
+        CancellationToken cancellationToken) =>
+        Task.FromException<ProviderCatalogProjection>(
+            new NotSupportedException("This data source does not project provider metadata."));
+
+    Task<ProviderCatalogProjection> RefreshProviderCatalogAsync(
+        CancellationToken cancellationToken) =>
+        Task.FromException<ProviderCatalogProjection>(
+            new NotSupportedException("This data source does not refresh provider metadata."));
+
     Task<FleetQueryResult> QueryAsync(FleetQuery query, CancellationToken cancellationToken);
 
     Task<FleetSummaryProjection> SummaryAsync(CancellationToken cancellationToken);
@@ -49,6 +59,54 @@ public interface IFleetDataSource
     Task<OperationLedger> OperationAsync(
         string operationId,
         CancellationToken cancellationToken);
+
+    Task<PackageInstallReleaseOperation> PreviewPackageInstallReleaseAsync(
+        PackageInstallReleasePreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<PackageInstallReleaseOperation> ExecutePackageInstallReleaseAsync(
+        PackageInstallReleaseExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<PackageInstallReleaseOperation> PackageInstallReleaseAsync(
+        string operationId,
+        CancellationToken cancellationToken);
+
+    Task<QuestAwakeOperation> PreviewQuestAwakeAsync(
+        QuestAwakePreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<QuestAwakeOperation> ExecuteQuestAwakeAsync(
+        QuestAwakeExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<QuestAwakeOperation> QuestAwakeAsync(
+        string operationId,
+        CancellationToken cancellationToken);
+
+    Task<QuestWifiAdbOperation> PreviewQuestWifiAdbAsync(
+        QuestWifiAdbPreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<QuestWifiAdbOperation> ExecuteQuestWifiAdbAsync(
+        QuestWifiAdbExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<QuestWifiAdbOperation> QuestWifiAdbAsync(
+        string operationId,
+        CancellationToken cancellationToken);
+
+    Task<WindowsHotspotOperation> PreviewWindowsHotspotAsync(
+        WindowsHotspotPreviewRequest request,
+        CancellationToken cancellationToken);
+
+    Task<WindowsHotspotOperation> ExecuteWindowsHotspotAsync(
+        WindowsHotspotExecuteRequest request,
+        CancellationToken cancellationToken);
+
+    Task<WindowsHotspotOperation> WindowsHotspotAsync(
+        string operationId,
+        CancellationToken cancellationToken);
 }
 
 public sealed class FleetApiClient : IFleetDataSource, IDisposable
@@ -56,6 +114,7 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
     public const long MaxResponseBytes = 16 * 1024 * 1024;
 
     private readonly HttpClient _http;
+    private readonly HttpClient _hotspotExecuteHttp;
 
     public FleetApiClient(Uri baseAddress)
     {
@@ -74,6 +133,39 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             Timeout = TimeSpan.FromSeconds(10),
             MaxResponseContentBufferSize = MaxResponseBytes
         };
+        _hotspotExecuteHttp = new HttpClient
+        {
+            BaseAddress = baseAddress,
+            Timeout = TimeSpan.FromSeconds(45),
+            MaxResponseContentBufferSize = MaxResponseBytes
+        };
+    }
+
+    public async Task<ProviderCatalogProjection> ProviderCatalogAsync(
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.GetAsync(
+            "/fleet/v1/provider-catalog",
+            cancellationToken);
+        var projection = await ReadAsync<ProviderCatalogProjection>(
+            response,
+            cancellationToken);
+        ProviderCatalogProjectionValidation.Validate(projection);
+        return projection;
+    }
+
+    public async Task<ProviderCatalogProjection> RefreshProviderCatalogAsync(
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsync(
+            "/fleet/v1/provider-catalog/refresh",
+            content: null,
+            cancellationToken);
+        var projection = await ReadAsync<ProviderCatalogProjection>(
+            response,
+            cancellationToken);
+        ProviderCatalogProjectionValidation.Validate(projection);
+        return projection;
     }
 
     public async Task<FleetQueryResult> QueryAsync(
@@ -206,7 +298,167 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
         return await ReadAsync<OperationLedger>(response, cancellationToken);
     }
 
-    public void Dispose() => _http.Dispose();
+    public async Task<PackageInstallReleaseOperation> PreviewPackageInstallReleaseAsync(
+        PackageInstallReleasePreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/package-install-releases/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<PackageInstallReleaseOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<PackageInstallReleaseOperation> ExecutePackageInstallReleaseAsync(
+        PackageInstallReleaseExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _http.PostAsJsonAsync(
+            $"/fleet/v1/package-install-releases/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<PackageInstallReleaseOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<PackageInstallReleaseOperation> PackageInstallReleaseAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/package-install-releases/{encoded}",
+            cancellationToken);
+        return await ReadAsync<PackageInstallReleaseOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<QuestAwakeOperation> PreviewQuestAwakeAsync(
+        QuestAwakePreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/quest-awake/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<QuestAwakeOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestAwakeOperation> ExecuteQuestAwakeAsync(
+        QuestAwakeExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _http.PostAsJsonAsync(
+            $"/fleet/v1/quest-awake/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<QuestAwakeOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestAwakeOperation> QuestAwakeAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/quest-awake/{encoded}",
+            cancellationToken);
+        return await ReadAsync<QuestAwakeOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestWifiAdbOperation> PreviewQuestWifiAdbAsync(
+        QuestWifiAdbPreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/quest-wifi-adb/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<QuestWifiAdbOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestWifiAdbOperation> ExecuteQuestWifiAdbAsync(
+        QuestWifiAdbExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _http.PostAsJsonAsync(
+            $"/fleet/v1/quest-wifi-adb/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<QuestWifiAdbOperation>(response, cancellationToken);
+    }
+
+    public async Task<QuestWifiAdbOperation> QuestWifiAdbAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/quest-wifi-adb/{encoded}",
+            cancellationToken);
+        return await ReadAsync<QuestWifiAdbOperation>(response, cancellationToken);
+    }
+
+    public async Task<WindowsHotspotOperation> PreviewWindowsHotspotAsync(
+        WindowsHotspotPreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "/fleet/v1/windows-hotspot/preview",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<WindowsHotspotOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<WindowsHotspotOperation> ExecuteWindowsHotspotAsync(
+        WindowsHotspotExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _hotspotExecuteHttp.PostAsJsonAsync(
+            $"/fleet/v1/windows-hotspot/{encoded}/execute",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<WindowsHotspotOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<WindowsHotspotOperation> WindowsHotspotAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/windows-hotspot/{encoded}",
+            cancellationToken);
+        return await ReadAsync<WindowsHotspotOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public void Dispose()
+    {
+        _hotspotExecuteHttp.Dispose();
+        _http.Dispose();
+    }
 
     private static async Task<T> ReadAsync<T>(
         HttpResponseMessage response,

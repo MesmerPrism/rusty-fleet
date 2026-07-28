@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MesmerPrism/rusty-fleet/schemas/rusty.hostess.windows_hotspot.provider_receipt.v1.schema.json",
+  "title": "Rusty Hostess Windows hotspot provider receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "request_id",
+    "operation_id",
+    "action",
+    "outcome",
+    "reason",
+    "observed_at_utc",
+    "capability_available",
+    "capability",
+    "operational_state",
+    "client_count",
+    "max_client_count",
+    "band",
+    "source_connectivity",
+    "ownership_generation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.hostess.windows_hotspot.provider_receipt.v1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "action": {
+      "enum": ["status", "start", "ensure", "stop"]
+    },
+    "outcome": {
+      "enum": ["verified", "failed", "rejected", "unavailable"]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observed_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "capability_available": {
+      "type": "boolean"
+    },
+    "capability": {
+      "type": "string",
+      "minLength": 1
+    },
+    "operational_state": {
+      "type": "string",
+      "minLength": 1
+    },
+    "client_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "max_client_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "band": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_connectivity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ownership_generation": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 128
+    }
+  }
+}

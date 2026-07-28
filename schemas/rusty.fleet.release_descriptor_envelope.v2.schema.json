@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/schemas/rusty.fleet.release_descriptor_envelope.v2.schema.json",
+  "title": "Rusty Fleet signed Windows release descriptor envelope v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "payload_base64url",
+    "signature_base64url",
+    "signer_spki_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.release_descriptor_envelope.v2"
+    },
+    "payload_base64url": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "maxLength": 87384
+    },
+    "signature_base64url": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "maxLength": 2048
+    },
+    "signer_spki_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
