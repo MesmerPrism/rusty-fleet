@@ -7,6 +7,57 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function ConvertTo-PolicyNewlines([string] $Text) {
+    return $Text.Replace("`r`n", "`n").Replace("`r", "`n")
+}
+
+function Get-ReleaseWorkflowBoundaryFailures([string] $Text) {
+    $portableText = ConvertTo-PolicyNewlines $Text
+    $checks = [ordered]@{
+        contents_read = (
+            $portableText -match "(?m)^permissions:\n  contents: read$"
+        )
+        checkout_credentials_disabled = (
+            $portableText -match
+                "(?m)^          persist-credentials: false$"
+        )
+        ambient_github_token_absent = (
+            $portableText -notmatch [regex]::Escape('${{ github.token }}')
+        )
+        protected_publish_token_present = (
+            $portableText -match [regex]::Escape(
+                '${{ secrets.FLEET_RELEASE_PUBLISH_TOKEN }}'
+            )
+        )
+        exact_tag_ref_present = (
+            $portableText -match
+                [regex]::Escape('-ExpectedRef $env:GITHUB_REF')
+        )
+        signed_release_publish_condition_present = (
+            $portableText -match [regex]::Escape(
+                "if: inputs.publish_release && " +
+                "inputs.signing_mode == 'signed-release'"
+            )
+        )
+        isolated_preflight_present = (
+            $portableText -match [regex]::Escape('-Mode Preflight')
+        )
+        isolated_publish_present = (
+            $portableText -match [regex]::Escape('-Mode Publish')
+        )
+        direct_gh_release_command_absent = (
+            $portableText -notmatch "\bgh release (?:create|edit|view)\b"
+        )
+    }
+    return @(
+        foreach ($check in $checks.GetEnumerator()) {
+            if (-not [bool] $check.Value) {
+                [string] $check.Key
+            }
+        }
+    )
+}
+
 $policyPath = Join-Path $PSScriptRoot "..\trust\release-policy.json"
 $policyText = Get-Content -LiteralPath $policyPath -Raw
 $policy = $policyText | ConvertFrom-Json -Depth 10
@@ -36,9 +87,13 @@ if ($policyText -match "[A-Za-z]:\\" -or
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $workflowPath = Join-Path $repoRoot ".github\workflows\release-windows.yml"
-$workflowText = Get-Content -LiteralPath $workflowPath -Raw
+$workflowText = ConvertTo-PolicyNewlines (
+    Get-Content -LiteralPath $workflowPath -Raw
+)
 $pagesWorkflowPath = Join-Path $repoRoot ".github\workflows\pages.yml"
-$pagesWorkflowText = Get-Content -LiteralPath $pagesWorkflowPath -Raw
+$pagesWorkflowText = ConvertTo-PolicyNewlines (
+    Get-Content -LiteralPath $pagesWorkflowPath -Raw
+)
 $pagesAuthorityPath = Join-Path $PSScriptRoot (
     "..\New-WindowsPagesDeployment.ps1"
 )
@@ -55,22 +110,21 @@ $remoteAuthorityPath = Join-Path $PSScriptRoot (
 $remoteAuthorityText = Get-Content `
     -LiteralPath $remoteAuthorityPath `
     -Raw
-if ($workflowText -notmatch "(?m)^permissions:\r?\n  contents: read$" -or
-    $workflowText -notmatch "(?m)^          persist-credentials: false$" -or
-    $workflowText -match [regex]::Escape('${{ github.token }}') -or
-    $workflowText -notmatch
-        [regex]::Escape('${{ secrets.FLEET_RELEASE_PUBLISH_TOKEN }}') -or
-    $workflowText -notmatch
-        [regex]::Escape('-ExpectedRef $env:GITHUB_REF') -or
-    $workflowText -notmatch [regex]::Escape(
-        "if: inputs.publish_release && inputs.signing_mode == 'signed-release'"
-    ) -or
-    $workflowText -notmatch [regex]::Escape(
-        '-Mode Preflight'
-    ) -or
-    $workflowText -notmatch [regex]::Escape('-Mode Publish') -or
-    $workflowText -match "\bgh release (?:create|edit|view)\b") {
-    throw "release workflow does not retain its read-only exact-tag token boundary"
+$releaseBoundaryFailures = @(
+    Get-ReleaseWorkflowBoundaryFailures $workflowText
+)
+$releaseBoundaryCrLfFailures = @(
+    Get-ReleaseWorkflowBoundaryFailures (
+        $workflowText.Replace("`n", "`r`n")
+    )
+)
+if ($releaseBoundaryFailures.Count -ne 0 -or
+    $releaseBoundaryCrLfFailures.Count -ne 0) {
+    throw (
+        "release workflow does not retain its read-only exact-tag token " +
+        "boundary: actual=[$($releaseBoundaryFailures -join ',')]; " +
+        "crlf=[$($releaseBoundaryCrLfFailures -join ',')]"
+    )
 }
 $requiredAuthorityEvidence = @(
     "RetainedAssetSet",
@@ -155,7 +209,7 @@ foreach ($variable in $requiredPagesVariables) {
         throw "Pages renewal workflow is missing public trust input: $variable"
     }
 }
-if ($pagesWorkflowText -notmatch "(?m)^permissions:\r?\n  contents: read$" -or
+if ($pagesWorkflowText -notmatch "(?m)^permissions:\n  contents: read$" -or
     $pagesWorkflowText -notmatch "(?m)^  cancel-in-progress: false$" -or
     $pagesWorkflowText -notmatch
         "(?m)^    environment: windows-release-metadata$" -or
@@ -205,4 +259,5 @@ foreach ($evidence in $requiredPagesAuthorityEvidence) {
     renewable_pages_metadata = $true
     pages_binary_count = 0
     metadata_renewal_secret_count = 1
+    workflow_newline_forms = @("lf", "crlf")
 } | ConvertTo-Json -Depth 5

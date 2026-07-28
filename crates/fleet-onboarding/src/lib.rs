@@ -2143,6 +2143,29 @@ mod secure_fs {
             inventory_path
         }
 
+        fn normalize_private_test_file(path: &Path, expect_reparse: bool) {
+            let (parent, leaf) = open_parent(path).expect("open test fixture parent");
+            let mut options = OpenOptions::new();
+            options
+                .access_mode(
+                    GENERIC_READ
+                        | FILE_READ_ATTRIBUTES
+                        | READ_CONTROL
+                        | DELETE
+                        | WRITE_DAC
+                        | WRITE_OWNER,
+                )
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .follow(FollowSymlinks::No);
+            let mut file = parent
+                .open_with(&leaf, &options)
+                .expect("retain test fixture file");
+            let metadata = file.metadata().expect("test fixture metadata");
+            assert_eq!(metadata.file_type().is_symlink(), expect_reparse);
+            apply_private_acl(&mut file, false).expect("normalize test fixture ACL");
+        }
+
         fn delete_private_file(path: &Path) {
             let file =
                 open_absolute_file(path, MAX_EXECUTABLE_BYTES, true, true, "test_cleanup_file")
@@ -2223,6 +2246,7 @@ mod secure_fs {
             let inventory_path = populate_and_commit(&root_path);
             let extra_path = root_path.join("extra.txt");
             std::fs::write(&extra_path, b"not inventoried").expect("write inherited-private extra");
+            normalize_private_test_file(&extra_path, false);
 
             assert_eq!(
                 CleanupSession::open(&inventory_path).err(),
@@ -2272,6 +2296,7 @@ mod secure_fs {
             let target = root_path.join("hub").join("enrollment.private-config.json");
 
             if std::os::windows::fs::symlink_file(&target, &reparse).is_ok() {
+                normalize_private_test_file(&reparse, true);
                 assert_eq!(
                     CleanupSession::open(&inventory_path).err(),
                     Some("inventory_reparse_entry_rejected".to_owned())
@@ -2310,6 +2335,7 @@ mod secure_fs {
             let extra_path = root_path.join("untracked.txt");
             std::fs::write(&extra_path, b"must survive rollback")
                 .expect("write inherited-private extra");
+            normalize_private_test_file(&extra_path, false);
 
             assert_eq!(tree.rollback(), Err(()));
             assert_eq!(
