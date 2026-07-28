@@ -4,22 +4,446 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if (-not ("RustyFleetAcceptanceNative" -as [type])) {
+if (-not ("RustyFleetAcceptanceNativeV2" -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
 
-public static class RustyFleetAcceptanceNative
+public static class RustyFleetAcceptanceNativeV2
 {
     private const uint MOVEFILE_REPLACE_EXISTING = 0x1;
     private const uint MOVEFILE_WRITE_THROUGH = 0x8;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint FILE_READ_ATTRIBUTES = 0x80;
+    private const uint FILE_SHARE_READ = 0x1;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+    private const uint FILE_ATTRIBUTE_DIRECTORY = 0x10;
+    private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
+    private const uint DUPLICATE_SAME_ACCESS = 0x2;
+    private const uint DRIVE_FIXED = 3;
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool MoveFileExW(
         string existingFileName,
         string newFileName,
         uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle file,
+        out ByHandleFileInformation information);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DuplicateHandle(
+        IntPtr sourceProcess,
+        SafeFileHandle sourceHandle,
+        IntPtr targetProcess,
+        out SafeFileHandle targetHandle,
+        uint desiredAccess,
+        bool inheritHandle,
+        uint options);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint GetDriveTypeW(string rootPathName);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime
+    {
+        public uint Low;
+        public uint High;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public FileTime CreationTime;
+        public FileTime LastAccessTime;
+        public FileTime LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    private sealed class PinnedPathComponent
+    {
+        public string Path { get; }
+        public SafeFileHandle Handle { get; }
+        public ByHandleFileInformation Identity { get; }
+        public bool IsDirectory { get; }
+
+        public PinnedPathComponent(
+            string path,
+            SafeFileHandle handle,
+            ByHandleFileInformation identity,
+            bool isDirectory)
+        {
+            Path = path;
+            Handle = handle;
+            Identity = identity;
+            IsDirectory = isDirectory;
+        }
+    }
+
+    public sealed class PinnedFileExecutionLease : IDisposable
+    {
+        private readonly List<PinnedPathComponent> components;
+        private bool disposed;
+
+        public string FullPath { get; }
+        public string ChainIdentity { get; }
+        public string Sha256 { get; }
+
+        private PinnedFileExecutionLease(
+            string fullPath,
+            List<PinnedPathComponent> pinnedComponents,
+            string chainIdentity,
+            string sha256)
+        {
+            FullPath = fullPath;
+            components = pinnedComponents;
+            ChainIdentity = chainIdentity;
+            Sha256 = sha256;
+        }
+
+        public static PinnedFileExecutionLease Acquire(
+            string path,
+            string expectedSha256,
+            string expectedChainIdentity)
+        {
+            if (String.IsNullOrWhiteSpace(path) ||
+                String.IsNullOrWhiteSpace(expectedSha256))
+            {
+                throw new InvalidOperationException(
+                    "Pinned execution requires a path and SHA-256.");
+            }
+            string fullPath = Path.GetFullPath(path);
+            string root = Path.GetPathRoot(fullPath);
+            if (String.IsNullOrEmpty(root) ||
+                GetDriveTypeW(root) != DRIVE_FIXED)
+            {
+                throw new InvalidOperationException(
+                    "Pinned execution requires a fixed local volume.");
+            }
+            string remainder = fullPath.Substring(root.Length);
+            string[] parts = remainder.Split(
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    "Pinned execution requires a leaf file.");
+            }
+
+            var pinned = new List<PinnedPathComponent>();
+            try
+            {
+                pinned.Add(OpenComponent(root, true));
+                string cursor = root;
+                for (int index = 0; index < parts.Length - 1; index++)
+                {
+                    cursor = Path.Combine(cursor, parts[index]);
+                    pinned.Add(OpenComponent(cursor, true));
+                }
+                pinned.Add(OpenComponent(fullPath, false));
+
+                PinnedPathComponent leaf = pinned[pinned.Count - 1];
+                if (leaf.Identity.NumberOfLinks != 1)
+                {
+                    throw new InvalidOperationException(
+                        "Pinned wrapper must have exactly one hard link.");
+                }
+                string chainIdentity = BuildChainIdentity(pinned);
+                if (!String.IsNullOrEmpty(expectedChainIdentity) &&
+                    !String.Equals(
+                        chainIdentity,
+                        expectedChainIdentity,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "Pinned path identity changed.");
+                }
+                string hash = HashHandle(leaf.Handle);
+                if (!String.Equals(
+                    hash,
+                    expectedSha256,
+                    StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "Pinned wrapper hash changed.");
+                }
+                VerifyPathBindings(pinned);
+                return new PinnedFileExecutionLease(
+                    fullPath,
+                    pinned,
+                    chainIdentity,
+                    hash);
+            }
+            catch
+            {
+                for (int index = pinned.Count - 1; index >= 0; index--)
+                {
+                    pinned[index].Handle.Dispose();
+                }
+                throw;
+            }
+        }
+
+        public void VerifyAfter()
+        {
+            if (disposed)
+            {
+                throw new ObjectDisposedException(
+                    nameof(PinnedFileExecutionLease));
+            }
+            for (int index = 0; index < components.Count; index++)
+            {
+                ByHandleFileInformation current =
+                    ReadIdentity(components[index].Handle);
+                if (!SameIdentity(current, components[index].Identity) ||
+                    current.NumberOfLinks !=
+                        components[index].Identity.NumberOfLinks)
+                {
+                    throw new InvalidOperationException(
+                        "Pinned path identity changed while executing.");
+                }
+            }
+            if (!String.Equals(
+                BuildChainIdentity(components),
+                ChainIdentity,
+                StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Pinned path chain changed while executing.");
+            }
+            PinnedPathComponent leaf = components[components.Count - 1];
+            if (leaf.Identity.NumberOfLinks != 1 ||
+                !String.Equals(
+                    HashHandle(leaf.Handle),
+                    Sha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Pinned wrapper bytes changed while executing.");
+            }
+            VerifyPathBindings(components);
+        }
+
+        public void Dispose()
+        {
+            if (disposed)
+            {
+                return;
+            }
+            disposed = true;
+            for (int index = components.Count - 1; index >= 0; index--)
+            {
+                components[index].Handle.Dispose();
+            }
+        }
+    }
+
+    public static PinnedFileExecutionLease AcquirePinnedFileExecutionLease(
+        string path,
+        string expectedSha256,
+        string expectedChainIdentity)
+    {
+        return PinnedFileExecutionLease.Acquire(
+            path,
+            expectedSha256,
+            expectedChainIdentity);
+    }
+
+    private static PinnedPathComponent OpenComponent(
+        string path,
+        bool directory)
+    {
+        uint access = directory ? FILE_READ_ATTRIBUTES :
+            (GENERIC_READ | FILE_READ_ATTRIBUTES);
+        uint flags = FILE_FLAG_OPEN_REPARSE_POINT |
+            (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0);
+        SafeFileHandle handle = CreateFileW(
+            path,
+            access,
+            FILE_SHARE_READ,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            flags,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(
+                error,
+                "Pinned path component could not be opened.");
+        }
+        try
+        {
+            ByHandleFileInformation information = ReadIdentity(handle);
+            bool isDirectory =
+                (information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (isDirectory != directory ||
+                (information.FileAttributes &
+                    FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+            {
+                throw new InvalidOperationException(
+                    "Pinned path contains a reparse or wrong-type component.");
+            }
+            return new PinnedPathComponent(
+                path,
+                handle,
+                information,
+                directory);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    private static ByHandleFileInformation ReadIdentity(
+        SafeFileHandle handle)
+    {
+        if (!GetFileInformationByHandle(handle, out var information))
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Pinned path identity could not be read.");
+        }
+        return information;
+    }
+
+    private static bool SameIdentity(
+        ByHandleFileInformation first,
+        ByHandleFileInformation second)
+    {
+        return first.VolumeSerialNumber == second.VolumeSerialNumber &&
+            first.FileIndexHigh == second.FileIndexHigh &&
+            first.FileIndexLow == second.FileIndexLow;
+    }
+
+    private static string BuildChainIdentity(
+        List<PinnedPathComponent> components)
+    {
+        var parts = new List<string>();
+        foreach (PinnedPathComponent component in components)
+        {
+            ByHandleFileInformation current = ReadIdentity(component.Handle);
+            parts.Add(String.Format(
+                System.Globalization.CultureInfo.InvariantCulture,
+                "{0:x8}:{1:x8}{2:x8}:{3}:{4}",
+                current.VolumeSerialNumber,
+                current.FileIndexHigh,
+                current.FileIndexLow,
+                component.IsDirectory ? 1 : 0,
+                current.NumberOfLinks));
+        }
+        return String.Join("|", parts);
+    }
+
+    private static void VerifyPathBindings(
+        List<PinnedPathComponent> components)
+    {
+        foreach (PinnedPathComponent expected in components)
+        {
+            using (DisposablePinnedPathComponent reopened =
+                OpenDisposableComponent(expected.Path, expected.IsDirectory))
+            {
+                if (!SameIdentity(
+                    reopened.Component.Identity,
+                    expected.Identity))
+                {
+                    throw new InvalidOperationException(
+                        "Pinned path no longer resolves to its held identity.");
+                }
+            }
+        }
+    }
+
+    private sealed class DisposablePinnedPathComponent : IDisposable
+    {
+        public PinnedPathComponent Component { get; }
+
+        public DisposablePinnedPathComponent(
+            PinnedPathComponent component)
+        {
+            Component = component;
+        }
+
+        public void Dispose()
+        {
+            Component.Handle.Dispose();
+        }
+    }
+
+    private static DisposablePinnedPathComponent OpenDisposableComponent(
+        string path,
+        bool directory)
+    {
+        return new DisposablePinnedPathComponent(
+            OpenComponent(path, directory));
+    }
+
+    private static string HashHandle(SafeFileHandle source)
+    {
+        if (!DuplicateHandle(
+            GetCurrentProcess(),
+            source,
+            GetCurrentProcess(),
+            out var duplicate,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS))
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Pinned wrapper handle could not be duplicated.");
+        }
+        try
+        {
+            using (var stream = new FileStream(
+                duplicate,
+                FileAccess.Read,
+                4096,
+                false))
+            using (var hasher = SHA256.Create())
+            {
+                stream.Position = 0;
+                return Convert.ToHexString(
+                    hasher.ComputeHash(stream)).ToLowerInvariant();
+            }
+        }
+        catch
+        {
+            duplicate.Dispose();
+            throw;
+        }
+    }
 
     public static void PublishWriteThrough(string source, string destination)
     {
@@ -41,6 +465,7 @@ $script:ConfigSchema = "rusty.fleet.wifi_adb_two_quest_run_config.v2"
 $script:StateSchema = "rusty.fleet.wifi_adb_two_quest_acceptance_state.v5"
 $script:AgentBoardReceiptSchema =
     "rusty.fleet.wifi_adb_two_quest_agent_board_receipt.v1"
+$script:AgentBoardExecutionRaceHook = $null
 $script:QfmCommit = "a6d8e88c9d65f642d0cbf74fc8b92c8f1cd19ae5"
 $script:HelperCommit = "d800e5c7c5f8c77ad2bae52450f32092f3c92ace"
 $script:ArtifactIds = @(
@@ -374,11 +799,25 @@ function Read-ValidatedRunConfig {
             ".ps1"
     ) "agent_board_cli_type_invalid" `
         "The Agent Board coordination owner must be a pinned PowerShell wrapper."
-    Assert-Condition (
-        (Get-Sha256 -Path ([string]$config.agent_board.cli_path)) -ceq
-            [string]$config.agent_board.cli_sha256
-    ) "agent_board_cli_hash_mismatch" `
-        "The Agent Board wrapper does not match its configured SHA-256."
+    $agentBoardIdentity = ""
+    $agentBoardValidationLease = $null
+    try {
+        $agentBoardValidationLease =
+            [RustyFleetAcceptanceNativeV2]::
+                AcquirePinnedFileExecutionLease(
+                    [string]$config.agent_board.cli_path,
+                    [string]$config.agent_board.cli_sha256,
+                    "")
+        $agentBoardIdentity =
+            [string]$agentBoardValidationLease.ChainIdentity
+    } catch {
+        throw (New-AcceptanceError "agent_board_cli_pin_invalid" `
+            "The Agent Board wrapper path, identity, or SHA-256 is invalid.")
+    } finally {
+        if ($null -ne $agentBoardValidationLease) {
+            $agentBoardValidationLease.Dispose()
+        }
+    }
     Assert-Condition (
         $config.agent_board.lease_duration_seconds -is [int] -or
         $config.agent_board.lease_duration_seconds -is [long]
@@ -562,6 +1001,7 @@ function Read-ValidatedRunConfig {
         Sha256 = $read.Sha256
         Config = $config
         Artifacts = $artifacts
+        AgentBoardChainIdentity = $agentBoardIdentity
     }
 }
 
@@ -985,7 +1425,7 @@ function Write-SanitizedState {
             $temporaryItem.Attributes -band [IO.FileAttributes]::ReparsePoint
         )) "state_temporary_reparse" `
         "The randomized state temp file became a reparse point."
-    [RustyFleetAcceptanceNative]::PublishWriteThrough($temporary, $path)
+    [RustyFleetAcceptanceNativeV2]::PublishWriteThrough($temporary, $path)
 }
 
 function Assert-ValidSanitizedStateShape {
@@ -1174,7 +1614,7 @@ function Write-AgentBoardReceipt {
                 [IO.FileAttributes]::ReparsePoint
         )) "agent_board_receipt_temporary_reparse" `
         "The randomized reservation receipt became a reparse point."
-    [RustyFleetAcceptanceNative]::PublishWriteThrough($temporary, $path)
+    [RustyFleetAcceptanceNativeV2]::PublishWriteThrough($temporary, $path)
 }
 
 function Get-AgentBoardBinding {
@@ -1222,17 +1662,56 @@ function Invoke-AgentBoardCli {
         [Parameter(Mandatory)][string[]] $Arguments,
         [int[]] $AllowedExitCodes = @(0)
     )
-    Assert-Condition (
-        (Get-Sha256 -Path ([string]$Context.Config.agent_board.cli_path)) -ceq
-            [string]$Context.Config.agent_board.cli_sha256
-    ) "agent_board_cli_hash_mismatch" `
-        "The pinned Agent Board wrapper changed after config validation."
-    $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
-    $result = Invoke-BoundedProcess -FilePath $pwsh -Arguments (@(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", [string]$Context.Config.agent_board.cli_path
-        ) + $Arguments) -TimeoutSeconds 30
+    $executionLease = $null
+    try {
+        try {
+            $executionLease =
+                [RustyFleetAcceptanceNativeV2]::
+                    AcquirePinnedFileExecutionLease(
+                        [string]$Context.Config.agent_board.cli_path,
+                        [string]$Context.Config.agent_board.cli_sha256,
+                        [string]$Context.AgentBoardChainIdentity)
+        } catch {
+            throw (New-AcceptanceError "agent_board_cli_pin_invalid" `
+                "The pinned Agent Board path, identity, or bytes changed.")
+        }
+        if ($null -ne $script:AgentBoardExecutionRaceHook) {
+            try {
+                & $script:AgentBoardExecutionRaceHook
+            } catch {
+                throw (New-AcceptanceError `
+                    "agent_board_execution_race_detected" `
+                    "A path mutation was attempted before owner launch.")
+            }
+            try {
+                $executionLease.VerifyAfter()
+            } catch {
+                throw (New-AcceptanceError `
+                    "agent_board_execution_race_detected" `
+                    "The pinned path changed before owner launch.")
+            }
+        }
+        $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+        try {
+            $result = Invoke-BoundedProcess -FilePath $pwsh -Arguments (@(
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", [string]$executionLease.FullPath
+                ) + $Arguments) -TimeoutSeconds 30
+        } finally {
+            try {
+                $executionLease.VerifyAfter()
+            } catch {
+                throw (New-AcceptanceError `
+                    "agent_board_execution_race_detected" `
+                    "The pinned path or wrapper changed during owner launch.")
+            }
+        }
+    } finally {
+        if ($null -ne $executionLease) {
+            $executionLease.Dispose()
+        }
+    }
     Assert-Condition ($result.ExitCode -in $AllowedExitCodes) `
         "agent_board_command_rejected" `
         "Agent Board rejected the exact reservation operation."

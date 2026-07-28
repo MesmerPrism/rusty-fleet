@@ -91,6 +91,30 @@ function Invoke-RunnerProcess {
     }
 }
 
+function Invoke-AgentBoardRaceAttempt {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][scriptblock] $Hook
+    )
+    & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
+        param($InnerContext, $InnerHook)
+        $script:AgentBoardExecutionRaceHook = $InnerHook
+        try {
+            Invoke-AgentBoardCli -Context $InnerContext -Arguments @(
+                "reserve", "quest:SYNTHETICa",
+                "--owner", "rusty-fleet-wifi-adb-wifi-adb-synthetic",
+                "--task", "two-quest acceptance device_a",
+                "--reason",
+                    "run=wifi-adb-synthetic;slot=device_a;device=device.synthetic.a",
+                "--duration", "3600s",
+                "--json"
+            ) | Out-Null
+        } finally {
+            $script:AgentBoardExecutionRaceHook = $null
+        }
+    } $Context $Hook
+}
+
 $ownerFixtureRoot = Join-Path $PSScriptRoot "fixtures/adb-owner"
 $cleanManager = ConvertFrom-ClosedAdbManagerDump -Text (
     Get-Content -LiteralPath (
@@ -284,7 +308,9 @@ try {
     }
 
     $fakeBoardStatePath = Join-Path $testRoot "fake-agent-board-state.json"
-    $fakeBoardPath = Join-Path $testRoot "fake-agent-board.ps1"
+    $fakeBoardDirectory = Join-Path $testRoot "agent-board-owner"
+    New-Item -ItemType Directory -Path $fakeBoardDirectory | Out-Null
+    $fakeBoardPath = Join-Path $fakeBoardDirectory "fake-agent-board.ps1"
     $fakeBoardScript = @'
 $ErrorActionPreference = "Stop"
 $statePath = '__STATE_PATH__'
@@ -561,6 +587,77 @@ Send-Json -Value ([ordered]@{
     $validated = Read-ValidatedRunConfig -RunConfig $configPath
     Assert-True ($validated.Artifacts.Count -eq 10) `
         "Valid config did not bind the exact artifact set."
+
+    $leafReplacement = Join-Path $testRoot "replacement-agent-board.ps1"
+    [IO.File]::WriteAllText(
+        $leafReplacement,
+        "throw 'replacement wrapper executed'",
+        [Text.UTF8Encoding]::new($false))
+    $ancestorReplacement = Join-Path $testRoot "agent-board-owner-malicious"
+    New-Item -ItemType Directory -Path $ancestorReplacement | Out-Null
+    [IO.File]::WriteAllText(
+        (Join-Path $ancestorReplacement "fake-agent-board.ps1"),
+        "throw 'ancestor replacement executed'",
+        [Text.UTF8Encoding]::new($false))
+    $movedBoardDirectory = Join-Path $testRoot "agent-board-owner-moved"
+    $hardlinkSource = Join-Path $testRoot "hardlink-agent-board-source.ps1"
+    $hardlinkCandidate =
+        Join-Path $testRoot "hardlink-agent-board-candidate.ps1"
+    [IO.File]::WriteAllText(
+        $hardlinkSource,
+        "throw 'hardlink replacement executed'",
+        [Text.UTF8Encoding]::new($false))
+    New-Item -ItemType HardLink -Path $hardlinkCandidate `
+        -Target $hardlinkSource | Out-Null
+
+    $raceCases = @(
+        [ordered]@{
+            name = "in-place modification"
+            hook = {
+                [IO.File]::AppendAllText(
+                    $fakeBoardPath,
+                    "`nthrow 'in-place mutation executed'")
+            }.GetNewClosure()
+        },
+        [ordered]@{
+            name = "leaf replacement"
+            hook = {
+                Move-Item -LiteralPath $leafReplacement `
+                    -Destination $fakeBoardPath -Force
+            }.GetNewClosure()
+        },
+        [ordered]@{
+            name = "ancestor rename and junction substitution"
+            hook = {
+                Move-Item -LiteralPath $fakeBoardDirectory `
+                    -Destination $movedBoardDirectory
+                New-Item -ItemType Junction -Path $fakeBoardDirectory `
+                    -Target $ancestorReplacement | Out-Null
+            }.GetNewClosure()
+        },
+        [ordered]@{
+            name = "hardlink substitution"
+            hook = {
+                Move-Item -LiteralPath $hardlinkCandidate `
+                    -Destination $fakeBoardPath -Force
+            }.GetNewClosure()
+        }
+    )
+    foreach ($raceCase in $raceCases) {
+        Assert-ThrowsCode `
+            -Code "agent_board_execution_race_detected" -Operation {
+            Invoke-AgentBoardRaceAttempt -Context $validated `
+                -Hook $raceCase.hook
+        }
+        Assert-True (
+            -not (Test-Path -LiteralPath $fakeBoardStatePath) -and
+            (Get-FileHash -LiteralPath $fakeBoardPath -Algorithm SHA256).
+                Hash.ToLowerInvariant() -ceq
+                    [string]$config.agent_board.cli_sha256 -and
+            (Test-Path -LiteralPath $fakeBoardDirectory -PathType Container)
+        ) "The $($raceCase.name) boundary attack reached Board or changed the pin."
+    }
+
     $plan = Invoke-FleetWifiAdbTwoQuestAcceptance `
         -Action Plan -RunConfig $configPath
     Assert-True (
@@ -620,7 +717,7 @@ Send-Json -Value ([ordered]@{
     $wrongBoardHash.agent_board.cli_sha256 = "0" * 64
     $wrongBoardHashPath = Join-Path $testRoot "wrong-board-hash.json"
     Write-Json -Path $wrongBoardHashPath -Value $wrongBoardHash
-    Assert-ThrowsCode -Code "agent_board_cli_hash_mismatch" -Operation {
+    Assert-ThrowsCode -Code "agent_board_cli_pin_invalid" -Operation {
         Read-ValidatedRunConfig -RunConfig $wrongBoardHashPath | Out-Null
     }
 
@@ -1215,6 +1312,8 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         "post_fd_begin",
         "agent_board_reservation",
         "Assert-AgentBoardReservation",
+        "AcquirePinnedFileExecutionLease",
+        "agent_board_execution_race_detected",
         "adb_retained_pairing_sha256",
         "wireless_pending_state",
         "host_forward_count",

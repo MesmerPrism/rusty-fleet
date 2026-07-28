@@ -54,8 +54,15 @@ The parser rejects unknown and duplicate JSON properties, extra artifacts,
 wrong hashes, wrong source commits, nonlocal or reparse input paths, duplicate
 slots/identities/serials, partial profile/seed pairs, cross-device QFM
 enrollments, wrong profile identities, seed lengths other than 32 bytes, and
-duplicate seeds. The Board wrapper hash is checked again before every
-coordination command.
+duplicate seeds. Before every coordination command the runner opens the fixed
+local-volume root, every ancestor, and the wrapper itself through retained
+Windows handles that permit owner reads but deny write/delete sharing. It
+rejects reparse components and multiply-linked wrapper files, binds every
+component's volume/file identity plus the wrapper SHA-256 before launch, keeps
+the handles open while `pwsh` reads the script, and verifies the complete
+identity chain and hash again after process completion. This closes
+hash-to-process-open modification, replacement, ancestor rename/junction, and
+hardlink-substitution races.
 
 `Preflight` requires the expected inventory, Hub config, and both profile/seed
 pairs to be absent. This gives the transaction exclusive, auditable ownership
@@ -351,7 +358,9 @@ proof consumption and snapshot/restore rejection of cross-operation reuse,
 digest-chain tampering, write-through publication, private two-lease
 acquisition/reload/revalidation, wrong-resource and expired-lease rejection,
 single-slot repair, deadline-only status downgrade, pre-dispatch heartbeats,
-release-before-cleanup rejection, partial release retry, within-sample late
-listener/session, close/reopen, FD/state/PID/TCP6/right-edge churn,
+release-before-cleanup rejection, partial release retry, deterministic
+in-place/leaf/ancestor-junction/hardlink substitution attempts at the pinned
+wrapper launch boundary, within-sample late listener/session, close/reopen,
+FD/state/PID/TCP6/right-edge churn,
 resume mismatch, partial cleanup truth, parser checks, and forbidden
 ADB/approval surfaces. It does not touch a device or claim a live pass.
