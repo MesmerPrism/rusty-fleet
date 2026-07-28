@@ -374,6 +374,13 @@ fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+#[cfg(test)]
+fn canonical_text_hash(bytes: &[u8]) -> String {
+    let text = std::str::from_utf8(bytes).expect("owner fixture must be UTF-8");
+    let canonical = text.replace("\r\n", "\n").replace('\r', "\n");
+    hash(canonical.as_bytes())
+}
+
 fn is_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -2868,7 +2875,7 @@ mod tests {
         let bytes = include_bytes!(
             "../../../fixtures/onboarding/rusty-quest-fleet-agent-profile.disabled.owner-de144.json"
         );
-        assert_eq!(hash(bytes), PROFILE_OWNER_FIXTURE_SHA256);
+        assert_eq!(canonical_text_hash(bytes), PROFILE_OWNER_FIXTURE_SHA256);
         let mut profile: QuestFleetAgentProfileV1 =
             serde_json::from_slice(bytes).expect("exact owner profile fixture");
         assert!(!profile.enabled);

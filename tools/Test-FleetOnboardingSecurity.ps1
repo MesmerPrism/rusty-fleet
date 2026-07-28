@@ -98,13 +98,17 @@ Assert-True -Condition (
 $ownerFixture = Join-Path $repoRoot (
     "fixtures/onboarding/" +
     "rusty-quest-fleet-agent-profile.disabled.owner-de144.json")
-$ownerHash = (
-    Get-FileHash -LiteralPath $ownerFixture -Algorithm SHA256
-).Hash.ToLowerInvariant()
+$ownerText = [IO.File]::ReadAllText($ownerFixture).
+    Replace("`r`n", "`n").
+    Replace("`r", "`n")
+$ownerHash = [Convert]::ToHexString(
+    [Security.Cryptography.SHA256]::HashData(
+        [Text.UTF8Encoding]::new($false).GetBytes($ownerText))
+).ToLowerInvariant()
 Assert-True -Condition (
     $ownerHash -ceq
     "ee6faba86ef876f988e7b5ddaa552ee3a484f15b0e3704c79404f92b0bda9fc9"
-) -Message "Pinned Rusty Quest owner-profile fixture changed."
+) -Message "Pinned canonical Rusty Quest owner-profile fixture changed."
 
 $requestSchema = Get-Content -LiteralPath (
     Join-Path $repoRoot "schemas/rusty.fleet.offline_onboarding_request.v1.schema.json"

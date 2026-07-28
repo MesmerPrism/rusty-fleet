@@ -134,8 +134,9 @@ are rejected before planning. Hub endpoints must exactly match the requested
 check-in listener. The generated Hub JSON is deserialized and validated by the
 real `fleet-hub-local` offline validator before the same typed value is
 serialized. The Quest profile uses a deny-unknown-fields Fleet mirror pinned
-to the owner source and fixture hashes; the committed owner fixture is a
-portable shape-conformance check, not a claim that Fleet owns that schema.
+to the owner source and canonical-LF UTF-8 fixture hashes; checkout line-ending
+materialization is not authority. The committed owner fixture is a portable
+shape-conformance check, not a claim that Fleet owns that schema.
 
 The inventory is written last as the transaction commit marker. It binds the
 root and every expected object by relative path, object kind, volume/file
