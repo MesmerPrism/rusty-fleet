@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <DebugType>None</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <AssemblyName>RustyFleet.Setup</AssemblyName>
+    <RootNamespace>RustyFleet.Setup</RootNamespace>
+    <ApplicationIcon>..\fleet-console-wpf\Assets\rusty-fleet.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource
+      Include="$(FleetEmbeddedBundlePath)"
+      LogicalName="RustyFleet.EmbeddedBundle.zip"
+      Condition="'$(FleetEmbeddedBundlePath)' != ''" />
+    <Compile
+      Include="$(FleetSetupGeneratedConfigPath)"
+      Link="GeneratedReleaseConfiguration.cs"
+      Condition="'$(FleetSetupGeneratedConfigPath)' != ''" />
+  </ItemGroup>
+
+  <Target Name="RequireReleaseInputs" BeforeTargets="PrepareForBuild">
+    <Error
+      Condition="'$(FleetEmbeddedBundlePath)' == '' or !Exists('$(FleetEmbeddedBundlePath)')"
+      Text="FleetEmbeddedBundlePath must name the exact validated inner ZIP." />
+    <Error
+      Condition="'$(FleetSetupGeneratedConfigPath)' == '' or !Exists('$(FleetSetupGeneratedConfigPath)')"
+      Text="FleetSetupGeneratedConfigPath must name generated release configuration." />
+  </Target>
+</Project>

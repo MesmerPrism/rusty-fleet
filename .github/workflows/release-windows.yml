@@ -24,6 +24,14 @@ on:
         options:
           - unsigned-dev
           - signed-release
+      fleet_signer_thumbprint:
+        description: Independently authorized Fleet signer thumbprint (required for signed release)
+        required: false
+        type: string
+      descriptor_signer_spki_sha256:
+        description: Independently authorized release-metadata RSA SPKI SHA-256
+        required: false
+        type: string
       hostess_provider_url:
         description: Exact public Hostess provider artifact URL
         required: true
@@ -55,7 +63,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   bundle:
@@ -68,16 +76,16 @@ jobs:
       PROVIDER_URL: ${{ inputs.hostess_provider_url }}
       PROVIDER_SHA256: ${{ inputs.hostess_provider_sha256 }}
       PROVIDER_SIGNER_THUMBPRINT: ${{ inputs.hostess_signer_thumbprint }}
+      FLEET_SIGNER_THUMBPRINT: ${{ inputs.fleet_signer_thumbprint }}
+      DESCRIPTOR_SIGNER_SPKI_SHA256: ${{ inputs.descriptor_signer_spki_sha256 }}
       PROVIDER_PROVENANCE_DOCUMENT_URL: ${{ inputs.hostess_provenance_document_url }}
       PROVIDER_LICENSE_URL: ${{ inputs.hostess_license_url }}
       PROVIDER_NOTICES_URL: ${{ inputs.hostess_third_party_notices_url }}
-      FLEET_SIGNING_PFX_BASE64: ${{ secrets.FLEET_SIGNING_PFX_BASE64 }}
-      FLEET_SIGNING_PFX_PASSWORD: ${{ secrets.FLEET_SIGNING_PFX_PASSWORD }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -89,13 +97,54 @@ jobs:
           if ($env:VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
             throw 'version is not SemVer'
           }
+          if ($env:SIGNING_MODE -eq 'signed-release' -and
+              $env:VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw 'signed release versions must use exactly three numeric components'
+          }
           if ($env:PROVIDER_SHA256 -cnotmatch '^[0-9a-f]{64}$') {
             throw 'provider SHA-256 must be lowercase hexadecimal'
           }
           if ($env:SIGNING_MODE -eq 'signed-release' -and
               $env:PROVIDER_SIGNER_THUMBPRINT.Replace(' ', '').ToLowerInvariant() -cnotmatch
-                '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
+                '^[0-9a-f]{40}$') {
             throw 'signed release requires an explicit Hostess signer thumbprint'
+          }
+          if ($env:SIGNING_MODE -eq 'signed-release' -and
+              $env:FLEET_SIGNER_THUMBPRINT.Replace(' ', '').ToLowerInvariant() -cnotmatch
+                '^[0-9a-f]{40}$') {
+            throw 'signed release requires an explicit Fleet signer thumbprint'
+          }
+          if ($env:SIGNING_MODE -eq 'signed-release' -and
+              $env:DESCRIPTOR_SIGNER_SPKI_SHA256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'signed release requires an explicit descriptor signer SPKI pin'
+          }
+          if ($env:SIGNING_MODE -eq 'signed-release') {
+            $policy = Get-Content `
+              -LiteralPath .\packaging\windows\trust\release-policy.json `
+              -Raw |
+              ConvertFrom-Json -Depth 10
+            if ($policy.schema -cne 'rusty.fleet.windows_release_trust_policy.v1' -or
+                $policy.publication_enabled -ne $true -or
+                @($policy.authorized_fleet_signer_thumbprints) -cnotcontains
+                  $env:FLEET_SIGNER_THUMBPRINT.ToUpperInvariant() -or
+                @($policy.authorized_hostess_signer_thumbprints) -cnotcontains
+                  $env:PROVIDER_SIGNER_THUMBPRINT.ToUpperInvariant() -or
+                @($policy.authorized_descriptor_signer_spki_sha256) -cnotcontains
+                  $env:DESCRIPTOR_SIGNER_SPKI_SHA256) {
+              throw 'dispatch inputs are not authorized by the revisioned release policy'
+            }
+            $tag = "v$env:VERSION"
+            if ($env:GITHUB_REF -cne "refs/tags/$tag") {
+              throw 'signed release execution requires the exact existing version tag ref'
+            }
+            & git show-ref --tags --verify --quiet "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) {
+              throw "signed release requires the existing authoritative tag $tag"
+            }
+            $tagCommit = (& git rev-parse "$tag^{commit}").Trim()
+            if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $env:GITHUB_SHA) {
+              throw 'the peeled release tag must resolve to the checked-out revision'
+            }
           }
           foreach ($value in @(
             $env:PROVIDER_URL,
@@ -111,15 +160,6 @@ jobs:
             if ($env:SIGNING_MODE -ne 'signed-release') {
               throw 'GitHub Release publication requires signed-release mode'
             }
-            $tag = "v$env:VERSION"
-            & git show-ref --verify --quiet "refs/tags/$tag"
-            if ($LASTEXITCODE -ne 0) {
-              throw "publish requires the existing tag $tag"
-            }
-            $tagCommit = (& git rev-list -n 1 $tag).Trim()
-            if ($tagCommit -cne $env:GITHUB_SHA) {
-              throw 'the release tag must resolve to the checked-out revision'
-            }
           }
 
       - name: Select Rust toolchain
@@ -130,7 +170,12 @@ jobs:
 
       - name: Run offline distribution tests
         shell: pwsh
-        run: .\packaging\windows\tests\Test-WindowsDistribution.ps1
+        run: |
+          .\packaging\windows\tests\Test-WindowsDistribution.ps1
+          .\packaging\windows\tests\Test-WindowsReleaseDescriptor.ps1
+          .\packaging\windows\tests\Test-WindowsReleasePolicy.ps1
+          .\packaging\windows\tests\Test-WindowsPublicationRemote.ps1
+          .\packaging\windows\tests\Test-WindowsPublication.ps1
 
       - name: Build Fleet executables
         shell: pwsh
@@ -150,8 +195,8 @@ jobs:
             /p:PublishReadyToRun=false `
             /p:Deterministic=true
           if ($LASTEXITCODE -ne 0) { throw 'Fleet Console publish failed' }
-          cargo build --release --locked --bin fleet-hub-local --bin fleetctl
-          if ($LASTEXITCODE -ne 0) { throw 'Fleet Hub or fleetctl build failed' }
+          cargo build --release --locked --bin fleet-hub-local --bin fleetctl --bin fleet-onboard
+          if ($LASTEXITCODE -ne 0) { throw 'Fleet Hub, fleetctl, or fleet-onboard build failed' }
 
       - name: Download and verify exact Hostess provider
         shell: pwsh
@@ -179,6 +224,9 @@ jobs:
       - name: Sign Fleet executables
         if: inputs.signing_mode == 'signed-release'
         shell: pwsh
+        env:
+          FLEET_SIGNING_PFX_BASE64: ${{ secrets.FLEET_SIGNING_PFX_BASE64 }}
+          FLEET_SIGNING_PFX_PASSWORD: ${{ secrets.FLEET_SIGNING_PFX_PASSWORD }}
         run: |
           if (-not $env:FLEET_SIGNING_PFX_BASE64 -or -not $env:FLEET_SIGNING_PFX_PASSWORD) {
             throw 'signed-release requires the protected Fleet signing secrets'
@@ -197,7 +245,8 @@ jobs:
               -ExecutablePath @(
                 (Join-Path $env:RUNNER_TEMP 'fleet-console\RustyFleet.FleetConsole.exe'),
                 (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleet-hub-local.exe'),
-                (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleetctl.exe')
+                (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleetctl.exe'),
+                (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleet-onboard.exe')
               ) `
               -PfxPath $pfx `
               -PfxPassword $password
@@ -229,46 +278,265 @@ jobs:
             ConsoleArtifactDirectory = (Join-Path $env:RUNNER_TEMP 'fleet-console')
             HubArtifactPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleet-hub-local.exe')
             FleetctlArtifactPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleetctl.exe')
+            FleetOnboardArtifactPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleet-onboard.exe')
             RequireCleanSource = $true
           }
           if ($env:SIGNING_MODE -eq 'signed-release') {
             $arguments.RequireAuthenticodeSignatures = $true
+            $arguments.ExpectedFleetSignerThumbprint = $env:FLEET_SIGNER_THUMBPRINT
             $arguments.ExpectedHostessSignerThumbprint = (
               $env:PROVIDER_SIGNER_THUMBPRINT
             )
           }
           .\packaging\windows\New-WindowsBundle.ps1 @arguments
 
-      - name: Upload workflow artifact
+      - name: Build exact self-contained guided Setup
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
+          $arguments = @{
+            Version = $env:VERSION
+            Channel = $env:CHANNEL
+            BuildKind = $env:SIGNING_MODE
+            BundleArchivePath = (
+              Join-Path $output "RustyFleet-$env:VERSION-win-x64.zip"
+            )
+            OutputDirectory = $output
+          }
+          if ($env:SIGNING_MODE -eq 'signed-release') {
+            $arguments.FleetSignerThumbprint = $env:FLEET_SIGNER_THUMBPRINT
+            $arguments.HostessSignerThumbprint = $env:PROVIDER_SIGNER_THUMBPRINT
+          }
+          $setupBuildReceiptJson = (
+            .\packaging\windows\New-WindowsSetup.ps1 @arguments
+          )
+          $setupBuildReceipt = $setupBuildReceiptJson | ConvertFrom-Json -Depth 10
+          [IO.File]::WriteAllText(
+            (Join-Path $output 'RustyFleet-Setup.build-receipt.json'),
+            ($setupBuildReceipt | ConvertTo-Json -Depth 10),
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Sign and verify exact guided Setup
+        if: inputs.signing_mode == 'signed-release'
+        shell: pwsh
+        env:
+          FLEET_SIGNING_PFX_BASE64: ${{ secrets.FLEET_SIGNING_PFX_BASE64 }}
+          FLEET_SIGNING_PFX_PASSWORD: ${{ secrets.FLEET_SIGNING_PFX_PASSWORD }}
+        run: |
+          $setup = Join-Path (
+            Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
+          ) 'RustyFleet-Setup.exe'
+          $pfx = Join-Path $env:RUNNER_TEMP 'fleet-setup-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes(
+              $pfx,
+              [Convert]::FromBase64String($env:FLEET_SIGNING_PFX_BASE64)
+            )
+            $password = ConvertTo-SecureString `
+              $env:FLEET_SIGNING_PFX_PASSWORD `
+              -AsPlainText `
+              -Force
+            .\packaging\windows\Sign-WindowsArtifacts.ps1 `
+              -ExecutablePath $setup `
+              -PfxPath $pfx `
+              -PfxPassword $password
+            $signature = Get-AuthenticodeSignature -LiteralPath $setup
+            if ($signature.Status -ne 'Valid' -or
+                $signature.SignerCertificate.Thumbprint -cne
+                  $env:FLEET_SIGNER_THUMBPRINT.ToUpperInvariant()) {
+              throw 'guided Setup does not match the authorized Fleet signer'
+            }
+          }
+          finally {
+            if (Test-Path -LiteralPath $pfx) {
+              Remove-Item -LiteralPath $pfx -Force
+            }
+          }
+
+      - name: Create short-lived signed Pages metadata
+        if: inputs.signing_mode == 'signed-release'
+        shell: pwsh
+        env:
+          FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64: ${{ secrets.FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64 }}
+        run: |
+          if (-not $env:FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64) {
+            throw 'signed release requires the protected descriptor signing key'
+          }
+          $keyPath = Join-Path $env:RUNNER_TEMP 'fleet-descriptor-signing-key.pem'
+          try {
+            [IO.File]::WriteAllBytes(
+              $keyPath,
+              [Convert]::FromBase64String(
+                $env:FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64
+              )
+            )
+            $output = Join-Path (
+              Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
+            ) 'pages-metadata'
+            $sourceTree = (& git rev-parse "$env:GITHUB_SHA^{tree}").Trim()
+            if ($LASTEXITCODE -ne 0 -or $sourceTree -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'could not resolve the exact signed-release source tree'
+            }
+            .\packaging\windows\New-WindowsReleaseDescriptor.ps1 `
+              -Version $env:VERSION `
+              -Channel $env:CHANNEL `
+              -SetupPath (
+                Join-Path (
+                  Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
+                ) 'RustyFleet-Setup.exe'
+              ) `
+              -SetupBuildReceiptPath (
+                Join-Path (
+                  Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
+                ) 'RustyFleet-Setup.build-receipt.json'
+              ) `
+              -ExpectedSetupSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
+              -ExpectedSourceRevision $env:GITHUB_SHA `
+              -ExpectedSourceTree $sourceTree `
+              -DescriptorPrivateKeyPemPath $keyPath `
+              -ExpectedDescriptorSignerSpkiSha256 (
+                $env:DESCRIPTOR_SIGNER_SPKI_SHA256
+              ) `
+              -OutputDirectory $output
+          }
+          finally {
+            if (Test-Path -LiteralPath $keyPath) {
+              Remove-Item -LiteralPath $keyPath -Force
+            }
+          }
+
+      - name: Stage and preflight exact publication inputs
+        if: inputs.publish_release && inputs.signing_mode == 'signed-release'
+        shell: pwsh
+        run: |
+          $distribution = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'artifacts\windows-distribution'
+          $descriptor = Join-Path $distribution 'pages-metadata'
+          $stage = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'artifacts\windows-publication'
+          if (Test-Path -LiteralPath $stage) {
+            throw 'publication input staging root already exists'
+          }
+          [IO.Directory]::CreateDirectory($stage) | Out-Null
+          $bundleName = "RustyFleet-$env:VERSION-win-x64"
+          $inputs = [ordered]@{
+            'RustyFleet-Setup.exe' = (
+              Join-Path $distribution 'RustyFleet-Setup.exe'
+            )
+            "$bundleName.zip" = (
+              Join-Path $distribution "$bundleName.zip"
+            )
+            "$bundleName.zip.sha256" = (
+              Join-Path $distribution "$bundleName.zip.sha256"
+            )
+            "$bundleName.manifest.json" = (
+              Join-Path $distribution "$bundleName.manifest.json"
+            )
+            "$bundleName.checksums.sha256" = (
+              Join-Path $distribution "$bundleName.checksums.sha256"
+            )
+            "$bundleName.validation-receipt.json" = (
+              Join-Path $distribution "$bundleName.validation-receipt.json"
+            )
+            'RustyFleet-Setup.build-receipt.json' = (
+              Join-Path $distribution 'RustyFleet-Setup.build-receipt.json'
+            )
+            'release.json' = (Join-Path $descriptor 'release.json')
+            'release-descriptor.receipt.json' = (
+              Join-Path $descriptor 'release-descriptor.receipt.json'
+            )
+            'release-descriptor.spki.der' = (
+              Join-Path $descriptor 'release-descriptor.spki.der'
+            )
+            'release-policy.json' = (
+              Join-Path `
+                $env:GITHUB_WORKSPACE `
+                'packaging\windows\trust\release-policy.json'
+            )
+          }
+          foreach ($entry in $inputs.GetEnumerator()) {
+            if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
+              throw "publication input is missing: $($entry.Key)"
+            }
+            Copy-Item `
+              -LiteralPath $entry.Value `
+              -Destination (Join-Path $stage $entry.Key)
+          }
+          $sourceTree = (& git rev-parse "$env:GITHUB_SHA^{tree}").Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $sourceTree -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'could not resolve the exact publication source tree'
+          }
+          $receipt = (
+            .\packaging\windows\Publish-WindowsRelease.ps1 `
+              -Mode Preflight `
+              -AssetDirectory $stage `
+              -Version $env:VERSION `
+              -Channel $env:CHANNEL `
+              -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
+              -ExpectedHostessSignerThumbprint (
+                $env:PROVIDER_SIGNER_THUMBPRINT
+              ) `
+              -ExpectedDescriptorSignerSpkiSha256 (
+                $env:DESCRIPTOR_SIGNER_SPKI_SHA256
+              ) `
+              -ExpectedSourceRevision $env:GITHUB_SHA `
+              -ExpectedSourceTree $sourceTree `
+              -RepositoryRoot $env:GITHUB_WORKSPACE `
+              -ExpectedRef $env:GITHUB_REF
+          )
+          [IO.File]::WriteAllText(
+            (Join-Path $distribution 'publication-preflight.receipt.json'),
+            $receipt,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: RustyFleet-${{ inputs.version }}-win-x64
+          name: RustyFleet-${{ inputs.version }}-release-evidence
           path: |
-            artifacts/windows-distribution/*.zip
             artifacts/windows-distribution/*.zip.sha256
             artifacts/windows-distribution/*.manifest.json
             artifacts/windows-distribution/*.checksums.sha256
             artifacts/windows-distribution/*.validation-receipt.json
+            artifacts/windows-distribution/*.build-receipt.json
+            artifacts/windows-distribution/pages-metadata/release.json
+            artifacts/windows-distribution/pages-metadata/release-descriptor.receipt.json
+            artifacts/windows-distribution/pages-metadata/release-descriptor.spki.der
+            artifacts/windows-distribution/publication-preflight.receipt.json
           if-no-files-found: error
 
       - name: Publish GitHub Release assets
-        if: inputs.publish_release
+        if: inputs.publish_release && inputs.signing_mode == 'signed-release'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_RELEASE_PUBLISH_TOKEN }}
         run: |
-          $tag = "v$env:VERSION"
-          $assets = Get-ChildItem `
-            -LiteralPath .\artifacts\windows-distribution `
-            -File |
-            Where-Object {
-              $_.Name -match '\.(zip|zip\.sha256|manifest\.json|checksums\.sha256|validation-receipt\.json)$'
-            } |
-            Select-Object -ExpandProperty FullName
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $assets --clobber
+          if (-not $env:GH_TOKEN) {
+            throw 'publication requires the protected Fleet release-only token'
           }
-          else {
-            $prerelease = if ($env:CHANNEL -eq 'stable') { @() } else { @('--prerelease') }
-            gh release create $tag $assets --verify-tag --generate-notes @prerelease
+          $sourceTree = (& git rev-parse "$env:GITHUB_SHA^{tree}").Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $sourceTree -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'could not resolve the exact publication source tree'
           }
-          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed' }
+          .\packaging\windows\Publish-WindowsRelease.ps1 `
+            -Mode Publish `
+            -AssetDirectory .\artifacts\windows-publication `
+            -Version $env:VERSION `
+            -Channel $env:CHANNEL `
+            -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
+            -ExpectedHostessSignerThumbprint (
+              $env:PROVIDER_SIGNER_THUMBPRINT
+            ) `
+            -ExpectedDescriptorSignerSpkiSha256 (
+              $env:DESCRIPTOR_SIGNER_SPKI_SHA256
+            ) `
+            -ExpectedSourceRevision $env:GITHUB_SHA `
+            -ExpectedSourceTree $sourceTree `
+            -RepositoryRoot $env:GITHUB_WORKSPACE `
+            -ExpectedRef $env:GITHUB_REF

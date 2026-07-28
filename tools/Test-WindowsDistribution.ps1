@@ -7,11 +7,14 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$distributionTest = Join-Path $PSScriptRoot (
-    "..\packaging\windows\tests\Test-WindowsDistribution.ps1"
+$distributionTests = @(
+    "..\packaging\windows\tests\Test-WindowsDistribution.ps1",
+    "..\packaging\windows\tests\Test-WindowsReleaseDescriptor.ps1"
 )
-if (-not (Test-Path -LiteralPath $distributionTest -PathType Leaf)) {
-    throw "Windows distribution validation entrypoint is missing"
+foreach ($relative in $distributionTests) {
+    $distributionTest = Join-Path $PSScriptRoot $relative
+    if (-not (Test-Path -LiteralPath $distributionTest -PathType Leaf)) {
+        throw "Windows distribution validation entrypoint is missing: $relative"
+    }
+    & $distributionTest
 }
-
-& $distributionTest

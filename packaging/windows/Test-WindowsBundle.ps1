@@ -7,6 +7,7 @@ param(
     [string] $BundleRoot,
 
     [string] $ExpectedVersion,
+    [string] $ExpectedFleetSignerThumbprint,
     [string] $ExpectedHostessSignerThumbprint
 )
 
@@ -36,12 +37,14 @@ if ($ExpectedVersion -and $manifest.version -ne $ExpectedVersion) {
     throw "bundle version does not match the expected version"
 }
 if ($manifest.build.kind -notin @("unsigned-dev", "signed-release") -or
-    $manifest.build.reproducible -ne $true) {
+    $manifest.build.reproducible_archive_for_identical_input_bytes -ne $true -or
+    $manifest.build.source_to_artifact_binding -ne "clean_worktree_prebuild_assertion") {
     throw "bundle build metadata is invalid"
 }
 if ($manifest.distribution.binary_authority -ne "github_releases" -or
-    $manifest.distribution.pages_role -ne "human_documentation_only") {
-    throw "GitHub Releases must remain binary truth and Pages must remain human-only"
+    $manifest.distribution.pages_role -ne
+        "human_documentation_and_signed_metadata_only") {
+    throw "GitHub Releases must remain binary truth and Pages must remain binary-free"
 }
 if ($manifest.build.kind -eq "signed-release") {
     if ($manifest.distribution.eligibility -ne "signed_release" -or
@@ -59,11 +62,30 @@ $expectedComponentIds = @(
     "fleet-console",
     "fleet-hub",
     "fleetctl",
+    "fleet-onboard",
     "hostess-hotspot-provider"
 )
 if (@(Compare-Object $expectedComponentIds $componentIds).Count -ne 0 -or
     $componentIds.Count -ne $expectedComponentIds.Count) {
-    throw "bundle must contain exactly the four declared runtime components"
+    throw "bundle must contain exactly the five declared runtime components"
+}
+
+$onboard = @($manifest.components |
+    Where-Object { $_.component_id -eq "fleet-onboard" })
+if ($onboard.Count -ne 1 -or
+    $onboard[0].owner -ne "rusty-fleet" -or
+    $onboard[0].kind -ne "offline_onboarding_generator" -or
+    $onboard[0].entrypoint -ne "components/fleet-onboard/fleet-onboard.exe" -or
+    $onboard[0].activation -ne "explicit_operator_invocation" -or
+    $onboard[0].network_access -ne "absent" -or
+    $onboard[0].output -ne "private_machine_bound_onboarding_only" -or
+    $onboard[0].operational_readiness -ne
+        "requires_separately_configured_signed_owner_key_record_tool" -or
+    $onboard[0].bundled_owner_key_record_tool -ne $false -or
+    $manifest.distribution.onboarding_ready -ne $false -or
+    $manifest.distribution.onboarding_blocker -ne
+        "signed_rusty_quest_owner_key_record_release_not_bundled") {
+    throw "fleet-onboard component boundary is not exact"
 }
 
 $provider = @($manifest.components |
@@ -156,7 +178,10 @@ if ($provider[0].provenance.owner_document_path -ne
 
 if ($manifest.build.kind -eq "signed-release") {
     if ($manifest.build.authenticode_required -ne $true -or
-        $manifest.build.source_tree_clean -ne $true) {
+        $manifest.build.source_tree_clean -ne $true -or
+        $ExpectedFleetSignerThumbprint -cnotmatch "^[0-9A-Fa-f]{40}$" -or
+        $manifest.build.authorized_fleet_signer_thumbprint -cne
+            $ExpectedFleetSignerThumbprint.ToUpperInvariant()) {
         throw "signed release does not require signatures and a clean source tree"
     }
     foreach ($component in $manifest.components) {
@@ -165,14 +190,22 @@ if ($manifest.build.kind -eq "signed-release") {
         if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
             throw "signed release component does not have a valid Authenticode signature"
         }
+        if ($component.owner -eq "rusty-fleet" -and
+            $signature.SignerCertificate.Thumbprint -cne
+                $ExpectedFleetSignerThumbprint.ToUpperInvariant()) {
+            throw "signed Fleet component does not match the authorized signer pin"
+        }
     }
 }
 
 if ($manifest.install.activation -ne "explicit_operator_start" -or
+    $manifest.install.authority -ne "RustyFleet-Setup.exe" -or
+    $manifest.install.plan_protocol -ne "rusty.fleet.guided_installer_plan.v1" -or
     $manifest.install.service_registration -ne "absent" -or
-    $manifest.update.strategy -ne "side_by_side_manifest" -or
+    $manifest.update.strategy -ne "setup_owned_side_by_side_manifest" -or
     $manifest.update.rollback.supported -ne $true -or
-    $manifest.update.rollback.mode -ne "pointer_only_previous_verified_release") {
+    $manifest.update.rollback.mode -ne
+        "setup_owned_pointer_to_previous_fully_verified_release") {
     throw "install, update, or rollback metadata is incomplete"
 }
 if (@($manifest.excluded_payload_classes) -notcontains "credentials" -or
@@ -270,6 +303,7 @@ if ($receipt.schema -ne "rusty.fleet.windows_distribution_validation_receipt.v1"
     $receipt.result -ne "pass" -or
     $receipt.version -ne $manifest.version -or
     $receipt.payload_files -ne $inventory.Count -or
+    $receipt.runtime_components -ne $expectedComponentIds.Count -or
     $receipt.manifest_sha256 -cne (Get-RustyFleetSha256 -LiteralPath $manifestPath) -or
     $receipt.checksums_sha256 -cne (Get-RustyFleetSha256 -LiteralPath $checksumsPath) -or
     $receipt.hostess_owner_provenance_sha256 -cne

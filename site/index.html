@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Install and verify Rusty Fleet for Windows.">
-  <title>Rusty Fleet for Windows</title>
+  <meta name="description" content="Preview the Rusty Fleet Windows distribution model.">
+  <title>Rusty Fleet for Windows — distribution preview</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,22 +12,22 @@
     <a class="wordmark" href="./">Rusty Fleet</a>
     <a class="release-link"
        href="https://github.com/MesmerPrism/rusty-fleet/releases/latest">
-      Open verified releases
+      Review release history
     </a>
   </header>
   <main>
     <section class="hero" aria-labelledby="hero-title">
       <p class="eyebrow">Windows fleet operations</p>
-      <h1 id="hero-title">Install the fleet tools directly.</h1>
+      <h1 id="hero-title">Preview the direct Fleet distribution.</h1>
       <p class="lede">
-        Fleet Console, Fleet Hub, and fleetctl ship together with one exact,
-        hash-pinned Hostess hotspot provider. QuestIonAble File Manager is not
-        required to install or run the fleet dashboard.
+        The planned signed release contains Fleet Console, Fleet Hub,
+        fleetctl, inert fleet-onboard, and one exact hash-pinned Hostess
+        hotspot provider. No supported public download has shipped yet.
       </p>
       <div class="actions">
         <a class="primary"
            href="https://github.com/MesmerPrism/rusty-fleet/releases/latest">
-          Get the latest release
+          Review development releases
         </a>
         <a href="#verify">How verification works</a>
       </div>
@@ -60,21 +60,23 @@
 
     <section id="verify" class="steps" aria-labelledby="verify-title">
       <p class="eyebrow">Before installation</p>
-      <h2 id="verify-title">Verify the release in three checks.</h2>
+      <h2 id="verify-title">When a supported release exists, verify four things.</h2>
       <ol>
         <li>
-          Download only from
+          Download the signed <code>RustyFleet-Setup.exe</code> only from
           <a href="https://github.com/MesmerPrism/rusty-fleet/releases">
-            GitHub Releases
-          </a>. Releases are the binary source of truth; this site hosts no
-          installers.
+          GitHub Releases
+          </a>. Releases are the binary source of truth; this site hosts
+          documentation and, when a supported release exists, short-lived
+          signed metadata.
         </li>
         <li>
           Use only a signed release. Unsigned developer bundles identify
           themselves as <code>development_only</code> and cannot be published.
         </li>
         <li>
-          Compare the ZIP with its adjacent <code>.zip.sha256</code> file.
+          Confirm the Setup Authenticode signer and the hash in the signed
+          release descriptor before execution.
         </li>
         <li>
           Expand the archive and run the included offline validator before

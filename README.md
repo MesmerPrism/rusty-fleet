@@ -154,9 +154,11 @@ The current implementation is split into:
   profiles, seeds, public key records, and Hub enrollment configuration. Its
   pinned developer-evidence tool runs from a deny-rename retained path inside
   a bounded Windows Job Object, and rollback/cleanup use a closed
-  retained-handle inventory. The current capsule is machine-bound evidence,
-  not a supported distribution artifact; distribution requires a separately
-  owner-issued release capsule. It neither installs nor enrolls devices and is
+  retained-handle inventory. The current portable Rusty Quest capsule is
+  explicitly pre-build-snapshot, unproven source binding usable only by exact
+  artifact hash, and development-only; distribution still requires a
+  separately signed owner-issued release capsule. The generator neither
+  installs nor enrolls devices and is
   documented in
   [Offline Fleet Onboarding](docs/OFFLINE_ONBOARDING.md).
 
@@ -172,6 +174,17 @@ effective result, and terminal cleanup remain separate evidence.
 This composition is a headless source candidate. Repository validation does
 not claim a GUI-attended pass, Quest/device behavior, signed Windows bundles,
 publication, or release availability. Those remain separately gated.
+
+The Windows distribution source now composes exactly five inert components,
+including `fleet-onboard`, into a deterministic validated ZIP and embeds it in
+the generic-icon `RustyFleet-Setup.exe`. Setup exposes exact no-change
+`--plan --json` automation plus a visible zero-argument guided install. QFM
+may verify and launch that Setup through the v2 signed-descriptor handoff, but
+Fleet owns composition, installation, updates, and rollback metadata. Pages
+is the documentation authority and, once the protected metadata deployment
+exists, will host short-lived signed `release.json`; immutable binaries belong
+only to GitHub Releases. No supported download or metadata deployment is
+claimed until the protected workflows produce and independently validate one.
 
 The deterministic M1 negative-path harness runs four independent devices
 through sleep/wake aging, route loss/recovery, duplicate and stale check-ins,

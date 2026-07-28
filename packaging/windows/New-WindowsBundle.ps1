@@ -26,17 +26,23 @@ param(
     [string] $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
     [string] $OutputDirectory,
     [string] $SourceRevision,
+    [string] $SourceTree,
     [long] $SourceDateEpoch = 0,
     [string] $SourceRepository = "https://github.com/MesmerPrism/rusty-fleet",
     [string] $ReleaseBaseUrl = "https://github.com/MesmerPrism/rusty-fleet/releases",
-    [string] $PagesUrl = "https://mesmerprism.github.io/rusty-fleet/",
+    [string] $PagesUrl = "https://mesmerprism.com/Rusty-Fleet/",
 
     [switch] $SkipBuild,
     [string] $ConsoleArtifactDirectory,
     [string] $HubArtifactPath,
     [string] $FleetctlArtifactPath,
+    [string] $FleetOnboardArtifactPath,
+    [string] $ReleasePolicyPath = (
+        Join-Path $PSScriptRoot "trust\release-policy.json"
+    ),
     [switch] $RequireCleanSource,
     [switch] $RequireAuthenticodeSignatures,
+    [string] $ExpectedFleetSignerThumbprint,
     [string] $ExpectedHostessSignerThumbprint
 )
 
@@ -56,6 +62,19 @@ Assert-RustyFleetSha256 `
     -Name "HostessProviderSha256"
 
 $repoPath = (Resolve-Path -LiteralPath $RepoRoot).Path
+if ($BuildKind -eq "signed-release") {
+    $policyPath = (Resolve-Path -LiteralPath $ReleasePolicyPath).Path
+    $policy = Get-Content -LiteralPath $policyPath -Raw |
+        ConvertFrom-Json -Depth 10
+    if ($policy.schema -cne "rusty.fleet.windows_release_trust_policy.v1" -or
+        $policy.publication_enabled -ne $true -or
+        @($policy.authorized_fleet_signer_thumbprints) -cnotcontains
+            $ExpectedFleetSignerThumbprint.ToUpperInvariant() -or
+        @($policy.authorized_hostess_signer_thumbprints) -cnotcontains
+            $ExpectedHostessSignerThumbprint.ToUpperInvariant()) {
+        throw "signed release inputs are not authorized by the revisioned Fleet release policy"
+    }
+}
 $providerPath = (Resolve-Path -LiteralPath $HostessProviderPath).Path
 if ((Split-Path -Leaf $providerPath) -cne "rusty-hostess-hotspot-provider.exe") {
     throw "the external provider filename must be exactly rusty-hostess-hotspot-provider.exe"
@@ -78,6 +97,15 @@ if (-not $SourceRevision) {
 }
 if ($SourceRevision -cnotmatch "^[0-9a-f]{40}$") {
     throw "SourceRevision must be a full lowercase Git commit"
+}
+if (-not $SourceTree) {
+    $SourceTree = (& git -C $repoPath rev-parse "$SourceRevision^{tree}" 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "could not resolve the exact Fleet source tree"
+    }
+}
+if ($SourceTree -cnotmatch "^[0-9a-f]{40}$") {
+    throw "SourceTree must be a full lowercase Git tree"
 }
 if (-not $SkipBuild -or $RequireCleanSource -or $BuildKind -eq "signed-release") {
     $observedHead = (& git -C $repoPath rev-parse HEAD).Trim()
@@ -132,42 +160,62 @@ try {
             --release `
             --locked `
             --bin fleet-hub-local `
-            --bin fleetctl
+            --bin fleetctl `
+            --bin fleet-onboard
         if ($LASTEXITCODE -ne 0) {
-            throw "Fleet Hub or fleetctl release build failed"
+            throw "Fleet Hub, fleetctl, or fleet-onboard release build failed"
         }
         $ConsoleArtifactDirectory = $consolePublish
         $HubArtifactPath = Join-Path $repoPath "target\release\fleet-hub-local.exe"
         $FleetctlArtifactPath = Join-Path $repoPath "target\release\fleetctl.exe"
+        $FleetOnboardArtifactPath = Join-Path $repoPath "target\release\fleet-onboard.exe"
     }
     elseif (-not $ConsoleArtifactDirectory -or
         -not $HubArtifactPath -or
-        -not $FleetctlArtifactPath) {
-        throw "SkipBuild requires ConsoleArtifactDirectory, HubArtifactPath, and FleetctlArtifactPath"
+        -not $FleetctlArtifactPath -or
+        -not $FleetOnboardArtifactPath) {
+        throw "SkipBuild requires ConsoleArtifactDirectory, HubArtifactPath, FleetctlArtifactPath, and FleetOnboardArtifactPath"
     }
 
     $consolePath = (Resolve-Path -LiteralPath $ConsoleArtifactDirectory).Path
     $hubPath = (Resolve-Path -LiteralPath $HubArtifactPath).Path
     $fleetctlPath = (Resolve-Path -LiteralPath $FleetctlArtifactPath).Path
+    $fleetOnboardPath = (Resolve-Path -LiteralPath $FleetOnboardArtifactPath).Path
     if (-not (Test-Path -LiteralPath (Join-Path $consolePath "RustyFleet.FleetConsole.exe") -PathType Leaf)) {
         throw "Fleet Console artifact directory has no RustyFleet.FleetConsole.exe"
     }
     if ((Split-Path -Leaf $hubPath) -cne "fleet-hub-local.exe" -or
-        (Split-Path -Leaf $fleetctlPath) -cne "fleetctl.exe") {
-        throw "Fleet Hub and fleetctl artifact names are not exact"
+        (Split-Path -Leaf $fleetctlPath) -cne "fleetctl.exe" -or
+        (Split-Path -Leaf $fleetOnboardPath) -cne "fleet-onboard.exe") {
+        throw "Fleet Hub, fleetctl, and fleet-onboard artifact names are not exact"
     }
 
     if ($RequireAuthenticodeSignatures) {
+        if ($ExpectedFleetSignerThumbprint -cnotmatch "^[0-9A-Fa-f]{40}$") {
+            throw "signed release requires an independently supplied Fleet signer thumbprint"
+        }
+        $fleetSigner = $ExpectedFleetSignerThumbprint.ToUpperInvariant()
         foreach ($executable in @(
             (Join-Path $consolePath "RustyFleet.FleetConsole.exe"),
             $hubPath,
             $fleetctlPath,
-            $providerPath
+            $fleetOnboardPath
         )) {
             $signature = Get-AuthenticodeSignature -LiteralPath $executable
-            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-                throw "required Authenticode signature is not valid: $(Split-Path -Leaf $executable)"
+            $observedThumbprint = if ($signature.SignerCertificate) {
+                $signature.SignerCertificate.Thumbprint
             }
+            else {
+                $null
+            }
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+                $observedThumbprint -cne $fleetSigner) {
+                throw "required Fleet Authenticode signer is not authorized: $(Split-Path -Leaf $executable)"
+            }
+        }
+        $providerSignature = Get-AuthenticodeSignature -LiteralPath $providerPath
+        if ($providerSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "required Hostess Authenticode signature is not valid"
         }
         if ($BuildKind -ne "signed-release") {
             throw "signature enforcement requires BuildKind signed-release"
@@ -186,6 +234,7 @@ try {
         "components\fleet-console",
         "components\fleet-hub",
         "components\fleetctl",
+        "components\fleet-onboard",
         "providers\hostess-hotspot-provider",
         "providers\hostess-hotspot-provider\provenance",
         "distribution-tools",
@@ -204,6 +253,8 @@ try {
         -Destination (Join-Path $bundleRoot "components\fleet-hub\fleet-hub-local.exe")
     Copy-Item -LiteralPath $fleetctlPath `
         -Destination (Join-Path $bundleRoot "components\fleetctl\fleetctl.exe")
+    Copy-Item -LiteralPath $fleetOnboardPath `
+        -Destination (Join-Path $bundleRoot "components\fleet-onboard\fleet-onboard.exe")
     Copy-Item -LiteralPath $providerPath `
         -Destination (Join-Path $bundleRoot "providers\hostess-hotspot-provider\rusty-hostess-hotspot-provider.exe")
     foreach ($documentName in $hostessProvenance.documents.Values) {
@@ -215,7 +266,6 @@ try {
     }
     foreach ($tool in @(
         "Distribution.Common.psm1",
-        "Install-RustyFleet.ps1",
         "Test-WindowsBundle.ps1"
     )) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $tool) `
@@ -226,6 +276,7 @@ try {
         "fleet-console" = "components/fleet-console/"
         "fleet-hub" = "components/fleet-hub/"
         "fleetctl" = "components/fleetctl/"
+        "fleet-onboard" = "components/fleet-onboard/"
         "hostess-hotspot-provider" = "providers/hostess-hotspot-provider/"
         "distribution-tools" = "distribution-tools/"
     }
@@ -271,6 +322,17 @@ try {
             owner = "rusty-fleet"
             kind = "command_line"
             entrypoint = "components/fleetctl/fleetctl.exe"
+        },
+        [ordered]@{
+            component_id = "fleet-onboard"
+            owner = "rusty-fleet"
+            kind = "offline_onboarding_generator"
+            entrypoint = "components/fleet-onboard/fleet-onboard.exe"
+            activation = "explicit_operator_invocation"
+            network_access = "absent"
+            output = "private_machine_bound_onboarding_only"
+            operational_readiness = "requires_separately_configured_signed_owner_key_record_tool"
+            bundled_owner_key_record_tool = $false
         },
         [ordered]@{
             component_id = "hostess-hotspot-provider"
@@ -340,12 +402,20 @@ try {
         source = [ordered]@{
             repository = $SourceRepository
             revision = $SourceRevision
+            tree = $SourceTree
         }
         build = [ordered]@{
             kind = $BuildKind
-            reproducible = $true
+            reproducible_archive_for_identical_input_bytes = $true
+            source_to_artifact_binding = "clean_worktree_prebuild_assertion"
             source_date_epoch = $SourceDateEpoch
             authenticode_required = [bool] $RequireAuthenticodeSignatures
+            authorized_fleet_signer_thumbprint = if ($RequireAuthenticodeSignatures) {
+                $ExpectedFleetSignerThumbprint.ToUpperInvariant()
+            }
+            else {
+                $null
+            }
             source_tree_clean = [bool] (
                 -not $SkipBuild -or $RequireCleanSource -or
                 $BuildKind -eq "signed-release"
@@ -356,7 +426,7 @@ try {
             release_base_url = $ReleaseBaseUrl
             archive_asset = $archiveAsset
             pages_url = $PagesUrl
-            pages_role = "human_documentation_only"
+            pages_role = "human_documentation_and_signed_metadata_only"
             eligibility = if ($BuildKind -eq "signed-release") {
                 "signed_release"
             }
@@ -364,6 +434,8 @@ try {
                 "development_only"
             }
             publication_allowed = $BuildKind -eq "signed-release"
+            onboarding_ready = $false
+            onboarding_blocker = "signed_rusty_quest_owner_key_record_release_not_bundled"
         }
         components = $components
         payload = $payload
@@ -371,11 +443,13 @@ try {
             mode = "per_user_side_by_side"
             default_root = "%LOCALAPPDATA%/RustyFleet"
             activation = "explicit_operator_start"
+            authority = "RustyFleet-Setup.exe"
+            plan_protocol = "rusty.fleet.guided_installer_plan.v1"
             service_registration = "absent"
             configuration = "external_after_install"
         }
         update = [ordered]@{
-            strategy = "side_by_side_manifest"
+            strategy = "setup_owned_side_by_side_manifest"
             channel = $Channel
             manifest_asset = "$bundleName.manifest.json"
             checksums_asset = "$bundleName.checksums.sha256"
@@ -383,7 +457,7 @@ try {
             archive_asset = $archiveAsset
             rollback = [ordered]@{
                 supported = $true
-                mode = "pointer_only_previous_verified_release"
+                mode = "setup_owned_pointer_to_previous_fully_verified_release"
                 preserves_releases = $true
                 automatic_delete = $false
             }
@@ -424,7 +498,7 @@ try {
         manifest_sha256 = Get-RustyFleetSha256 -LiteralPath $manifestPath
         checksums_sha256 = Get-RustyFleetSha256 -LiteralPath $checksumsPath
         payload_files = $payload.Count
-        runtime_components = 4
+        runtime_components = 5
         exact_external_provider = $true
         hostess_owner_provenance_sha256 = $hostessProvenance.provenance_sha256
         distribution_eligibility = $manifest.distribution.eligibility
@@ -442,6 +516,7 @@ try {
     & (Join-Path $PSScriptRoot "Test-WindowsBundle.ps1") `
         -BundleRoot $bundleRoot `
         -ExpectedVersion $Version `
+        -ExpectedFleetSignerThumbprint $ExpectedFleetSignerThumbprint `
         -ExpectedHostessSignerThumbprint $ExpectedHostessSignerThumbprint |
         Out-Null
 

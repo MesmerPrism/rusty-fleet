@@ -100,28 +100,60 @@ function Get-RustyFleetPeCanonicalPayload {
 
     [byte[]] $bytes = [System.IO.File]::ReadAllBytes($LiteralPath)
     if ($bytes.Length -lt 512) {
-        throw "Hostess provider PE artifact is unexpectedly small"
+        throw "PE artifact is unexpectedly small"
+    }
+    if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+        throw "PE artifact does not have a valid DOS header"
     }
     $peOffset = [int] [BitConverter]::ToUInt32($bytes, 0x3c)
-    if ($peOffset -lt 64 -or $peOffset + 256 -gt $bytes.Length -or
+    if ($peOffset -lt 64 -or $peOffset + 24 -gt $bytes.Length -or
         $bytes[$peOffset] -ne 0x50 -or
         $bytes[$peOffset + 1] -ne 0x45 -or
         $bytes[$peOffset + 2] -ne 0 -or
         $bytes[$peOffset + 3] -ne 0) {
-        throw "Hostess provider does not have a valid PE header"
+        throw "PE artifact does not have a valid PE header"
     }
     $optionalHeader = $peOffset + 24
-    $dataDirectories = switch (
-        [BitConverter]::ToUInt16($bytes, $optionalHeader)
-    ) {
+    $optionalHeaderSize = [int] [BitConverter]::ToUInt16(
+        $bytes,
+        $peOffset + 20
+    )
+    if ($optionalHeaderSize -le 0 -or
+        $optionalHeader + $optionalHeaderSize -gt $bytes.Length) {
+        throw "PE optional header is truncated"
+    }
+    $optionalHeaderMagic = [BitConverter]::ToUInt16($bytes, $optionalHeader)
+    $expectedOptionalHeaderSize = switch ($optionalHeaderMagic) {
+        0x10b { 224 }
+        0x20b { 240 }
+        default { throw "PE artifact has an unsupported optional header" }
+    }
+    if ($optionalHeaderSize -ne $expectedOptionalHeaderSize) {
+        throw "PE artifact has a non-canonical optional-header size"
+    }
+    $dataDirectories = switch ($optionalHeaderMagic) {
         0x10b { $optionalHeader + 96 }
         0x20b { $optionalHeader + 112 }
-        default { throw "Hostess provider has an unsupported PE optional header" }
+    }
+    $directoryCountOffset = switch ($optionalHeaderMagic) {
+        0x10b { $optionalHeader + 92 }
+        0x20b { $optionalHeader + 108 }
     }
     $checksumOffset = $optionalHeader + 64
     $certificateDirectory = $dataDirectories + (4 * 8)
-    if ($certificateDirectory + 8 -gt $bytes.Length) {
-        throw "Hostess provider PE certificate directory is truncated"
+    $directoryCount = [long] [BitConverter]::ToUInt32(
+        $bytes,
+        $directoryCountOffset
+    )
+    if ($directoryCountOffset + 4 -gt
+            $optionalHeader + $optionalHeaderSize -or
+        $directoryCount -ne 16 -or
+        $dataDirectories + ($directoryCount * 8) -ne
+            $optionalHeader + $optionalHeaderSize -or
+        $checksumOffset + 4 -gt $optionalHeader + $optionalHeaderSize -or
+        $certificateDirectory + 8 -gt
+            $optionalHeader + $optionalHeaderSize) {
+        throw "PE optional header does not have the canonical directory layout"
     }
     $certificateOffset = [long] [BitConverter]::ToUInt32(
         $bytes,
@@ -132,20 +164,58 @@ function Get-RustyFleetPeCanonicalPayload {
         $certificateDirectory + 4
     )
     if (($certificateOffset -eq 0) -xor ($certificateSize -eq 0)) {
-        throw "Hostess provider PE certificate directory is inconsistent"
+        throw "PE certificate directory is inconsistent"
     }
     $physicalPayloadSize = [long] $bytes.Length
     if ($certificateOffset -ne 0) {
         if ($certificateOffset % 8 -ne 0 -or
             $certificateSize -lt 8 -or
             $certificateOffset + $certificateSize -ne $bytes.Length) {
-            throw "Hostess provider signature table is malformed or has an overlay"
+            throw "PE signature table is malformed or has an overlay"
+        }
+        $certificateLength = [long] [BitConverter]::ToUInt32(
+            $bytes,
+            [int] $certificateOffset
+        )
+        $certificateRevision = [BitConverter]::ToUInt16(
+            $bytes,
+            [int] $certificateOffset + 4
+        )
+        $certificateType = [BitConverter]::ToUInt16(
+            $bytes,
+            [int] $certificateOffset + 6
+        )
+        $alignedCertificateLength = (
+            [long] (($certificateLength + 7) -band (-bnot 7))
+        )
+        if ($certificateLength -lt 8 -or
+            $certificateLength -gt $certificateSize -or
+            $certificateRevision -ne 0x0200 -or
+            $certificateType -ne 0x0002 -or
+            $alignedCertificateLength -ne $certificateSize) {
+            throw "PE signature table is ambiguous or contains multiple entries"
+        }
+        for (
+            $index = $certificateOffset + $certificateLength
+            $index -lt $certificateOffset + $certificateSize
+            $index++
+        ) {
+            if ($bytes[$index] -ne 0) {
+                throw "PE signature-table alignment padding is not zero"
+            }
         }
         $physicalPayloadSize = $certificateOffset
     }
     if ($ExpectedPayloadSize -le $certificateDirectory + 8 -or
         $ExpectedPayloadSize -gt $physicalPayloadSize) {
-        throw "Hostess provider canonical PE payload size is invalid"
+        throw "canonical PE payload size is invalid"
+    }
+    if (($certificateOffset -eq 0 -and
+            $ExpectedPayloadSize -ne $physicalPayloadSize) -or
+        ($certificateOffset -ne 0 -and
+            $physicalPayloadSize -ne
+                (($ExpectedPayloadSize + 7) -band (-bnot 7)))) {
+        throw "canonical PE payload has an invalid signature-alignment gap"
     }
     for (
         $index = $ExpectedPayloadSize
@@ -153,7 +223,7 @@ function Get-RustyFleetPeCanonicalPayload {
         $index++
     ) {
         if ($bytes[$index] -ne 0) {
-            throw "Hostess provider has data between its payload and signature"
+            throw "PE artifact has data between its payload and signature"
         }
     }
     [byte[]] $payload = [byte[]]::new($ExpectedPayloadSize)
@@ -166,6 +236,31 @@ function Get-RustyFleetPeCanonicalPayload {
         ).ToLowerInvariant()
         size_bytes = $ExpectedPayloadSize
     }
+}
+
+function ConvertTo-RustyFleetUtcDateTimeOffset {
+    param(
+        [Parameter(Mandatory)][object] $Value,
+        [Parameter(Mandatory)][string] $Context
+    )
+
+    if ($Value -is [DateTime]) {
+        return [DateTimeOffset]::new($Value.ToUniversalTime())
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return $Value.ToUniversalTime()
+    }
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+        [string] $Value,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal -bor
+            [Globalization.DateTimeStyles]::AdjustToUniversal,
+        [ref] $parsed
+    )) {
+        throw "$Context is not an invariant UTC timestamp"
+    }
+    return $parsed.ToUniversalTime()
 }
 
 function Assert-RustyFleetHostessSignerAuthorization {
@@ -412,15 +507,21 @@ function Read-RustyFleetHostessProvenance {
 
     $observedSignature = Get-AuthenticodeSignature -LiteralPath $providerFullPath
     if ($BuildKind -eq "signed-release") {
-        $verifiedAt = [DateTimeOffset]::MinValue
+        $verifiedAtValue = $provenance.source.verified_at_utc
+        $verifiedAtValid = try {
+            $verifiedAt = ConvertTo-RustyFleetUtcDateTimeOffset `
+                -Value $verifiedAtValue `
+                -Context "Hostess source verified_at_utc"
+            $true
+        }
+        catch {
+            $false
+        }
         if ($provenance.source.availability_state -cne "verified_public" -or
             [string]::IsNullOrWhiteSpace(
-                [string] $provenance.source.verified_at_utc
+                [string] $verifiedAtValue
             ) -or
-            -not [DateTimeOffset]::TryParse(
-                [string] $provenance.source.verified_at_utc,
-                [ref] $verifiedAt
-            ) -or
+            -not $verifiedAtValid -or
             $observedSignature.Status -ne
                 [System.Management.Automation.SignatureStatus]::Valid -or
             $null -eq $observedSignature.SignerCertificate) {
@@ -537,6 +638,7 @@ Export-ModuleMember -Function @(
     "Assert-RustyFleetHttpsUrl",
     "Assert-RustyFleetSha256",
     "Assert-RustyFleetPayloadPath",
+    "Get-RustyFleetPeCanonicalPayload",
     "Read-RustyFleetHostessProvenance",
     "New-RustyFleetDeterministicZip"
 )
