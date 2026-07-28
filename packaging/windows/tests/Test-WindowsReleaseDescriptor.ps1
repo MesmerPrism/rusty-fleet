@@ -21,6 +21,17 @@ function ConvertFrom-Base64Url([string] $Value) {
 
 $packagingRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
+Import-Module (
+    Join-Path $PSScriptRoot "WindowsCertificateFixture.psm1"
+) -Force
+function global:Get-AuthenticodeSignature {
+    param(
+        [Parameter(Mandatory)]
+        [string] $LiteralPath
+    )
+
+    Get-RustyFleetTestAuthenticodeSignature -LiteralPath $LiteralPath
+}
 $repoRoot = (Resolve-Path (Join-Path $packagingRoot "..\..")).Path
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-descriptor-$([Guid]::NewGuid().ToString('N'))"
@@ -28,7 +39,6 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
 [IO.Directory]::CreateDirectory($testRoot) | Out-Null
 $rsa = [Security.Cryptography.RSA]::Create(3072)
 $signingCertificate = $null
-$certificateStores = @()
 try {
     $fixtureRoot = Join-Path $testRoot "setup-fixture"
     $fixtureOutput = Join-Path $fixtureRoot "output"
@@ -102,30 +112,22 @@ return 0;
         -LiteralPath $setupPath `
         -ExpectedPayloadSize $unsignedSetupSize
 
-    $signingCertificate = New-SelfSignedCertificate `
-        -Type CodeSigningCert `
-        -Subject "CN=Rusty Fleet descriptor test" `
-        -CertStoreLocation "Cert:\CurrentUser\My" `
-        -HashAlgorithm SHA256 `
-        -NotAfter ([DateTime]::UtcNow.AddDays(1))
-    foreach ($storeName in @("Root", "TrustedPublisher")) {
-        $store = [Security.Cryptography.X509Certificates.X509Store]::new(
-            $storeName,
-            [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-        )
-        $store.Open(
-            [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
-        )
-        $store.Add($signingCertificate)
-        $certificateStores += $store
-    }
+    $signingCertificate = New-RustyFleetTestCodeSigningCertificate `
+        -Subject "CN=Rusty Fleet descriptor test"
     $signed = Set-AuthenticodeSignature `
         -FilePath $setupPath `
         -Certificate $signingCertificate `
         -HashAlgorithm SHA256
+    Register-RustyFleetTestAuthenticodeSignature `
+        -LiteralPath $setupPath `
+        -Certificate $signingCertificate
+    $signed = Get-AuthenticodeSignature -LiteralPath $setupPath
     Assert-Descriptor `
         ($signed.Status -eq [Management.Automation.SignatureStatus]::Valid) `
-        "the generated Setup fixture could not be signed"
+        (
+            "the generated Setup fixture could not be signed: " +
+            "$($signed.Status) ($($signed.StatusMessage))"
+        )
     $setupSignature = Get-AuthenticodeSignature -LiteralPath $setupPath
     Assert-Descriptor `
         ($setupSignature.Status -eq [Management.Automation.SignatureStatus]::Valid) `
@@ -389,31 +391,12 @@ return 0;
     } | ConvertTo-Json -Depth 5
 }
 finally {
-    foreach ($store in $certificateStores) {
-        try {
-            if ($signingCertificate) {
-                $store.Remove($signingCertificate)
-            }
-        }
-        finally {
-            $store.Dispose()
-        }
-    }
+    Remove-Item `
+        -LiteralPath "Function:\global:Get-AuthenticodeSignature" `
+        -Force `
+        -ErrorAction SilentlyContinue
     if ($signingCertificate) {
-        $myStore = [Security.Cryptography.X509Certificates.X509Store]::new(
-            "My",
-            [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-        )
-        try {
-            $myStore.Open(
-                [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
-            )
-            $myStore.Remove($signingCertificate)
-        }
-        finally {
-            $myStore.Dispose()
-            $signingCertificate.Dispose()
-        }
+        $signingCertificate.Dispose()
     }
     $rsa.Dispose()
     if (Test-Path -LiteralPath $testRoot) {

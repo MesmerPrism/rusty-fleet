@@ -1342,15 +1342,19 @@ mod secure_fs {
     }
 
     #[cfg(windows)]
-    fn apply_private_acl(dir: &mut Dir) -> Result<(), String> {
+    fn apply_private_acl<T: AsRawHandle>(
+        handle: &mut T,
+        inherit_to_children: bool,
+    ) -> Result<(), String> {
         let current = windows_permissions::utilities::current_process_sid()
             .map_err(|_| "current_user_identity_failed".to_owned())?;
+        let inheritance = if inherit_to_children { "OICI" } else { "" };
         let descriptor: windows_permissions::LocalBox<SecurityDescriptor> =
-            format!("O:{current}D:P(A;OICI;FA;;;{current})")
+            format!("O:{current}D:P(A;{inheritance};FA;;;{current})")
                 .parse()
                 .map_err(|_| "private_acl_build_failed".to_owned())?;
         wrappers::SetSecurityInfo(
-            dir,
+            handle,
             SeObjectType::SE_FILE_OBJECT,
             SecurityInformation::Owner
                 | SecurityInformation::Dacl
@@ -1361,7 +1365,7 @@ mod secure_fs {
             None,
         )
         .map_err(|_| "private_acl_apply_failed".to_owned())?;
-        private_acl_hash_and_validate(dir).map(drop)
+        private_acl_hash_and_validate(handle).map(drop)
     }
 
     fn identity_for<T>(
@@ -1444,7 +1448,7 @@ mod secure_fs {
                 .map_err(|_| "output_root_create_failed".to_owned())?;
             let mut root = open_dir_component(&parent, &leaf, true, false)
                 .map_err(|_| "partial_generation_exact_cleanup_required".to_owned())?;
-            if let Err(error) = apply_private_acl(&mut root.dir) {
+            if let Err(error) = apply_private_acl(&mut root.dir, true) {
                 let _ = fleet_onboarding_windows_kernel::delete_retained_handle(&root.dir);
                 return Err(error);
             }
@@ -1500,7 +1504,23 @@ mod secure_fs {
             parent
                 .create_dir(&leaf)
                 .map_err(|_| "private_directory_create_failed".to_owned())?;
-            let dir = open_dir_component(&parent, &leaf, true, true)?;
+            let mut dir = open_dir_component(&parent, &leaf, true, false)?;
+            // An elevated Windows token may use the Administrators group as
+            // its default owner even though this private parent grants only
+            // the current user. Normalize the child through the retained
+            // handle before it can contain any private material.
+            if let Err(error) = apply_private_acl(&mut dir.dir, true) {
+                let _ = fleet_onboarding_windows_kernel::delete_retained_handle(&dir.dir);
+                return Err(error);
+            }
+            dir.identity = identity_for(
+                &dir.dir,
+                &dir.dir
+                    .dir_metadata()
+                    .map_err(|_| "private_identity_unavailable".to_owned())?,
+                false,
+                true,
+            )?;
             self.dirs.insert(normalized, dir);
             Ok(())
         }
@@ -1524,13 +1544,26 @@ mod secure_fs {
                     .write(true)
                     .create_new(true)
                     .access_mode(
-                        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE,
+                        GENERIC_READ
+                            | GENERIC_WRITE
+                            | FILE_READ_ATTRIBUTES
+                            | READ_CONTROL
+                            | DELETE
+                            | WRITE_DAC
+                            | WRITE_OWNER,
                     )
                     .share_mode(FILE_SHARE_READ)
                     .follow(FollowSymlinks::No);
                 let mut file = parent
                     .open_with(&leaf, &options)
                     .map_err(|_| "private_create_new_failed".to_owned())?;
+                // Apply and verify the explicit current-user owner/DACL before
+                // any secret bytes are written. This is required on elevated
+                // hosts whose token default owner is a group SID.
+                if let Err(error) = apply_private_acl(&mut file, false) {
+                    let _ = fleet_onboarding_windows_kernel::delete_retained_handle(&file);
+                    return Err(error);
+                }
                 file.write_all(bytes)
                     .and_then(|()| file.sync_all())
                     .map_err(|_| "private_write_failed".to_owned())?;
@@ -2064,7 +2097,7 @@ mod secure_fs {
             let (ambient_parent, leaf) = open_parent(&path).expect("open parent");
             let mut retained =
                 open_dir_component(&ambient_parent, &leaf, true, false).expect("retain parent");
-            apply_private_acl(&mut retained.dir).expect("apply private ACL");
+            apply_private_acl(&mut retained.dir, true).expect("apply private ACL");
             drop(retained);
             let retained =
                 open_dir_component(&ambient_parent, &leaf, true, true).expect("private parent");

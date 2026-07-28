@@ -69,6 +69,17 @@ function Invoke-PublicationAuthority {
 
 $packagingRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
+Import-Module (
+    Join-Path $PSScriptRoot "WindowsCertificateFixture.psm1"
+) -Force
+function global:Get-AuthenticodeSignature {
+    param(
+        [Parameter(Mandatory)]
+        [string] $LiteralPath
+    )
+
+    Get-RustyFleetTestAuthenticodeSignature -LiteralPath $LiteralPath
+}
 $distributionModule = Get-Module Distribution.Common
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-publication-test-$([Guid]::NewGuid().ToString('N'))"
@@ -76,7 +87,6 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
 [IO.Directory]::CreateDirectory($testRoot) | Out-Null
 $descriptorRsa = [Security.Cryptography.RSA]::Create(3072)
 $signingCertificate = $null
-$certificateStoreNames = @("Root", "TrustedPublisher")
 $testNow = [DateTimeOffset]::UtcNow
 $priorToken = [Environment]::GetEnvironmentVariable(
     "GH_TOKEN",
@@ -123,27 +133,8 @@ try {
         [Globalization.CultureInfo]::CurrentUICulture = $priorUiCulture
     }
 
-    $signingCertificate = New-SelfSignedCertificate `
-        -Type CodeSigningCert `
-        -Subject "CN=Rusty Fleet publication test" `
-        -CertStoreLocation "Cert:\CurrentUser\My" `
-        -HashAlgorithm SHA256 `
-        -NotAfter ([DateTime]::UtcNow.AddDays(1))
-    foreach ($storeName in $certificateStoreNames) {
-        $store = [Security.Cryptography.X509Certificates.X509Store]::new(
-            $storeName,
-            [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-        )
-        try {
-            $store.Open(
-                [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
-            )
-            $store.Add($signingCertificate)
-        }
-        finally {
-            $store.Dispose()
-        }
-    }
+    $signingCertificate = New-RustyFleetTestCodeSigningCertificate `
+        -Subject "CN=Rusty Fleet publication test"
     $signerThumbprint = $signingCertificate.Thumbprint.ToUpperInvariant()
     $descriptorSpki = $descriptorRsa.ExportSubjectPublicKeyInfo()
     $descriptorSpkiSha256 = [Convert]::ToHexString(
@@ -246,6 +237,10 @@ public static class ProviderFixture { }
         -FilePath $providerPath `
         -Certificate $signingCertificate `
         -HashAlgorithm SHA256
+    Register-RustyFleetTestAuthenticodeSignature `
+        -LiteralPath $providerPath `
+        -Certificate $signingCertificate
+    $providerSigned = Get-AuthenticodeSignature -LiteralPath $providerPath
     Assert-Publication `
         ($providerSigned.Status -eq
             [Management.Automation.SignatureStatus]::Valid) `
@@ -453,6 +448,10 @@ public static class ProviderFixture { }
         -FilePath $setupPath `
         -Certificate $signingCertificate `
         -HashAlgorithm SHA256
+    Register-RustyFleetTestAuthenticodeSignature `
+        -LiteralPath $setupPath `
+        -Certificate $signingCertificate
+    $signedSetup = Get-AuthenticodeSignature -LiteralPath $setupPath
     Assert-Publication `
         ($signedSetup.Status -eq
             [Management.Automation.SignatureStatus]::Valid) `
@@ -1062,43 +1061,17 @@ exit 99
     } | ConvertTo-Json -Depth 10
 }
 finally {
+    Remove-Item `
+        -LiteralPath "Function:\global:Get-AuthenticodeSignature" `
+        -Force `
+        -ErrorAction SilentlyContinue
     [Environment]::SetEnvironmentVariable(
         "GH_TOKEN",
         $priorToken,
         [EnvironmentVariableTarget]::Process
     )
-    foreach ($storeName in $certificateStoreNames) {
-        $store = [Security.Cryptography.X509Certificates.X509Store]::new(
-            $storeName,
-            [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-        )
-        try {
-            $store.Open(
-                [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
-            )
-            if ($signingCertificate) {
-                $store.Remove($signingCertificate)
-            }
-        }
-        finally {
-            $store.Dispose()
-        }
-    }
     if ($signingCertificate) {
-        $myStore = [Security.Cryptography.X509Certificates.X509Store]::new(
-            "My",
-            [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-        )
-        try {
-            $myStore.Open(
-                [Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
-            )
-            $myStore.Remove($signingCertificate)
-        }
-        finally {
-            $myStore.Dispose()
-            $signingCertificate.Dispose()
-        }
+        $signingCertificate.Dispose()
     }
     $descriptorRsa.Dispose()
     if (Test-Path -LiteralPath $testRoot) {
