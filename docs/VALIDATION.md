@@ -148,6 +148,9 @@ Deep includes Standard and adds:
 - architecture/authority/public-boundary review markers;
 - source-candidate dependency convergence and unsigned/non-publishable
   Windows distribution eligibility;
+- signed-release metadata renewal with exact tag/commit/tree/policy and
+  closed-asset preflight, stale/replay/wrong-binding rejection, binary-free
+  Pages staging, and interrupted deployment resume;
 - any implementation-era full workspace, security, performance, or
   cross-repository checks registered by the active milestone.
 

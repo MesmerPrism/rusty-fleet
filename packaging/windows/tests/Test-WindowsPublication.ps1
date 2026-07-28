@@ -77,6 +77,7 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
 $descriptorRsa = [Security.Cryptography.RSA]::Create(3072)
 $signingCertificate = $null
 $certificateStoreNames = @("Root", "TrustedPublisher")
+$testNow = [DateTimeOffset]::UtcNow
 $priorToken = [Environment]::GetEnvironmentVariable(
     "GH_TOKEN",
     [EnvironmentVariableTarget]::Process
@@ -474,9 +475,7 @@ public static class ProviderFixture { }
         -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
         -OutputDirectory $descriptorRoot `
         -DescriptorId "v1.2.3-preview-publication-test" `
-        -IssuedAtUtc (
-            [DateTimeOffset]::Parse("2026-07-27T12:00:00Z")
-        ) `
+        -IssuedAtUtc $testNow.AddMinutes(-5) `
         -LifetimeMinutes 1380 |
         Out-Null
 
@@ -536,6 +535,360 @@ exit 99
         $preflight.gh_invoked -eq $false -and
         -not (Test-Path -LiteralPath $fakeGhMarker)
     ) "valid publication preflight was not exact and token-free"
+
+    $preflightPath = Join-Path $testRoot "publication-preflight.json"
+    Write-TestUtf8 `
+        -LiteralPath $preflightPath `
+        -Content (ConvertTo-RustyFleetJson -InputObject $preflight)
+    $siteRoot = Join-Path $testRoot "site"
+    Write-TestUtf8 `
+        -LiteralPath (Join-Path $siteRoot "index.html") `
+        -Content "<!doctype html><title>Rusty Fleet test</title>"
+    Write-TestUtf8 `
+        -LiteralPath (Join-Path $siteRoot "styles.css") `
+        -Content "body { color: black; }"
+    $pagesOutput = Join-Path $testRoot "pages-output"
+    $firstHandoff = & (
+        Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
+    ) `
+        -Version "1.2.3" `
+        -Channel preview `
+        -SiteDirectory $siteRoot `
+        -MetadataDirectory $descriptorRoot `
+        -PublicationPreflightReceiptPath $preflightPath `
+        -ExpectedSourceRevision $sourceRevision `
+        -ExpectedSourceTree $sourceTree `
+        -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+        -OutputDirectory $pagesOutput `
+        -NowUtc $testNow |
+        ConvertFrom-Json -Depth 20
+    $firstHandoffPath = Join-Path $pagesOutput (
+        "Rusty-Fleet\metadata\preview\deployment-handoff.json"
+    )
+    Assert-Publication (
+        $firstHandoff.schema -eq
+            "rusty.fleet.windows_release_metadata_handoff.v1" -and
+        $firstHandoff.result -eq "pass" -and
+        $firstHandoff.deployment_sequence -eq 1 -and
+        $firstHandoff.pages_binary_count -eq 0 -and
+        @($firstHandoff.release_files).Count -eq 5 -and
+        (Test-Path -LiteralPath $firstHandoffPath -PathType Leaf) -and
+        -not (Get-ChildItem -LiteralPath $pagesOutput -Recurse -File |
+            Where-Object {
+                $_.Name -ceq "RustyFleet-Setup.exe" -or
+                $_.Extension -cin @(".zip", ".msi", ".dll")
+            })
+    ) "first Pages metadata deployment handoff is not exact or binary-free"
+
+    $resumedHandoff = & (
+        Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
+    ) `
+        -Version "1.2.3" `
+        -Channel preview `
+        -SiteDirectory $siteRoot `
+        -MetadataDirectory $descriptorRoot `
+        -PublicationPreflightReceiptPath $preflightPath `
+        -ExpectedSourceRevision $sourceRevision `
+        -ExpectedSourceTree $sourceTree `
+        -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+        -OutputDirectory $pagesOutput `
+        -NowUtc $testNow `
+        -Resume |
+        ConvertFrom-Json -Depth 20
+    Assert-Publication (
+        $resumedHandoff.deployment_id -ceq $firstHandoff.deployment_id -and
+        $resumedHandoff.deployment_sequence -eq 1
+    ) "completed Pages deployment did not resume idempotently"
+
+    $interruptedOutput = Join-Path $testRoot "pages-interrupted"
+    $interruptedStage = (
+        "$interruptedOutput.staging-$($firstHandoff.deployment_id)"
+    )
+    Write-TestUtf8 `
+        -LiteralPath (Join-Path $interruptedStage "partial.txt") `
+        -Content "interrupted"
+    $interruptedResume = & (
+        Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
+    ) `
+        -Version "1.2.3" `
+        -Channel preview `
+        -SiteDirectory $siteRoot `
+        -MetadataDirectory $descriptorRoot `
+        -PublicationPreflightReceiptPath $preflightPath `
+        -ExpectedSourceRevision $sourceRevision `
+        -ExpectedSourceTree $sourceTree `
+        -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+        -OutputDirectory $interruptedOutput `
+        -NowUtc $testNow `
+        -Resume |
+        ConvertFrom-Json -Depth 20
+    Assert-Publication (
+        $interruptedResume.deployment_id -ceq $firstHandoff.deployment_id -and
+        -not (Test-Path -LiteralPath $interruptedStage) -and
+        (Test-Path -LiteralPath (
+            Join-Path $interruptedOutput (
+                "Rusty-Fleet\metadata\preview\release.json"
+            )
+        ))
+    ) "interrupted Pages deployment did not rebuild and resume exactly"
+
+    $badSite = Join-Path $testRoot "site-with-binary"
+    Copy-Item -LiteralPath $siteRoot -Destination $badSite -Recurse
+    Write-TestUtf8 `
+        -LiteralPath (Join-Path $badSite "RustyFleet-Setup.exe") `
+        -Content "binary must not enter Pages"
+    $binaryRejected = $false
+    try {
+        & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
+            -Version "1.2.3" `
+            -Channel preview `
+            -SiteDirectory $badSite `
+            -MetadataDirectory $descriptorRoot `
+            -PublicationPreflightReceiptPath $preflightPath `
+            -ExpectedSourceRevision $sourceRevision `
+            -ExpectedSourceTree $sourceTree `
+            -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+            -OutputDirectory (Join-Path $testRoot "pages-binary") `
+            -NowUtc $testNow |
+            Out-Null
+    }
+    catch {
+        $binaryRejected = $true
+    }
+    Assert-Publication $binaryRejected "Pages accepted a binary payload"
+
+    foreach ($wrongBoundary in @(
+        [pscustomobject]@{
+            name = "source"
+            version = "1.2.3"
+            source_revision = "0" * 40
+            descriptor_spki = $descriptorSpkiSha256
+        },
+        [pscustomobject]@{
+            name = "tag"
+            version = "1.2.4"
+            source_revision = $sourceRevision
+            descriptor_spki = $descriptorSpkiSha256
+        },
+        [pscustomobject]@{
+            name = "signer"
+            version = "1.2.3"
+            source_revision = $sourceRevision
+            descriptor_spki = "0" * 64
+        }
+    )) {
+        $boundaryRejected = $false
+        try {
+            & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
+                -Version $wrongBoundary.version `
+                -Channel preview `
+                -SiteDirectory $siteRoot `
+                -MetadataDirectory $descriptorRoot `
+                -PublicationPreflightReceiptPath $preflightPath `
+                -ExpectedSourceRevision $wrongBoundary.source_revision `
+                -ExpectedSourceTree $sourceTree `
+                -ExpectedDescriptorSignerSpkiSha256 (
+                    $wrongBoundary.descriptor_spki
+                ) `
+                -OutputDirectory (
+                    Join-Path $testRoot "pages-wrong-$($wrongBoundary.name)"
+                ) `
+                -NowUtc $testNow |
+                Out-Null
+        }
+        catch {
+            $boundaryRejected = $true
+        }
+        Assert-Publication `
+            $boundaryRejected `
+            "Pages accepted a wrong $($wrongBoundary.name) binding"
+    }
+
+    $damagedMetadata = Join-Path $testRoot "damaged-metadata"
+    Copy-Item `
+        -LiteralPath $descriptorRoot `
+        -Destination $damagedMetadata `
+        -Recurse
+    [IO.File]::AppendAllText(
+        (Join-Path $damagedMetadata "release.json"),
+        "damage",
+        [Text.UTF8Encoding]::new($false)
+    )
+    $assetRejected = $false
+    try {
+        & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
+            -Version "1.2.3" `
+            -Channel preview `
+            -SiteDirectory $siteRoot `
+            -MetadataDirectory $damagedMetadata `
+            -PublicationPreflightReceiptPath $preflightPath `
+            -ExpectedSourceRevision $sourceRevision `
+            -ExpectedSourceTree $sourceTree `
+            -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+            -OutputDirectory (Join-Path $testRoot "pages-damaged-asset") `
+            -NowUtc $testNow |
+            Out-Null
+    }
+    catch {
+        $assetRejected = $true
+    }
+    Assert-Publication $assetRejected "Pages accepted damaged metadata"
+
+    $staleMetadata = Join-Path $testRoot "stale-metadata"
+    & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
+        -Version "1.2.3" `
+        -Channel preview `
+        -SetupPath $setupPath `
+        -SetupBuildReceiptPath $setupReceiptPath `
+        -ExpectedSetupSignerThumbprint $signerThumbprint `
+        -ExpectedSourceRevision $sourceRevision `
+        -ExpectedSourceTree $sourceTree `
+        -DescriptorPrivateKeyPemPath $descriptorKeyPath `
+        -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+        -OutputDirectory $staleMetadata `
+        -DescriptorId "v1.2.3-preview-stale-test" `
+        -IssuedAtUtc $testNow.AddDays(-2) `
+        -LifetimeMinutes 60 |
+        Out-Null
+    $stalePreflight = $preflight |
+        ConvertTo-Json -Depth 20 |
+        ConvertFrom-Json -Depth 20
+    foreach ($name in @(
+        "release.json",
+        "release-descriptor.receipt.json",
+        "release-descriptor.spki.der"
+    )) {
+        $asset = @($stalePreflight.assets | Where-Object name -CEQ $name)
+        $asset[0].sha256 = Get-RustyFleetSha256 `
+            -LiteralPath (Join-Path $staleMetadata $name)
+        $asset[0].size_bytes = (
+            Get-Item -LiteralPath (Join-Path $staleMetadata $name)
+        ).Length
+    }
+    $stalePreflight.descriptor_sha256 = (
+        Get-RustyFleetSha256 `
+            -LiteralPath (Join-Path $staleMetadata "release.json")
+    )
+    $stalePreflight.descriptor_receipt_sha256 = (
+        Get-RustyFleetSha256 `
+            -LiteralPath (
+                Join-Path $staleMetadata "release-descriptor.receipt.json"
+            )
+    )
+    $stalePreflightPath = Join-Path $testRoot "stale-preflight.json"
+    Write-TestUtf8 `
+        -LiteralPath $stalePreflightPath `
+        -Content (ConvertTo-RustyFleetJson -InputObject $stalePreflight)
+    $staleRejected = $false
+    try {
+        & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
+            -Version "1.2.3" `
+            -Channel preview `
+            -SiteDirectory $siteRoot `
+            -MetadataDirectory $staleMetadata `
+            -PublicationPreflightReceiptPath $stalePreflightPath `
+            -ExpectedSourceRevision $sourceRevision `
+            -ExpectedSourceTree $sourceTree `
+            -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+            -OutputDirectory (Join-Path $testRoot "pages-stale") `
+            -NowUtc $testNow |
+            Out-Null
+    }
+    catch {
+        $staleRejected = $true
+    }
+    Assert-Publication $staleRejected "Pages accepted stale release metadata"
+
+    $renewalMetadata = Join-Path $testRoot "renewal-metadata"
+    & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
+        -Version "1.2.3" `
+        -Channel preview `
+        -SetupPath $setupPath `
+        -SetupBuildReceiptPath $setupReceiptPath `
+        -ExpectedSetupSignerThumbprint $signerThumbprint `
+        -ExpectedSourceRevision $sourceRevision `
+        -ExpectedSourceTree $sourceTree `
+        -DescriptorPrivateKeyPemPath $descriptorKeyPath `
+        -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+        -OutputDirectory $renewalMetadata `
+        -DescriptorId "v1.2.3-preview-renewal-test" `
+        -IssuedAtUtc $testNow.AddMinutes(5) `
+        -LifetimeMinutes 1380 |
+        Out-Null
+    $renewalStage = Join-Path $testRoot "renewal-publication-input"
+    Copy-Item -LiteralPath $stage -Destination $renewalStage -Recurse
+    foreach ($name in @(
+        "release.json",
+        "release-descriptor.receipt.json",
+        "release-descriptor.spki.der"
+    )) {
+        Copy-Item `
+            -LiteralPath (Join-Path $renewalMetadata $name) `
+            -Destination (Join-Path $renewalStage $name) `
+            -Force
+    }
+    $renewalPreflight = Invoke-PublicationAuthority `
+        -Mode Preflight `
+        -InputRoot $renewalStage `
+        -SourceRepository $sourceRepo `
+        -SourceRevision $sourceRevision `
+        -SourceTree $sourceTree `
+        -FleetSigner $signerThumbprint `
+        -HostessSigner $signerThumbprint `
+        -DescriptorSpki $descriptorSpkiSha256 `
+        -GhExecutable $fakeGh |
+        ConvertFrom-Json -Depth 20
+    $renewalPreflightPath = Join-Path $testRoot (
+        "renewal-publication-preflight.json"
+    )
+    Write-TestUtf8 `
+        -LiteralPath $renewalPreflightPath `
+        -Content (ConvertTo-RustyFleetJson -InputObject $renewalPreflight)
+    $renewalOutput = Join-Path $testRoot "pages-renewal"
+    $renewalHandoff = & (
+        Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
+    ) `
+        -Version "1.2.3" `
+        -Channel preview `
+        -SiteDirectory $siteRoot `
+        -MetadataDirectory $renewalMetadata `
+        -PublicationPreflightReceiptPath $renewalPreflightPath `
+        -ExpectedSourceRevision $sourceRevision `
+        -ExpectedSourceTree $sourceTree `
+        -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+        -OutputDirectory $renewalOutput `
+        -PreviousHandoffPath $firstHandoffPath `
+        -NowUtc $testNow.AddMinutes(5) |
+        ConvertFrom-Json -Depth 20
+    Assert-Publication (
+        $renewalHandoff.deployment_sequence -eq 2 -and
+        $renewalHandoff.previous_handoff_sha256 -cmatch
+            "^[0-9a-f]{64}$" -and
+        $renewalHandoff.descriptor_id -ceq
+            "v1.2.3-preview-renewal-test" -and
+        $renewalHandoff.expires_at_ms -gt $firstHandoff.expires_at_ms
+    ) "fresh release metadata did not renew the Pages handoff"
+
+    $replayRejected = $false
+    try {
+        & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
+            -Version "1.2.3" `
+            -Channel preview `
+            -SiteDirectory $siteRoot `
+            -MetadataDirectory $descriptorRoot `
+            -PublicationPreflightReceiptPath $preflightPath `
+            -ExpectedSourceRevision $sourceRevision `
+            -ExpectedSourceTree $sourceTree `
+            -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
+            -OutputDirectory (Join-Path $testRoot "pages-replay") `
+            -PreviousHandoffPath $firstHandoffPath `
+            -NowUtc $testNow |
+            Out-Null
+    }
+    catch {
+        $replayRejected = $true
+    }
+    Assert-Publication $replayRejected "Pages accepted a descriptor replay"
 
     $expectedInputNames = @(
         "RustyFleet-Setup.exe",
@@ -700,6 +1053,12 @@ exit 99
         validation_receipt_substitution_rejected_before_gh = $true
         asset_addition_and_omission_rejected_before_gh = $true
         preflight_token_free = $true
+        metadata_renewal_verified = $true
+        stale_metadata_rejected = $true
+        wrong_source_tag_asset_and_signer_rejected = $true
+        metadata_replay_rejected = $true
+        pages_binary_exclusion_verified = $true
+        pages_interruption_and_resume_verified = $true
     } | ConvertTo-Json -Depth 10
 }
 finally {

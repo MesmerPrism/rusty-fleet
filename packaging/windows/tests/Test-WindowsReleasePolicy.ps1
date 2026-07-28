@@ -37,6 +37,12 @@ if ($policyText -match "[A-Za-z]:\\" -or
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $workflowPath = Join-Path $repoRoot ".github\workflows\release-windows.yml"
 $workflowText = Get-Content -LiteralPath $workflowPath -Raw
+$pagesWorkflowPath = Join-Path $repoRoot ".github\workflows\pages.yml"
+$pagesWorkflowText = Get-Content -LiteralPath $pagesWorkflowPath -Raw
+$pagesAuthorityPath = Join-Path $PSScriptRoot (
+    "..\New-WindowsPagesDeployment.ps1"
+)
+$pagesAuthorityText = Get-Content -LiteralPath $pagesAuthorityPath -Raw
 $publicationAuthorityPath = Join-Path $PSScriptRoot (
     "..\Publish-WindowsRelease.ps1"
 )
@@ -134,6 +140,55 @@ if ($evidenceStep -match "(?m)/\*\.zip\r?$" -or
     throw "Actions release evidence must not contain Fleet binaries"
 }
 
+$requiredPagesVariables = @(
+    "FLEET_METADATA_DEPLOYMENT_ENABLED",
+    "FLEET_METADATA_VERSION",
+    "FLEET_METADATA_CHANNEL",
+    "FLEET_METADATA_SOURCE_REVISION",
+    "FLEET_METADATA_SOURCE_TREE",
+    "FLEET_SIGNER_THUMBPRINT",
+    "HOSTESS_SIGNER_THUMBPRINT",
+    "FLEET_DESCRIPTOR_SIGNER_SPKI_SHA256"
+)
+foreach ($variable in $requiredPagesVariables) {
+    if ($pagesWorkflowText -notmatch [regex]::Escape($variable)) {
+        throw "Pages renewal workflow is missing public trust input: $variable"
+    }
+}
+if ($pagesWorkflowText -notmatch "(?m)^permissions:\r?\n  contents: read$" -or
+    $pagesWorkflowText -notmatch "(?m)^  cancel-in-progress: false$" -or
+    $pagesWorkflowText -notmatch
+        "(?m)^    environment: windows-release-metadata$" -or
+    $pagesWorkflowText -notmatch [regex]::Escape(
+        '${{ secrets.FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64 }}'
+    ) -or
+    $pagesWorkflowText -match
+        "secrets\.(?:FLEET_SIGNING_PFX|FLEET_RELEASE_PUBLISH_TOKEN)" -or
+    $pagesWorkflowText -notmatch [regex]::Escape("-Mode Preflight") -or
+    $pagesWorkflowText -notmatch [regex]::Escape(
+        "New-WindowsPagesDeployment.ps1"
+    ) -or
+    $pagesWorkflowText -match
+        "\bgh release (?:create|upload|edit|delete)\b") {
+    throw "Pages workflow does not preserve the protected renewal boundary"
+}
+$requiredPagesAuthorityEvidence = @(
+    "rusty.fleet.windows_release_metadata_handoff.v1",
+    "publication preflight asset inventory is not closed",
+    "release descriptor RSA-PSS signature is invalid",
+    "release metadata renewal is stale, downgraded, or replayed",
+    "Pages payload contains a prohibited binary or key asset",
+    "interrupted Pages deployment stage requires explicit resume",
+    "existing Pages deployment output is not an exact resumable handoff",
+    "binary_authority = ""github_releases""",
+    "pages_binary_count = 0"
+)
+foreach ($evidence in $requiredPagesAuthorityEvidence) {
+    if ($pagesAuthorityText -notmatch [regex]::Escape($evidence)) {
+        throw "Pages deployment authority is missing evidence: $evidence"
+    }
+}
+
 [ordered]@{
     schema = "rusty.fleet.windows_release_policy_test.v1"
     result = "pass"
@@ -147,4 +202,7 @@ if ($evidenceStep -match "(?m)/\*\.zip\r?$" -or
     actions_binary_artifacts = 0
     isolated_publication_authority = $true
     token_free_preflight = $true
+    renewable_pages_metadata = $true
+    pages_binary_count = 0
+    metadata_renewal_secret_count = 1
 } | ConvertTo-Json -Depth 5

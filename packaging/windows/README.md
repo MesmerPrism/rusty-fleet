@@ -187,6 +187,58 @@ not duplicate or proxy release binaries. Until the protected signing keys and
 an actual signed release and protected metadata deployment exist, the site
 must say that no supported download or deployed metadata is available.
 
+### Renewable Pages metadata handoff
+
+The protected Pages workflow renews the 23-hour descriptor every 12 hours and
+may also be dispatched explicitly. It checks out the exact existing release
+tag for release validation while retaining the human site from the triggering
+main revision. It requires the configured commit, tree, and tagged policy,
+resolves the visible GitHub Release tag to that commit, downloads its complete
+ten-asset inventory, and verifies every remote SHA-256 and size before
+generating new metadata. The unchanged Setup and bundle remain GitHub Release
+assets. Pages receives only the human site plus:
+
+```text
+Rusty-Fleet/metadata/<channel>/release.json
+Rusty-Fleet/metadata/<channel>/release-descriptor.receipt.json
+Rusty-Fleet/metadata/<channel>/release-descriptor.spki.der
+Rusty-Fleet/metadata/<channel>/deployment-handoff.json
+```
+
+`New-WindowsPagesDeployment.ps1` rejects stale, downgraded, replayed, or
+wrong-source metadata, requires the token-free closed-release preflight, and
+enforces a binary-free Pages tree. Its
+`rusty.fleet.windows_release_metadata_handoff.v1` output carries only fixed
+relative filenames, hashes, sizes, owners, version/channel, exact source
+commit/tree, freshness, and prior-handoff lineage. It names Setup and its build
+receipt as `github_releases` authority assets without copying either binary to
+Pages. A completed output is idempotently resumable; an explicitly resumed
+partial owned staging directory is rebuilt from the retained inputs.
+
+Source publication and metadata deployment remain disabled by default.
+Activation requires the repository variable
+`FLEET_METADATA_DEPLOYMENT_ENABLED=true`, plus these public trust inputs in the
+protected `windows-release-metadata` environment:
+
+| Variable | Exact meaning |
+| --- | --- |
+| `FLEET_METADATA_VERSION` | Numeric three-component release version |
+| `FLEET_METADATA_CHANNEL` | `dev`, `preview`, or `stable` |
+| `FLEET_METADATA_SOURCE_REVISION` | Full 40-hex commit resolved by `v<version>` |
+| `FLEET_METADATA_SOURCE_TREE` | Full 40-hex tree for that exact commit |
+| `FLEET_SIGNER_THUMBPRINT` | Reviewed uppercase Fleet Authenticode thumbprint |
+| `HOSTESS_SIGNER_THUMBPRINT` | Reviewed uppercase Hostess Authenticode thumbprint |
+| `FLEET_DESCRIPTOR_SIGNER_SPKI_SHA256` | Reviewed lowercase descriptor RSA SPKI SHA-256 |
+
+The protected secret used by renewal is
+`FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64`. The signed-release workflow also
+requires `FLEET_SIGNING_PFX_BASE64`, `FLEET_SIGNING_PFX_PASSWORD`, and, only
+for final GitHub Release mutation, `FLEET_RELEASE_PUBLISH_TOKEN`. Secret values
+never enter workflow inputs, release policy, receipts, Actions evidence, or
+Pages content. The checked-in release policy intentionally remains disabled
+with empty pin arrays until the reviewed public production identities are
+supplied in a dedicated release commit.
+
 ## Offline tests
 
 ```powershell
@@ -196,6 +248,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -File .\packaging\windows\tests\Test-WindowsReleaseDescriptor.ps1
 pwsh -NoProfile -ExecutionPolicy Bypass `
   -File .\packaging\windows\tests\Test-WindowsReleasePolicy.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\packaging\windows\tests\Test-WindowsPagesDeployment.ps1
 pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File .\packaging\windows\tests\Test-WindowsPublicationRemote.ps1
 pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass `
@@ -221,3 +275,7 @@ digest/size/state mismatch, absent digest, extra and duplicate assets,
 lightweight and nested annotated tags, tag movement between stages, tag
 movement after visibility, tag cycles/depth, malformed JSON, and
 authentication failure.
+
+The publication baseline additionally exercises fresh renewal, stale metadata,
+wrong source/tag/asset/signer rejection, descriptor replay rejection, Pages
+binary exclusion, idempotent completion, and interrupted-stage resume.

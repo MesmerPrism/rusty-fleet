@@ -9,7 +9,9 @@ $ErrorActionPreference = "Stop"
 
 $distributionTests = @(
     "..\packaging\windows\tests\Test-WindowsDistribution.ps1",
-    "..\packaging\windows\tests\Test-WindowsReleaseDescriptor.ps1"
+    "..\packaging\windows\tests\Test-WindowsReleaseDescriptor.ps1",
+    "..\packaging\windows\tests\Test-WindowsReleasePolicy.ps1",
+    "..\packaging\windows\tests\Test-WindowsPagesDeployment.ps1"
 )
 foreach ($relative in $distributionTests) {
     $distributionTest = Join-Path $PSScriptRoot $relative

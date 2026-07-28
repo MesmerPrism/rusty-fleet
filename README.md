@@ -198,6 +198,15 @@ exists, will host short-lived signed `release.json`; immutable binaries belong
 only to GitHub Releases. No supported download or metadata deployment is
 claimed until the protected workflows produce and independently validate one.
 
+The Pages handoff is renewable rather than release-run-only: a protected
+12-hour workflow revalidates the exact visible ten-asset GitHub Release,
+tag/commit/tree, tagged trust policy, Authenticode identities, and descriptor
+SPKI before signing fresh 23-hour metadata. It deploys only the human site,
+descriptor, receipt, public SPKI, and a relative hash-bound renewal handoff;
+Setup and archives remain GitHub Release assets. The workflow is inert until
+its explicit deployment-enable variable, reviewed public pins, exact release
+identity, and protected descriptor key are configured.
+
 The deterministic M1 negative-path harness runs four independent devices
 through sleep/wake aging, route loss/recovery, duplicate and stale check-ins,
 agent upgrade, old-epoch replay, and final canonical recovery. The exact
