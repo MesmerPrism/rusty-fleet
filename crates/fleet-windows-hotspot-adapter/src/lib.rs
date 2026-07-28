@@ -326,16 +326,24 @@ fn run_process(
     drain_stream(0, stdout, sender.clone());
     drain_stream(1, stderr, sender);
     let started = Instant::now();
+    let deadline = started + timeout;
     let mut stdout_result = None;
     let mut stderr_result = None;
     loop {
         while let Ok((stream, result)) = receiver.try_recv() {
-            let bytes = result.map_err(|error| {
-                WindowsHotspotAdapterError::new(
-                    "provider_read_failed",
-                    format!("cannot read provider output: {error}"),
-                )
-            })?;
+            let bytes = match result {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        return Err(terminate_timed_out_provider(&mut child));
+                    }
+                    terminate_process_tree(&mut child);
+                    return Err(WindowsHotspotAdapterError::new(
+                        "provider_read_failed",
+                        format!("cannot read provider output: {error}"),
+                    ));
+                }
+            };
             if bytes.len() > MAX_OUTPUT_BYTES {
                 terminate_process_tree(&mut child);
                 return Err(WindowsHotspotAdapterError::new(
@@ -351,36 +359,49 @@ fn run_process(
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                let drain_deadline = Instant::now() + Duration::from_secs(1);
-                while (stdout_result.is_none() || stderr_result.is_none())
-                    && Instant::now() < drain_deadline
-                {
-                    if let Ok((stream, result)) = receiver.recv_timeout(Duration::from_millis(25)) {
-                        let bytes = result.map_err(|error| {
-                            WindowsHotspotAdapterError::new(
+                while stdout_result.is_none() || stderr_result.is_none() {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(terminate_timed_out_provider(&mut child));
+                    }
+                    match receiver.recv_timeout(remaining.min(Duration::from_millis(25))) {
+                        Ok((stream, result)) => {
+                            let bytes = match result {
+                                Ok(bytes) => bytes,
+                                Err(error) => {
+                                    if Instant::now() >= deadline {
+                                        return Err(terminate_timed_out_provider(&mut child));
+                                    }
+                                    terminate_process_tree(&mut child);
+                                    return Err(WindowsHotspotAdapterError::new(
+                                        "provider_read_failed",
+                                        format!("cannot read provider output: {error}"),
+                                    ));
+                                }
+                            };
+                            if stream == 0 {
+                                stdout_result = Some(bytes);
+                            } else {
+                                stderr_result = Some(bytes);
+                            }
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            terminate_process_tree(&mut child);
+                            return Err(WindowsHotspotAdapterError::new(
                                 "provider_read_failed",
-                                format!("cannot read provider output: {error}"),
-                            )
-                        })?;
-                        if stream == 0 {
-                            stdout_result = Some(bytes);
-                        } else {
-                            stderr_result = Some(bytes);
+                                "provider output readers disconnected before closing both streams",
+                            ));
                         }
                     }
                 }
-                let stdout = stdout_result.ok_or_else(|| {
-                    WindowsHotspotAdapterError::new(
+                let (Some(stdout), Some(stderr)) = (stdout_result, stderr_result) else {
+                    terminate_process_tree(&mut child);
+                    return Err(WindowsHotspotAdapterError::new(
                         "provider_read_failed",
-                        "provider stdout did not close",
-                    )
-                })?;
-                let stderr = stderr_result.ok_or_else(|| {
-                    WindowsHotspotAdapterError::new(
-                        "provider_read_failed",
-                        "provider stderr did not close",
-                    )
-                })?;
+                        "provider output did not close both streams",
+                    ));
+                };
                 if !stderr.is_empty() {
                     return Err(WindowsHotspotAdapterError::new(
                         "provider_stderr_rejected",
@@ -397,14 +418,8 @@ fn run_process(
                     stdout,
                 });
             }
-            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(25)),
-            Ok(None) => {
-                terminate_process_tree(&mut child);
-                return Err(WindowsHotspotAdapterError::new(
-                    "provider_timeout",
-                    "provider exceeded its bounded deadline and its process tree was terminated",
-                ));
-            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            Ok(None) => return Err(terminate_timed_out_provider(&mut child)),
             Err(error) => {
                 terminate_process_tree(&mut child);
                 return Err(WindowsHotspotAdapterError::new(
@@ -414,6 +429,14 @@ fn run_process(
             }
         }
     }
+}
+
+fn terminate_timed_out_provider(child: &mut Child) -> WindowsHotspotAdapterError {
+    terminate_process_tree(child);
+    WindowsHotspotAdapterError::new(
+        "provider_timeout",
+        "provider exceeded its bounded deadline and its process tree was terminated",
+    )
 }
 
 fn drain_stream<R: Read + Send + 'static>(
