@@ -360,7 +360,8 @@ acquisition/reload/revalidation, wrong-resource and expired-lease rejection,
 single-slot repair, deadline-only status downgrade, pre-dispatch heartbeats,
 release-before-cleanup rejection, partial release retry, deterministic
 in-place/leaf/ancestor-junction/hardlink substitution attempts at the pinned
-wrapper launch boundary, within-sample late listener/session, close/reopen,
-FD/state/PID/TCP6/right-edge churn,
+wrapper launch boundary, durable false cleanup readback retry and repeated
+partial cleanup without duplicate unsafe effects, within-sample late
+listener/session, close/reopen, FD/state/PID/TCP6/right-edge churn,
 resume mismatch, partial cleanup truth, parser checks, and forbidden
 ADB/approval surfaces. It does not touch a device or claim a live pass.

@@ -115,6 +115,29 @@ function Invoke-AgentBoardRaceAttempt {
     } $Context $Hook
 }
 
+function Invoke-ModeledJournaledCleanupStep {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [Parameter(Mandatory)][Collections.IDictionary] $Checks,
+        [Parameter(Mandatory)][string] $Name,
+        [Parameter(Mandatory)][scriptblock] $Operation
+    )
+    & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
+        param(
+            $InnerContext,
+            $InnerState,
+            $InnerChecks,
+            $InnerName,
+            $InnerOperation
+        )
+        Invoke-JournaledCleanupStep `
+            -Context $InnerContext -State $InnerState `
+            -Checks $InnerChecks -Name $InnerName `
+            -ModeledNoDeviceProjection -Operation $InnerOperation
+    } $Context $State $Checks $Name $Operation
+}
+
 $ownerFixtureRoot = Join-Path $PSScriptRoot "fixtures/adb-owner"
 $cleanManager = ConvertFrom-ClosedAdbManagerDump -Text (
     Get-Content -LiteralPath (
@@ -1169,6 +1192,218 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
     Assert-True (
         [string]$modelState.agent_board_reservation -ceq "released"
     ) "Terminal retry did not release the retained exact reservation."
+
+    $cleanupRetryBoardBefore =
+        Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    $cleanupRetryState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $cleanupRetryState
+    [void](Ensure-AgentBoardReservation `
+        -Context $validated -State $cleanupRetryState -AllowRepair)
+    $cleanupRetryReceipt =
+        Get-Content -LiteralPath $privateReservationPath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    $cleanupRetryLeaseIds = @(
+        $cleanupRetryReceipt.leases | ForEach-Object {
+            [string]$_.lease_id
+        }
+    )
+    $cleanupRetryOwner = [ordered]@{
+        dispatch_count = 0
+        unsafe_effect_count = 0
+        effect_applied = $false
+        recovered = $false
+    }
+    $cleanupRetryOperation = {
+        $cleanupRetryOwner.dispatch_count =
+            [int]$cleanupRetryOwner.dispatch_count + 1
+        if (-not [bool]$cleanupRetryOwner.effect_applied) {
+            $cleanupRetryOwner.effect_applied = $true
+            $cleanupRetryOwner.unsafe_effect_count =
+                [int]$cleanupRetryOwner.unsafe_effect_count + 1
+        }
+        return [bool]$cleanupRetryOwner.recovered
+    }.GetNewClosure()
+    $cleanupRetryChecks = [ordered]@{
+        "device_a-final-readback" = $true
+        "device_b-final-readback" = $true
+    }
+    [void](Assert-AgentBoardReservation `
+        -Context $validated -State $cleanupRetryState)
+    Invoke-ModeledJournaledCleanupStep `
+        -Context $validated -State $cleanupRetryState `
+        -Checks $cleanupRetryChecks -Name "owner-cleanup-confirmed" `
+        -Operation $cleanupRetryOperation
+    $cleanupRetryTruth = Get-CleanupTruth -Checks $cleanupRetryChecks
+    $cleanupRetryState.cleanup.status = $cleanupRetryTruth.Status
+    $cleanupRetryState.status = "cleanup_partial_failure"
+    $cleanupRetryState.phase = "cleanup"
+    Write-SanitizedState -Context $validated -State $cleanupRetryState
+
+    $cleanupRetryState = Read-SanitizedState -Context $validated
+    Assert-True (
+        $cleanupRetryState.cleanup.checks["owner-cleanup-confirmed"] -eq
+            $false -and
+        [string]$cleanupRetryState.cleanup.status -ceq "partial_failure" -and
+        [string]$cleanupRetryState.status -ceq "cleanup_partial_failure" -and
+        [string]$cleanupRetryState.agent_board_reservation -ceq "bound" -and
+        $null -eq $cleanupRetryState.mutation -and
+        $cleanupRetryState.mutation_history.Count -eq 1 -and
+        [string]$cleanupRetryState.mutation_history[0].stage -ceq "terminal" -and
+        [int]$cleanupRetryOwner.dispatch_count -eq 1 -and
+        [int]$cleanupRetryOwner.unsafe_effect_count -eq 1
+    ) "A false cleanup readback was not durably retained as retryable partial state."
+
+    $cleanupRetryOwner.recovered = $true
+    $cleanupRetryChecks = [ordered]@{}
+    foreach ($entry in $cleanupRetryState.cleanup.checks.GetEnumerator()) {
+        $cleanupRetryChecks[[string]$entry.Key] = $entry.Value
+    }
+    [void](Assert-AgentBoardReservation `
+        -Context $validated -State $cleanupRetryState)
+    Invoke-ModeledJournaledCleanupStep `
+        -Context $validated -State $cleanupRetryState `
+        -Checks $cleanupRetryChecks -Name "owner-cleanup-confirmed" `
+        -Operation $cleanupRetryOperation
+    $cleanupRetryTruth = Get-CleanupTruth -Checks $cleanupRetryChecks
+    $cleanupRetryState.cleanup.checks = $cleanupRetryChecks
+    $cleanupRetryState.cleanup.status = $cleanupRetryTruth.Status
+    $cleanupRetryState.status = "complete"
+    $cleanupRetryState.phase = "cleanup"
+    Write-SanitizedState -Context $validated -State $cleanupRetryState
+    Invoke-ModeledJournaledCleanupStep `
+        -Context $validated -State $cleanupRetryState `
+        -Checks $cleanupRetryChecks -Name "owner-cleanup-confirmed" `
+        -Operation { throw "A durable true cleanup check was redispatched." }
+    [void](Release-AgentBoardReservation `
+        -Context $validated -State $cleanupRetryState)
+
+    $cleanupRetryState = Read-SanitizedState -Context $validated
+    $cleanupRetryReceipt =
+        Get-Content -LiteralPath $privateReservationPath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    $cleanupRetryBoardAfter =
+        Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    $cleanupRetryExternalLeases = @(
+        $cleanupRetryBoardAfter.leases | Where-Object {
+            [string]$_.id -cin $cleanupRetryLeaseIds
+        }
+    )
+    Assert-True (
+        [int]$cleanupRetryOwner.dispatch_count -eq 2 -and
+        [int]$cleanupRetryOwner.unsafe_effect_count -eq 1 -and
+        $cleanupRetryState.cleanup.checks["owner-cleanup-confirmed"] -eq
+            $true -and
+        [string]$cleanupRetryState.cleanup.status -ceq "complete" -and
+        [string]$cleanupRetryState.status -ceq "complete" -and
+        [string]$cleanupRetryState.agent_board_reservation -ceq "released" -and
+        $null -eq $cleanupRetryState.mutation -and
+        $cleanupRetryState.mutation_history.Count -eq 2 -and
+        [string]$cleanupRetryState.mutation_history[1].stage -ceq "confirmed" -and
+        [string]$cleanupRetryReceipt.state -ceq "released" -and
+        @($cleanupRetryReceipt.leases).Count -eq 2 -and
+        @($cleanupRetryReceipt.leases | Where-Object {
+            [string]$_.status -ceq "released"
+        }).Count -eq 2 -and
+        [int]$cleanupRetryBoardAfter.reserve_count -eq
+            [int]$cleanupRetryBoardBefore.reserve_count + 2 -and
+        [int]$cleanupRetryBoardAfter.release_count -eq
+            [int]$cleanupRetryBoardBefore.release_count + 2 -and
+        $cleanupRetryExternalLeases.Count -eq 2 -and
+        @($cleanupRetryExternalLeases | Where-Object {
+            [string]$_.status -ceq "released"
+        }).Count -eq 2
+    ) "A recovered owner did not safely redispatch, complete, and release exactly two leases."
+
+    $repeatedFalseBoardBefore = $cleanupRetryBoardAfter
+    $repeatedFalseState = New-SanitizedState `
+        -Context $validated -Snapshots $syntheticSnapshots
+    Write-SanitizedState -Context $validated -State $repeatedFalseState
+    [void](Ensure-AgentBoardReservation `
+        -Context $validated -State $repeatedFalseState -AllowRepair)
+    $repeatedFalseOwner = [ordered]@{
+        dispatch_count = 0
+        unsafe_effect_count = 0
+        effect_applied = $false
+        recovered = $false
+    }
+    $repeatedFalseOperation = {
+        $repeatedFalseOwner.dispatch_count =
+            [int]$repeatedFalseOwner.dispatch_count + 1
+        if (-not [bool]$repeatedFalseOwner.effect_applied) {
+            $repeatedFalseOwner.effect_applied = $true
+            $repeatedFalseOwner.unsafe_effect_count =
+                [int]$repeatedFalseOwner.unsafe_effect_count + 1
+        }
+        return [bool]$repeatedFalseOwner.recovered
+    }.GetNewClosure()
+    $repeatedFalseChecks = [ordered]@{
+        "device_a-final-readback" = $true
+        "device_b-final-readback" = $true
+    }
+    foreach ($attempt in 1..2) {
+        [void](Assert-AgentBoardReservation `
+            -Context $validated -State $repeatedFalseState)
+        Invoke-ModeledJournaledCleanupStep `
+            -Context $validated -State $repeatedFalseState `
+            -Checks $repeatedFalseChecks -Name "owner-still-unavailable" `
+            -Operation $repeatedFalseOperation
+        $repeatedFalseTruth = Get-CleanupTruth -Checks $repeatedFalseChecks
+        $repeatedFalseState.cleanup.checks = $repeatedFalseChecks
+        $repeatedFalseState.cleanup.status = $repeatedFalseTruth.Status
+        $repeatedFalseState.status = "cleanup_partial_failure"
+        $repeatedFalseState.phase = "cleanup"
+        Write-SanitizedState -Context $validated -State $repeatedFalseState
+        $repeatedFalseState = Read-SanitizedState -Context $validated
+        $repeatedFalseChecks = [ordered]@{}
+        foreach ($entry in $repeatedFalseState.cleanup.checks.GetEnumerator()) {
+            $repeatedFalseChecks[[string]$entry.Key] = $entry.Value
+        }
+    }
+    $repeatedFalseBoardPartial =
+        Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 16
+    Assert-True (
+        [int]$repeatedFalseOwner.dispatch_count -eq 2 -and
+        [int]$repeatedFalseOwner.unsafe_effect_count -eq 1 -and
+        $repeatedFalseState.cleanup.checks["owner-still-unavailable"] -eq
+            $false -and
+        [string]$repeatedFalseState.cleanup.status -ceq "partial_failure" -and
+        [string]$repeatedFalseState.status -ceq "cleanup_partial_failure" -and
+        [string]$repeatedFalseState.agent_board_reservation -ceq "bound" -and
+        $null -eq $repeatedFalseState.mutation -and
+        $repeatedFalseState.mutation_history.Count -eq 2 -and
+        @($repeatedFalseState.mutation_history | Where-Object {
+            [string]$_.stage -ceq "terminal"
+        }).Count -eq 2 -and
+        [int]$repeatedFalseBoardPartial.reserve_count -eq
+            [int]$repeatedFalseBoardBefore.reserve_count + 2 -and
+        [int]$repeatedFalseBoardPartial.release_count -eq
+            [int]$repeatedFalseBoardBefore.release_count
+    ) "Repeated false cleanup readbacks did not remain partial or duplicated an unsafe effect."
+
+    $repeatedFalseOwner.recovered = $true
+    [void](Assert-AgentBoardReservation `
+        -Context $validated -State $repeatedFalseState)
+    Invoke-ModeledJournaledCleanupStep `
+        -Context $validated -State $repeatedFalseState `
+        -Checks $repeatedFalseChecks -Name "owner-still-unavailable" `
+        -Operation $repeatedFalseOperation
+    $repeatedFalseTruth = Get-CleanupTruth -Checks $repeatedFalseChecks
+    $repeatedFalseState.cleanup.checks = $repeatedFalseChecks
+    $repeatedFalseState.cleanup.status = $repeatedFalseTruth.Status
+    $repeatedFalseState.status = "complete"
+    $repeatedFalseState.phase = "cleanup"
+    Write-SanitizedState -Context $validated -State $repeatedFalseState
+    [void](Release-AgentBoardReservation `
+        -Context $validated -State $repeatedFalseState)
+    Assert-True (
+        [int]$repeatedFalseOwner.dispatch_count -eq 3 -and
+        [int]$repeatedFalseOwner.unsafe_effect_count -eq 1 -and
+        [string]$repeatedFalseState.agent_board_reservation -ceq "released"
+    ) "Repeated-false test leases did not terminalize after modeled recovery."
 
     $modelState = New-SanitizedState `
         -Context $validated -Snapshots $syntheticSnapshots

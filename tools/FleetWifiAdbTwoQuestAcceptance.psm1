@@ -5734,15 +5734,21 @@ function Invoke-JournaledCleanupStep {
         [Parameter(Mandatory)][string] $Name,
         [ValidateSet("none", "device_a", "device_b")][string] $Slot = "none",
         [string] $OwnerId = "acceptance-cleanup",
+        [switch] $ModeledNoDeviceProjection,
         [Parameter(Mandatory)][scriptblock] $Operation
     )
-    if ($Checks.Contains($Name)) {
+    if (
+        $Checks.Contains($Name) -and
+        $Checks[$Name] -is [bool] -and
+        $Checks[$Name] -eq $true
+    ) {
         return
     }
     $kind = "cleanup-" + ($Name -replace '[^a-z0-9-]+', '-').ToLowerInvariant()
     [void](Start-DurableMutation -Context $Context -State $State `
         -Kind $kind -ActionId "acceptance.cleanup.$Name" `
-        -Slot $Slot -OwnerId $OwnerId -CleanupOwner $OwnerId)
+        -Slot $Slot -OwnerId $OwnerId -CleanupOwner $OwnerId `
+        -ModeledNoDeviceProjection:$ModeledNoDeviceProjection)
     Set-DurableMutationSent -Context $Context -State $State
     try {
         $Checks[$Name] = (& $Operation) -eq $true
