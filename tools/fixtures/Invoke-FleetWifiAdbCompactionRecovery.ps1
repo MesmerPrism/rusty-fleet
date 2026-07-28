@@ -5,7 +5,14 @@
 param(
     [Parameter(Mandatory)][string] $ModulePath,
     [Parameter(Mandatory)][string] $RunConfig,
-    [Parameter(Mandatory)][string] $OwnerStatePath
+    [Parameter(Mandatory)][string] $OwnerStatePath,
+    [ValidateSet(
+        "none",
+        "owner-leaf-substitution",
+        "owner-ancestor-substitution",
+        "state-leaf-substitution"
+    )]
+    [string] $TestRaceCase = "none"
 )
 
 Set-StrictMode -Version Latest
@@ -31,12 +38,60 @@ $fixtureBinding = & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
         -Context $InnerContext -OwnerStatePath $InnerOwnerStatePath
 } $context $OwnerStatePath
 
+$ownerLease = $fixtureBinding.OwnerLease
+$finalStateLease = $null
+try {
 $state = Read-SanitizedState -Context $context
 $preRecovery = & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
     param($InnerState, $InnerBinding)
     Assert-ModeledRecoveryFixtureState `
         -State $InnerState -Binding $InnerBinding
 } $state $fixtureBinding
+
+if ($TestRaceCase -ceq "owner-leaf-substitution") {
+    $replacement = Join-Path $fixtureBinding.TestRoot `
+        "owner-leaf-race-replacement.json"
+    if (-not (Test-Path -LiteralPath $replacement -PathType Leaf)) {
+        throw "The owner leaf race fixture is missing."
+    }
+    try {
+        Move-Item -LiteralPath $replacement `
+            -Destination $fixtureBinding.OwnerPath -Force -ErrorAction Stop
+    } catch {
+        # The retained writable owner lease must deny path replacement.
+    }
+    try {
+        $ownerLease.VerifyAfter()
+    } catch {
+        throw "modeled_recovery_owner_race_detected"
+    }
+    throw "modeled_recovery_owner_race_detected"
+}
+if ($TestRaceCase -ceq "owner-ancestor-substitution") {
+    $ownerDirectory = Split-Path -Parent $fixtureBinding.OwnerPath
+    $movedDirectory =
+        Join-Path $fixtureBinding.TestRoot "compaction-owner-moved"
+    $replacementDirectory =
+        Join-Path $fixtureBinding.TestRoot "owner-ancestor-race-target"
+    if (-not (Test-Path -LiteralPath $replacementDirectory `
+            -PathType Container)) {
+        throw "The owner ancestor race fixture is missing."
+    }
+    try {
+        Move-Item -LiteralPath $ownerDirectory `
+            -Destination $movedDirectory -ErrorAction Stop
+        New-Item -ItemType Junction -Path $ownerDirectory `
+            -Target $replacementDirectory -ErrorAction Stop | Out-Null
+    } catch {
+        # Every held path component denies ancestor rename/substitution.
+    }
+    try {
+        $ownerLease.VerifyAfter()
+    } catch {
+        throw "modeled_recovery_owner_race_detected"
+    }
+    throw "modeled_recovery_owner_race_detected"
+}
 
 # No reservation state is read and no Agent Board process is contacted until
 # the complete synthetic context, owner binding, and compacted recovery state
@@ -57,12 +112,9 @@ $recoveryEvidence = [ordered]@{
 }
 $ownerOperation = {
     $ownerRead = & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
-        param($InnerBinding)
-        Read-PinnedModeledRecoveryFixtureOwner `
-            -Path $InnerBinding.OwnerPath `
-            -ExpectedSha256 $InnerBinding.OwnerSha256 `
-            -ExpectedChainIdentity $InnerBinding.OwnerChainIdentity
-    } $fixtureBinding
+        param($InnerLease)
+        Read-ModeledRecoveryFixtureOwnerFromLease -Lease $InnerLease
+    } $ownerLease
     $owner = $ownerRead.Value
     if (
         [long]$owner.dispatch_count -ne
@@ -77,31 +129,13 @@ $ownerOperation = {
     $owner.dispatch_count = [long]$owner.dispatch_count + 1L
     $serializedOwner =
         ($owner | ConvertTo-Json -Depth 8) + [Environment]::NewLine
-    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($serializedOwner)
-    $stream = [IO.File]::Open(
-        [string]$fixtureBinding.OwnerPath,
-        [IO.FileMode]::Open,
-        [IO.FileAccess]::Write,
-        [IO.FileShare]::Read)
-    try {
-        $stream.SetLength(0)
-        $stream.Write($bytes, 0, $bytes.Length)
-        $stream.Flush($true)
-    } finally {
-        $stream.Dispose()
-        [Array]::Clear($bytes, 0, $bytes.Length)
-    }
-
-    $afterSha256 = (
-        Get-FileHash -LiteralPath $fixtureBinding.OwnerPath -Algorithm SHA256
-    ).Hash.ToLowerInvariant()
+    $afterSha256 = $ownerLease.RewriteUtf8Text(
+        $serializedOwner,
+        65536)
     $ownerAfter = & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
-        param($InnerBinding, $InnerAfterSha256)
-        Read-PinnedModeledRecoveryFixtureOwner `
-            -Path $InnerBinding.OwnerPath `
-            -ExpectedSha256 $InnerAfterSha256 `
-            -ExpectedChainIdentity $InnerBinding.OwnerChainIdentity
-    } $fixtureBinding $afterSha256
+        param($InnerLease)
+        Read-ModeledRecoveryFixtureOwnerFromLease -Lease $InnerLease
+    } $ownerLease
     if (
         [long]$ownerAfter.Value.dispatch_count -ne
             [long]$recoveryEvidence.dispatch_before + 1L -or
@@ -164,25 +198,92 @@ $state.status = "complete"
 $state.phase = "cleanup"
 Write-SanitizedState -Context $context -State $state
 
-$state = Read-SanitizedState -Context $context
+$finalStateBinding = & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
+    param($InnerContext, $InnerState, $InnerPreRecovery)
+    Get-ModeledRecoveryFinalStateBinding `
+        -Context $InnerContext -State $InnerState `
+        -PreRecovery $InnerPreRecovery
+} $context $state $preRecovery
+$finalStateLease = $finalStateBinding.Lease
 $ownerPostReadback = & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
-    param($InnerBinding, $InnerAfterSha256)
-    Read-PinnedModeledRecoveryFixtureOwner `
-        -Path $InnerBinding.OwnerPath `
-        -ExpectedSha256 $InnerAfterSha256 `
-        -ExpectedChainIdentity $InnerBinding.OwnerChainIdentity
-} $fixtureBinding $recoveryEvidence.owner_after_sha256
+    param($InnerLease)
+    Read-ModeledRecoveryFixtureOwnerFromLease -Lease $InnerLease
+} $ownerLease
 if (
-    [string]$state.cleanup.status -cne "complete" -or
-    [string]$state.status -cne "complete" -or
-    $state.cleanup.checks["owner-compaction-retry"] -ne $true -or
+    [string]$finalStateBinding.State.cleanup.status -cne "complete" -or
+    [string]$finalStateBinding.State.status -cne "complete" -or
+    $finalStateBinding.State.cleanup.checks[
+        "owner-compaction-retry"] -ne $true -or
     [long]$ownerPostReadback.Value.dispatch_count -ne
-        [long]$recoveryEvidence.dispatch_after
+        [long]$recoveryEvidence.dispatch_after -or
+    [string]$ownerPostReadback.Sha256 -cne
+        [string]$recoveryEvidence.owner_after_sha256
 ) {
     throw "The fresh recovery evidence did not survive final durable readback."
 }
-[void](Release-AgentBoardReservation -Context $context -State $state)
 
+if ($TestRaceCase -ceq "state-leaf-substitution") {
+    $replacement = Join-Path $fixtureBinding.TestRoot `
+        "state-leaf-race-replacement.json"
+    if (-not (Test-Path -LiteralPath $replacement -PathType Leaf)) {
+        throw "The final state leaf race fixture is missing."
+    }
+    try {
+        Move-Item -LiteralPath $replacement `
+            -Destination $finalStateBinding.Path -Force -ErrorAction Stop
+    } catch {
+        # The retained final-state lease must deny leaf substitution.
+    }
+    try {
+        $finalStateLease.VerifyAfter()
+        $ownerLease.VerifyAfter()
+    } catch {
+        throw "modeled_recovery_state_race_detected"
+    }
+    throw "modeled_recovery_state_race_detected"
+}
+
+$releaseReceipt = & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
+    param(
+        $InnerContext,
+        $InnerState,
+        $InnerOwnerLease,
+        $InnerStateLease
+    )
+    Invoke-AgentBoardReservationRelease `
+        -Context $InnerContext -State $InnerState `
+        -DeferStateProjection `
+        -RetainedOwnerLease $InnerOwnerLease `
+        -RetainedStateLease $InnerStateLease
+} $context $state $ownerLease $finalStateLease
+
+# The irreversible external release decision is accepted only while both the
+# exact post-operation owner and exact recovered state handles/path chains are
+# still held and hash-verified.
+$finalStateLease.VerifyAfter()
+$ownerLease.VerifyAfter()
+$stateTextAfterRelease =
+    $finalStateLease.ReadUtf8Text(1048576)
+$ownerAfterRelease = & (Get-Module FleetWifiAdbTwoQuestAcceptance) {
+    param($InnerLease)
+    Read-ModeledRecoveryFixtureOwnerFromLease -Lease $InnerLease
+} $ownerLease
+if (
+    $stateTextAfterRelease -cne $finalStateBinding.Text -or
+    [string]$finalStateLease.Sha256 -cne
+        [string]$finalStateBinding.Sha256 -or
+    [string]$ownerAfterRelease.Sha256 -cne
+        [string]$recoveryEvidence.owner_after_sha256 -or
+    [string]$releaseReceipt.state -cne "released"
+) {
+    throw "The pinned recovery evidence changed during reservation release."
+}
+
+$finalStateLease.Dispose()
+$finalStateLease = $null
+$ownerLease.Dispose()
+$ownerLease = $null
+Write-SanitizedState -Context $context -State $state
 $state = Read-SanitizedState -Context $context
 $statePath = Join-Path (
     [string]$context.Config.private_state_root
@@ -204,4 +305,14 @@ $totalRecords =
     state_size_bytes = [long](Get-Item -LiteralPath $statePath).Length
     recovery_evidence_sha256 =
         [string]$recoveryEvidence.owner_after_sha256
+    recovered_state_sha256 =
+        [string]$finalStateBinding.Sha256
 } | ConvertTo-Json -Compress
+} finally {
+    if ($null -ne $finalStateLease) {
+        $finalStateLease.Dispose()
+    }
+    if ($null -ne $ownerLease) {
+        $ownerLease.Dispose()
+    }
+}

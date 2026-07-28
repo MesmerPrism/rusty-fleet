@@ -19,6 +19,7 @@ public static class RustyFleetAcceptanceNativeV2
     private const uint MOVEFILE_REPLACE_EXISTING = 0x1;
     private const uint MOVEFILE_WRITE_THROUGH = 0x8;
     private const uint GENERIC_READ = 0x80000000;
+    private const uint GENERIC_WRITE = 0x40000000;
     private const uint FILE_READ_ATTRIBUTES = 0x80;
     private const uint FILE_SHARE_READ = 0x1;
     private const uint OPEN_EXISTING = 3;
@@ -111,28 +112,57 @@ public static class RustyFleetAcceptanceNativeV2
     public sealed class PinnedFileExecutionLease : IDisposable
     {
         private readonly List<PinnedPathComponent> components;
+        private readonly bool writable;
         private bool disposed;
 
         public string FullPath { get; }
         public string ChainIdentity { get; }
-        public string Sha256 { get; }
+        public string Sha256 { get; private set; }
+        public bool Writable { get { return writable; } }
 
         private PinnedFileExecutionLease(
             string fullPath,
             List<PinnedPathComponent> pinnedComponents,
             string chainIdentity,
-            string sha256)
+            string sha256,
+            bool allowWrite)
         {
             FullPath = fullPath;
             components = pinnedComponents;
             ChainIdentity = chainIdentity;
             Sha256 = sha256;
+            writable = allowWrite;
         }
 
         public static PinnedFileExecutionLease Acquire(
             string path,
             string expectedSha256,
             string expectedChainIdentity)
+        {
+            return AcquireCore(
+                path,
+                expectedSha256,
+                expectedChainIdentity,
+                false);
+        }
+
+        public static PinnedFileExecutionLease AcquireWritable(
+            string path,
+            string expectedSha256,
+            string expectedChainIdentity)
+        {
+            return AcquireCore(
+                path,
+                expectedSha256,
+                expectedChainIdentity,
+                true);
+        }
+
+        private static PinnedFileExecutionLease AcquireCore(
+            string path,
+            string expectedSha256,
+            string expectedChainIdentity,
+            bool allowWrite)
         {
             if (String.IsNullOrWhiteSpace(path) ||
                 String.IsNullOrWhiteSpace(expectedSha256))
@@ -161,14 +191,14 @@ public static class RustyFleetAcceptanceNativeV2
             var pinned = new List<PinnedPathComponent>();
             try
             {
-                pinned.Add(OpenComponent(root, true));
+                pinned.Add(OpenComponent(root, true, false));
                 string cursor = root;
                 for (int index = 0; index < parts.Length - 1; index++)
                 {
                     cursor = Path.Combine(cursor, parts[index]);
-                    pinned.Add(OpenComponent(cursor, true));
+                    pinned.Add(OpenComponent(cursor, true, false));
                 }
-                pinned.Add(OpenComponent(fullPath, false));
+                pinned.Add(OpenComponent(fullPath, false, allowWrite));
 
                 PinnedPathComponent leaf = pinned[pinned.Count - 1];
                 if (leaf.Identity.NumberOfLinks != 1)
@@ -195,12 +225,13 @@ public static class RustyFleetAcceptanceNativeV2
                     throw new InvalidOperationException(
                         "Pinned wrapper hash changed.");
                 }
-                VerifyPathBindings(pinned);
+                VerifyPathBindings(pinned, allowWrite);
                 return new PinnedFileExecutionLease(
                     fullPath,
                     pinned,
                     chainIdentity,
-                    hash);
+                    hash,
+                    allowWrite);
             }
             catch
             {
@@ -249,7 +280,90 @@ public static class RustyFleetAcceptanceNativeV2
                 throw new InvalidOperationException(
                     "Pinned wrapper bytes changed while executing.");
             }
-            VerifyPathBindings(components);
+            VerifyPathBindings(components, writable);
+        }
+
+        public string ReadUtf8Text(int maximumBytes)
+        {
+            if (maximumBytes < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+            }
+            VerifyAfter();
+            PinnedPathComponent leaf = components[components.Count - 1];
+            byte[] bytes = ReadHandleBytes(leaf.Handle, maximumBytes);
+            try
+            {
+                return new System.Text.UTF8Encoding(false, true).
+                    GetString(bytes);
+            }
+            finally
+            {
+                Array.Clear(bytes, 0, bytes.Length);
+            }
+        }
+
+        public string RewriteUtf8Text(string text, int maximumBytes)
+        {
+            if (!writable)
+            {
+                throw new InvalidOperationException(
+                    "Pinned file lease is read-only.");
+            }
+            if (text == null)
+            {
+                throw new ArgumentNullException(nameof(text));
+            }
+            byte[] bytes =
+                new System.Text.UTF8Encoding(false, true).GetBytes(text);
+            if (bytes.Length < 1 || bytes.Length > maximumBytes)
+            {
+                Array.Clear(bytes, 0, bytes.Length);
+                throw new InvalidOperationException(
+                    "Pinned write has an invalid byte length.");
+            }
+            VerifyAfter();
+            PinnedPathComponent leaf = components[components.Count - 1];
+            if (!DuplicateHandle(
+                GetCurrentProcess(),
+                leaf.Handle,
+                GetCurrentProcess(),
+                out var duplicate,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS))
+            {
+                Array.Clear(bytes, 0, bytes.Length);
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "Pinned writable handle could not be duplicated.");
+            }
+            try
+            {
+                using (var stream = new FileStream(
+                    duplicate,
+                    FileAccess.ReadWrite,
+                    4096,
+                    false))
+                {
+                    stream.Position = 0;
+                    stream.SetLength(0);
+                    stream.Write(bytes, 0, bytes.Length);
+                    stream.Flush(true);
+                }
+                Sha256 = HashHandle(leaf.Handle);
+                VerifyAfter();
+                return Sha256;
+            }
+            catch
+            {
+                duplicate.Dispose();
+                throw;
+            }
+            finally
+            {
+                Array.Clear(bytes, 0, bytes.Length);
+            }
         }
 
         public void Dispose()
@@ -277,12 +391,25 @@ public static class RustyFleetAcceptanceNativeV2
             expectedChainIdentity);
     }
 
+    public static PinnedFileExecutionLease AcquirePinnedWritableFileLease(
+        string path,
+        string expectedSha256,
+        string expectedChainIdentity)
+    {
+        return PinnedFileExecutionLease.AcquireWritable(
+            path,
+            expectedSha256,
+            expectedChainIdentity);
+    }
+
     private static PinnedPathComponent OpenComponent(
         string path,
-        bool directory)
+        bool directory,
+        bool writable)
     {
         uint access = directory ? FILE_READ_ATTRIBUTES :
-            (GENERIC_READ | FILE_READ_ATTRIBUTES);
+            (GENERIC_READ | FILE_READ_ATTRIBUTES |
+                (writable ? GENERIC_WRITE : 0));
         uint flags = FILE_FLAG_OPEN_REPARSE_POINT |
             (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0);
         SafeFileHandle handle = CreateFileW(
@@ -367,10 +494,19 @@ public static class RustyFleetAcceptanceNativeV2
     }
 
     private static void VerifyPathBindings(
-        List<PinnedPathComponent> components)
+        List<PinnedPathComponent> components,
+        bool writableLeafHeld)
     {
-        foreach (PinnedPathComponent expected in components)
+        for (int index = 0; index < components.Count; index++)
         {
+            PinnedPathComponent expected = components[index];
+            if (writableLeafHeld && index == components.Count - 1)
+            {
+                // The exact leaf was opened by name with no delete sharing and
+                // remains held. Reopening it would require granting write
+                // sharing to the second handle and weaken the mutation lock.
+                continue;
+            }
             using (DisposablePinnedPathComponent reopened =
                 OpenDisposableComponent(expected.Path, expected.IsDirectory))
             {
@@ -406,7 +542,64 @@ public static class RustyFleetAcceptanceNativeV2
         bool directory)
     {
         return new DisposablePinnedPathComponent(
-            OpenComponent(path, directory));
+            OpenComponent(path, directory, false));
+    }
+
+    private static byte[] ReadHandleBytes(
+        SafeFileHandle source,
+        int maximumBytes)
+    {
+        if (!DuplicateHandle(
+            GetCurrentProcess(),
+            source,
+            GetCurrentProcess(),
+            out var duplicate,
+            0,
+            false,
+            DUPLICATE_SAME_ACCESS))
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Pinned readable handle could not be duplicated.");
+        }
+        try
+        {
+            using (var stream = new FileStream(
+                duplicate,
+                FileAccess.Read,
+                4096,
+                false))
+            {
+                if (stream.Length < 1 || stream.Length > maximumBytes)
+                {
+                    throw new InvalidOperationException(
+                        "Pinned file has an invalid byte length.");
+                }
+                byte[] bytes = new byte[(int)stream.Length];
+                stream.Position = 0;
+                int read = 0;
+                while (read < bytes.Length)
+                {
+                    int count = stream.Read(
+                        bytes,
+                        read,
+                        bytes.Length - read);
+                    if (count <= 0)
+                    {
+                        Array.Clear(bytes, 0, bytes.Length);
+                        throw new EndOfStreamException(
+                            "Pinned file changed while it was read.");
+                    }
+                    read += count;
+                }
+                return bytes;
+            }
+        }
+        catch
+        {
+            duplicate.Dispose();
+            throw;
+        }
     }
 
     private static string HashHandle(SafeFileHandle source)
@@ -705,6 +898,22 @@ function Read-StrictJsonFile {
         if ($null -ne $bytes) {
             [Array]::Clear($bytes, 0, $bytes.Length)
         }
+    }
+}
+
+function ConvertFrom-StrictJsonText {
+    param(
+        [Parameter(Mandatory)][string] $Json,
+        [Parameter(Mandatory)][string] $Context
+    )
+
+    Assert-NoDuplicateJsonProperties -Json $Json
+    try {
+        return $Json |
+            ConvertFrom-Json -AsHashtable -Depth 64 -DateKind String
+    } catch {
+        throw (New-AcceptanceError "private_input_json_invalid" `
+            "$Context must be strict JSON.")
     }
 }
 
@@ -2087,11 +2296,48 @@ function Ensure-AgentBoardReservation {
     }
 }
 
-function Release-AgentBoardReservation {
+function Invoke-AgentBoardReservationRelease {
     param(
         [Parameter(Mandatory)][object] $Context,
-        [Parameter(Mandatory)][Collections.IDictionary] $State
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [switch] $DeferStateProjection,
+        [object] $RetainedOwnerLease,
+        [object] $RetainedStateLease
     )
+    if ($DeferStateProjection) {
+        Assert-ModeledNoDeviceProjectionContext -Context $Context
+        $testRoot = Split-Path -Parent (
+            [string]$Context.Config.private_state_root)
+        $expectedOwnerPath = [IO.Path]::GetFullPath((Join-Path `
+            (Join-Path $testRoot "compaction-owner") `
+            "compaction-owner-state.json"))
+        $expectedStatePath = [IO.Path]::GetFullPath(
+            (Get-StatePath -Context $Context))
+        Assert-Condition (
+            $null -ne $RetainedOwnerLease -and
+            $null -ne $RetainedStateLease -and
+            $RetainedOwnerLease.Writable -eq $true -and
+            $RetainedStateLease.Writable -eq $false -and
+            [string]$RetainedOwnerLease.FullPath -ceq
+                $expectedOwnerPath -and
+            [string]$RetainedStateLease.FullPath -ceq
+                $expectedStatePath -and
+            [string]$RetainedOwnerLease.Sha256 -cmatch
+                '^[0-9a-f]{64}$' -and
+            [string]$RetainedStateLease.Sha256 -cmatch
+                '^[0-9a-f]{64}$'
+        ) "modeled_recovery_release_pins_required" `
+            "Deferred projection requires exact retained owner and final-state leases."
+        $RetainedOwnerLease.VerifyAfter()
+        $RetainedStateLease.VerifyAfter()
+    } elseif (
+        $null -ne $RetainedOwnerLease -or
+        $null -ne $RetainedStateLease
+    ) {
+        throw (New-AcceptanceError `
+            "modeled_recovery_release_pins_unexpected" `
+            "Production release accepts no modeled fixture leases.")
+    }
     Assert-Condition (
         [string]$State.cleanup.status -ceq "complete" -and
         [string]$State.status -ceq "complete"
@@ -2113,6 +2359,10 @@ function Release-AgentBoardReservation {
         }
         $binding = Get-AgentBoardBinding -Context $Context -Slot $slot
         try {
+            if ($DeferStateProjection) {
+                $RetainedOwnerLease.VerifyAfter()
+                $RetainedStateLease.VerifyAfter()
+            }
             $response = Invoke-AgentBoardCli -Context $Context -Arguments @(
                 "release", [string]$record[0].lease_id,
                 "--result", "done",
@@ -2133,6 +2383,10 @@ function Release-AgentBoardReservation {
                 -Binding $binding `
                 -ExpectedLeaseId ([string]$record[0].lease_id) `
                 -AllowedStatuses @("released", "expired")
+            if ($DeferStateProjection) {
+                $RetainedOwnerLease.VerifyAfter()
+                $RetainedStateLease.VerifyAfter()
+            }
             $released = ConvertTo-AgentBoardReceiptLease `
                 -Binding $binding -Lease $response.lease
             Set-AgentBoardReceiptLease -Receipt $receipt -Record $released
@@ -2145,7 +2399,9 @@ function Release-AgentBoardReservation {
         $receipt.state = "expired"
         $State.agent_board_reservation = "expired"
         Write-AgentBoardReceipt -Context $Context -Receipt $receipt
-        Write-SanitizedState -Context $Context -State $State
+        if (-not $DeferStateProjection) {
+            Write-SanitizedState -Context $Context -State $State
+        }
         throw (New-AcceptanceError "agent_board_release_incomplete" `
             "Terminal cleanup is complete, but reservation release is incomplete.")
     }
@@ -2154,8 +2410,20 @@ function Release-AgentBoardReservation {
         [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     Write-AgentBoardReceipt -Context $Context -Receipt $receipt
     $State.agent_board_reservation = "released"
-    Write-SanitizedState -Context $Context -State $State
+    if (-not $DeferStateProjection) {
+        Write-SanitizedState -Context $Context -State $State
+    }
     return $receipt
+}
+
+function Release-AgentBoardReservation {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State
+    )
+
+    return Invoke-AgentBoardReservationRelease `
+        -Context $Context -State $State
 }
 
 function Set-AgentBoardStatusProjection {
@@ -2755,33 +3023,23 @@ function Assert-ModeledRecoveryFixtureOwnerShape {
         "The modeled recovery owner must contain one applied effect and an explicit recovery readback."
 }
 
-function Read-PinnedModeledRecoveryFixtureOwner {
+function Read-ModeledRecoveryFixtureOwnerFromLease {
     param(
-        [Parameter(Mandatory)][string] $Path,
-        [Parameter(Mandatory)][string] $ExpectedSha256,
-        [Parameter(Mandatory)][string] $ExpectedChainIdentity
+        [Parameter(Mandatory)][object] $Lease
     )
 
-    $lease = $null
     try {
-        $lease = [RustyFleetAcceptanceNativeV2]::
-            AcquirePinnedFileExecutionLease(
-                $Path,
-                $ExpectedSha256,
-                $ExpectedChainIdentity)
-        $read = Read-StrictJsonFile -Path $Path `
+        $text = $Lease.ReadUtf8Text(65536)
+        $owner = ConvertFrom-StrictJsonText -Json $text `
             -Context "modeled recovery fixture owner"
-        Assert-Condition (
-            [string]$read.Sha256 -ceq $ExpectedSha256
-        ) "modeled_recovery_owner_changed" `
-            "The modeled recovery owner changed while it was read."
-        Assert-ModeledRecoveryFixtureOwnerShape -Owner $read.Value
-        $lease.VerifyAfter()
+        Assert-ModeledRecoveryFixtureOwnerShape -Owner $owner
+        $Lease.VerifyAfter()
         return [pscustomobject]@{
-            Path = [string]$read.Path
-            Sha256 = [string]$read.Sha256
-            ChainIdentity = [string]$lease.ChainIdentity
-            Value = $read.Value
+            Path = [string]$Lease.FullPath
+            Sha256 = [string]$Lease.Sha256
+            ChainIdentity = [string]$Lease.ChainIdentity
+            Text = $text
+            Value = $owner
         }
     } catch {
         if ([string]$_.Exception.Message -like "modeled_*") {
@@ -2789,10 +3047,6 @@ function Read-PinnedModeledRecoveryFixtureOwner {
         }
         throw (New-AcceptanceError "modeled_recovery_owner_changed" `
             "The modeled recovery owner path, identity, or bytes changed.")
-    } finally {
-        if ($null -ne $lease) {
-            $lease.Dispose()
-        }
     }
 }
 
@@ -2806,9 +3060,9 @@ function Get-ModeledRecoveryFixtureBinding {
     $stateRoot = [IO.Path]::GetFullPath(
         [string]$Context.Config.private_state_root)
     $testRoot = [IO.Path]::GetFullPath((Split-Path -Parent $stateRoot))
-    $expectedOwnerPath =
-        [IO.Path]::GetFullPath((Join-Path $testRoot `
-            "compaction-owner-state.json"))
+    $expectedOwnerPath = [IO.Path]::GetFullPath((Join-Path `
+        (Join-Path $testRoot "compaction-owner") `
+        "compaction-owner-state.json"))
     $resolvedOwnerPath = Resolve-PrivateLeaf -Path $OwnerStatePath `
         -Context "modeled recovery fixture owner"
     Assert-Condition (
@@ -2816,24 +3070,26 @@ function Get-ModeledRecoveryFixtureBinding {
     ) "modeled_recovery_owner_path_invalid" `
         "The modeled recovery owner must be the exact synthetic fixture path."
 
-    $read = Read-StrictJsonFile -Path $resolvedOwnerPath `
-        -Context "modeled recovery fixture owner"
-    Assert-ModeledRecoveryFixtureOwnerShape -Owner $read.Value
+    $ownerSha256 = Get-Sha256 -Path $resolvedOwnerPath
     $lease = $null
     try {
         $lease = [RustyFleetAcceptanceNativeV2]::
-            AcquirePinnedFileExecutionLease(
+            AcquirePinnedWritableFileLease(
                 $resolvedOwnerPath,
-                [string]$read.Sha256,
+                $ownerSha256,
                 "")
+        $read = Read-ModeledRecoveryFixtureOwnerFromLease -Lease $lease
         $lease.VerifyAfter()
-        return [pscustomobject]@{
+        $binding = [pscustomobject]@{
             TestRoot = $testRoot
             OwnerPath = [string]$resolvedOwnerPath
             OwnerSha256 = [string]$read.Sha256
             OwnerChainIdentity = [string]$lease.ChainIdentity
             Owner = $read.Value
+            OwnerLease = $lease
         }
+        $lease = $null
+        return $binding
     } catch {
         if ([string]$_.Exception.Message -like "modeled_*") {
             throw
@@ -2898,6 +3154,150 @@ function Assert-ModeledRecoveryFixtureState {
         TotalRecords = [long]$totalRecords
         JournalHeadSha256 = [string]$State.journal_head_sha256
         DispatchCount = [long]$Binding.Owner.dispatch_count
+        CompactionCount =
+            [long]$State.mutation_history_summary.compaction_count
+        CompactedCount =
+            [long]$State.mutation_history_summary.compacted_count
+    }
+}
+
+function Get-ModeledRecoveryFinalStateBinding {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [Parameter(Mandatory)][object] $PreRecovery
+    )
+
+    Assert-ModeledNoDeviceProjectionContext -Context $Context
+    $statePath = [IO.Path]::GetFullPath((Get-StatePath -Context $Context))
+    $expectedStatePath = [IO.Path]::GetFullPath((Join-Path `
+        ([string]$Context.Config.private_state_root) `
+        "acceptance-state.json"))
+    Assert-Condition (
+        $statePath -ceq $expectedStatePath
+    ) "modeled_recovery_state_path_invalid" `
+        "The modeled recovery state must use the exact synthetic state path."
+    $resolvedStatePath = Resolve-PrivateLeaf -Path $statePath `
+        -Context "modeled recovery final state"
+    Assert-Condition (
+        $resolvedStatePath -ceq $expectedStatePath
+    ) "modeled_recovery_state_path_invalid" `
+        "The modeled recovery final state escaped its exact synthetic path."
+
+    $expectedText =
+        ($State | ConvertTo-Json -Depth 32) + [Environment]::NewLine
+    $expectedSha256 = Get-BytesSha256 -Bytes (
+        [Text.UTF8Encoding]::new($false).GetBytes($expectedText))
+    $lease = $null
+    try {
+        $lease = [RustyFleetAcceptanceNativeV2]::
+            AcquirePinnedFileExecutionLease(
+                $resolvedStatePath,
+                $expectedSha256,
+                "")
+        $actualText = $lease.ReadUtf8Text($script:StateMaximumBytes)
+        Assert-Condition (
+            $actualText -ceq $expectedText -and
+            [string]$lease.Sha256 -ceq $expectedSha256
+        ) "modeled_recovery_state_changed" `
+            "The exact freshly recovered state bytes were not retained."
+        $readback = ConvertFrom-StrictJsonText -Json $actualText `
+            -Context "modeled recovery final state"
+        Assert-Condition (
+            [string]$readback.schema -ceq $script:StateSchema -and
+            [string]$readback.config_sha256 -ceq
+                [string]$Context.Sha256 -and
+            [string]$readback.run_id_hash -ceq
+                (Get-BytesSha256 -Bytes (
+                    [Text.Encoding]::UTF8.GetBytes(
+                        [string]$Context.Config.run_id)))
+        ) "modeled_recovery_state_changed" `
+            "The final state does not bind the synthetic run config."
+        Assert-ValidSanitizedStateShape -State $readback
+        Assert-MutationJournal -State $readback
+
+        $truth = Get-CleanupTruth -Checks $readback.cleanup.checks
+        $totalRecords = Get-MutationTotalCount -State $readback
+        $lastMutation = @($readback.mutation_history)[-1]
+        $expectedOrdinal = [long]$PreRecovery.TotalRecords + 1L
+        $requestMaterial = "$($Context.Sha256)`0" +
+            "cleanup-owner-compaction-retry`0none`0$expectedOrdinal"
+        $mutationHash = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes($requestMaterial))
+        $expectedMutationId =
+            "mutation-" + $mutationHash.Substring(0, 32)
+        $expectedRequestIdSha256 = Get-BytesSha256 -Bytes (
+            [Text.Encoding]::UTF8.GetBytes($expectedMutationId))
+        $valid = (
+            [string]$readback.phase -ceq "cleanup" -and
+            [string]$readback.status -ceq "complete" -and
+            [string]$readback.cleanup.status -ceq "complete" -and
+            [string]$truth.Status -ceq "complete" -and
+            [string]$readback.agent_board_reservation -ceq "bound" -and
+            $null -eq $readback.mutation -and
+            $readback.cleanup.checks["device_a-final-readback"] -eq $true -and
+            $readback.cleanup.checks["device_b-final-readback"] -eq $true -and
+            $readback.cleanup.checks["owner-compaction-retry"] -eq $true -and
+            $totalRecords -eq [long]$PreRecovery.TotalRecords + 1L -and
+            [long]$readback.mutation_history_summary.compaction_count -eq
+                [long]$PreRecovery.CompactionCount + 1L -and
+            [long]$readback.mutation_history_summary.compacted_count -eq
+                [long]$PreRecovery.CompactedCount + 1L -and
+            [string]$readback.journal_head_sha256 -cne
+                [string]$PreRecovery.JournalHeadSha256 -and
+            [string]$lastMutation.journal_sha256 -ceq
+                [string]$readback.journal_head_sha256 -and
+            [string]$lastMutation.mutation_id -ceq
+                $expectedMutationId -and
+            [string]$lastMutation.request_id_sha256 -ceq
+                $expectedRequestIdSha256 -and
+            [string]$lastMutation.action_id -ceq
+                "acceptance.cleanup.owner-compaction-retry" -and
+            [string]$lastMutation.cleanup_owner -ceq
+                "acceptance-cleanup" -and
+            [string]$lastMutation.stage -ceq "confirmed" -and
+            [string]$lastMutation.reconciliation_code -ceq
+                "cleanup_exact_readback_confirmed"
+        )
+        Assert-Condition $valid "modeled_recovery_state_invalid" `
+            (
+                "Release requires the exact fresh confirmed cleanup mutation " +
+                "and complete readback. " +
+                "phase=$([string]$readback.phase); " +
+                "status=$([string]$readback.status); " +
+                "cleanup=$([string]$readback.cleanup.status)/" +
+                    "$([string]$truth.Status); " +
+                "reservation=$([string]$readback.agent_board_reservation); " +
+                "total=$totalRecords/" +
+                    "$([long]$PreRecovery.TotalRecords + 1L); " +
+                "head_changed=$([string]$readback.journal_head_sha256 -cne [string]$PreRecovery.JournalHeadSha256); " +
+                "mutation_matches=$([string]$lastMutation.mutation_id -ceq $expectedMutationId); " +
+                "request_matches=$([string]$lastMutation.request_id_sha256 -ceq $expectedRequestIdSha256); " +
+                "action=$([string]$lastMutation.action_id); " +
+                "stage=$([string]$lastMutation.stage); " +
+                "reconciliation=$([string]$lastMutation.reconciliation_code)")
+        $lease.VerifyAfter()
+        $binding = [pscustomobject]@{
+            Path = $resolvedStatePath
+            Sha256 = $expectedSha256
+            ChainIdentity = [string]$lease.ChainIdentity
+            Text = $actualText
+            State = $readback
+            TotalRecords = [long]$totalRecords
+            Lease = $lease
+        }
+        $lease = $null
+        return $binding
+    } catch {
+        if ([string]$_.Exception.Message -like "modeled_*") {
+            throw
+        }
+        throw (New-AcceptanceError "modeled_recovery_state_changed" `
+            "The modeled recovery final state path, identity, or bytes changed.")
+    } finally {
+        if ($null -ne $lease) {
+            $lease.Dispose()
+        }
     }
 }
 

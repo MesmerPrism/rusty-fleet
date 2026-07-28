@@ -1485,8 +1485,11 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
             [string]$_.lease_id
         }
     )
+    $compactionOwnerDirectory =
+        Join-Path $testRoot "compaction-owner"
+    New-Item -ItemType Directory -Path $compactionOwnerDirectory | Out-Null
     $compactionOwnerPath =
-        Join-Path $testRoot "compaction-owner-state.json"
+        Join-Path $compactionOwnerDirectory "compaction-owner-state.json"
     $compactionOwner = [ordered]@{
         schema = "rusty.fleet.wifi_adb_compaction_test_owner.v1"
         dispatch_count = 0
@@ -1574,8 +1577,31 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
             [Parameter(Mandatory)][string] $AttackName,
             [Parameter(Mandatory)][string] $AttackRunConfig,
             [Parameter(Mandatory)][string] $AttackOwnerStatePath,
-            [Parameter(Mandatory)][string] $ExpectedError
+            [Parameter(Mandatory)][string] $ExpectedError,
+            [string] $AttackProbePath = "",
+            [string] $AttackTargetPath = "",
+            [ValidateSet(
+                "none",
+                "owner-leaf-substitution",
+                "owner-ancestor-substitution",
+                "state-leaf-substitution"
+            )]
+            [string] $TestRaceCase = "none",
+            [switch] $AllowHeartbeat,
+            [switch] $AllowOwnerMutation
         )
+
+        function Get-ProbeSha256 {
+            param([string] $Path)
+            if (-not $Path) {
+                return "<not-selected>"
+            }
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+                return "<missing>"
+            }
+            return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).
+                Hash.ToLowerInvariant()
+        }
 
         $boardBefore =
             Get-Content -LiteralPath $fakeBoardStatePath -Raw |
@@ -1583,7 +1609,10 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         $ownerBefore =
             Get-Content -LiteralPath $compactionOwnerPath -Raw |
                 ConvertFrom-Json -AsHashtable -Depth 8
-        $result = Invoke-RunnerProcess -Arguments @(
+        $attackOwnerBefore = Get-ProbeSha256 -Path $AttackOwnerStatePath
+        $attackProbeBefore = Get-ProbeSha256 -Path $AttackProbePath
+        $attackTargetBefore = Get-ProbeSha256 -Path $AttackTargetPath
+        $arguments = @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
             "-File", $compactionRecoveryFixturePath,
@@ -1591,12 +1620,19 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
             "-RunConfig", $AttackRunConfig,
             "-OwnerStatePath", $AttackOwnerStatePath
         )
+        if ($TestRaceCase -cne "none") {
+            $arguments += @("-TestRaceCase", $TestRaceCase)
+        }
+        $result = Invoke-RunnerProcess -Arguments $arguments
         $boardAfter =
             Get-Content -LiteralPath $fakeBoardStatePath -Raw |
                 ConvertFrom-Json -AsHashtable -Depth 16
         $ownerAfter =
             Get-Content -LiteralPath $compactionOwnerPath -Raw |
                 ConvertFrom-Json -AsHashtable -Depth 8
+        $attackOwnerAfter = Get-ProbeSha256 -Path $AttackOwnerStatePath
+        $attackProbeAfter = Get-ProbeSha256 -Path $AttackProbePath
+        $attackTargetAfter = Get-ProbeSha256 -Path $AttackTargetPath
         $safeStderr = (
             [string]$result.Stderr -replace
                 '(?i)[a-z]:\\[^\r\n]+', '<path>'
@@ -1611,14 +1647,47 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
                 [StringComparison]::Ordinal) -and
             [int]$boardAfter.reserve_count -eq
                 [int]$boardBefore.reserve_count -and
-            [int]$boardAfter.heartbeat_count -eq
-                [int]$boardBefore.heartbeat_count -and
+            (
+                (
+                    $AllowHeartbeat -and
+                    [int]$boardAfter.heartbeat_count -eq
+                        [int]$boardBefore.heartbeat_count + 2
+                ) -or
+                (
+                    -not $AllowHeartbeat -and
+                    [int]$boardAfter.heartbeat_count -eq
+                        [int]$boardBefore.heartbeat_count
+                )
+            ) -and
             [int]$boardAfter.release_count -eq
                 [int]$boardBefore.release_count -and
-            [long]$ownerAfter.dispatch_count -eq
-                [long]$ownerBefore.dispatch_count -and
+            (
+                (
+                    $AllowOwnerMutation -and
+                    [long]$ownerAfter.dispatch_count -eq
+                        [long]$ownerBefore.dispatch_count + 1L
+                ) -or
+                (
+                    -not $AllowOwnerMutation -and
+                    [long]$ownerAfter.dispatch_count -eq
+                        [long]$ownerBefore.dispatch_count
+                )
+            ) -and
             [long]$ownerAfter.unsafe_effect_count -eq
-                [long]$ownerBefore.unsafe_effect_count
+                [long]$ownerBefore.unsafe_effect_count -and
+            (
+                (
+                    $AllowOwnerMutation -and
+                    $attackOwnerAfter -cne $attackOwnerBefore -and
+                    $attackOwnerAfter -cne "<missing>"
+                ) -or
+                (
+                    -not $AllowOwnerMutation -and
+                    $attackOwnerAfter -ceq $attackOwnerBefore
+                )
+            ) -and
+            $attackProbeAfter -ceq $attackProbeBefore -and
+            $attackTargetAfter -ceq $attackTargetBefore
         ) (
             "$AttackName reached Agent Board, released a lease, changed " +
             "the owner, or returned the wrong rejection. " +
@@ -1653,8 +1722,10 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
     $reparseOwnerTarget = Join-Path $testRoot "owner-reparse-target"
     $reparseOwnerDirectory = Join-Path $testRoot "owner-reparse"
     New-Item -ItemType Directory -Path $reparseOwnerTarget | Out-Null
-    Copy-Item -LiteralPath $compactionOwnerPath -Destination (
-        Join-Path $reparseOwnerTarget "compaction-owner-state.json")
+    $reparseOwnerTargetPath =
+        Join-Path $reparseOwnerTarget "compaction-owner-state.json"
+    Copy-Item -LiteralPath $compactionOwnerPath `
+        -Destination $reparseOwnerTargetPath
     New-Item -ItemType Junction -Path $reparseOwnerDirectory `
         -Target $reparseOwnerTarget | Out-Null
     Assert-RejectedCompactionFixtureNoBoardContact `
@@ -1662,6 +1733,7 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         -AttackRunConfig $configPath `
         -AttackOwnerStatePath (
             Join-Path $reparseOwnerDirectory "compaction-owner-state.json") `
+        -AttackTargetPath $reparseOwnerTargetPath `
         -ExpectedError "private_input_reparse"
 
     $compactionPartialState = Copy-JsonValue $compactionState
@@ -1673,6 +1745,64 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         -AttackRunConfig $configPath `
         -AttackOwnerStatePath $compactionOwnerPath `
         -ExpectedError "modeled_recovery_state_invalid"
+    Write-SanitizedState -Context $validated -State $compactionPartialState
+    $compactionState = Read-SanitizedState -Context $validated
+
+    $ownerLeafRaceReplacement =
+        Join-Path $testRoot "owner-leaf-race-replacement.json"
+    Copy-Item -LiteralPath $compactionOwnerPath `
+        -Destination $ownerLeafRaceReplacement
+    Assert-RejectedCompactionFixtureNoBoardContact `
+        -AttackName "An owner leaf substitution race" `
+        -AttackRunConfig $configPath `
+        -AttackOwnerStatePath $compactionOwnerPath `
+        -AttackProbePath $ownerLeafRaceReplacement `
+        -TestRaceCase "owner-leaf-substitution" `
+        -ExpectedError "modeled_recovery_owner_race_detected"
+
+    $ownerAncestorRaceTarget =
+        Join-Path $testRoot "owner-ancestor-race-target"
+    New-Item -ItemType Directory -Path $ownerAncestorRaceTarget | Out-Null
+    $ownerAncestorRaceTargetPath =
+        Join-Path $ownerAncestorRaceTarget "compaction-owner-state.json"
+    Copy-Item -LiteralPath $compactionOwnerPath `
+        -Destination $ownerAncestorRaceTargetPath
+    Assert-RejectedCompactionFixtureNoBoardContact `
+        -AttackName "An owner ancestor substitution race" `
+        -AttackRunConfig $configPath `
+        -AttackOwnerStatePath $compactionOwnerPath `
+        -AttackProbePath $ownerAncestorRaceTargetPath `
+        -TestRaceCase "owner-ancestor-substitution" `
+        -ExpectedError "modeled_recovery_owner_race_detected"
+
+    $stateRaceOwnerBefore =
+        Get-Content -LiteralPath $compactionOwnerPath -Raw |
+            ConvertFrom-Json -AsHashtable -Depth 8
+    $stateLeafRaceReplacement =
+        Join-Path $testRoot "state-leaf-race-replacement.json"
+    Copy-Item -LiteralPath $compactionStatePath `
+        -Destination $stateLeafRaceReplacement
+    Assert-RejectedCompactionFixtureNoBoardContact `
+        -AttackName "A final state leaf substitution race" `
+        -AttackRunConfig $configPath `
+        -AttackOwnerStatePath $compactionOwnerPath `
+        -AttackProbePath $stateLeafRaceReplacement `
+        -TestRaceCase "state-leaf-substitution" `
+        -ExpectedError "modeled_recovery_state_race_detected" `
+        -AllowHeartbeat -AllowOwnerMutation
+    $stateAfterRace = Read-SanitizedState -Context $validated
+    $stateRaceLastMutation = @($stateAfterRace.mutation_history)[-1]
+    Assert-True (
+        [string]$stateAfterRace.status -ceq "complete" -and
+        [string]$stateAfterRace.cleanup.status -ceq "complete" -and
+        [string]$stateAfterRace.agent_board_reservation -ceq "bound" -and
+        [string]$stateRaceLastMutation.action_id -ceq
+            "acceptance.cleanup.owner-compaction-retry" -and
+        [string]$stateRaceLastMutation.stage -ceq "confirmed" -and
+        [string]$stateRaceLastMutation.reconciliation_code -ceq
+            "cleanup_exact_readback_confirmed"
+    ) "The blocked final-state substitution did not retain exact recovered state."
+    Write-Json -Path $compactionOwnerPath -Value $stateRaceOwnerBefore
     Write-SanitizedState -Context $validated -State $compactionPartialState
     $compactionState = Read-SanitizedState -Context $validated
 
@@ -1743,6 +1873,8 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
             $mutationHistoryLimit -and
         [long]$compactionRestartProof.state_size_bytes -lt 1048576 -and
         [string]$compactionRestartProof.recovery_evidence_sha256 -cmatch
+            '^[0-9a-f]{64}$' -and
+        [string]$compactionRestartProof.recovered_state_sha256 -cmatch
             '^[0-9a-f]{64}$' -and
         $compactionState.cleanup.checks["owner-compaction-retry"] -eq
             $true -and
