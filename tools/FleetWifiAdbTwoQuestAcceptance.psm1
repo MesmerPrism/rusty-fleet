@@ -2405,7 +2405,10 @@ function Compress-MutationHistory {
     ) {
         "0" * 64
     } else {
-        [string]$summary.final_journal_sha256
+        # The retained suffix begins at the complete summary, rather than only
+        # at its last compacted record.  This makes a recomputed summary change
+        # invalidate the first retained record on restart.
+        [string]$summary.summary_sha256
     }
     foreach ($record in $history) {
         Assert-Condition (
@@ -2438,7 +2441,7 @@ function Compress-MutationHistory {
     $expectedPrevious = if ([long]$summary.compacted_count -eq 0) {
         "0" * 64
     } else {
-        [string]$summary.final_journal_sha256
+        [string]$summary.summary_sha256
     }
     foreach ($record in $compacted) {
         Assert-Condition (
@@ -2538,8 +2541,18 @@ function Compress-MutationHistory {
         [long]$summary.compacted_count + [long]$compacted.Count
     $summary.summary_sha256 =
         Get-MutationHistorySummarySha256 -Summary $summary
+    # Re-anchor the bounded retained suffix at the new, self-hashed summary.
+    # The suffix is deliberately small, so preserving this binding does not
+    # reintroduce the unbounded state growth that compaction removes.
+    $remainingPrevious = [string]$summary.summary_sha256
+    foreach ($record in $remaining) {
+        $record.previous_journal_sha256 = $remainingPrevious
+        $record.journal_sha256 = Get-MutationJournalSha256 -Mutation $record
+        $remainingPrevious = [string]$record.journal_sha256
+    }
     $State.mutation_history_summary = $summary
     $State.mutation_history = $remaining
+    $State.journal_head_sha256 = $remainingPrevious
 }
 
 function Add-DurableMutationHistoryRecord {
@@ -2585,7 +2598,7 @@ function Assert-MutationJournal {
         ) {
             "0" * 64
         } else {
-            [string]$State.mutation_history_summary.final_journal_sha256
+            [string]$State.mutation_history_summary.summary_sha256
         }
     }
     foreach ($record in @($State.mutation_history)) {

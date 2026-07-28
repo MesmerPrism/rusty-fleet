@@ -1618,12 +1618,18 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
 
     $tamperedRecordsDigest = Copy-JsonValue $validCompactionState
     $tamperedRecordsDigest.mutation_history_summary.
-        records_commitment_sha256 = "0" * 64
+        records_commitment_sha256 = ("e" * 64 -join "")
     $tamperedRecordsDigest.mutation_history_summary.summary_sha256 =
         Get-TestMutationHistorySummarySha256 `
             -Summary $tamperedRecordsDigest.mutation_history_summary
+    Assert-True (
+        [string]$tamperedRecordsDigest.mutation_history_summary.
+            records_commitment_sha256 -cne
+            [string]$validCompactionState.mutation_history_summary.
+                records_commitment_sha256
+    ) "The recomputed-summary tamper fixture did not alter its commitment."
     Write-Json -Path $compactionStatePath -Value $tamperedRecordsDigest
-    Assert-ThrowsCode -Code "mutation_history_summary_invalid" -Operation {
+    Assert-ThrowsCode -Code "mutation_journal_invalid" -Operation {
         Read-SanitizedState -Context $validated | Out-Null
     }
 

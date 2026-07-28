@@ -285,9 +285,10 @@ V6 retains the latest 64 terminal records exactly. Older records enter a
 chain-bound summary containing their count, first/last ordinals and
 timestamps, prior/final journal digests, confirmed/terminal and cleanup
 outcome counts, a cleanup-key/outcome commitment, and a commitment over every
-compacted record plus the preceding summary. The summary is self-hashed, its
-final digest anchors the retained suffix, and the ordinary journal head still
-commits the complete record sequence. Restart rejects summary tampering,
+compacted record plus the preceding summary. The summary is self-hashed, and
+that self-hash anchors the retained suffix while its final journal digest binds
+the compacted record chain; the ordinary journal head still commits the
+complete record sequence. Restart rejects summary tampering,
 invalid ordinals, suffix reorder or truncation, and noncanonical suffix
 lengths.
 
