@@ -313,7 +313,11 @@ Assert-True (
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-wifi-adb-acceptance-" + [guid]::NewGuid().ToString("N"))
+$externalOwnerRoot = Join-Path ([IO.Path]::GetTempPath()) (
+    "rusty-fleet-wifi-adb-owner-external-" +
+        [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
+New-Item -ItemType Directory -Path $externalOwnerRoot | Out-Null
 try {
     $artifactIds = @(
         "adb",
@@ -1564,6 +1568,114 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
 
     $compactionOwner.recovered = $true
     Write-Json -Path $compactionOwnerPath -Value $compactionOwner
+
+    function Assert-RejectedCompactionFixtureNoBoardContact {
+        param(
+            [Parameter(Mandatory)][string] $AttackName,
+            [Parameter(Mandatory)][string] $AttackRunConfig,
+            [Parameter(Mandatory)][string] $AttackOwnerStatePath,
+            [Parameter(Mandatory)][string] $ExpectedError
+        )
+
+        $boardBefore =
+            Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+                ConvertFrom-Json -AsHashtable -Depth 16
+        $ownerBefore =
+            Get-Content -LiteralPath $compactionOwnerPath -Raw |
+                ConvertFrom-Json -AsHashtable -Depth 8
+        $result = Invoke-RunnerProcess -Arguments @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $compactionRecoveryFixturePath,
+            "-ModulePath", $modulePath,
+            "-RunConfig", $AttackRunConfig,
+            "-OwnerStatePath", $AttackOwnerStatePath
+        )
+        $boardAfter =
+            Get-Content -LiteralPath $fakeBoardStatePath -Raw |
+                ConvertFrom-Json -AsHashtable -Depth 16
+        $ownerAfter =
+            Get-Content -LiteralPath $compactionOwnerPath -Raw |
+                ConvertFrom-Json -AsHashtable -Depth 8
+        $safeStderr = (
+            [string]$result.Stderr -replace
+                '(?i)[a-z]:\\[^\r\n]+', '<path>'
+        )
+        if ($safeStderr.Length -gt 512) {
+            $safeStderr = $safeStderr.Substring(0, 512)
+        }
+        Assert-True (
+            $result.ExitCode -ne 0 -and
+            $result.Stderr.Contains(
+                $ExpectedError,
+                [StringComparison]::Ordinal) -and
+            [int]$boardAfter.reserve_count -eq
+                [int]$boardBefore.reserve_count -and
+            [int]$boardAfter.heartbeat_count -eq
+                [int]$boardBefore.heartbeat_count -and
+            [int]$boardAfter.release_count -eq
+                [int]$boardBefore.release_count -and
+            [long]$ownerAfter.dispatch_count -eq
+                [long]$ownerBefore.dispatch_count -and
+            [long]$ownerAfter.unsafe_effect_count -eq
+                [long]$ownerBefore.unsafe_effect_count
+        ) (
+            "$AttackName reached Agent Board, released a lease, changed " +
+            "the owner, or returned the wrong rejection. " +
+            "exit=$($result.ExitCode); " +
+            "before=$($boardBefore.reserve_count)/" +
+                "$($boardBefore.heartbeat_count)/$($boardBefore.release_count); " +
+            "after=$($boardAfter.reserve_count)/" +
+                "$($boardAfter.heartbeat_count)/$($boardAfter.release_count); " +
+            "stderr=$safeStderr")
+    }
+
+    $realRunConfig = Copy-JsonValue $config
+    $realRunConfig.run_id = "wifi-adb-real"
+    $realRunConfigPath = Join-Path $testRoot "real-run-config.json"
+    Write-Json -Path $realRunConfigPath -Value $realRunConfig
+    Assert-RejectedCompactionFixtureNoBoardContact `
+        -AttackName "A real/non-synthetic fixture" `
+        -AttackRunConfig $realRunConfigPath `
+        -AttackOwnerStatePath $compactionOwnerPath `
+        -ExpectedError "modeled_projection_test_context_required"
+
+    $externalOwnerPath =
+        Join-Path $externalOwnerRoot "compaction-owner-state.json"
+    Copy-Item -LiteralPath $compactionOwnerPath `
+        -Destination $externalOwnerPath
+    Assert-RejectedCompactionFixtureNoBoardContact `
+        -AttackName "An external owner fixture" `
+        -AttackRunConfig $configPath `
+        -AttackOwnerStatePath $externalOwnerPath `
+        -ExpectedError "modeled_recovery_owner_path_invalid"
+
+    $reparseOwnerTarget = Join-Path $testRoot "owner-reparse-target"
+    $reparseOwnerDirectory = Join-Path $testRoot "owner-reparse"
+    New-Item -ItemType Directory -Path $reparseOwnerTarget | Out-Null
+    Copy-Item -LiteralPath $compactionOwnerPath -Destination (
+        Join-Path $reparseOwnerTarget "compaction-owner-state.json")
+    New-Item -ItemType Junction -Path $reparseOwnerDirectory `
+        -Target $reparseOwnerTarget | Out-Null
+    Assert-RejectedCompactionFixtureNoBoardContact `
+        -AttackName "A reparse owner fixture" `
+        -AttackRunConfig $configPath `
+        -AttackOwnerStatePath (
+            Join-Path $reparseOwnerDirectory "compaction-owner-state.json") `
+        -ExpectedError "private_input_reparse"
+
+    $compactionPartialState = Copy-JsonValue $compactionState
+    $alreadyTrueState = Copy-JsonValue $compactionState
+    $alreadyTrueState.cleanup.checks["owner-compaction-retry"] = $true
+    Write-SanitizedState -Context $validated -State $alreadyTrueState
+    Assert-RejectedCompactionFixtureNoBoardContact `
+        -AttackName "An inherited true cleanup check" `
+        -AttackRunConfig $configPath `
+        -AttackOwnerStatePath $compactionOwnerPath `
+        -ExpectedError "modeled_recovery_state_invalid"
+    Write-SanitizedState -Context $validated -State $compactionPartialState
+    $compactionState = Read-SanitizedState -Context $validated
+
     $compactionRestart = Invoke-RunnerProcess -Arguments @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -1630,6 +1742,8 @@ Import-Module -Force -DisableNameChecking '$($modulePath.Replace("'", "''"))'
         [long]$compactionRestartProof.recent_records -eq
             $mutationHistoryLimit -and
         [long]$compactionRestartProof.state_size_bytes -lt 1048576 -and
+        [string]$compactionRestartProof.recovery_evidence_sha256 -cmatch
+            '^[0-9a-f]{64}$' -and
         $compactionState.cleanup.checks["owner-compaction-retry"] -eq
             $true -and
         [string]$compactionState.cleanup.status -ceq "complete" -and
@@ -1908,6 +2022,14 @@ finally {
         (Split-Path -Leaf $resolvedTestRoot) -like
             "rusty-fleet-wifi-adb-acceptance-*") {
         Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force `
+            -ErrorAction SilentlyContinue
+    }
+    $resolvedExternalOwnerRoot = [IO.Path]::GetFullPath($externalOwnerRoot)
+    if ($resolvedExternalOwnerRoot.StartsWith(
+            $tempRoot, [StringComparison]::OrdinalIgnoreCase) -and
+        (Split-Path -Leaf $resolvedExternalOwnerRoot) -like
+            "rusty-fleet-wifi-adb-owner-external-*") {
+        Remove-Item -LiteralPath $resolvedExternalOwnerRoot -Recurse -Force `
             -ErrorAction SilentlyContinue
     }
 }

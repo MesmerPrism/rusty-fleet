@@ -2651,8 +2651,10 @@ function Assert-ModeledNoDeviceProjectionContext {
     $stateRoot = [IO.Path]::GetFullPath(
         [string]$Context.Config.private_state_root)
     $testRoot = [IO.Path]::GetFullPath((Split-Path -Parent $stateRoot))
-    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $temporaryRoot = [IO.Path]::TrimEndingDirectorySeparator(
+        [IO.Path]::GetFullPath([IO.Path]::GetTempPath()))
     $pathPrefix = $testRoot + [IO.Path]::DirectorySeparatorChar
+    $expectedConfigPath = Join-Path $testRoot "run-config.json"
     $devices = @($Context.Config.devices)
     $deviceA = @($devices | Where-Object {
         [string]$_.slot -ceq "device_a"
@@ -2684,12 +2686,12 @@ function Assert-ModeledNoDeviceProjectionContext {
     }
 
     $valid = (
+        [string]$Context.Path -ceq $expectedConfigPath -and
+        [string]$Context.Sha256 -cmatch '^[0-9a-f]{64}$' -and
         [string]$Context.Config.run_id -ceq "wifi-adb-synthetic" -and
         (Split-Path -Leaf $testRoot) -like
             "rusty-fleet-wifi-adb-acceptance-*" -and
-        $testRoot.StartsWith(
-            $temporaryRoot,
-            [StringComparison]::OrdinalIgnoreCase) -and
+        [string](Split-Path -Parent $testRoot) -ceq $temporaryRoot -and
         $stateRoot -ceq (Join-Path $testRoot "state") -and
         $devices.Count -eq 2 -and
         $deviceA.Count -eq 1 -and
@@ -2710,6 +2712,193 @@ function Assert-ModeledNoDeviceProjectionContext {
     )
     Assert-Condition $valid "modeled_projection_test_context_required" `
         "A no-device modeled mutation is restricted to the closed synthetic test context."
+
+    $configRead = Read-StrictJsonFile -Path $expectedConfigPath `
+        -Context "synthetic modeled run config"
+    Assert-Condition (
+        [string]$configRead.Sha256 -ceq [string]$Context.Sha256
+    ) "modeled_projection_test_context_required" `
+        "The synthetic modeled context must bind the exact run-config bytes."
+
+    foreach ($path in $allPrivateInputs) {
+        [void](Resolve-PrivateLeaf -Path $path `
+            -Context "synthetic modeled private input" -AllowMissing)
+    }
+    [void](Resolve-PrivateLeaf -Path $stateRoot `
+        -Context "synthetic modeled state root" -AllowMissing)
+}
+
+function Assert-ModeledRecoveryFixtureOwnerShape {
+    param([Parameter(Mandatory)][Collections.IDictionary] $Owner)
+
+    Assert-ExactProperties -Value $Owner -Required @(
+        "dispatch_count",
+        "effect_applied",
+        "recovered",
+        "schema",
+        "unsafe_effect_count"
+    ) -Context "modeled recovery fixture owner"
+    Assert-Condition (
+        [string]$Owner.schema -ceq
+            "rusty.fleet.wifi_adb_compaction_test_owner.v1" -and
+        ($Owner.dispatch_count -is [int] -or
+            $Owner.dispatch_count -is [long]) -and
+        [long]$Owner.dispatch_count -ge 1L -and
+        ($Owner.unsafe_effect_count -is [int] -or
+            $Owner.unsafe_effect_count -is [long]) -and
+        [long]$Owner.unsafe_effect_count -eq 1L -and
+        $Owner.effect_applied -is [bool] -and
+        $Owner.effect_applied -eq $true -and
+        $Owner.recovered -is [bool] -and
+        $Owner.recovered -eq $true
+    ) "modeled_recovery_owner_invalid" `
+        "The modeled recovery owner must contain one applied effect and an explicit recovery readback."
+}
+
+function Read-PinnedModeledRecoveryFixtureOwner {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][string] $ExpectedSha256,
+        [Parameter(Mandatory)][string] $ExpectedChainIdentity
+    )
+
+    $lease = $null
+    try {
+        $lease = [RustyFleetAcceptanceNativeV2]::
+            AcquirePinnedFileExecutionLease(
+                $Path,
+                $ExpectedSha256,
+                $ExpectedChainIdentity)
+        $read = Read-StrictJsonFile -Path $Path `
+            -Context "modeled recovery fixture owner"
+        Assert-Condition (
+            [string]$read.Sha256 -ceq $ExpectedSha256
+        ) "modeled_recovery_owner_changed" `
+            "The modeled recovery owner changed while it was read."
+        Assert-ModeledRecoveryFixtureOwnerShape -Owner $read.Value
+        $lease.VerifyAfter()
+        return [pscustomobject]@{
+            Path = [string]$read.Path
+            Sha256 = [string]$read.Sha256
+            ChainIdentity = [string]$lease.ChainIdentity
+            Value = $read.Value
+        }
+    } catch {
+        if ([string]$_.Exception.Message -like "modeled_*") {
+            throw
+        }
+        throw (New-AcceptanceError "modeled_recovery_owner_changed" `
+            "The modeled recovery owner path, identity, or bytes changed.")
+    } finally {
+        if ($null -ne $lease) {
+            $lease.Dispose()
+        }
+    }
+}
+
+function Get-ModeledRecoveryFixtureBinding {
+    param(
+        [Parameter(Mandatory)][object] $Context,
+        [Parameter(Mandatory)][string] $OwnerStatePath
+    )
+
+    Assert-ModeledNoDeviceProjectionContext -Context $Context
+    $stateRoot = [IO.Path]::GetFullPath(
+        [string]$Context.Config.private_state_root)
+    $testRoot = [IO.Path]::GetFullPath((Split-Path -Parent $stateRoot))
+    $expectedOwnerPath =
+        [IO.Path]::GetFullPath((Join-Path $testRoot `
+            "compaction-owner-state.json"))
+    $resolvedOwnerPath = Resolve-PrivateLeaf -Path $OwnerStatePath `
+        -Context "modeled recovery fixture owner"
+    Assert-Condition (
+        [string]$resolvedOwnerPath -ceq $expectedOwnerPath
+    ) "modeled_recovery_owner_path_invalid" `
+        "The modeled recovery owner must be the exact synthetic fixture path."
+
+    $read = Read-StrictJsonFile -Path $resolvedOwnerPath `
+        -Context "modeled recovery fixture owner"
+    Assert-ModeledRecoveryFixtureOwnerShape -Owner $read.Value
+    $lease = $null
+    try {
+        $lease = [RustyFleetAcceptanceNativeV2]::
+            AcquirePinnedFileExecutionLease(
+                $resolvedOwnerPath,
+                [string]$read.Sha256,
+                "")
+        $lease.VerifyAfter()
+        return [pscustomobject]@{
+            TestRoot = $testRoot
+            OwnerPath = [string]$resolvedOwnerPath
+            OwnerSha256 = [string]$read.Sha256
+            OwnerChainIdentity = [string]$lease.ChainIdentity
+            Owner = $read.Value
+        }
+    } catch {
+        if ([string]$_.Exception.Message -like "modeled_*") {
+            throw
+        }
+        throw (New-AcceptanceError "modeled_recovery_owner_changed" `
+            "The modeled recovery owner path, identity, or bytes changed.")
+    } finally {
+        if ($null -ne $lease) {
+            $lease.Dispose()
+        }
+    }
+}
+
+function Assert-ModeledRecoveryFixtureState {
+    param(
+        [Parameter(Mandatory)][Collections.IDictionary] $State,
+        [Parameter(Mandatory)][object] $Binding
+    )
+
+    $checkNames = @($State.cleanup.checks.Keys | Sort-Object)
+    $expectedCheckNames = @(
+        "device_a-final-readback",
+        "device_b-final-readback",
+        "owner-compaction-retry"
+    )
+    $recent = @($State.mutation_history)
+    $totalRecords = Get-MutationTotalCount -State $State
+    $valid = (
+        [string]$State.phase -ceq "cleanup" -and
+        [string]$State.status -ceq "cleanup_partial_failure" -and
+        [string]$State.cleanup.status -ceq "partial_failure" -and
+        [string]$State.agent_board_reservation -ceq "bound" -and
+        $null -eq $State.mutation -and
+        @(Compare-Object $checkNames $expectedCheckNames).Count -eq 0 -and
+        $State.cleanup.checks["device_a-final-readback"] -eq $true -and
+        $State.cleanup.checks["device_b-final-readback"] -eq $true -and
+        $State.cleanup.checks["owner-compaction-retry"] -eq $false -and
+        $totalRecords -gt [long]$script:MutationHistoryRecentLimit -and
+        $recent.Count -eq $script:MutationHistoryRecentLimit -and
+        [long]$State.mutation_history_summary.compacted_count -gt 0L -and
+        [long]$State.mutation_history_summary.cleanup_attempt_count -eq
+            [long]$State.mutation_history_summary.compacted_count -and
+        [long]$State.mutation_history_summary.cleanup_partial_count -eq
+            [long]$State.mutation_history_summary.compacted_count -and
+        [long]$State.mutation_history_summary.cleanup_confirmed_count -eq 0L -and
+        [long]$State.mutation_history_summary.cleanup_exception_count -eq 0L -and
+        [long]$State.mutation_history_summary.cleanup_other_terminal_count -eq
+            0L -and
+        @($recent | Where-Object {
+            [string]$_.action_id -cne
+                "acceptance.cleanup.owner-compaction-retry" -or
+            [string]$_.stage -cne "terminal" -or
+            [string]$_.reconciliation_code -cne
+                "cleanup_step_partial_failure"
+        }).Count -eq 0 -and
+        [long]$Binding.Owner.dispatch_count -eq $totalRecords
+    )
+    Assert-Condition $valid "modeled_recovery_state_invalid" `
+        "Fresh recovery requires the exact closed compacted partial-failure fixture state."
+
+    return [pscustomobject]@{
+        TotalRecords = [long]$totalRecords
+        JournalHeadSha256 = [string]$State.journal_head_sha256
+        DispatchCount = [long]$Binding.Owner.dispatch_count
+    }
 }
 
 function Start-DurableMutation {
@@ -6218,6 +6407,9 @@ function Invoke-JournaledCleanupStep {
         [switch] $ModeledNoDeviceProjection,
         [Parameter(Mandatory)][scriptblock] $Operation
     )
+    if ($ModeledNoDeviceProjection) {
+        Assert-ModeledNoDeviceProjectionContext -Context $Context
+    }
     if (
         $Checks.Contains($Name) -and
         $Checks[$Name] -is [bool] -and
