@@ -4,7 +4,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if (-not ("RustyFleetAcceptanceNativeV2" -as [type])) {
+if (-not ("RustyFleetAcceptanceNativeV3" -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
@@ -14,7 +14,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
-public static class RustyFleetAcceptanceNativeV2
+public static class RustyFleetAcceptanceNativeV3
 {
     private const uint MOVEFILE_REPLACE_EXISTING = 0x1;
     private const uint MOVEFILE_WRITE_THROUGH = 0x8;
@@ -1018,7 +1018,7 @@ function Read-ValidatedRunConfig {
     $agentBoardValidationLease = $null
     try {
         $agentBoardValidationLease =
-            [RustyFleetAcceptanceNativeV2]::
+            [RustyFleetAcceptanceNativeV3]::
                 AcquirePinnedFileExecutionLease(
                     [string]$config.agent_board.cli_path,
                     [string]$config.agent_board.cli_sha256,
@@ -1648,7 +1648,7 @@ function Write-SanitizedState {
             $temporaryItem.Attributes -band [IO.FileAttributes]::ReparsePoint
         )) "state_temporary_reparse" `
         "The randomized state temp file became a reparse point."
-    [RustyFleetAcceptanceNativeV2]::PublishWriteThrough($temporary, $path)
+    [RustyFleetAcceptanceNativeV3]::PublishWriteThrough($temporary, $path)
 }
 
 function Assert-ValidSanitizedStateShape {
@@ -1858,7 +1858,7 @@ function Write-AgentBoardReceipt {
                 [IO.FileAttributes]::ReparsePoint
         )) "agent_board_receipt_temporary_reparse" `
         "The randomized reservation receipt became a reparse point."
-    [RustyFleetAcceptanceNativeV2]::PublishWriteThrough($temporary, $path)
+    [RustyFleetAcceptanceNativeV3]::PublishWriteThrough($temporary, $path)
 }
 
 function Get-AgentBoardBinding {
@@ -1910,7 +1910,7 @@ function Invoke-AgentBoardCli {
     try {
         try {
             $executionLease =
-                [RustyFleetAcceptanceNativeV2]::
+                [RustyFleetAcceptanceNativeV3]::
                     AcquirePinnedFileExecutionLease(
                         [string]$Context.Config.agent_board.cli_path,
                         [string]$Context.Config.agent_board.cli_sha256,
@@ -3073,7 +3073,7 @@ function Get-ModeledRecoveryFixtureBinding {
     $ownerSha256 = Get-Sha256 -Path $resolvedOwnerPath
     $lease = $null
     try {
-        $lease = [RustyFleetAcceptanceNativeV2]::
+        $lease = [RustyFleetAcceptanceNativeV3]::
             AcquirePinnedWritableFileLease(
                 $resolvedOwnerPath,
                 $ownerSha256,
@@ -3190,7 +3190,7 @@ function Get-ModeledRecoveryFinalStateBinding {
         [Text.UTF8Encoding]::new($false).GetBytes($expectedText))
     $lease = $null
     try {
-        $lease = [RustyFleetAcceptanceNativeV2]::
+        $lease = [RustyFleetAcceptanceNativeV3]::
             AcquirePinnedFileExecutionLease(
                 $resolvedStatePath,
                 $expectedSha256,

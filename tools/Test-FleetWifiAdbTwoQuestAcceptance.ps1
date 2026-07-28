@@ -319,6 +319,114 @@ $externalOwnerRoot = Join-Path ([IO.Path]::GetTempPath()) (
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 New-Item -ItemType Directory -Path $externalOwnerRoot | Out-Null
 try {
+    $nativeCoexistenceOwnerPath =
+        Join-Path $testRoot "native-v3-coexistence-owner.json"
+    $nativeCoexistenceStatePath =
+        Join-Path $testRoot "native-v3-coexistence-state.json"
+    $escapedModulePath = $modulePath.Replace("'", "''")
+    $escapedCoexistenceOwnerPath =
+        $nativeCoexistenceOwnerPath.Replace("'", "''")
+    $escapedCoexistenceStatePath =
+        $nativeCoexistenceStatePath.Replace("'", "''")
+    $nativeCoexistenceScript = @"
+Set-StrictMode -Version Latest
+`$ErrorActionPreference = "Stop"
+Add-Type -TypeDefinition @'
+public static class RustyFleetAcceptanceNativeV2
+{
+    public static string PriorShapeMarker()
+    {
+        return "prior-v2";
+    }
+}
+'@
+Import-Module -Name '$escapedModulePath' -Force -DisableNameChecking
+`$utf8 = [Text.UTF8Encoding]::new(`$false)
+`$ownerPath = '$escapedCoexistenceOwnerPath'
+`$ownerBefore = '{"schema":"synthetic.owner.v1","revision":1}' +
+    [Environment]::NewLine
+[IO.File]::WriteAllText(`$ownerPath, `$ownerBefore, `$utf8)
+`$ownerBeforeHash = (
+    Get-FileHash -LiteralPath `$ownerPath -Algorithm SHA256
+).Hash.ToLowerInvariant()
+`$ownerLease =
+    [RustyFleetAcceptanceNativeV3]::
+        AcquirePinnedWritableFileLease(`$ownerPath, `$ownerBeforeHash, "")
+try {
+    if (`$ownerLease.ReadUtf8Text(4096) -cne `$ownerBefore) {
+        throw "The V3 writable lease did not read its retained owner handle."
+    }
+    `$ownerAfter = '{"schema":"synthetic.owner.v1","revision":2}' +
+        [Environment]::NewLine
+    `$ownerAfterHash = `$ownerLease.RewriteUtf8Text(`$ownerAfter, 4096)
+    `$ownerLease.VerifyAfter()
+    if (
+        `$ownerLease.ReadUtf8Text(4096) -cne `$ownerAfter -or
+        [string]`$ownerLease.Sha256 -cne `$ownerAfterHash
+    ) {
+        throw "The V3 writable lease did not retain its post-write identity."
+    }
+} finally {
+    `$ownerLease.Dispose()
+}
+`$statePath = '$escapedCoexistenceStatePath'
+`$stateText = '{"schema":"synthetic.state.v1","status":"complete"}' +
+    [Environment]::NewLine
+[IO.File]::WriteAllText(`$statePath, `$stateText, `$utf8)
+`$stateHash = (
+    Get-FileHash -LiteralPath `$statePath -Algorithm SHA256
+).Hash.ToLowerInvariant()
+`$stateLease =
+    [RustyFleetAcceptanceNativeV3]::
+        AcquirePinnedFileExecutionLease(`$statePath, `$stateHash, "")
+try {
+    `$stateLease.VerifyAfter()
+    if (
+        `$stateLease.Writable -ne `$false -or
+        `$stateLease.ReadUtf8Text(4096) -cne `$stateText
+    ) {
+        throw "The V3 read-only state lease did not retain exact bytes."
+    }
+} finally {
+    `$stateLease.Dispose()
+}
+if (
+    [RustyFleetAcceptanceNativeV2]::PriorShapeMarker() -cne "prior-v2"
+) {
+    throw "Importing V3 replaced the already-loaded V2 helper."
+}
+[ordered]@{
+    schema = "rusty.fleet.native_helper_coexistence.v1"
+    result = "pass"
+    owner_sha256 = `$ownerAfterHash
+    state_sha256 = `$stateHash
+} | ConvertTo-Json -Compress
+"@
+    $nativeCoexistenceResult = Invoke-RunnerProcess -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-Command", $nativeCoexistenceScript
+    )
+    Assert-True (
+        $nativeCoexistenceResult.ExitCode -eq 0 -and
+        [string]::IsNullOrEmpty($nativeCoexistenceResult.Stderr)
+    ) (
+        "The V3 native helper did not coexist with a prior loaded V2 type: " +
+        ([string]$nativeCoexistenceResult.Stderr -replace
+            '(?i)[a-z]:\\[^\r\n]+', '<path>'))
+    $nativeCoexistenceProof =
+        $nativeCoexistenceResult.Stdout |
+            ConvertFrom-Json -AsHashtable -Depth 8
+    Assert-True (
+        [string]$nativeCoexistenceProof.schema -ceq
+            "rusty.fleet.native_helper_coexistence.v1" -and
+        [string]$nativeCoexistenceProof.result -ceq "pass" -and
+        [string]$nativeCoexistenceProof.owner_sha256 -cmatch
+            '^[0-9a-f]{64}$' -and
+        [string]$nativeCoexistenceProof.state_sha256 -cmatch
+            '^[0-9a-f]{64}$'
+    ) "The V2/V3 coexistence proof is incomplete."
+
     $artifactIds = @(
         "adb",
         "fleet-onboard",
