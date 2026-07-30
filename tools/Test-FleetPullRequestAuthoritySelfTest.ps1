@@ -9,6 +9,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ExpectedVerifierCommit = "354545a63e870c3d89254f8fb78f6ed4060a8dc3"
+$ExpectedGuardrailBase = "c023f54805a7d29146d595ede6b8c56e9d33b1cc"
 $ExpectedGuardrailCandidate = "bee088f24277a5ee3537f04c729639ef204d4827"
 $AdapterPath = Join-Path $PSScriptRoot "Test-FleetPullRequestAuthority.ps1"
 $SourceRoot = Split-Path -Parent $PSScriptRoot
@@ -589,8 +590,16 @@ throw "Candidate trap must never execute."
             "fetch",
             "--no-tags",
             $SourceRoot,
-            "HEAD:refs/heads/source-base"
+            "$ExpectedGuardrailBase`:refs/heads/source-base"
         ))
+        $fetchedSourceBase = (
+            Invoke-Git $productionRoot @(
+                "rev-parse", "refs/heads/source-base^{commit}"
+            )
+        ).stdout.Trim()
+        if ($fetchedSourceBase -cne $ExpectedGuardrailBase) {
+            throw "Fetched production fixture base changed identity."
+        }
         [void](Invoke-Git $productionRoot @(
             "checkout", "--detach", "refs/heads/source-base"
         ))
