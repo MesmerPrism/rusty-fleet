@@ -121,8 +121,8 @@
           "path": "docs/VALIDATION.md",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 23420,
-          "sha256": "f278eb20c6c3c33c3b40c46a53203fbf009e18e7b7cbb057d8c7be218b83eb11"
+          "size_bytes": 23557,
+          "sha256": "6d8faa38fcd6e7dbcd49b8b1f5b3e1b6f76ebe01af538768f2aca59245b7a3fd"
         },
         {
           "path": "docs/WORKFLOW.md",
@@ -149,8 +149,8 @@
           "path": "tools/Fleet.ValidationGuardrails.psm1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 77164,
-          "sha256": "ce967f632a8646ef8c7d44e771b3f62800d980ef9cb7c6e65b326061762ac5ce"
+          "size_bytes": 77559,
+          "sha256": "ae8154691bde32199caf6f324b24ccc461f09d2b13471440288156d37016ef45"
         },
         {
           "path": "tools/Invoke-FleetValidation.ps1",
@@ -163,8 +163,8 @@
           "path": "tools/Test-FleetValidationGuardrails.ps1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 36435,
-          "sha256": "0ea665da395f902ae3df9c32b80569bad0ce3fadfa300753327ad4ed8adf6dc3"
+          "size_bytes": 39396,
+          "sha256": "8cbce41e0a8b9d6f4616c2616937f70f0329314a81d7f071c94e383796c0bd2f"
         },
         {
           "path": "tools/Test-Repo.ps1",
