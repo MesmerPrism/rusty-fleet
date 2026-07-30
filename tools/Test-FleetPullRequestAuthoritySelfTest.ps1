@@ -10,7 +10,8 @@ $ErrorActionPreference = "Stop"
 
 $ExpectedVerifierCommit = "354545a63e870c3d89254f8fb78f6ed4060a8dc3"
 $ExpectedGuardrailBase = "c023f54805a7d29146d595ede6b8c56e9d33b1cc"
-$ExpectedGuardrailCandidate = "bee088f24277a5ee3537f04c729639ef204d4827"
+$ExpectedGuardrailRequiredAncestor = "bee088f24277a5ee3537f04c729639ef204d4827"
+$ExpectedGuardrailArtifactCommit = "3ddfa732b27e91d80eba8cebbe02554d38a97463"
 $AdapterPath = Join-Path $PSScriptRoot "Test-FleetPullRequestAuthority.ps1"
 $SourceRoot = Split-Path -Parent $PSScriptRoot
 $SourceSchema = Join-Path `
@@ -560,10 +561,10 @@ throw "Candidate trap must never execute."
     $guardrailCommit = (
         Invoke-Git $guardrailSource @(
             "rev-parse",
-            "$ExpectedGuardrailCandidate^{commit}"
+            "$ExpectedGuardrailArtifactCommit^{commit}"
         )
     ).stdout.Trim()
-    if ($guardrailCommit -cne $ExpectedGuardrailCandidate) {
+    if ($guardrailCommit -cne $ExpectedGuardrailArtifactCommit) {
         throw "Guardrail repository does not contain the exact reviewed commit."
     }
     if ((
@@ -622,7 +623,7 @@ throw "Candidate trap must never execute."
         $tokenPath = Join-Path $productionRoot $tokenRelative
         Write-DisposableApprovalTokenFixture `
             -Path $tokenPath `
-            -RequiredAncestor $ExpectedGuardrailCandidate
+            -RequiredAncestor $ExpectedGuardrailRequiredAncestor
         [void](Invoke-Git $productionRoot @("add", "--all"))
         [void](Invoke-Git $productionRoot @(
             "commit", "--allow-empty", "-m", "Bootstrap exact production authority"
@@ -635,14 +636,14 @@ throw "Candidate trap must never execute."
             "fetch",
             "--no-tags",
             $guardrailSource,
-            "$ExpectedGuardrailCandidate`:refs/heads/guardrail-candidate"
+            "$ExpectedGuardrailArtifactCommit`:refs/heads/guardrail-candidate"
         ))
         $fetchedGuardrail = (
             Invoke-Git $productionRoot @(
                 "rev-parse", "refs/heads/guardrail-candidate^{commit}"
             )
         ).stdout.Trim()
-        if ($fetchedGuardrail -cne $ExpectedGuardrailCandidate) {
+        if ($fetchedGuardrail -cne $ExpectedGuardrailArtifactCommit) {
             throw "Fetched guardrail candidate changed identity."
         }
 
@@ -650,7 +651,7 @@ throw "Candidate trap must never execute."
             "checkout",
             "-b",
             "production-authority-head",
-            $ExpectedGuardrailCandidate
+            $ExpectedGuardrailArtifactCommit
         ))
         [void](Invoke-Git $productionRoot @(
             "merge", "--no-ff", "--no-commit", $productionBase
@@ -930,7 +931,7 @@ throw "Candidate trap must never execute."
         }
         Write-DisposableApprovalTokenFixture `
             -Path $tokenPath `
-            -RequiredAncestor $ExpectedGuardrailCandidate
+            -RequiredAncestor $ExpectedGuardrailRequiredAncestor
         [void](Invoke-Git $productionRoot @("add", "--all"))
         [void](Invoke-Git $productionRoot @(
             "commit", "-m", "Create consumed-approval drifted base"
@@ -941,7 +942,7 @@ throw "Candidate trap must never execute."
         $ancestorResult = Invoke-Git $productionRoot @(
             "merge-base",
             "--is-ancestor",
-            $ExpectedGuardrailCandidate,
+            $ExpectedGuardrailArtifactCommit,
             $driftedBase
         ) -AllowFailure
         if ($ancestorResult.exit_code -ne 0) {
