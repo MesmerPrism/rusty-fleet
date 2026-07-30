@@ -36,6 +36,67 @@ function Get-TestPendingReceiptPath([string] $Root, [object] $Receipt) {
     )
 }
 
+$hostedWorkflowPaths = @(
+    ".github/workflows/ci.yml",
+    ".github/workflows/deep-validation.yml"
+)
+$vsceipBuildToolsKey = `
+    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\VSCommon\17.0\SQM'
+$vsceipPolicyKey = `
+    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\VisualStudio\SQM'
+foreach ($hostedWorkflowPath in $hostedWorkflowPaths) {
+    $hostedWorkflowText = Get-Content -LiteralPath (
+        Join-Path $repoRoot $hostedWorkflowPath
+    ) -Raw
+    foreach ($requiredVsceipContract in @(
+        "Disable Visual Studio customer-experience telemetry",
+        "if: runner.environment == 'github-hosted'",
+        $vsceipBuildToolsKey,
+        $vsceipPolicyKey,
+        "New-Item -Path `$key -Force -ErrorAction Stop",
+        "New-ItemProperty -LiteralPath `$key -Name OptIn -PropertyType DWord",
+        "-Value 0 -Force -ErrorAction Stop",
+        "Get-ItemPropertyValue -LiteralPath `$key -Name OptIn",
+        "if ([int]`$actual -ne 0)"
+    )) {
+        Assert-True (
+            $hostedWorkflowText.Contains(
+                $requiredVsceipContract,
+                [StringComparison]::Ordinal
+            )
+        ) "$hostedWorkflowPath does not fail closed on the documented VSCEIP opt-out."
+    }
+    Assert-True (
+        ([regex]::Matches(
+            $hostedWorkflowText,
+            "(?m)^\s*- name: Disable Visual Studio customer-experience telemetry\r?\n" +
+                "\s+if: runner\.environment == 'github-hosted'\s*$"
+        )).Count -eq 1
+    ) "$hostedWorkflowPath must contain exactly one GitHub-hosted-only VSCEIP setup step."
+    $vsceipSetupIndex = $hostedWorkflowText.IndexOf(
+        "Disable Visual Studio customer-experience telemetry",
+        [StringComparison]::Ordinal
+    )
+    $validationInvocationIndex = $hostedWorkflowText.IndexOf(
+        ".\tools\Invoke-FleetValidation.ps1",
+        [StringComparison]::Ordinal
+    )
+    Assert-True (
+        $vsceipSetupIndex -ge 0 -and
+        $validationInvocationIndex -gt $vsceipSetupIndex
+    ) "$hostedWorkflowPath must apply VSCEIP setup before guarded validation."
+    Assert-True (
+        -not $hostedWorkflowText.Contains(
+            "VSCMD_SKIP_SENDTELEMETRY",
+            [StringComparison]::Ordinal
+        ) -and
+        -not $hostedWorkflowText.Contains(
+            "Stop-Process",
+            [StringComparison]::Ordinal
+        )
+    ) "$hostedWorkflowPath must configure VSCEIP at source, not suppress or kill a leaked process."
+}
+
 $repositoryGateText = Get-Content -LiteralPath (
     Join-Path $PSScriptRoot "Test-Repo.ps1"
 ) -Raw

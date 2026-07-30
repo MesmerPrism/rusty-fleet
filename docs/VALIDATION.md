@@ -57,6 +57,19 @@ captured. The receipt records the one-second observation budget and actual
 elapsed time. Observation is best-effort, cannot prevent termination, and
 never weakens the Job membership decision or zero-survivor requirement.
 
+The two GitHub-hosted Windows validation workflows opt out of Visual Studio's
+optional customer-experience telemetry before invoking the guarded runner.
+They set the [Microsoft-documented Build Tools and policy registry
+keys](https://learn.microsoft.com/visualstudio/ide/visual-studio-experience-improvement-program)
+to `OptIn` DWORD value `0` and read both values back fail-closed. This disables
+optional VSCEIP at its documented source so `vctip.exe` has no opted-in
+telemetry work; hosted validation still fails closed if any descendant
+survives the five-second drain. It is runner setup, not a process-name
+allowlist or a cleanup exception. Forced tree termination on a leak and the
+zero-survivor proof remain unchanged. The registry step is explicitly
+conditioned on `runner.environment == 'github-hosted'`; self-hosted runners do
+not receive an HKLM mutation and remain subject to the same strict leak gate.
+
 The atomic `rusty.fleet.validation_run_receipt.v1` records requested,
 required, and effective profiles; configuration SHA-256; Git evidence;
 command identities; timings; per-check status, timeout, and cleanup; aggregate

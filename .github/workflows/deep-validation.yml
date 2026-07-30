@@ -17,6 +17,26 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.201
+      - name: Disable Visual Studio customer-experience telemetry
+        if: runner.environment == 'github-hosted'
+        shell: pwsh
+        run: |
+          # Build Tools requires registry configuration for VSCEIP. The hosted
+          # Windows runner is ephemeral, so this applies only to this job.
+          $vsceipKeys = @(
+            'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\VSCommon\17.0\SQM',
+            'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\VisualStudio\SQM'
+          )
+          foreach ($key in $vsceipKeys) {
+            New-Item -Path $key -Force -ErrorAction Stop | Out-Null
+            New-ItemProperty -LiteralPath $key -Name OptIn -PropertyType DWord `
+              -Value 0 -Force -ErrorAction Stop | Out-Null
+            $actual = Get-ItemPropertyValue -LiteralPath $key -Name OptIn `
+              -ErrorAction Stop
+            if ([int]$actual -ne 0) {
+              throw "Visual Studio customer-experience telemetry opt-out did not persist."
+            }
+          }
       - name: Deep validation
         shell: pwsh
         run: .\tools\Invoke-FleetValidation.ps1 -Profile release -Execute
