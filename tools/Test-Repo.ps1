@@ -30,6 +30,16 @@ if (-not $GuardrailChild) {
     }
 }
 
+if ($GuardrailChild) {
+    # A guarded validation run owns its complete process tree. Prevent the .NET
+    # CLI, MSBuild, and Roslyn from retaining same-user build servers after the
+    # validation root exits; a genuinely persistent descendant remains a
+    # fail-closed owned-child-leak in the outer Job Object.
+    $env:MSBUILDDISABLENODEREUSE = "1"
+    $env:DOTNET_CLI_USE_MSBUILD_SERVER = "0"
+    $env:UseSharedCompilation = "false"
+}
+
 function Assert-True {
     param(
         [Parameter(Mandatory)]
@@ -394,7 +404,8 @@ function Test-WpfConsole {
         $testProject,
         "-c",
         "Release",
-        "--nologo"
+        "--nologo",
+        "--disable-build-servers"
     )
 
     $receiptLines = @(
@@ -402,6 +413,7 @@ function Test-WpfConsole {
             --project $testProject `
             -c Release `
             --no-build `
+            --disable-build-servers `
             -- `
             --repo-root $repoRoot
     )

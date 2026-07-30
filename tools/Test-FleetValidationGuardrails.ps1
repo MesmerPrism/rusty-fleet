@@ -35,6 +35,28 @@ function Get-TestPendingReceiptPath([string] $Root, [object] $Receipt) {
     )
 }
 
+$repositoryGateText = Get-Content -LiteralPath (
+    Join-Path $PSScriptRoot "Test-Repo.ps1"
+) -Raw
+foreach ($requiredBuildServerSetting in @(
+    '$env:MSBUILDDISABLENODEREUSE = "1"',
+    '$env:DOTNET_CLI_USE_MSBUILD_SERVER = "0"',
+    '$env:UseSharedCompilation = "false"'
+)) {
+    Assert-True (
+        $repositoryGateText.Contains(
+            $requiredBuildServerSetting,
+            [StringComparison]::Ordinal
+        )
+    ) "GuardrailChild does not suppress every persistent .NET build server."
+}
+Assert-True (
+    ([regex]::Matches(
+        $repositoryGateText,
+        [regex]::Escape("--disable-build-servers")
+    )).Count -eq 2
+) "The guarded .NET build and run commands must both ignore persistent build servers."
+
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("fleet-validation-{0}" -f [guid]::NewGuid())
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
