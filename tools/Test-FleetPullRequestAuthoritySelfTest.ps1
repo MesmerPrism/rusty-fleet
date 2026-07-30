@@ -21,7 +21,9 @@ $ProcessTimeoutSeconds = 300
 function Invoke-Process {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string[]]$Arguments,
         [switch]$AllowFailure,
         [int]$TimeoutSeconds = 60
     )
@@ -130,7 +132,9 @@ function New-EventPayload {
         [Parameter(Mandatory = $true)][int]$Number,
         [Parameter(Mandatory = $true)][string]$BaseCommit,
         [Parameter(Mandatory = $true)][string]$HeadCommit,
-        [Parameter(Mandatory = $true)][string]$MergeCommit,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$MergeCommit,
         [string]$RepositoryId = "1309815859"
     )
 
@@ -351,10 +355,10 @@ throw "Candidate trap must never execute."
             [int]$PayloadPullRequestNumber = 7,
             [string]$CaseBase = $base,
             [string]$CaseHead = $head,
-            [string]$CaseMerge = $merge,
+            [AllowEmptyString()][string]$CaseMerge = $merge,
             [string]$RefCase = "baseline",
             [string]$PayloadHead = $head,
-            [string]$PayloadMerge = $merge,
+            [AllowEmptyString()][string]$PayloadMerge = $merge,
             [string]$CaseVerifierRoot = $verifierRoot,
             [string]$ExistingOutput = ""
         )
@@ -442,6 +446,11 @@ throw "Candidate trap must never execute."
     if (Test-Path -LiteralPath $sentinel) {
         throw "Candidate trap executed during static admission."
     }
+    [void](Invoke-Case `
+        -Name "hosted-null-event-merge" `
+        -ExpectSuccess `
+        -CaseMerge "" `
+        -PayloadMerge "")
     [void](Invoke-Case -Name "wrong-event" -CaseEventName "pull_request")
     [void](Invoke-Case -Name "wrong-action" -CaseAction "closed")
     [void](Invoke-Case -Name "wrong-repository-id" -CaseRepositoryId "1309815858")
