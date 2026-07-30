@@ -68,6 +68,7 @@
         "README.md",
         "config/fleet-validation-risk.v1.json",
         "config/validation-authority/fleet-validation-guardrails-20260730.approval-token.json",
+        "crates/fleet-quest-connectivity-adapter/src/lib.rs",
         "docs/VALIDATION.md",
         "docs/WORKFLOW.md",
         "schemas/rusty.fleet.change_risk_manifest.v1.schema.json",
@@ -82,15 +83,15 @@
           "path": ".github/workflows/ci.yml",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 1398,
-          "sha256": "fc3ad657561490a856963aeaeb000830a968ee4bf95487b3fed2717e60ee8b37"
+          "size_bytes": 4838,
+          "sha256": "62d62e415799127d1f2fe12b1455b5a72713df47bcb00b23a2d28d42c687241b"
         },
         {
           "path": ".github/workflows/deep-validation.yml",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 548,
-          "sha256": "7be702f29fdd205ccab537fa950f2e5a6bf3c8394d467f3ccfe5eb147669e72d"
+          "size_bytes": 3988,
+          "sha256": "fff27119635738280fec012db5483022d9b5f264123e63021e35f6ce602c1267"
         },
         {
           "path": "AGENTS.md",
@@ -118,11 +119,18 @@
           "state": "absent"
         },
         {
+          "path": "crates/fleet-quest-connectivity-adapter/src/lib.rs",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 43965,
+          "sha256": "a9b6b67022e3a67ac2c8ce16d5ea6802528c84b5378a2e3aa6003afcaa359c95"
+        },
+        {
           "path": "docs/VALIDATION.md",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 24124,
-          "sha256": "5b08e5b1cd7dfff648b022e2ce4390ee062e6a5d38ec815e58fcef0f19106228"
+          "size_bytes": 25838,
+          "sha256": "64414b03b5ad0f2ba4dae71ab1bd3056b7d0b48e4a07a1485382e7143f3c7afe"
         },
         {
           "path": "docs/WORKFLOW.md",
@@ -163,8 +171,8 @@
           "path": "tools/Test-FleetValidationGuardrails.ps1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 52400,
-          "sha256": "f22ab7b6d758e48bb7bfcee8e08ae91cec2f976bc741cf42896304a4eede5792"
+          "size_bytes": 56112,
+          "sha256": "a99c7184ddf9b08f0ecbcb131846dac5fe54bac707e00cf474d2095c2764cd38"
         },
         {
           "path": "tools/Test-Repo.ps1",
