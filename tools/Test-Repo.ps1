@@ -858,9 +858,17 @@ try {
     }
     $pullRequestAuthoritySelfTest = Join-Path $repoRoot "tools/Test-FleetPullRequestAuthoritySelfTest.ps1"
     if (Test-Path -LiteralPath $pullRequestAuthoritySelfTest -PathType Leaf) {
-        & $pullRequestAuthoritySelfTest
-        if ($LASTEXITCODE -ne 0) {
-            throw "Fleet pull-request authority self-tests failed."
+        $trustedVerifierRoot = [string]$env:RUSTY_FLEET_TRUSTED_VERIFIER_ROOT
+        if ($trustedVerifierRoot) {
+            & $pullRequestAuthoritySelfTest -TrustedVerifierRoot $trustedVerifierRoot
+            if ($LASTEXITCODE -ne 0) {
+                throw "Fleet pull-request authority self-tests failed."
+            }
+        } else {
+            Write-Host (
+                "Fleet pull-request authority integration self-test skipped; " +
+                "RUSTY_FLEET_TRUSTED_VERIFIER_ROOT is not set."
+            )
         }
     }
     Test-RequiredFiles
