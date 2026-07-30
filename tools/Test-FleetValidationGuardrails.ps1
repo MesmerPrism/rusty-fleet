@@ -40,41 +40,41 @@ $hostedWorkflowPaths = @(
     ".github/workflows/ci.yml",
     ".github/workflows/deep-validation.yml"
 )
-$vsceipBuildToolsKey = `
-    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Microsoft\VSCommon\17.0\SQM'
-$vsceipPolicyKey = `
-    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\VisualStudio\SQM'
 foreach ($hostedWorkflowPath in $hostedWorkflowPaths) {
     $hostedWorkflowText = Get-Content -LiteralPath (
         Join-Path $repoRoot $hostedWorkflowPath
     ) -Raw
-    foreach ($requiredVsceipContract in @(
-        "Disable Visual Studio customer-experience telemetry",
+    foreach ($requiredHostedLinkerContract in @(
+        "Select bundled Rust LLD for hosted validation",
         "if: runner.environment == 'github-hosted'",
-        $vsceipBuildToolsKey,
-        $vsceipPolicyKey,
-        "New-Item -Path `$key -Force -ErrorAction Stop",
-        "New-ItemProperty -LiteralPath `$key -Name OptIn -PropertyType DWord",
-        "-Value 0 -Force -ErrorAction Stop",
-        "Get-ItemPropertyValue -LiteralPath `$key -Name OptIn",
-        "if ([int]`$actual -ne 0)"
+        "'host: x86_64-pc-windows-msvc'",
+        "& rustc '--print' 'sysroot'",
+        "'lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe'",
+        "-not (Test-Path -LiteralPath `$linker -PathType Leaf)",
+        "& `$linker '-flavor' 'link' '--version'",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = `$linker",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTDOCFLAGS",
+        "'-Clinker-flavor=lld-link'",
+        "-not [string]::IsNullOrEmpty(`$existing)",
+        "Add-Content -LiteralPath `$env:GITHUB_ENV"
     )) {
         Assert-True (
             $hostedWorkflowText.Contains(
-                $requiredVsceipContract,
+                $requiredHostedLinkerContract,
                 [StringComparison]::Ordinal
             )
-        ) "$hostedWorkflowPath does not fail closed on the documented VSCEIP opt-out."
+        ) "$hostedWorkflowPath does not fail closed on bundled Rust LLD selection."
     }
     Assert-True (
         ([regex]::Matches(
             $hostedWorkflowText,
-            "(?m)^\s*- name: Disable Visual Studio customer-experience telemetry\r?\n" +
+            "(?m)^\s*- name: Select bundled Rust LLD for hosted validation\r?\n" +
                 "\s+if: runner\.environment == 'github-hosted'\s*$"
         )).Count -eq 1
-    ) "$hostedWorkflowPath must contain exactly one GitHub-hosted-only VSCEIP setup step."
-    $vsceipSetupIndex = $hostedWorkflowText.IndexOf(
-        "Disable Visual Studio customer-experience telemetry",
+    ) "$hostedWorkflowPath must contain exactly one GitHub-hosted-only LLD setup step."
+    $hostedLinkerSetupIndex = $hostedWorkflowText.IndexOf(
+        "Select bundled Rust LLD for hosted validation",
         [StringComparison]::Ordinal
     )
     $validationInvocationIndex = $hostedWorkflowText.IndexOf(
@@ -82,19 +82,28 @@ foreach ($hostedWorkflowPath in $hostedWorkflowPaths) {
         [StringComparison]::Ordinal
     )
     Assert-True (
-        $vsceipSetupIndex -ge 0 -and
-        $validationInvocationIndex -gt $vsceipSetupIndex
-    ) "$hostedWorkflowPath must apply VSCEIP setup before guarded validation."
-    Assert-True (
-        -not $hostedWorkflowText.Contains(
-            "VSCMD_SKIP_SENDTELEMETRY",
-            [StringComparison]::Ordinal
-        ) -and
-        -not $hostedWorkflowText.Contains(
-            "Stop-Process",
-            [StringComparison]::Ordinal
-        )
-    ) "$hostedWorkflowPath must configure VSCEIP at source, not suppress or kill a leaked process."
+        $hostedLinkerSetupIndex -ge 0 -and
+        $validationInvocationIndex -gt $hostedLinkerSetupIndex
+    ) "$hostedWorkflowPath must select bundled Rust LLD before guarded validation."
+    foreach ($forbiddenHostedLinkerWorkaround in @(
+        "/d2vctip",
+        "Registry::",
+        "VSCMD_SKIP_SENDTELEMETRY",
+        "vctip",
+        "Stop-Process",
+        "Wait-Process",
+        "taskkill",
+        "Remove-Item",
+        "Move-Item",
+        "Rename-Item"
+    )) {
+        Assert-True (
+            -not $hostedWorkflowText.Contains(
+                $forbiddenHostedLinkerWorkaround,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) "$hostedWorkflowPath contains a forbidden MSVC telemetry workaround."
+    }
 }
 
 $repositoryGateText = Get-Content -LiteralPath (

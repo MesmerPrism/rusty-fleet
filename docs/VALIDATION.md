@@ -57,18 +57,26 @@ captured. The receipt records the one-second observation budget and actual
 elapsed time. Observation is best-effort, cannot prevent termination, and
 never weakens the Job membership decision or zero-survivor requirement.
 
-The two GitHub-hosted Windows validation workflows opt out of Visual Studio's
-optional customer-experience telemetry before invoking the guarded runner.
-They set the [Microsoft-documented Build Tools and policy registry
-keys](https://learn.microsoft.com/visualstudio/ide/visual-studio-experience-improvement-program)
-to `OptIn` DWORD value `0` and read both values back fail-closed. This disables
-optional VSCEIP at its documented source so `vctip.exe` has no opted-in
-telemetry work; hosted validation still fails closed if any descendant
-survives the five-second drain. It is runner setup, not a process-name
-allowlist or a cleanup exception. Forced tree termination on a leak and the
-zero-survivor proof remain unchanged. The registry step is explicitly
-conditioned on `runner.environment == 'github-hosted'`; self-hosted runners do
-not receive an HKLM mutation and remain subject to the same strict leak gate.
+The two GitHub-hosted Windows validation workflows select the `rust-lld.exe`
+bundled with the active Rust sysroot before invoking the guarded runner. They
+fail closed unless the Rust host is exactly `x86_64-pc-windows-msvc`, the
+in-sysroot linker is a regular executable that identifies itself as LLD, and
+the three target-specific Cargo variables were previously unset. The
+workflows then export the exact linker plus
+`-Clinker-flavor=lld-link` through Cargo's documented
+[target linker and target rustflags
+controls](https://doc.rust-lang.org/cargo/reference/config.html#target).
+
+This avoids invoking MSVC `link.exe`, whose optional telemetry server can
+outlive an otherwise successful source-validation root. It is not a
+process-name allowlist, wait, cleanup exception, toolchain mutation, or change
+to the five-second drain. Hosted validation still fails closed if any
+descendant survives that drain, and the forced tree termination and
+zero-survivor proof remain unchanged. The selection is explicitly conditioned
+on `runner.environment == 'github-hosted'`; self-hosted validation retains its
+configured linker and the same strict leak gate. This is source/test evidence
+under Rust LLD, not a claim that separately produced release artifacts are
+equivalent to MSVC-linked artifacts.
 
 The atomic `rusty.fleet.validation_run_receipt.v1` records requested,
 required, and effective profiles; configuration SHA-256; Git evidence;
