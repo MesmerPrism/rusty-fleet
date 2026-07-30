@@ -56,6 +56,11 @@ foreach ($hostedWorkflowPath in $hostedWorkflowPaths) {
         "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
         "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTDOCFLAGS",
         "'-Clinker-flavor=lld-link'",
+        "'RUSTFLAGS'",
+        "'RUSTDOCFLAGS'",
+        "'CARGO_ENCODED_RUSTFLAGS'",
+        "'CARGO_ENCODED_RUSTDOCFLAGS'",
+        "Hosted Rust flags contain a global override.",
         "-not [string]::IsNullOrEmpty(`$existing)",
         "Add-Content -LiteralPath `$env:GITHUB_ENV"
     )) {
@@ -104,6 +109,27 @@ foreach ($hostedWorkflowPath in $hostedWorkflowPaths) {
             )
         ) "$hostedWorkflowPath contains a forbidden MSVC telemetry workaround."
     }
+}
+
+$fixtureCompilerText = Get-Content -LiteralPath (
+    Join-Path $repoRoot "crates/fleet-quest-connectivity-adapter/src/lib.rs"
+) -Raw
+foreach ($requiredFixtureCompilerContract in @(
+    'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER',
+    'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS',
+    '-Clinker-flavor=lld-link',
+    'cfg!(all(target_arch = "x86_64", target_env = "msvc"))',
+    'fs::symlink_metadata(&linker_path)',
+    'metadata.file_type().is_symlink()',
+    'configured_process_fixture_compiler().expect(',
+    'process_fixture_compiler_rejects_damaged_lld_configuration'
+)) {
+    Assert-True (
+        $fixtureCompilerText.Contains(
+            $requiredFixtureCompilerContract,
+            [StringComparison]::Ordinal
+        )
+    ) "The direct rustc fixture compiler does not honor the hosted LLD contract."
 }
 
 $repositoryGateText = Get-Content -LiteralPath (

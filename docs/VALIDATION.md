@@ -66,6 +66,12 @@ workflows then export the exact linker plus
 `-Clinker-flavor=lld-link` through Cargo's documented
 [target linker and target rustflags
 controls](https://doc.rust-lang.org/cargo/reference/config.html#target).
+They reject global encoded or plain Rust and rustdoc flags that could override
+the target-specific selection. Cargo passes the target linker to ordinary
+rustc and rustdoc invocations, while the target flags pin the matching
+`lld-link` flavor. The Windows connectivity-adapter test fixture invokes
+rustc directly, so its test-only compiler path explicitly honors the same
+validated target-linker environment when configured.
 
 This avoids invoking MSVC `link.exe`, whose optional telemetry server can
 outlive an otherwise successful source-validation root. It is not a

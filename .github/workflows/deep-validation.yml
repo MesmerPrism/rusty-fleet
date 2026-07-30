@@ -75,6 +75,21 @@ jobs:
             CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTDOCFLAGS = `
               '-Clinker-flavor=lld-link'
           }
+          $forbiddenOverrides = @(
+            'RUSTFLAGS',
+            'RUSTDOCFLAGS',
+            'CARGO_ENCODED_RUSTFLAGS',
+            'CARGO_ENCODED_RUSTDOCFLAGS'
+          )
+          foreach ($name in $forbiddenOverrides) {
+            $existing = [Environment]::GetEnvironmentVariable(
+              $name,
+              [EnvironmentVariableTarget]::Process
+            )
+            if (-not [string]::IsNullOrEmpty($existing)) {
+              throw "Hosted Rust flags contain a global override."
+            }
+          }
           foreach ($entry in $cargoEnvironment.GetEnumerator()) {
             $existing = [Environment]::GetEnvironmentVariable(
               $entry.Key,

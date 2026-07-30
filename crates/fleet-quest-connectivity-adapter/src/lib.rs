@@ -612,7 +612,11 @@ fn is_portable_id(value: &str, maximum: usize) -> bool {
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]
+    use std::ffi::{OsStr, OsString};
+    #[cfg(windows)]
     use std::fs;
+    #[cfg(windows)]
+    use std::os::windows::ffi::OsStringExt;
     #[cfg(windows)]
     use std::path::Path;
     use std::path::PathBuf;
@@ -751,6 +755,140 @@ mod tests {
     }
 
     #[cfg(windows)]
+    const FIXTURE_LINKER_ENV: &str = "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER";
+    #[cfg(windows)]
+    const FIXTURE_RUSTFLAGS_ENV: &str = "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS";
+    #[cfg(windows)]
+    const FIXTURE_RUSTFLAGS: &str = "-Clinker-flavor=lld-link";
+
+    #[cfg(windows)]
+    fn process_fixture_compiler(
+        linker: Option<OsString>,
+        rustflags: Option<OsString>,
+    ) -> Result<Command, &'static str> {
+        let mut compiler = Command::new("rustc");
+        match (linker, rustflags) {
+            (None, None) => Ok(compiler),
+            (Some(linker), Some(rustflags)) => {
+                if !cfg!(all(target_arch = "x86_64", target_env = "msvc")) {
+                    return Err("configured fixture linker requires x86_64 MSVC");
+                }
+                if linker.is_empty() || rustflags != OsStr::new(FIXTURE_RUSTFLAGS) {
+                    return Err("configured fixture linker pair is malformed");
+                }
+                let linker_path = PathBuf::from(&linker);
+                if !linker_path.is_absolute() {
+                    return Err("configured fixture linker is not absolute");
+                }
+                let metadata = fs::symlink_metadata(&linker_path)
+                    .map_err(|_| "configured fixture linker is unavailable")?;
+                if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+                    return Err("configured fixture linker is not a regular file");
+                }
+                let mut linker_argument = OsString::from("linker=");
+                linker_argument.push(linker);
+                compiler
+                    .arg("-C")
+                    .arg(linker_argument)
+                    .args(["-C", "linker-flavor=lld-link"]);
+                Ok(compiler)
+            }
+            _ => Err("configured fixture linker pair is incomplete"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn configured_process_fixture_compiler() -> Result<Command, &'static str> {
+        process_fixture_compiler(
+            std::env::var_os(FIXTURE_LINKER_ENV),
+            std::env::var_os(FIXTURE_RUSTFLAGS_ENV),
+        )
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn process_fixture_compiler_preserves_plain_local_rustc() {
+        let compiler = process_fixture_compiler(None, None).expect("plain compiler");
+        assert_eq!(compiler.get_program(), OsStr::new("rustc"));
+        assert_eq!(compiler.get_args().count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn process_fixture_compiler_preserves_exact_lld_path_as_one_argument() {
+        let directory = TestDirectory::create("linker path");
+        let linker = directory.path().join("rust-lld.exe");
+        fs::write(&linker, b"fixture").expect("write fake linker");
+        let compiler = process_fixture_compiler(
+            Some(linker.as_os_str().to_owned()),
+            Some(OsString::from(FIXTURE_RUSTFLAGS)),
+        )
+        .expect("configured compiler");
+        let mut linker_argument = OsString::from("linker=");
+        linker_argument.push(&linker);
+        assert_eq!(
+            compiler.get_args().map(OsStr::to_owned).collect::<Vec<_>>(),
+            vec![
+                OsString::from("-C"),
+                linker_argument,
+                OsString::from("-C"),
+                OsString::from("linker-flavor=lld-link")
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn process_fixture_compiler_rejects_damaged_lld_configuration() {
+        let directory = TestDirectory::create("linker-damage");
+        let linker = directory.path().join("rust-lld.exe");
+        fs::write(&linker, b"fixture").expect("write fake linker");
+        let exact_flags = Some(OsString::from(FIXTURE_RUSTFLAGS));
+        assert!(process_fixture_compiler(Some(linker.as_os_str().to_owned()), None).is_err());
+        assert!(process_fixture_compiler(None, exact_flags.clone()).is_err());
+        assert!(
+            process_fixture_compiler(
+                Some(OsString::from("relative-rust-lld.exe")),
+                exact_flags.clone()
+            )
+            .is_err()
+        );
+        assert!(
+            process_fixture_compiler(
+                Some(directory.path().join("missing.exe").into_os_string()),
+                exact_flags.clone()
+            )
+            .is_err()
+        );
+        assert!(
+            process_fixture_compiler(
+                Some(directory.path().as_os_str().to_owned()),
+                exact_flags.clone()
+            )
+            .is_err()
+        );
+        assert!(
+            process_fixture_compiler(
+                Some(linker.as_os_str().to_owned()),
+                Some(OsString::from("-Clinker-flavor=link"))
+            )
+            .is_err()
+        );
+        assert!(
+            process_fixture_compiler(
+                Some(linker.as_os_str().to_owned()),
+                Some(OsString::from_wide(&[0xd800]))
+            )
+            .is_err()
+        );
+
+        let symlink = directory.path().join("rust-lld-link.exe");
+        if std::os::windows::fs::symlink_file(&linker, &symlink).is_ok() {
+            assert!(process_fixture_compiler(Some(symlink.into_os_string()), exact_flags).is_err());
+        }
+    }
+
+    #[cfg(windows)]
     fn build_process_fixture(directory: &Path) -> PathBuf {
         const SOURCE: &str = r###"
 use std::env;
@@ -831,13 +969,14 @@ fn main() {
         let source = directory.join("process-fixture.rs");
         let executable = directory.join(PROVIDER_FILE_NAME);
         fs::write(&source, SOURCE).expect("write process fixture source");
-        let output = Command::new("rustc")
+        let mut compiler =
+            configured_process_fixture_compiler().expect("configure process fixture compiler");
+        compiler
             .args(["--edition=2024"])
             .arg(&source)
             .arg("-o")
-            .arg(&executable)
-            .output()
-            .expect("compile process fixture");
+            .arg(&executable);
+        let output = compiler.output().expect("compile process fixture");
         assert!(
             output.status.success(),
             "fixture compilation failed: {}",
