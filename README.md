@@ -207,6 +207,13 @@ Setup and archives remain GitHub Release assets. The workflow is inert until
 its explicit deployment-enable variable, reviewed public pins, exact release
 identity, and protected descriptor key are configured.
 
+The full-product Windows distribution also has a first-class `alpha` channel
+with a distinct Setup name, product/display identity, install and rollback
+namespaces, prerelease workflow, and
+`Rusty-Fleet/metadata/alpha/release.json`. Stable identities and URLs remain
+unchanged; `preview` is deprecated compatibility input only. See
+[Windows Alpha Distribution](docs/WINDOWS_ALPHA_DISTRIBUTION.md).
+
 The deterministic M1 negative-path harness runs four independent devices
 through sleep/wake aging, route loss/recovery, duplicate and stale check-ins,
 agent upgrade, old-epoch replay, and final canonical recovery. The exact

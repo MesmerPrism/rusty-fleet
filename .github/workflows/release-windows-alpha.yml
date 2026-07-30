@@ -1,0 +1,93 @@
+name: Windows alpha release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable numeric asset version (X.Y.Z)
+        required: true
+        type: string
+      alpha:
+        description: Alpha tag sequence number
+        required: true
+        type: number
+      publish_release:
+        description: Create the protected GitHub prerelease
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-alpha-release-${{ inputs.version }}-${{ inputs.alpha }}
+  cancel-in-progress: false
+
+jobs:
+  alpha:
+    environment: windows-alpha-release
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
+      CHANNEL: alpha
+      TAG: v${{ inputs.version }}-alpha.${{ inputs.alpha }}
+      FLEET_SIGNER_THUMBPRINT: ${{ vars.FLEET_SIGNER_THUMBPRINT }}
+      HOSTESS_SIGNER_THUMBPRINT: ${{ vars.HOSTESS_SIGNER_THUMBPRINT }}
+      DESCRIPTOR_SIGNER_SPKI_SHA256: ${{ vars.FLEET_DESCRIPTOR_SIGNER_SPKI_SHA256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.201
+
+      - name: Validate alpha release identity
+        shell: pwsh
+        run: |
+          if ($env:VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
+              $env:TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[1-9][0-9]*$') {
+            throw 'alpha requires a numeric immutable version and vX.Y.Z-alpha.N tag'
+          }
+          if ($env:GITHUB_REF -ne "refs/tags/$env:TAG" -and
+              '${{ inputs.publish_release }}' -eq 'true') {
+            throw 'publication must run from the exact alpha tag'
+          }
+
+      - name: Run complete distribution contract suite
+        shell: pwsh
+        run: .\tools\Test-WindowsDistribution.ps1
+
+      - name: Build complete signed alpha distribution
+        if: inputs.publish_release
+        shell: pwsh
+        env:
+          FLEET_CODESIGN_CERTIFICATE_PFX_BASE64: ${{ secrets.FLEET_CODESIGN_CERTIFICATE_PFX_BASE64 }}
+          FLEET_CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.FLEET_CODESIGN_CERTIFICATE_PASSWORD }}
+          FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64: ${{ secrets.FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64 }}
+        run: |
+          if (-not $env:FLEET_CODESIGN_CERTIFICATE_PFX_BASE64 -or
+              -not $env:FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64) {
+            throw 'protected alpha signing inputs are required'
+          }
+          throw 'Alpha publication remains fail-closed until the owner artifact inputs used by release-windows.yml are supplied to this protected environment.'
+
+      - name: Publish GitHub prerelease (never latest)
+        if: inputs.publish_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_ALPHA_RELEASE_PUBLISH_TOKEN }}
+        run: |
+          if (-not $env:GH_TOKEN) {
+            throw 'alpha publication requires the protected alpha-only token'
+          }
+          gh release create $env:TAG `
+            --repo MesmerPrism/rusty-fleet `
+            --title "Rusty Fleet $env:VERSION alpha ${{ inputs.alpha }}" `
+            --prerelease `
+            --verify-tag `
+            .\artifacts\windows-distribution\RustyFleet-Alpha-Setup.exe `
+            .\artifacts\windows-distribution\RustyFleet-Alpha-$env:VERSION-win-x64*

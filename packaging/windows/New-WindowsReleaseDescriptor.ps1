@@ -8,7 +8,7 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "preview", "stable")]
+    [ValidateSet("dev", "alpha", "preview", "stable")]
     [string] $Channel,
 
     [Parameter(Mandatory)]
@@ -380,8 +380,14 @@ namespace RustyFleet.Release
 }
 
 $setup = (Resolve-Path -LiteralPath $SetupPath).Path
-if ((Split-Path -Leaf $setup) -cne "RustyFleet-Setup.exe") {
-    throw "Setup filename must be exactly RustyFleet-Setup.exe"
+$setupName = if ($Channel -eq "alpha") {
+    "RustyFleet-Alpha-Setup.exe"
+}
+else {
+    "RustyFleet-Setup.exe"
+}
+if ((Split-Path -Leaf $setup) -cne $setupName) {
+    throw "Setup filename does not match the release channel"
 }
 $buildReceiptPath = (
     Resolve-Path -LiteralPath $SetupBuildReceiptPath
@@ -566,7 +572,7 @@ try {
     }
     $assetUrl = (
         "https://github.com/MesmerPrism/rusty-fleet/releases/download/" +
-        "v$Version/RustyFleet-Setup.exe"
+        "v$Version/$setupName"
     )
 
     # Every variable interpolated below is constrained to ASCII identifiers,
@@ -577,7 +583,7 @@ try {
         '{"asset":{' +
         '"installer_protocol":"rusty.fleet.guided_setup.v1",' +
         '"media_type":"application/vnd.microsoft.portable-executable",' +
-        '"name":"RustyFleet-Setup.exe",' +
+        '"name":"' + $setupName + '",' +
         '"sha256":"' + $setupSha256 + '",' +
         '"signer_certificate_sha256":"' + $setupCertificateSha256 + '",' +
         '"size_bytes":' + $setupInfo.Length + ',' +

@@ -110,6 +110,13 @@ distribution aggregate and every `.github/**` path are release-authority
 surfaces. Ordinary product code
 remains `standard`, and ordinary documentation remains `focused`.
 
+The Windows distribution aggregate additionally proves the full-product alpha
+identity, deprecated preview compatibility, stable preservation,
+cross-channel rejection, signed descriptor freshness/signer checks, Pages
+replay isolation, deterministic bundles, and never-latest prerelease policy.
+These checks are synthetic and device-free; production publication remains
+disabled in the checked-in trust policy.
+
 Provider-catalog source tests cover exact contract/version/action/owner/receipt
 bindings, RFC3339 offsets and leap seconds, duplicate IDs, freshness drift,
 stale/future observations, executable vocabulary, artifact swaps, oversized

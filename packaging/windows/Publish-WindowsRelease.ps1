@@ -15,7 +15,7 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "preview", "stable")]
+    [ValidateSet("dev", "alpha", "preview", "stable")]
     [string] $Channel,
 
     [Parameter(Mandatory)]
@@ -602,14 +602,15 @@ if ($ExpectedRef -cne "refs/tags/$tag") {
 $repoPath = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $script:repoPath = $repoPath
 $assetRoot = (Resolve-Path -LiteralPath $AssetDirectory).Path
-$bundleName = "RustyFleet-$Version-win-x64"
-$setupName = "RustyFleet-Setup.exe"
+$productStem = if ($Channel -eq "alpha") { "RustyFleet-Alpha" } else { "RustyFleet" }
+$bundleName = "$productStem-$Version-win-x64"
+$setupName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.exe" } else { "RustyFleet-Setup.exe" }
 $zipName = "$bundleName.zip"
 $zipSidecarName = "$zipName.sha256"
 $manifestName = "$bundleName.manifest.json"
 $checksumsName = "$bundleName.checksums.sha256"
 $validationReceiptName = "$bundleName.validation-receipt.json"
-$setupBuildReceiptName = "RustyFleet-Setup.build-receipt.json"
+$setupBuildReceiptName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.build-receipt.json" } else { "RustyFleet-Setup.build-receipt.json" }
 $releaseJsonName = "release.json"
 $descriptorReceiptName = "release-descriptor.receipt.json"
 $spkiName = "release-descriptor.spki.der"
@@ -982,7 +983,7 @@ try {
         '{"asset":{' +
         '"installer_protocol":"rusty.fleet.guided_setup.v1",' +
         '"media_type":"application/vnd.microsoft.portable-executable",' +
-        '"name":"RustyFleet-Setup.exe",' +
+        '"name":"' + $setupName + '",' +
         '"sha256":"' + $setupSha256 + '",' +
         '"signer_certificate_sha256":"' + $setupCertificateSha256 + '",' +
         '"size_bytes":' + [long] $payload.asset.size_bytes + ',' +

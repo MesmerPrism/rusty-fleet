@@ -10,10 +10,11 @@ on:
       channel:
         description: Release channel
         required: true
-        default: preview
+        default: alpha
         type: choice
         options:
           - dev
+          - alpha
           - preview
           - stable
       signing_mode:

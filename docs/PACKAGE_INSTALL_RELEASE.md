@@ -2,6 +2,12 @@
 
 ## Outcome
 
+Windows product distribution channels are separate from the Quest package
+operation described here. The complete Fleet alpha channel, stable isolation,
+and signed Pages metadata path are defined in
+[Windows Alpha Distribution](WINDOWS_ALPHA_DISTRIBUTION.md); alpha does not
+reduce this operation or any other current Fleet component.
+
 Rusty Fleet can preview and explicitly confirm one immutable
 `packages.install-release` operation over exact device identity revisions. The
 release reference, expected Android package identity, rollout ring, owner

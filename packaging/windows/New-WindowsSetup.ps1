@@ -8,7 +8,7 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "preview", "stable")]
+    [ValidateSet("dev", "alpha", "preview", "stable")]
     [string] $Channel,
 
     [Parameter(Mandatory)]
@@ -34,7 +34,14 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 $archive = (Resolve-Path -LiteralPath $BundleArchivePath).Path
-$expectedArchiveName = "RustyFleet-$Version-win-x64.zip"
+$productStem = if ($Channel -eq "alpha") { "RustyFleet-Alpha" } else { "RustyFleet" }
+$setupFileName = if ($Channel -eq "alpha") {
+    "RustyFleet-Alpha-Setup.exe"
+}
+else {
+    "RustyFleet-Setup.exe"
+}
+$expectedArchiveName = "$productStem-$Version-win-x64.zip"
 if ((Split-Path -Leaf $archive) -cne $expectedArchiveName) {
     throw "inner bundle filename must be exactly $expectedArchiveName"
 }
@@ -49,7 +56,7 @@ $buildRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
 try {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $inspectionRoot)
     $inspectionBundleRoot = Join-Path $inspectionRoot (
-        "RustyFleet-$Version-win-x64"
+        "$productStem-$Version-win-x64"
     )
     $manifestPath = Join-Path $inspectionBundleRoot "metadata\release-manifest.json"
     $manifest = Get-Content -LiteralPath $manifestPath -Raw |
@@ -125,6 +132,10 @@ internal static class ReleaseConfiguration
     internal static readonly string ManifestSha256 = "$manifestSha256";
     internal static readonly string FleetSignerThumbprint = "$fleetSigner";
     internal static readonly string HostessSignerThumbprint = "$hostessSigner";
+    internal static readonly string ProductId = "$(if ($Channel -eq "alpha") { "rusty-fleet-alpha" } else { "rusty-fleet" })";
+    internal static readonly string DisplayName = "$(if ($Channel -eq "alpha") { "Rusty Fleet Alpha" } else { "Rusty Fleet" })";
+    internal static readonly string SetupFileName = "$setupFileName";
+    internal static readonly string InstallDirectoryName = "$(if ($Channel -eq "alpha") { "RustyFleetAlpha" } else { "RustyFleet" })";
     internal static readonly string DevelopmentInstallRoot = "$developmentRoot";
     internal static readonly int DevelopmentTestPauseAfterRetainMs = $DevelopmentTestPauseAfterRetainMs;
 }
@@ -152,9 +163,9 @@ internal static class ReleaseConfiguration
     [System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
     $destination = Join-Path (
         [System.IO.Path]::GetFullPath($OutputDirectory)
-    ) "RustyFleet-Setup.exe"
+    ) $setupFileName
     if (Test-Path -LiteralPath $destination) {
-        throw "refusing to overwrite an existing RustyFleet-Setup.exe"
+        throw "refusing to overwrite an existing $setupFileName"
     }
     Copy-Item -LiteralPath $built -Destination $destination
     $canonicalPayload = Get-RustyFleetPeCanonicalPayload `

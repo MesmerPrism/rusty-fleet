@@ -58,7 +58,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
-              $env:CHANNEL -cnotmatch '^(?:dev|preview|stable)$' -or
+              $env:CHANNEL -cnotmatch '^(?:dev|alpha|preview|stable)$' -or
               $env:SOURCE_REVISION -cnotmatch '^[0-9a-f]{40}$' -or
               $env:SOURCE_TREE -cnotmatch '^[0-9a-f]{40}$' -or
               $env:FLEET_SIGNER_THUMBPRINT -cnotmatch '^[0-9A-F]{40}$' -or

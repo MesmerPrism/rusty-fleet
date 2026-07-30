@@ -34,7 +34,7 @@ internal static class Program
             using var runningSetup = OpenRunningSetup();
             var plan = new SetupPlan(
                 Schema: "rusty.fleet.guided_installer_plan.v1",
-                Product: "rusty-fleet",
+                Product: ReleaseConfiguration.ProductId,
                 Version: ReleaseConfiguration.Version,
                 Channel: ReleaseConfiguration.Channel,
                 AssetSha256: Convert.ToHexStringLower(SHA256.HashData(runningSetup)),
@@ -46,7 +46,7 @@ internal static class Program
                 return 0;
             }
 
-            Console.WriteLine("Rusty Fleet Setup");
+            Console.WriteLine($"{ReleaseConfiguration.DisplayName} Setup");
             Console.WriteLine($"Version: {plan.Version} ({plan.Channel})");
             Console.WriteLine($"Install location: {installRoot}");
             if (ReleaseConfiguration.BuildKind == "unsigned-dev")
@@ -97,7 +97,7 @@ internal static class Program
         string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentInstallRoot)
             ? Path.GetFullPath(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "RustyFleet"))
+                ReleaseConfiguration.InstallDirectoryName))
             : ReleaseConfiguration.BuildKind == "unsigned-dev"
                 ? Path.GetFullPath(ReleaseConfiguration.DevelopmentInstallRoot)
                 : throw new InvalidDataException(

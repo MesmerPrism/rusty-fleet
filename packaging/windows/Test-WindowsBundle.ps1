@@ -198,8 +198,14 @@ if ($manifest.build.kind -eq "signed-release") {
     }
 }
 
+$expectedSetupAuthority = if ($manifest.channel -eq "alpha") {
+    "RustyFleet-Alpha-Setup.exe"
+}
+else {
+    "RustyFleet-Setup.exe"
+}
 if ($manifest.install.activation -ne "explicit_operator_start" -or
-    $manifest.install.authority -ne "RustyFleet-Setup.exe" -or
+    $manifest.install.authority -ne $expectedSetupAuthority -or
     $manifest.install.plan_protocol -ne "rusty.fleet.guided_installer_plan.v1" -or
     $manifest.install.service_registration -ne "absent" -or
     $manifest.update.strategy -ne "setup_owned_side_by_side_manifest" -or

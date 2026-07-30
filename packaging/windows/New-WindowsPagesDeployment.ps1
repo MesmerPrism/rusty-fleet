@@ -8,7 +8,7 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "preview", "stable")]
+    [ValidateSet("dev", "alpha", "preview", "stable")]
     [string] $Channel,
 
     [Parameter(Mandatory)]
@@ -47,6 +47,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$productStem = if ($Channel -eq "alpha") { "RustyFleet-Alpha" } else { "RustyFleet" }
+$setupName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.exe" } else { "RustyFleet-Setup.exe" }
+$setupReceiptName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.build-receipt.json" } else { "RustyFleet-Setup.build-receipt.json" }
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 function Assert-ExactProperties {
@@ -138,7 +141,7 @@ function Assert-NoPagesBinary {
         $isAllowedSpki = (
             $AllowDescriptorSpki -and
             $relative -cmatch (
-                "^Rusty-Fleet/metadata/(?:dev|preview|stable)/" +
+                "^Rusty-Fleet/metadata/(?:dev|alpha|preview|stable)/" +
                 "release-descriptor\.spki\.der$"
             )
         )
@@ -162,13 +165,13 @@ function Get-ReleaseAssetMap {
     param([Parameter(Mandatory)][object] $Preflight)
 
     $expectedNames = @(
-        "RustyFleet-Setup.exe",
-        "RustyFleet-$Version-win-x64.zip",
-        "RustyFleet-$Version-win-x64.zip.sha256",
-        "RustyFleet-$Version-win-x64.manifest.json",
-        "RustyFleet-$Version-win-x64.checksums.sha256",
-        "RustyFleet-$Version-win-x64.validation-receipt.json",
-        "RustyFleet-Setup.build-receipt.json",
+        $setupName,
+        "$productStem-$Version-win-x64.zip",
+        "$productStem-$Version-win-x64.zip.sha256",
+        "$productStem-$Version-win-x64.manifest.json",
+        "$productStem-$Version-win-x64.checksums.sha256",
+        "$productStem-$Version-win-x64.validation-receipt.json",
+        $setupReceiptName,
         "release.json",
         "release-descriptor.receipt.json",
         "release-descriptor.spki.der"
@@ -365,7 +368,7 @@ Assert-ExactProperties -InputObject $payload.asset -Expected @(
 ) -Context "release descriptor asset"
 $expectedSetupUrl = (
     "https://github.com/MesmerPrism/rusty-fleet/releases/download/" +
-    "v$Version/RustyFleet-Setup.exe"
+    "v$Version/$setupName"
 )
 $nowMs = $NowUtc.ToUniversalTime().ToUnixTimeMilliseconds()
 $minimumRemainingMs = [long] $MinimumRemainingMinutes * 60000
@@ -386,10 +389,10 @@ if ($payload.schema -cne "rusty.fleet.windows_release.v2" -or
         "rusty.fleet.guided_setup.v1" -or
     $payload.asset.media_type -cne
         "application/vnd.microsoft.portable-executable" -or
-    $payload.asset.name -cne "RustyFleet-Setup.exe" -or
+    $payload.asset.name -cne $setupName -or
     $payload.asset.sha256 -cne $preflight.setup_sha256 -or
     [long] $payload.asset.size_bytes -ne
-        [long] $assetMap["RustyFleet-Setup.exe"].size_bytes -or
+        [long] $assetMap[$setupName].size_bytes -or
     $payload.asset.url -cne $expectedSetupUrl -or
     $payload.asset.signer_certificate_sha256 -isnot [string] -or
     $payload.asset.signer_certificate_sha256 -cnotmatch "^[0-9a-f]{64}$") {
@@ -516,14 +519,14 @@ if ($PreviousHandoffPath) {
 $releaseFiles = @(
     Get-HandoffReleaseFile `
         -Role "setup" `
-        -Name "RustyFleet-Setup.exe" `
+        -Name $setupName `
         -Authority "github_releases" `
-        -Asset $assetMap["RustyFleet-Setup.exe"]
+        -Asset $assetMap[$setupName]
     Get-HandoffReleaseFile `
         -Role "setup_build_receipt" `
-        -Name "RustyFleet-Setup.build-receipt.json" `
+        -Name $setupReceiptName `
         -Authority "github_releases" `
-        -Asset $assetMap["RustyFleet-Setup.build-receipt.json"]
+        -Asset $assetMap[$setupReceiptName]
     Get-HandoffReleaseFile `
         -Role "descriptor" `
         -Name "release.json" `

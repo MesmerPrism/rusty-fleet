@@ -17,7 +17,7 @@ param(
     [Parameter(Mandatory)]
     [string] $HostessProviderMetadataDirectory,
 
-    [ValidateSet("dev", "preview", "stable")]
+    [ValidateSet("dev", "alpha", "preview", "stable")]
     [string] $Channel = "dev",
 
     [ValidateSet("unsigned-dev", "signed-release")]
@@ -225,7 +225,12 @@ try {
         throw "signed-release requires RequireAuthenticodeSignatures"
     }
 
-    $bundleName = "RustyFleet-$Version-win-x64"
+    $bundleName = if ($Channel -eq "alpha") {
+        "RustyFleet-Alpha-$Version-win-x64"
+    }
+    else {
+        "RustyFleet-$Version-win-x64"
+    }
     $bundleRoot = Join-Path $outputPath $bundleName
     if (Test-Path -LiteralPath $bundleRoot) {
         Remove-Item -LiteralPath $bundleRoot -Recurse -Force
@@ -443,7 +448,12 @@ try {
             mode = "per_user_side_by_side"
             default_root = "%LOCALAPPDATA%/RustyFleet"
             activation = "explicit_operator_start"
-            authority = "RustyFleet-Setup.exe"
+            authority = if ($Channel -eq "alpha") {
+                "RustyFleet-Alpha-Setup.exe"
+            }
+            else {
+                "RustyFleet-Setup.exe"
+            }
             plan_protocol = "rusty.fleet.guided_installer_plan.v1"
             service_registration = "absent"
             configuration = "external_after_install"

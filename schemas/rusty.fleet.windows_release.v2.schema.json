@@ -60,6 +60,7 @@
     "channel": {
       "enum": [
         "dev",
+        "alpha",
         "preview",
         "stable"
       ]

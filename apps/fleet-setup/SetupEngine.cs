@@ -92,7 +92,7 @@ internal sealed class ReleaseDefinition
         RequireString(root, "architecture", "x64");
         var version = RequiredString(root, "version");
         var channel = RequiredString(root, "channel");
-        if (channel is not ("dev" or "preview" or "stable"))
+        if (channel is not ("dev" or "alpha" or "preview" or "stable"))
         {
             throw new InvalidDataException("release manifest channel is invalid");
         }
@@ -112,6 +112,12 @@ internal sealed class ReleaseDefinition
             RequireString(distribution, "eligibility", "development_only");
             RequireBoolean(distribution, "publication_allowed", false);
         }
+        RequireString(
+            root.GetProperty("install"),
+            "authority",
+            channel == "alpha"
+                ? "RustyFleet-Alpha-Setup.exe"
+                : "RustyFleet-Setup.exe");
 
         var componentIds = root.GetProperty("components")
             .EnumerateArray()
@@ -443,7 +449,10 @@ internal sealed class EmbeddedBundle
     {
         var entries = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
         var windowsNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var prefix = $"RustyFleet-{ReleaseConfiguration.Version}-win-x64/";
+        var productStem = ReleaseConfiguration.Channel == "alpha"
+            ? "RustyFleet-Alpha"
+            : "RustyFleet";
+        var prefix = $"{productStem}-{ReleaseConfiguration.Version}-win-x64/";
         foreach (var entry in zip.Entries)
         {
             var archivePath = entry.FullName;
