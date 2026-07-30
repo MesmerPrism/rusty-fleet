@@ -344,6 +344,11 @@ runner refuses to guess a range. Direct execution rejects dirty source unless
 `standard`, and `release`; explicit requests may raise the selected profile
 but cannot lower it.
 
+Changes to Fleet's validation policy, workflows, schemas, or runners also use
+the separate [base-owned static-admission boundary](docs/VALIDATION_AUTHORITY.md).
+That check never executes candidate code and never replaces dynamic CI or
+independent publication review.
+
 Existing callers remain compatible:
 
 ```powershell

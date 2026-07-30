@@ -24,7 +24,9 @@ Changes to workflows, guardrail configuration/runner/tests/schemas,
 roots, project composition locks, and live device/security runners always
 select `release`. Windows packaging/signing/publication code, Fleet Setup, and
 the Windows distribution aggregate are included in that floor; a protected
-base/main-pinned verifier remains a separate publication control.
+base/main-pinned verifier remains a separate publication control. Use
+[Validation Authority](VALIDATION_AUTHORITY.md) for that static-admission
+boundary and its audited bootstrap/policy-update route.
 
 ## Decision
 

@@ -215,8 +215,9 @@ supplies that opt-in and binds exact dirty hashes. Execution receipts use
 immutable in-progress and terminal run-ID paths under ignored
 `artifacts/validation/`; plans write nothing.
 
-Use `docs/VALIDATION.md` for the invalidation matrix and
-`docs/WORKFLOW.md` for checkpoint policy.
+Use `docs/VALIDATION.md` for the invalidation matrix,
+`docs/WORKFLOW.md` for checkpoint policy, and
+`docs/VALIDATION_AUTHORITY.md` for the base-owned static-admission boundary.
 
 ## Activation and safety
 

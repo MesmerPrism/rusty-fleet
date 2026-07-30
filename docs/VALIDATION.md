@@ -62,12 +62,12 @@ filenames. Paths outside ignored `artifacts/validation/`, reparse ancestry,
 and existing run-ID paths are rejected. Planning writes no file. Repository
 validation remains source-only and cannot register device commands.
 
-This Phase 1 source pilot does not make candidate-owned workflow or validation
-code an independent trust root. It hard-floors every validation-authority path
-at `release` and self-tests the canonical check identities and device-command
-rejections, but publication policy must still require a protected,
-base/main-pinned verifier or equivalent external required check before a
-candidate guardrail change can authorize itself.
+Candidate-owned workflow or validation code is not an independent trust root.
+Every validation-authority path is hard-floored at `release`, and the canonical
+check identities and device-command rejections are self-tested. Changes to
+those surfaces additionally use the protected, base/main-pinned static
+admission defined in [Validation Authority](VALIDATION_AUTHORITY.md) before a
+candidate guardrail change can proceed to independent dynamic validation.
 
 Windows packaging/signing/publication code, Fleet Setup, and the Windows
 distribution aggregate and every `.github/**` path are release-authority
