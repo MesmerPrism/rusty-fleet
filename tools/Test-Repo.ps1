@@ -6,13 +6,39 @@ param(
     [ValidateSet("Quick", "Standard", "Deep")]
     [string] $Tier = "Quick",
 
-    [string] $WorkEnvironmentRoot = ""
+    [string] $WorkEnvironmentRoot = $env:FLEET_VALIDATION_WORK_ENVIRONMENT_ROOT,
+
+    [switch] $GuardrailChild
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+if (-not $GuardrailChild) {
+    $priorWorkEnvironmentRoot = $env:FLEET_VALIDATION_WORK_ENVIRONMENT_ROOT
+    try {
+        $env:FLEET_VALIDATION_WORK_ENVIRONMENT_ROOT = $WorkEnvironmentRoot
+        & (Join-Path $PSScriptRoot "Invoke-FleetValidation.ps1") `
+            -Profile $Tier `
+            -Execute `
+            -AllowDirtySource
+        exit $LASTEXITCODE
+    } finally {
+        $env:FLEET_VALIDATION_WORK_ENVIRONMENT_ROOT = $priorWorkEnvironmentRoot
+    }
+}
+
+if ($GuardrailChild) {
+    # A guarded validation run owns its complete process tree. Prevent the .NET
+    # CLI, MSBuild, and Roslyn from retaining same-user build servers after the
+    # validation root exits; a genuinely persistent descendant remains a
+    # fail-closed owned-child-leak in the outer Job Object.
+    $env:MSBUILDDISABLENODEREUSE = "1"
+    $env:DOTNET_CLI_USE_MSBUILD_SERVER = "0"
+    $env:UseSharedCompilation = "false"
+}
 
 function Assert-True {
     param(
@@ -291,6 +317,9 @@ function Test-RequiredFiles {
         "schemas/rusty.fleet.offline_onboarding_private_inventory.v1.schema.json",
         "schemas/rusty.fleet.signed_checkin.v1.schema.json",
         "schemas/rusty.fleet.stream_descriptor.v1.schema.json",
+        "schemas/rusty.fleet.change_risk_manifest.v1.schema.json",
+        "schemas/rusty.fleet.validation_run_receipt.v1.schema.json",
+        "config/fleet-validation-risk.v1.json",
         "docs/ARCHITECTURE.md",
         "docs/DATASTREAMS.md",
         "docs/IMPLEMENTATION_PLAN.md",
@@ -306,6 +335,9 @@ function Test-RequiredFiles {
         "docs/PROVIDER_CAPABILITY_CATALOG.md",
         "tools/New-FleetIcon.ps1",
         "tools/Test-FleetOnboardingSecurity.ps1",
+        "tools/Fleet.ValidationGuardrails.psm1",
+        "tools/Invoke-FleetValidation.ps1",
+        "tools/Test-FleetValidationGuardrails.ps1",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
         "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
         "docs/decisions/0005-m1-checkin-authority.md",
@@ -372,7 +404,8 @@ function Test-WpfConsole {
         $testProject,
         "-c",
         "Release",
-        "--nologo"
+        "--nologo",
+        "--disable-build-servers"
     )
 
     $receiptLines = @(
@@ -380,6 +413,7 @@ function Test-WpfConsole {
             --project $testProject `
             -c Release `
             --no-build `
+            --disable-build-servers `
             -- `
             --repo-root $repoRoot
     )
@@ -830,6 +864,27 @@ function Test-ReleaseCandidateDependencies {
 
 Push-Location -LiteralPath $repoRoot
 try {
+    & (Join-Path $repoRoot "tools/Test-FleetValidationGuardrails.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fleet validation guardrail self-tests failed."
+    }
+    $pullRequestAuthoritySelfTest = Join-Path $repoRoot "tools/Test-FleetPullRequestAuthoritySelfTest.ps1"
+    if (Test-Path -LiteralPath $pullRequestAuthoritySelfTest -PathType Leaf) {
+        $trustedVerifierRoot = [string]$env:RUSTY_FLEET_TRUSTED_VERIFIER_ROOT
+        if ($trustedVerifierRoot) {
+            & $pullRequestAuthoritySelfTest `
+                -TrustedVerifierRoot $trustedVerifierRoot `
+                -GuardrailCandidateRoot $repoRoot
+            if ($LASTEXITCODE -ne 0) {
+                throw "Fleet pull-request authority self-tests failed."
+            }
+        } else {
+            Write-Host (
+                "Fleet pull-request authority integration self-test skipped; " +
+                "RUSTY_FLEET_TRUSTED_VERIFIER_ROOT is not set."
+            )
+        }
+    }
     Test-RequiredFiles
     Test-JsonDocuments
     Test-PublicBoundary

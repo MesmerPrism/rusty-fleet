@@ -13,9 +13,97 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.201
+      - name: Select bundled Rust LLD for hosted validation
+        if: runner.environment == 'github-hosted'
+        shell: pwsh
+        run: |
+          $hostLines = @(
+            & rustc '-vV' |
+              Where-Object { $_.StartsWith('host:', [StringComparison]::Ordinal) }
+          )
+          if (
+            $LASTEXITCODE -ne 0 -or
+            $hostLines.Count -ne 1 -or
+            $hostLines[0] -cne 'host: x86_64-pc-windows-msvc'
+          ) {
+            throw "Hosted validation requires the exact x86_64 MSVC Rust host."
+          }
+          $sysrootLines = @(& rustc '--print' 'sysroot')
+          if ($LASTEXITCODE -ne 0 -or $sysrootLines.Count -ne 1) {
+            throw "Unable to resolve one Rust sysroot."
+          }
+          $sysroot = [IO.Path]::GetFullPath($sysrootLines[0].Trim())
+          $linker = [IO.Path]::GetFullPath(
+            (Join-Path $sysroot (
+              'lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe'
+            ))
+          )
+          $sysrootPrefix = $sysroot.TrimEnd(
+            [IO.Path]::DirectorySeparatorChar
+          ) + [IO.Path]::DirectorySeparatorChar
+          if (
+            -not $linker.StartsWith(
+              $sysrootPrefix,
+              [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            -not (Test-Path -LiteralPath $linker -PathType Leaf)
+          ) {
+            throw "The bundled Rust LLD linker is unavailable."
+          }
+          $linkerItem = Get-Item -LiteralPath $linker -ErrorAction Stop
+          if ($linkerItem.LinkType) {
+            throw "The bundled Rust LLD linker resolved through a link."
+          }
+          $versionLines = @(& $linker '-flavor' 'link' '--version' 2>&1)
+          if (
+            $LASTEXITCODE -ne 0 -or
+            -not ($versionLines -join "`n").Contains(
+              'LLD',
+              [StringComparison]::Ordinal
+            )
+          ) {
+            throw "The bundled Rust LLD linker did not identify itself."
+          }
+          $cargoEnvironment = [ordered]@{
+            CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+            CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = `
+              '-Clinker-flavor=lld-link'
+            CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTDOCFLAGS = `
+              '-Clinker-flavor=lld-link'
+          }
+          $forbiddenOverrides = @(
+            'RUSTFLAGS',
+            'RUSTDOCFLAGS',
+            'CARGO_ENCODED_RUSTFLAGS',
+            'CARGO_ENCODED_RUSTDOCFLAGS'
+          )
+          foreach ($name in $forbiddenOverrides) {
+            $existing = [Environment]::GetEnvironmentVariable(
+              $name,
+              [EnvironmentVariableTarget]::Process
+            )
+            if (-not [string]::IsNullOrEmpty($existing)) {
+              throw "Hosted Rust flags contain a global override."
+            }
+          }
+          foreach ($entry in $cargoEnvironment.GetEnumerator()) {
+            $existing = [Environment]::GetEnvironmentVariable(
+              $entry.Key,
+              [EnvironmentVariableTarget]::Process
+            )
+            if (
+              -not [string]::IsNullOrEmpty($existing) -or
+              [string]$entry.Value -match '[\r\n]'
+            ) {
+              throw "Hosted Rust linker selection was preconfigured or malformed."
+            }
+            Add-Content -LiteralPath $env:GITHUB_ENV `
+              -Value "$($entry.Key)=$($entry.Value)" -Encoding utf8NoBOM
+          }
       - name: Deep validation
         shell: pwsh
-        run: .\tools\Test-Repo.ps1 -Tier Deep
+        run: .\tools\Invoke-FleetValidation.ps1 -Profile release -Execute

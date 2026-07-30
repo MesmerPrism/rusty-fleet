@@ -201,8 +201,23 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Standa
 git diff --check
 ```
 
-Use `docs/VALIDATION.md` for the invalidation matrix and
-`docs/WORKFLOW.md` for checkpoint policy.
+Fleet-local validation authority is
+`config/fleet-validation-risk.v1.json`. Its canonical profiles are
+`focused|standard|release`; the portable `Quick|Standard|Deep` vocabulary
+remains supported by `tools/Test-Repo.ps1` as upward-only aliases. Use
+`tools/Invoke-FleetValidation.ps1` for typed planning and execution. Planning
+is the default; `-Execute` is required to run checks. Unknown profiles,
+downgrades, missing clean-tree base evidence, unapproved dirty execution, Git
+or index drift, timeouts, Job Object cleanup failures, and device-command
+registrations fail closed. Direct guardrail execution rejects dirty source
+unless `-AllowDirtySource` is explicit; the legacy `Test-Repo.ps1` edit loop
+supplies that opt-in and binds exact dirty hashes. Execution receipts use
+immutable in-progress and terminal run-ID paths under ignored
+`artifacts/validation/`; plans write nothing.
+
+Use `docs/VALIDATION.md` for the invalidation matrix,
+`docs/WORKFLOW.md` for checkpoint policy, and
+`docs/VALIDATION_AUTHORITY.md` for the base-owned static-admission boundary.
 
 ## Activation and safety
 
