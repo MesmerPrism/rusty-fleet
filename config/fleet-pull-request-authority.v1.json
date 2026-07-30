@@ -121,8 +121,8 @@
           "path": "docs/VALIDATION.md",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 23557,
-          "sha256": "6d8faa38fcd6e7dbcd49b8b1f5b3e1b6f76ebe01af538768f2aca59245b7a3fd"
+          "size_bytes": 24124,
+          "sha256": "5b08e5b1cd7dfff648b022e2ce4390ee062e6a5d38ec815e58fcef0f19106228"
         },
         {
           "path": "docs/WORKFLOW.md",
@@ -142,15 +142,15 @@
           "path": "schemas/rusty.fleet.validation_run_receipt.v1.schema.json",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 15094,
-          "sha256": "e4dbc8794f8722d515e8486e3a56019f8e2c3b2928c1de8022678036af8dbd83"
+          "size_bytes": 22361,
+          "sha256": "53613ee62cc7813a9079da69908dc98678d03e8f361ac1e7cecf7daf9184eb70"
         },
         {
           "path": "tools/Fleet.ValidationGuardrails.psm1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 77559,
-          "sha256": "ae8154691bde32199caf6f324b24ccc461f09d2b13471440288156d37016ef45"
+          "size_bytes": 88548,
+          "sha256": "056cd0b1592f0b20ee67ba7dba9394841768e29d5afcc5814ef34106e5c879a6"
         },
         {
           "path": "tools/Invoke-FleetValidation.ps1",
@@ -163,8 +163,8 @@
           "path": "tools/Test-FleetValidationGuardrails.ps1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 40126,
-          "sha256": "e9b1d895ba54cf3c578ff2c0e4bcc4142f2e3056e981bced2a6820af900cccb4"
+          "size_bytes": 52400,
+          "sha256": "f22ab7b6d758e48bb7bfcee8e08ae91cec2f976bc741cf42896304a4eede5792"
         },
         {
           "path": "tools/Test-Repo.ps1",
