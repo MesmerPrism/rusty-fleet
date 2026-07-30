@@ -1,0 +1,16 @@
+{
+  "schema": "rusty.fleet.validation_authority_approval_token.v1",
+  "approval_id": "fleet-validation-guardrails-20260730",
+  "required_ancestor": "bee088f24277a5ee3537f04c729639ef204d4827",
+  "state": "available",
+  "consumption": {
+    "action": "delete-this-file",
+    "required_candidate_state": "absent"
+  },
+  "limitations": [
+    "This token authorizes only the exact artifact set in the base-owned authority policy.",
+    "The required ancestor must be present in the candidate and absent from the trusted base.",
+    "The token and ancestry approval are both consumed when the approved candidate becomes the trusted base.",
+    "This token does not attest execution, validation, publication, or release."
+  ]
+}

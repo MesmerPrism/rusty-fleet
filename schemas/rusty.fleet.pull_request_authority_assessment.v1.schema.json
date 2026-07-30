@@ -1,0 +1,541 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MesmerPrism/rusty-fleet/schemas/rusty.fleet.pull_request_authority_assessment.v1.schema.json",
+  "title": "Rusty Fleet pull request authority assessment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repository",
+    "pull_request",
+    "run",
+    "trusted_authority",
+    "external_assessment",
+    "decision",
+    "approval_id",
+    "changed_paths",
+    "protected_paths",
+    "candidate_code_executed",
+    "execution_attested",
+    "publication_authority",
+    "limitations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "rusty.fleet.pull_request_authority_assessment.v1"
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "full_name",
+        "repository_id",
+        "repository_node_id"
+      ],
+      "properties": {
+        "full_name": {
+          "const": "MesmerPrism/rusty-fleet"
+        },
+        "repository_id": {
+          "const": 1309815859
+        },
+        "repository_node_id": {
+          "const": "R_kgDOThI0Mw"
+        }
+      }
+    },
+    "pull_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "authority_mode",
+        "event_name",
+        "event_action",
+        "event_ref",
+        "event_sha",
+        "event_payload_sha256",
+        "base_repository",
+        "base_ref",
+        "base_commit",
+        "base_tree",
+        "candidate_commit",
+        "candidate_tree",
+        "merge_commit",
+        "merge_tree",
+        "merge_parent_commits",
+        "head_private_ref",
+        "merge_private_ref"
+      ],
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "authority_mode": {
+          "enum": [
+            "hosted",
+            "offline-self-test"
+          ]
+        },
+        "event_name": {
+          "const": "pull_request_target"
+        },
+        "event_action": {
+          "enum": [
+            "edited",
+            "opened",
+            "ready_for_review",
+            "reopened",
+            "synchronize"
+          ]
+        },
+        "event_ref": {
+          "const": "refs/heads/main"
+        },
+        "event_sha": {
+          "$ref": "#/$defs/objectId"
+        },
+        "event_payload_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "base_repository": {
+          "const": "MesmerPrism/rusty-fleet"
+        },
+        "base_ref": {
+          "const": "main"
+        },
+        "base_commit": {
+          "$ref": "#/$defs/objectId"
+        },
+        "base_tree": {
+          "$ref": "#/$defs/objectId"
+        },
+        "candidate_commit": {
+          "$ref": "#/$defs/objectId"
+        },
+        "candidate_tree": {
+          "$ref": "#/$defs/objectId"
+        },
+        "merge_commit": {
+          "$ref": "#/$defs/objectId"
+        },
+        "merge_tree": {
+          "$ref": "#/$defs/objectId"
+        },
+        "merge_parent_commits": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/objectId"
+            },
+            {
+              "$ref": "#/$defs/objectId"
+            }
+          ]
+        },
+        "head_private_ref": {
+          "type": "string"
+        },
+        "merge_private_ref": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "authority_mode": {
+                "const": "hosted"
+              }
+            },
+            "required": [
+              "authority_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "head_private_ref": {
+                "pattern": "^refs/validation-authority/run-[1-9][0-9]*-attempt-[1-9][0-9]*/pr-[1-9][0-9]*/head$"
+              },
+              "merge_private_ref": {
+                "pattern": "^refs/validation-authority/run-[1-9][0-9]*-attempt-[1-9][0-9]*/pr-[1-9][0-9]*/merge$"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "head_private_ref": {
+                "pattern": "^refs/validation-authority-self-test/[a-z0-9-]+/head$"
+              },
+              "merge_private_ref": {
+                "pattern": "^refs/validation-authority-self-test/[a-z0-9-]+/merge$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "run_attempt",
+        "job",
+        "workflow_ref",
+        "workflow_sha"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "job": {
+          "const": "validation_authority"
+        },
+        "workflow_ref": {
+          "const": "MesmerPrism/rusty-fleet/.github/workflows/validation-authority.yml@refs/heads/main"
+        },
+        "workflow_sha": {
+          "$ref": "#/$defs/objectId"
+        }
+      }
+    },
+    "trusted_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fleet_workflow",
+        "fleet_policy",
+        "fleet_adapter",
+        "fleet_assessment_schema",
+        "verifier"
+      ],
+      "properties": {
+        "fleet_workflow": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/artifactEvidence"
+            },
+            {
+              "properties": {
+                "path": {
+                  "const": ".github/workflows/validation-authority.yml"
+                }
+              }
+            }
+          ]
+        },
+        "fleet_policy": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/artifactEvidence"
+            },
+            {
+              "properties": {
+                "path": {
+                  "const": "config/fleet-pull-request-authority.v1.json"
+                }
+              }
+            }
+          ]
+        },
+        "fleet_adapter": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/artifactEvidence"
+            },
+            {
+              "properties": {
+                "path": {
+                  "const": "tools/Test-FleetPullRequestAuthority.ps1"
+                }
+              }
+            }
+          ]
+        },
+        "fleet_assessment_schema": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/artifactEvidence"
+            },
+            {
+              "properties": {
+                "path": {
+                  "const": "schemas/rusty.fleet.pull_request_authority_assessment.v1.schema.json"
+                }
+              }
+            }
+          ]
+        },
+        "verifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "commit",
+            "tree",
+            "script",
+            "policy_schema",
+            "assessment_schema"
+          ],
+          "properties": {
+            "repository": {
+              "const": "MesmerPrism/rusty-morphospace-work-environment"
+            },
+            "commit": {
+              "const": "354545a63e870c3d89254f8fb78f6ed4060a8dc3"
+            },
+            "tree": {
+              "const": "1cf79cd4478e5dd5b940729b917a8beea41dac40"
+            },
+            "script": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/artifactEvidence"
+                },
+                {
+                  "properties": {
+                    "path": {
+                      "const": "scripts/Test-ExternalValidationAuthority.ps1"
+                    },
+                    "object_id": {
+                      "const": "277a3bbbabfdedc66d50263a37e06bb094acac5f"
+                    },
+                    "size_bytes": {
+                      "const": 34411
+                    },
+                    "sha256": {
+                      "const": "89c3875c426eaa30500108644c0e2a89802d44049827aec2fe452358a5416c0e"
+                    }
+                  }
+                }
+              ]
+            },
+            "policy_schema": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/artifactEvidence"
+                },
+                {
+                  "properties": {
+                    "path": {
+                      "const": "schemas/external-validation-authority-policy-v1.schema.json"
+                    },
+                    "object_id": {
+                      "const": "1a7ed651d6cbcfccbf792ca60d41cc16301c407a"
+                    },
+                    "size_bytes": {
+                      "const": 4217
+                    },
+                    "sha256": {
+                      "const": "a89050065ea95d4f2d6edbf85c1d4e05802cef8c92c71684fb0d84e7cc616826"
+                    }
+                  }
+                }
+              ]
+            },
+            "assessment_schema": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/artifactEvidence"
+                },
+                {
+                  "properties": {
+                    "path": {
+                      "const": "schemas/external-validation-authority-assessment-v1.schema.json"
+                    },
+                    "object_id": {
+                      "const": "2ad62c6c6f034538a8abc530e2cfecb7a43f8614"
+                    },
+                    "size_bytes": {
+                      "const": 2769
+                    },
+                    "sha256": {
+                      "const": "88b8b8a8d70cc5af50c9e43428017f971d04476b9235ebc545b634175e011426"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "external_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "file_name",
+        "sha256",
+        "policy_id",
+        "policy_sha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rusty.morphospace.workflow.external_validation_authority_assessment.v1"
+        },
+        "file_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.-]+\\.json$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "policy_id": {
+          "const": "rusty-fleet-pull-request-authority-v1"
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "decision": {
+      "enum": [
+        "approved-change-set",
+        "unprotected"
+      ]
+    },
+    "approval_id": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "changed_paths": {
+      "$ref": "#/$defs/pathSet"
+    },
+    "protected_paths": {
+      "$ref": "#/$defs/pathSet"
+    },
+    "candidate_code_executed": {
+      "const": false
+    },
+    "execution_attested": {
+      "const": false
+    },
+    "publication_authority": {
+      "const": false
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "approved-change-set"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "then": {
+        "properties": {
+          "approval_id": {
+            "$ref": "#/$defs/id"
+          },
+          "protected_paths": {
+            "minItems": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "approval_id": {
+            "type": "null"
+          },
+          "protected_paths": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "artifactEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "mode",
+        "object_id",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "mode": {
+          "enum": [
+            "100644",
+            "100755"
+          ]
+        },
+        "object_id": {
+          "$ref": "#/$defs/objectId"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,127}$"
+    },
+    "objectId": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\\\\\u0000-\\u001f\\u007f]+$"
+    },
+    "pathSet": {
+      "type": "array",
+      "maxItems": 512,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/path"
+      }
+    }
+  }
+}
