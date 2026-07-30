@@ -120,7 +120,7 @@ function Copy-ExactSourceFile {
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
         [void][IO.Directory]::CreateDirectory($parent)
     }
-    [IO.File]::Copy($source, $destination, $false)
+    [IO.File]::Copy($source, $destination, $true)
 }
 
 function New-EventPayload {
@@ -578,7 +578,7 @@ throw "Candidate trap must never execute."
         }
         [void](Invoke-Git $productionRoot @("add", "--all"))
         [void](Invoke-Git $productionRoot @(
-            "commit", "-m", "Bootstrap exact production authority"
+            "commit", "--allow-empty", "-m", "Bootstrap exact production authority"
         ))
         $productionBase = (
             Invoke-Git $productionRoot @("rev-parse", "HEAD^{commit}")
