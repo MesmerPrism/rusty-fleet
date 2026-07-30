@@ -154,6 +154,14 @@ Start-Sleep -Seconds 30
 $child = Start-Process -FilePath "pwsh" -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Seconds 30") -PassThru -WindowStyle Hidden
 exit 7
 '@ -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $scratch "tools/transient-child.ps1") -Value @'
+$child = Start-Process -FilePath "pwsh" -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Milliseconds 750") -PassThru -WindowStyle Hidden
+exit 0
+'@ -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $scratch "tools/leaking-child.ps1") -Value @'
+$child = Start-Process -FilePath "pwsh" -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Seconds 30") -PassThru -WindowStyle Hidden
+exit 0
+'@ -Encoding utf8NoBOM
     Set-Content -LiteralPath (Join-Path $scratch "tools/throw.ps1") `
         -Value 'throw "synthetic terminating error"' -Encoding utf8NoBOM
     Set-Content -LiteralPath (Join-Path $scratch "tools/recovered-native.ps1") -Value @'
@@ -508,6 +516,55 @@ Write-Output "native failure handled by the check"
         Get-TestPendingReceiptPath $scratch $defaultExecute
     ))) "Completed execution retained its in-progress receipt."
     Remove-Item -LiteralPath $defaultExecutePath -Force
+
+    $transientConfig = $config | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+    ($transientConfig.checks | Where-Object minimum_profile -EQ "focused").file = `
+        "tools/transient-child.ps1"
+    $transientConfigPath = Join-Path $scratch "transient-child-risk.json"
+    Write-Json $transientConfigPath $transientConfig
+    $transientPath = $null
+    try {
+        $transient = Invoke-FleetValidationGuardrail $scratch $transientConfigPath `
+            "focused" $null -Execute -AllowDirtySource
+        $transientPath = Get-TestReceiptPath $scratch $transient
+        Assert-True (
+            $transient.result -eq "passed" -and
+            $transient.commands[0].status -eq "passed" -and
+            $transient.commands[0].exit_code -eq 0 -and
+            -not $transient.commands[0].cleanup.attempted
+        ) "A naturally draining owned child produced a false leak failure."
+    } finally {
+        Remove-Item -LiteralPath $transientConfigPath -Force -ErrorAction SilentlyContinue
+        if ($transientPath) {
+            Remove-Item -LiteralPath $transientPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $leakingConfig = $config | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+    ($leakingConfig.checks | Where-Object minimum_profile -EQ "focused").file = `
+        "tools/leaking-child.ps1"
+    $leakingConfigPath = Join-Path $scratch "leaking-child-risk.json"
+    Write-Json $leakingConfigPath $leakingConfig
+    $leakingPath = $null
+    try {
+        $leaking = Invoke-FleetValidationGuardrail $scratch $leakingConfigPath `
+            "focused" $null -Execute -AllowDirtySource
+        $leakingPath = Get-TestReceiptPath $scratch $leaking
+        Assert-True (
+            $leaking.result -eq "failed" -and
+            $leaking.commands[0].status -eq "failed" -and
+            $leaking.commands[0].exit_code -eq 0 -and
+            $leaking.commands[0].failure_reason -eq "owned-child-leak" -and
+            $leaking.commands[0].cleanup.attempted -and
+            $leaking.commands[0].cleanup.completed -and
+            $leaking.commands[0].cleanup.survivors.Count -eq 0
+        ) "A persistent owned child did not fail closed after the drain grace."
+    } finally {
+        Remove-Item -LiteralPath $leakingConfigPath -Force -ErrorAction SilentlyContinue
+        if ($leakingPath) {
+            Remove-Item -LiteralPath $leakingPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 
     $recoveredConfig = $config | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
     ($recoveredConfig.checks | Where-Object minimum_profile -EQ "standard").file = `
