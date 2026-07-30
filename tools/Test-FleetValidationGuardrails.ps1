@@ -123,6 +123,13 @@ Start-Sleep -Seconds 30
 $child = Start-Process -FilePath "pwsh" -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Seconds 30") -PassThru -WindowStyle Hidden
 exit 7
 '@ -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $scratch "tools/throw.ps1") `
+        -Value 'throw "synthetic terminating error"' -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $scratch "tools/recovered-native.ps1") -Value @'
+& (Join-Path $PSHOME "pwsh.exe") -NoProfile -NonInteractive -Command "exit 9"
+if ($LASTEXITCODE -ne 9) { throw "Synthetic native failure did not execute." }
+Write-Output "native failure handled by the check"
+'@ -Encoding utf8NoBOM
     & git -C $scratch add .
     & git -C $scratch commit --quiet -m harness
 
@@ -467,6 +474,28 @@ exit 7
     ))) "Completed execution retained its in-progress receipt."
     Remove-Item -LiteralPath $defaultExecutePath -Force
 
+    $recoveredConfig = $config | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+    ($recoveredConfig.checks | Where-Object minimum_profile -EQ "standard").file = `
+        "tools/recovered-native.ps1"
+    $recoveredConfigPath = Join-Path $scratch "recovered-risk.json"
+    Write-Json $recoveredConfigPath $recoveredConfig
+    $recoveredPath = $null
+    try {
+        $recovered = Invoke-FleetValidationGuardrail $scratch $recoveredConfigPath `
+            "standard" $null -Execute -AllowDirtySource
+        $recoveredPath = Get-TestReceiptPath $scratch $recovered
+        Assert-True (
+            $recovered.result -eq "passed" -and
+            $recovered.commands[0].status -eq "passed" -and
+            $recovered.commands[0].exit_code -eq 0
+        ) "A handled native failure leaked stale LASTEXITCODE into a false failure."
+    } finally {
+        Remove-Item -LiteralPath $recoveredConfigPath -Force -ErrorAction SilentlyContinue
+        if ($recoveredPath) {
+            Remove-Item -LiteralPath $recoveredPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $driftPath = $null
     try {
         $drift = Invoke-FleetValidationGuardrail $scratch $configPath "standard" $null `
@@ -511,6 +540,16 @@ exit 7
         $failure = Invoke-FleetValidationGuardrail $scratch $failureConfigPath "standard" $null `
             -Execute -AllowDirtySource
         $failurePath = Get-TestReceiptPath $scratch $failure
+        if (
+            $failure.result -ne "failed" -or
+            $failure.commands[0].status -ne "failed" -or
+            $failure.commands[0].exit_code -ne 7 -or
+            -not $failure.commands[0].cleanup.attempted -or
+            -not $failure.commands[0].cleanup.completed -or
+            $failure.commands[0].cleanup.survivors.Count -ne 0
+        ) {
+            Write-Host ($failure | ConvertTo-Json -Depth 100)
+        }
         Assert-True (
             $failure.result -eq "failed" -and
             $failure.commands[0].status -eq "failed" -and
@@ -523,6 +562,28 @@ exit 7
         Remove-Item -LiteralPath $failureConfigPath -Force -ErrorAction SilentlyContinue
         if ($failurePath) {
             Remove-Item -LiteralPath $failurePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $throwConfig = $config | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+    ($throwConfig.checks | Where-Object minimum_profile -EQ "standard").file = "tools/throw.ps1"
+    $throwConfigPath = Join-Path $scratch "throw-risk.json"
+    Write-Json $throwConfigPath $throwConfig
+    $throwPath = $null
+    try {
+        $throwFailure = Invoke-FleetValidationGuardrail $scratch $throwConfigPath `
+            "standard" $null -Execute -AllowDirtySource
+        $throwPath = Get-TestReceiptPath $scratch $throwFailure
+        Assert-True (
+            $throwFailure.result -eq "failed" -and
+            $throwFailure.commands[0].status -eq "failed" -and
+            $throwFailure.commands[0].exit_code -eq 1 -and
+            $throwFailure.commands[0].failure_reason -eq "nonzero-exit"
+        ) "Terminating PowerShell error produced a false passing receipt."
+    } finally {
+        Remove-Item -LiteralPath $throwConfigPath -Force -ErrorAction SilentlyContinue
+        if ($throwPath) {
+            Remove-Item -LiteralPath $throwPath -Force -ErrorAction SilentlyContinue
         }
     }
 

@@ -1309,8 +1309,22 @@ function Invoke-FleetGuardrailCheck {
         $launcher = @"
 `$specJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$invocationBase64'))
 `$spec = `$specJson | ConvertFrom-Json -Depth 10
-& ([string]`$spec.file) @(`$spec.arguments | ForEach-Object { [string]`$_ }) *> ([string]`$spec.stdout)
-`$code = `$LASTEXITCODE
+`$ErrorActionPreference = 'Stop'
+`$code = 1
+try {
+    `$global:LASTEXITCODE = 0
+    & ([string]`$spec.file) @(`$spec.arguments | ForEach-Object { [string]`$_ }) *> ([string]`$spec.stdout)
+    `$invocationSucceeded = `$?
+    `$reportedExit = `$LASTEXITCODE
+    `$code = if (`$invocationSucceeded) {
+        0
+    } elseif (`$null -ne `$reportedExit -and [int]`$reportedExit -ne 0) {
+        [int]`$reportedExit
+    } else { 1 }
+} catch {
+    (`$_ | Out-String) | Set-Content -LiteralPath ([string]`$spec.stderr) -Encoding utf8NoBOM
+    `$code = 1
+}
 Start-Sleep -Milliseconds 750
 exit `$code
 "@
