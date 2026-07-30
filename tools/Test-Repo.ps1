@@ -856,6 +856,13 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Fleet validation guardrail self-tests failed."
     }
+    $pullRequestAuthoritySelfTest = Join-Path $repoRoot "tools/Test-FleetPullRequestAuthoritySelfTest.ps1"
+    if (Test-Path -LiteralPath $pullRequestAuthoritySelfTest -PathType Leaf) {
+        & $pullRequestAuthoritySelfTest
+        if ($LASTEXITCODE -ne 0) {
+            throw "Fleet pull-request authority self-tests failed."
+        }
+    }
     Test-RequiredFiles
     Test-JsonDocuments
     Test-PublicBoundary
