@@ -6,3 +6,6 @@ pull-request refs without executing candidate content, and reports the stable
 `validation-authority/base-owned` check context.
 
 The canary is not intended for merge.
+
+This retry verifies the corrected hosted event normalization against the
+current protected base.
