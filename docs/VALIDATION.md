@@ -44,9 +44,11 @@ receipt and requires new evidence.
 
 Each registered check has an identity and timeout, emits a periodic heartbeat,
 and starts suspended. The runner assigns it to a kill-on-close Windows Job
-Object before resuming it. Timeout, nonzero exit, or an owned-child leak
-terminates the complete kernel-owned process tree; inability to prove zero
-remaining Job Object processes fails the run.
+Object before resuming it. After a successful root exit, descendants receive
+at most five seconds to drain naturally while remaining kernel-owned. Timeout,
+nonzero exit, or a descendant still active after that grace period terminates
+the complete process tree; inability to prove zero remaining Job Object
+processes fails the run.
 
 The atomic `rusty.fleet.validation_run_receipt.v1` records requested,
 required, and effective profiles; configuration SHA-256; Git evidence;

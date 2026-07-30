@@ -1545,6 +1545,15 @@ function Invoke-FleetGuardrailCheck {
         }
         if (-not $timedOut) {
             $exitCode = $job.ExitCode
+            if ($exitCode -eq 0 -and $job.ActiveProcessCount -gt 0) {
+                $exitDrainDeadline = [DateTimeOffset]::UtcNow.AddSeconds(5)
+                while (
+                    $job.ActiveProcessCount -gt 0 -and
+                    [DateTimeOffset]::UtcNow -lt $exitDrainDeadline
+                ) {
+                    Start-Sleep -Milliseconds 100
+                }
+            }
             $ownedChildLeak = $job.ActiveProcessCount -gt 0
         }
         if ($timedOut -or $exitCode -ne 0 -or $ownedChildLeak) {
