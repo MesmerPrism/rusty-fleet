@@ -95,7 +95,8 @@ try {
     $config.checks = @(
         [ordered]@{
             id = "synthetic-pass"; minimum_profile = "focused"; file = "tools/pass.ps1"
-            arguments = @(); timeout_seconds = 10
+            arguments = @("alpha value", "", 'quoted"value', 'trailing path\', "-Flag")
+            timeout_seconds = 10
         },
         [ordered]@{
             id = "synthetic-standard"; minimum_profile = "standard"; file = "tools/drift.ps1"
@@ -110,12 +111,32 @@ try {
     $config.receipt_directory = "artifacts/validation"
     $configPath = Join-Path $scratch "risk.json"
     Write-Json $configPath $config
-    Set-Content -LiteralPath (Join-Path $scratch "tools/pass.ps1") -Value "exit 0" -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $scratch "tools/pass.ps1") -Value @'
+param(
+    [string] $First,
+    [AllowEmptyString()][string] $Empty,
+    [string] $Quoted,
+    [string] $Trailing,
+    [switch] $Flag
+)
+if (
+    $First -cne "alpha value" -or
+    $Empty -cne "" -or
+    $Quoted -cne 'quoted"value' -or
+    $Trailing -cne 'trailing path\' -or
+    -not $Flag
+) {
+    throw "Synthetic arguments were not splatted as distinct parameters."
+}
+exit 0
+'@ -Encoding utf8NoBOM
     Set-Content -LiteralPath (Join-Path $scratch "tools/drift.ps1") `
         -Value 'Set-Content -LiteralPath (Join-Path $PSScriptRoot "../README.md") -Value "drift"' -Encoding utf8NoBOM
     Set-Content -LiteralPath (Join-Path $scratch "tools/index-drift.ps1") `
         -Value '& git add README.md; exit $LASTEXITCODE' -Encoding utf8NoBOM
     Set-Content -LiteralPath (Join-Path $scratch "tools/timeout.ps1") -Value @'
+Write-Output "timeout stdout survived"
+[Console]::Error.WriteLine("timeout stderr survived")
 $child = Start-Process -FilePath "pwsh" -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Seconds 30") -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 30
 '@ -Encoding utf8NoBOM
@@ -589,7 +610,10 @@ Write-Output "native failure handled by the check"
 
     $timeoutPath = $null
     try {
-        $timeout = Invoke-FleetValidationGuardrail $scratch $configPath "release" $null -Execute
+        $timeoutInformation = @()
+        $timeoutWarnings = @()
+        $timeout = Invoke-FleetValidationGuardrail $scratch $configPath "release" $null `
+            -Execute -InformationVariable timeoutInformation -WarningVariable timeoutWarnings
         $timeoutPath = Get-TestReceiptPath $scratch $timeout
         Assert-True ($timeout.result -eq "failed") "Timeout did not fail aggregate."
         Assert-True (
@@ -598,6 +622,10 @@ Write-Output "native failure handled by the check"
             $timeout.commands[0].cleanup.completed -and
             $timeout.commands[0].cleanup.survivors.Count -eq 0
         ) "Timeout cleanup receipt is incomplete."
+        Assert-True (
+            (($timeoutInformation | Out-String) -match "timeout stdout survived") -and
+            (($timeoutWarnings | Out-String) -match "timeout stderr survived")
+        ) "Partial stdout/stderr produced before timeout did not survive Job Object cleanup."
     } finally {
         if ($timeoutPath) {
             Remove-Item -LiteralPath $timeoutPath -Force -ErrorAction SilentlyContinue

@@ -949,6 +949,17 @@ namespace RustyFleet
     {
         private const uint CREATE_SUSPENDED = 0x00000004;
         private const uint CREATE_NO_WINDOW = 0x08000000;
+        private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+        private const uint GENERIC_READ = 0x80000000;
+        private const uint GENERIC_WRITE = 0x40000000;
+        private const uint FILE_SHARE_READ = 0x00000001;
+        private const uint FILE_SHARE_WRITE = 0x00000002;
+        private const uint FILE_SHARE_DELETE = 0x00000004;
+        private const uint CREATE_ALWAYS = 2;
+        private const uint OPEN_EXISTING = 3;
+        private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+        private const uint STARTF_USESTDHANDLES = 0x00000100;
+        private const int PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
         private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
         private const uint WAIT_OBJECT_0 = 0;
         private const uint WAIT_TIMEOUT = 258;
@@ -967,9 +978,61 @@ namespace RustyFleet
             ProcessId = processId;
         }
 
-        public static ValidationJob Start(string application, string arguments, string workingDirectory)
+        private static string QuoteArgument(string argument)
+        {
+            if (argument == null) argument = String.Empty;
+            if (argument.Length == 0) return "\"\"";
+            bool needsQuotes = false;
+            foreach (char value in argument)
+            {
+                if (Char.IsWhiteSpace(value) || value == '"')
+                {
+                    needsQuotes = true;
+                    break;
+                }
+            }
+            if (!needsQuotes) return argument;
+
+            StringBuilder quoted = new StringBuilder();
+            quoted.Append('"');
+            int backslashes = 0;
+            foreach (char value in argument)
+            {
+                if (value == '\\')
+                {
+                    backslashes++;
+                    continue;
+                }
+                if (value == '"')
+                {
+                    quoted.Append('\\', backslashes * 2 + 1);
+                    quoted.Append('"');
+                    backslashes = 0;
+                    continue;
+                }
+                quoted.Append('\\', backslashes);
+                backslashes = 0;
+                quoted.Append(value);
+            }
+            quoted.Append('\\', backslashes * 2);
+            quoted.Append('"');
+            return quoted.ToString();
+        }
+
+        public static ValidationJob Start(
+            string application,
+            string[] arguments,
+            string workingDirectory,
+            string standardOutputPath,
+            string standardErrorPath)
         {
             IntPtr jobHandle = IntPtr.Zero;
+            IntPtr standardInputHandle = new IntPtr(-1);
+            IntPtr standardOutputHandle = new IntPtr(-1);
+            IntPtr standardErrorHandle = new IntPtr(-1);
+            IntPtr attributeList = IntPtr.Zero;
+            IntPtr inheritedHandles = IntPtr.Zero;
+            bool attributeListInitialized = false;
             PROCESS_INFORMATION processInfo = new PROCESS_INFORMATION();
             try
             {
@@ -987,17 +1050,94 @@ namespace RustyFleet
                     throw new Win32Exception(Marshal.GetLastWin32Error());
                 }
 
-                STARTUPINFO startup = new STARTUPINFO();
-                startup.cb = (uint)Marshal.SizeOf<STARTUPINFO>();
-                StringBuilder commandLine = new StringBuilder(
-                    "\"" + application.Replace("\"", "\\\"") + "\" " + arguments);
-                if (!CreateProcessW(
+                STARTUPINFOEX startup = new STARTUPINFOEX();
+                startup.StartupInfo.cb = (uint)Marshal.SizeOf<STARTUPINFOEX>();
+                SECURITY_ATTRIBUTES security = new SECURITY_ATTRIBUTES();
+                security.nLength = (uint)Marshal.SizeOf<SECURITY_ATTRIBUTES>();
+                security.bInheritHandle = true;
+                standardInputHandle = CreateFileW(
+                    "NUL",
+                    GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    ref security,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    IntPtr.Zero);
+                standardOutputHandle = CreateFileW(
+                    standardOutputPath,
+                    GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ref security,
+                    CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL,
+                    IntPtr.Zero);
+                standardErrorHandle = CreateFileW(
+                    standardErrorPath,
+                    GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ref security,
+                    CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL,
+                    IntPtr.Zero);
+                if (standardInputHandle == new IntPtr(-1) ||
+                    standardOutputHandle == new IntPtr(-1) ||
+                    standardErrorHandle == new IntPtr(-1))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+                startup.StartupInfo.hStdInput = standardInputHandle;
+                startup.StartupInfo.hStdOutput = standardOutputHandle;
+                startup.StartupInfo.hStdError = standardErrorHandle;
+                IntPtr attributeListSize = IntPtr.Zero;
+                InitializeProcThreadAttributeList(
+                    IntPtr.Zero,
+                    1,
+                    0,
+                    ref attributeListSize);
+                if (attributeListSize == IntPtr.Zero)
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                attributeList = Marshal.AllocHGlobal(attributeListSize);
+                if (!InitializeProcThreadAttributeList(
+                    attributeList,
+                    1,
+                    0,
+                    ref attributeListSize))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                attributeListInitialized = true;
+                inheritedHandles = Marshal.AllocHGlobal(IntPtr.Size * 3);
+                Marshal.WriteIntPtr(inheritedHandles, 0, standardInputHandle);
+                Marshal.WriteIntPtr(inheritedHandles, IntPtr.Size, standardOutputHandle);
+                Marshal.WriteIntPtr(inheritedHandles, IntPtr.Size * 2, standardErrorHandle);
+                if (!UpdateProcThreadAttribute(
+                    attributeList,
+                    0,
+                    new IntPtr(PROC_THREAD_ATTRIBUTE_HANDLE_LIST),
+                    inheritedHandles,
+                    new IntPtr(IntPtr.Size * 3),
+                    IntPtr.Zero,
+                    IntPtr.Zero))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                startup.lpAttributeList = attributeList;
+                StringBuilder commandLine = new StringBuilder(QuoteArgument(application));
+                foreach (string argument in arguments)
+                {
+                    commandLine.Append(' ');
+                    commandLine.Append(QuoteArgument(argument));
+                }
+                if (!CreateProcessWithAttributesW(
                     application,
                     commandLine,
                     IntPtr.Zero,
                     IntPtr.Zero,
-                    false,
-                    CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                    true,
+                    CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
                     IntPtr.Zero,
                     workingDirectory,
                     ref startup,
@@ -1005,6 +1145,12 @@ namespace RustyFleet
                 {
                     throw new Win32Exception(Marshal.GetLastWin32Error());
                 }
+                DeleteProcThreadAttributeList(attributeList);
+                attributeListInitialized = false;
+                Marshal.FreeHGlobal(attributeList);
+                attributeList = IntPtr.Zero;
+                Marshal.FreeHGlobal(inheritedHandles);
+                inheritedHandles = IntPtr.Zero;
 
                 if (!AssignProcessToJobObject(jobHandle, processInfo.hProcess))
                 {
@@ -1016,6 +1162,12 @@ namespace RustyFleet
                 }
                 CloseHandle(processInfo.hThread);
                 processInfo.hThread = IntPtr.Zero;
+                CloseHandle(standardInputHandle);
+                standardInputHandle = new IntPtr(-1);
+                CloseHandle(standardOutputHandle);
+                standardOutputHandle = new IntPtr(-1);
+                CloseHandle(standardErrorHandle);
+                standardErrorHandle = new IntPtr(-1);
                 return new ValidationJob(jobHandle, processInfo.hProcess, unchecked((int)processInfo.dwProcessId));
             }
             catch
@@ -1026,6 +1178,12 @@ namespace RustyFleet
                     CloseHandle(processInfo.hProcess);
                 }
                 if (processInfo.hThread != IntPtr.Zero) CloseHandle(processInfo.hThread);
+                if (attributeListInitialized) DeleteProcThreadAttributeList(attributeList);
+                if (attributeList != IntPtr.Zero) Marshal.FreeHGlobal(attributeList);
+                if (inheritedHandles != IntPtr.Zero) Marshal.FreeHGlobal(inheritedHandles);
+                if (standardInputHandle != new IntPtr(-1)) CloseHandle(standardInputHandle);
+                if (standardOutputHandle != new IntPtr(-1)) CloseHandle(standardOutputHandle);
+                if (standardErrorHandle != new IntPtr(-1)) CloseHandle(standardErrorHandle);
                 if (jobHandle != IntPtr.Zero) CloseHandle(jobHandle);
                 throw;
             }
@@ -1196,6 +1354,22 @@ namespace RustyFleet
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct STARTUPINFOEX
+        {
+            public STARTUPINFO StartupInfo;
+            public IntPtr lpAttributeList;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SECURITY_ATTRIBUTES
+        {
+            public uint nLength;
+            public IntPtr lpSecurityDescriptor;
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool bInheritHandle;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct PROCESS_INFORMATION
         {
             public IntPtr hProcess;
@@ -1236,8 +1410,8 @@ namespace RustyFleet
             uint informationLength,
             IntPtr returnLength);
 
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern bool CreateProcessW(
+        [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateProcessWithAttributesW(
             string applicationName,
             StringBuilder commandLine,
             IntPtr processAttributes,
@@ -1246,8 +1420,38 @@ namespace RustyFleet
             uint creationFlags,
             IntPtr environment,
             string currentDirectory,
-            ref STARTUPINFO startupInfo,
+            ref STARTUPINFOEX startupInfo,
             out PROCESS_INFORMATION processInformation);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool InitializeProcThreadAttributeList(
+            IntPtr attributeList,
+            int attributeCount,
+            int flags,
+            ref IntPtr size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool UpdateProcThreadAttribute(
+            IntPtr attributeList,
+            uint flags,
+            IntPtr attribute,
+            IntPtr value,
+            IntPtr size,
+            IntPtr previousValue,
+            IntPtr returnSize);
+
+        [DllImport("kernel32.dll")]
+        private static extern void DeleteProcThreadAttributeList(IntPtr attributeList);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateFileW(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            ref SECURITY_ATTRIBUTES securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern uint ResumeThread(IntPtr thread);
@@ -1298,45 +1502,24 @@ function Invoke-FleetGuardrailCheck {
     $exitCode = $null
     try {
         Initialize-FleetValidationJobHost
-        $invocation = [ordered]@{
-            file = $fullFile
-            arguments = $arguments
-            stdout = $stdout
-            stderr = $stderr
-        } |
-            ConvertTo-Json -Depth 10 -Compress
-        $invocationBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($invocation))
-        $launcher = @"
-`$specJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$invocationBase64'))
-`$spec = `$specJson | ConvertFrom-Json -Depth 10
-`$ErrorActionPreference = 'Stop'
-`$code = 1
-try {
-    `$global:LASTEXITCODE = 0
-    & ([string]`$spec.file) @(`$spec.arguments | ForEach-Object { [string]`$_ }) *> ([string]`$spec.stdout)
-    `$invocationSucceeded = `$?
-    `$reportedExit = `$LASTEXITCODE
-    `$code = if (`$invocationSucceeded) {
-        0
-    } elseif (`$null -ne `$reportedExit -and [int]`$reportedExit -ne 0) {
-        [int]`$reportedExit
-    } else { 1 }
-} catch {
-    (`$_ | Out-String) | Set-Content -LiteralPath ([string]`$spec.stderr) -Encoding utf8NoBOM
-    `$code = 1
-}
-Start-Sleep -Milliseconds 750
-exit `$code
-"@
-        $launcherBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcher))
         $pwshPath = Join-Path $PSHOME "pwsh.exe"
         if (-not (Test-Path -LiteralPath $pwshPath -PathType Leaf)) {
             throw "The current PowerShell host executable is unavailable."
         }
+        [string[]]$processArguments = @(
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $fullFile
+        ) + $arguments
         $job = [RustyFleet.ValidationJob]::Start(
             $pwshPath,
-            "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $launcherBase64",
-            [IO.Path]::GetFullPath($RepositoryRoot)
+            $processArguments,
+            [IO.Path]::GetFullPath($RepositoryRoot),
+            $stdout,
+            $stderr
         )
         $deadline = $started.AddSeconds([int]$Check.timeout_seconds)
         $nextHeartbeat = $started.AddSeconds($HeartbeatSeconds)
