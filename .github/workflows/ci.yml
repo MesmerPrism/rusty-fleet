@@ -8,26 +8,32 @@ permissions:
   contents: read
 
 jobs:
-  quick:
+  validation:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.201
-      - name: Quick validation
+      - name: Risk-proportional validation
         shell: pwsh
-        run: .\tools\Test-Repo.ps1 -Tier Quick
-
-  standard:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    needs: quick
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: 10.0.201
-      - name: Standard validation
-        shell: pwsh
-        run: .\tools\Test-Repo.ps1 -Tier Standard
+        env:
+          FLEET_BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FLEET_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $base = $env:FLEET_BASE_COMMIT
+          if (-not $base -or $base -match '^0+$') {
+            $defaultRef = "origin/$($env:FLEET_DEFAULT_BRANCH)"
+            git show-ref --verify --quiet "refs/remotes/$defaultRef"
+            if ($LASTEXITCODE -ne 0) {
+              git fetch --no-tags origin $env:FLEET_DEFAULT_BRANCH
+              if ($LASTEXITCODE -ne 0) { throw "Unable to fetch the default branch." }
+            }
+            $base = (git merge-base HEAD $defaultRef).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $base) {
+              throw "Unable to resolve a non-empty validation base."
+            }
+          }
+          .\tools\Invoke-FleetValidation.ps1 -BaseCommit $base -Execute

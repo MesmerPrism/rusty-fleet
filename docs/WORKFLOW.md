@@ -1,5 +1,31 @@
 # Stacked Milestone Workflow
 
+## Risk-proportional source validation
+
+Use `tools/Invoke-FleetValidation.ps1` to plan the smallest sufficient
+Fleet-local profile from the exact changed paths. Planning is read-only by
+default; execution requires `-Execute`. `focused`, `standard`, and `release`
+are Fleet's canonical profiles. Existing `Test-Repo.ps1 -Tier
+Quick|Standard|Deep` calls remain supported as upward-only aliases, so CI and
+portable work-environment callers retain their vocabulary.
+
+The plan is not acceptance. An executed receipt fails closed on repository
+or index drift, command failure, timeout, incomplete Job Object cleanup, a
+forbidden device command, an unknown profile, or a downgrade request. A clean
+automatic plan needs an exact base; dirty execution needs explicit
+`-AllowDirtySource`. Plans write nothing. Executions create an immutable
+non-passing in-progress file and one unique ignored terminal run-ID receipt
+without overwrite. The receipt records source validation only and never authorizes
+publication, release, signing, or device work.
+
+Candidate-owned validation code is not independent publication authority.
+Changes to workflows, guardrail configuration/runner/tests/schemas,
+`Test-Repo.ps1`, `AGENTS.md`, ignore/evidence boundaries, toolchain/dependency
+roots, project composition locks, and live device/security runners always
+select `release`. Windows packaging/signing/publication code, Fleet Setup, and
+the Windows distribution aggregate are included in that floor; a protected
+base/main-pinned verifier remains a separate publication control.
+
 ## Decision
 
 Rusty Fleet adopts the Morphospace Quick/Standard/Deep validation model while

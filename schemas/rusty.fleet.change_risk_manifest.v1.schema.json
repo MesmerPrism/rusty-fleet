@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MesmerPrism/rusty-fleet/blob/main/schemas/rusty.fleet.change_risk_manifest.v1.schema.json",
+  "title": "Rusty Fleet change risk manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "repository", "git", "paths", "classifications", "required_profile", "config_sha256"],
+  "properties": {
+    "schema": { "const": "rusty.fleet.change_risk_manifest.v1" },
+    "repository": { "const": "rusty-fleet" },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "branch", "detached", "index_sha256", "snapshot_sha256", "base_commit", "clean"],
+      "properties": {
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "tree": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "branch": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "pattern": "^[^\\u0000]+$"
+        },
+        "detached": { "type": "boolean" },
+        "index_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "snapshot_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "base_commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "clean": { "type": "boolean" }
+      }
+    },
+    "paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\\u0000]+$"
+      }
+    },
+    "classifications": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "rule_id", "profile"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\\u0000]+$"
+          },
+          "rule_id": { "type": "string", "minLength": 1 },
+          "profile": { "enum": ["focused", "standard", "release"] }
+        }
+      }
+    },
+    "required_profile": { "enum": ["focused", "standard", "release"] },
+    "config_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

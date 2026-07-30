@@ -18,4 +18,4 @@ jobs:
           dotnet-version: 10.0.201
       - name: Deep validation
         shell: pwsh
-        run: .\tools\Test-Repo.ps1 -Tier Deep
+        run: .\tools\Invoke-FleetValidation.ps1 -Profile release -Execute

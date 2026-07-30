@@ -1,5 +1,78 @@
 # Validation
 
+## Fleet validation guardrail pilot
+
+The Fleet-local canonical profiles are `focused`, `standard`, and `release`.
+They do not replace the portable work-environment vocabulary:
+`Quick` maps to `focused`, `Standard` to `standard`, and `Deep` to `release`.
+Aliases are compatibility inputs only. An explicit request may raise the
+profile selected from risk, but an unknown profile or downgrade is rejected.
+
+`config/fleet-validation-risk.v1.json` is the typed risk/check registry.
+Changed tracked paths are sorted and classified deterministically; the
+highest matching risk wins. CI supplies an exact base commit. A local run
+without a base classifies the index, worktree, and untracked paths. A clean
+source without a base must provide an explicit profile or, for automatic
+selection, the exact ancestor through `-BaseCommit`; the runner never treats
+an unknown clean range as focused.
+
+```powershell
+# Read-only dirty-overlay plan
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Invoke-FleetValidation.ps1
+
+# Clean committed branch plan or execution
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Invoke-FleetValidation.ps1 `
+  -BaseCommit <exact-ancestor-commit> `
+  -Execute
+
+# Deliberate dirty-source execution
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Invoke-FleetValidation.ps1 `
+  -Execute `
+  -AllowDirtySource
+```
+
+The runner binds the exact commit, tree, cleanliness, changed paths, and dirty
+path hashes plus branch/detached identity and the complete index fingerprint
+before execution and re-reads them afterward. Drift rejects the run. Direct
+execution rejects dirty source unless `-AllowDirtySource` is explicit; the
+legacy `Test-Repo.ps1` edit entrypoint supplies that opt-in because it is
+specifically an uncommitted edit loop. A later commit invalidates the dirty
+receipt and requires new evidence.
+
+Each registered check has an identity and timeout, emits a periodic heartbeat,
+and starts suspended. The runner assigns it to a kill-on-close Windows Job
+Object before resuming it. Timeout, nonzero exit, or an owned-child leak
+terminates the complete kernel-owned process tree; inability to prove zero
+remaining Job Object processes fails the run.
+
+The atomic `rusty.fleet.validation_run_receipt.v1` records requested,
+required, and effective profiles; configuration SHA-256; Git evidence;
+command identities; timings; per-check status, timeout, and cleanup; aggregate
+result; and limitations. The owner validator recomputes profile, configuration,
+classification, command, Git-path, exact drift, dirty-source, timing, and
+cleanup invariants against the exact repository and configuration before any
+atomic rename. Execution first creates an immutable non-passing
+`<run-id>.in-progress.json`, then creates the terminal `<run-id>.json` without
+overwrite and removes the run-owned provisional file. An interruption leaves
+the explicit in-progress evidence behind. Callers cannot select receipt
+filenames. Paths outside ignored `artifacts/validation/`, reparse ancestry,
+and existing run-ID paths are rejected. Planning writes no file. Repository
+validation remains source-only and cannot register device commands.
+
+This Phase 1 source pilot does not make candidate-owned workflow or validation
+code an independent trust root. It hard-floors every validation-authority path
+at `release` and self-tests the canonical check identities and device-command
+rejections, but publication policy must still require a protected,
+base/main-pinned verifier or equivalent external required check before a
+candidate guardrail change can authorize itself.
+
+Windows packaging/signing/publication code, Fleet Setup, and the Windows
+distribution aggregate are release-authority surfaces. Ordinary product code
+remains `standard`, and ordinary documentation remains `focused`.
+
 Provider-catalog source tests cover exact contract/version/action/owner/receipt
 bindings, RFC3339 offsets and leap seconds, duplicate IDs, freshness drift,
 stale/future observations, executable vocabulary, artifact swaps, oversized
@@ -371,8 +444,14 @@ replacement for them.
 
 ## GitHub cadence
 
-- Quick runs on every push and pull request.
-- Standard runs on pull requests and `main`.
-- Deep is manual/release-triggered until implementation needs a scheduled
-  integration gate.
+- The risk-proportional gate runs on every push and pull request from the
+  exact event base, or the default-branch merge base for a first branch push.
+- Focused is sufficient for ordinary documentation and narrow static edits.
+- Standard is selected for ordinary product code, schemas, tools, integration
+  changes, and normal Morphospace unit/state evidence.
+- Release is selected for validation authority, workflows, ignore/evidence
+  boundaries, dependency/toolchain roots, project composition/feature locks,
+  architecture/security authority, live device/security adapters and runners,
+  signed/release contracts, or comparable promotion risk; it is also manually
+  selectable for a release checkpoint.
 - Device suites run outside generic GitHub-hosted CI.

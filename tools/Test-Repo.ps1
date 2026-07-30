@@ -6,13 +6,29 @@ param(
     [ValidateSet("Quick", "Standard", "Deep")]
     [string] $Tier = "Quick",
 
-    [string] $WorkEnvironmentRoot = ""
+    [string] $WorkEnvironmentRoot = $env:FLEET_VALIDATION_WORK_ENVIRONMENT_ROOT,
+
+    [switch] $GuardrailChild
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+if (-not $GuardrailChild) {
+    $priorWorkEnvironmentRoot = $env:FLEET_VALIDATION_WORK_ENVIRONMENT_ROOT
+    try {
+        $env:FLEET_VALIDATION_WORK_ENVIRONMENT_ROOT = $WorkEnvironmentRoot
+        & (Join-Path $PSScriptRoot "Invoke-FleetValidation.ps1") `
+            -Profile $Tier `
+            -Execute `
+            -AllowDirtySource
+        exit $LASTEXITCODE
+    } finally {
+        $env:FLEET_VALIDATION_WORK_ENVIRONMENT_ROOT = $priorWorkEnvironmentRoot
+    }
+}
 
 function Assert-True {
     param(
@@ -291,6 +307,9 @@ function Test-RequiredFiles {
         "schemas/rusty.fleet.offline_onboarding_private_inventory.v1.schema.json",
         "schemas/rusty.fleet.signed_checkin.v1.schema.json",
         "schemas/rusty.fleet.stream_descriptor.v1.schema.json",
+        "schemas/rusty.fleet.change_risk_manifest.v1.schema.json",
+        "schemas/rusty.fleet.validation_run_receipt.v1.schema.json",
+        "config/fleet-validation-risk.v1.json",
         "docs/ARCHITECTURE.md",
         "docs/DATASTREAMS.md",
         "docs/IMPLEMENTATION_PLAN.md",
@@ -306,6 +325,9 @@ function Test-RequiredFiles {
         "docs/PROVIDER_CAPABILITY_CATALOG.md",
         "tools/New-FleetIcon.ps1",
         "tools/Test-FleetOnboardingSecurity.ps1",
+        "tools/Fleet.ValidationGuardrails.psm1",
+        "tools/Invoke-FleetValidation.ps1",
+        "tools/Test-FleetValidationGuardrails.ps1",
         "docs/decisions/0003-datastream-lifecycle-and-authority.md",
         "docs/decisions/0004-m0-source-boundary-and-threat-model.md",
         "docs/decisions/0005-m1-checkin-authority.md",
@@ -830,6 +852,10 @@ function Test-ReleaseCandidateDependencies {
 
 Push-Location -LiteralPath $repoRoot
 try {
+    & (Join-Path $repoRoot "tools/Test-FleetValidationGuardrails.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fleet validation guardrail self-tests failed."
+    }
     Test-RequiredFiles
     Test-JsonDocuments
     Test-PublicBoundary

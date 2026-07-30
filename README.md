@@ -324,7 +324,27 @@ headset route.
 
 ## Validation
 
-Run the edit-sized checks:
+Fleet selects the smallest sufficient source-only validation profile from the
+tracked Git change set:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Invoke-FleetValidation.ps1 `
+  -BaseCommit <exact-ancestor-commit>
+```
+
+This is a read-only plan. Omit `-BaseCommit` only while classifying a dirty
+edit tree. Add `-Execute` to run the selected profile and write
+an immutable in-progress record followed by an atomic typed terminal receipt
+to unique run-ID paths under
+`artifacts/validation/`. A dirty edit tree can be classified without a base.
+For a clean committed branch, pass the exact ancestor with `-BaseCommit`; the
+runner refuses to guess a range. Direct execution rejects dirty source unless
+`-AllowDirtySource` is explicit. The canonical Fleet profiles are `focused`,
+`standard`, and `release`; explicit requests may raise the selected profile
+but cannot lower it.
+
+Existing callers remain compatible:
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Quick
@@ -343,6 +363,7 @@ or broad integration checkpoints:
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\Test-Repo.ps1 -Tier Deep
 ```
 
+`Quick`, `Standard`, and `Deep` map to `focused`, `standard`, and `release`.
 These commands do not contact or mutate a headset.
 
 ## Status

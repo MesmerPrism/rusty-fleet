@@ -1,0 +1,134 @@
+{
+  "schema": "rusty.fleet.validation_risk_config.v1",
+  "profiles": [
+    {
+      "id": "focused",
+      "rank": 1
+    },
+    {
+      "id": "standard",
+      "rank": 2
+    },
+    {
+      "id": "release",
+      "rank": 3
+    }
+  ],
+  "aliases": {
+    "Quick": "focused",
+    "Standard": "standard",
+    "Deep": "release"
+  },
+  "default_profile": "focused",
+  "risk_rules": [
+    {
+      "id": "release-authority",
+      "profile": "release",
+      "patterns": [
+        ".github/workflows/**",
+        ".gitignore",
+        "AGENTS.md",
+        "Directory.Build.props",
+        "Directory.Packages.props",
+        "SECURITY.md",
+        "config/**",
+        "docs/ARCHITECTURE.md",
+        "docs/DATASTREAMS.md",
+        "docs/PUBLIC_PRIVATE_BOUNDARY.md",
+        "docs/decisions/**",
+        "apps/fleet-setup/**",
+        "apps/fleet-hub-local/**",
+        "crates/fleet-manifold-adapter/**",
+        "crates/fleet-onboarding/**",
+        "crates/fleet-onboarding-windows-kernel/**",
+        "crates/fleet-provider-catalog/**",
+        "crates/fleet-quest-awake-adapter/**",
+        "crates/fleet-quest-connectivity-adapter/**",
+        "crates/fleet-windows-hotspot-adapter/**",
+        "global.json",
+        "morphospace/feature.lock.json",
+        "morphospace/project.spec.json",
+        "packaging/windows/**",
+        "schemas/rusty.fleet.change_risk_manifest.v1.schema.json",
+        "schemas/rusty.fleet.validation_run_receipt.v1.schema.json",
+        "schemas/*authority*",
+        "schemas/*credential*",
+        "schemas/*release*",
+        "schemas/*signed*",
+        "tools/Fleet.ValidationGuardrails.psm1",
+        "tools/FleetWifiAdbTwoQuestAcceptance.psm1",
+        "tools/Invoke-FleetWifiAdbTwoQuestAcceptance.ps1",
+        "tools/Invoke-FleetValidation.ps1",
+        "tools/Test-FleetOnboardingSecurity.ps1",
+        "tools/Test-FleetWifiAdbTwoQuestAcceptance.ps1",
+        "tools/Test-FleetValidationGuardrails.ps1",
+        "tools/Test-WindowsDistribution.ps1",
+        "tools/Test-Repo.ps1",
+        "Cargo.lock",
+        "Cargo.toml"
+      ]
+    },
+    {
+      "id": "standard-integration",
+      "profile": "standard",
+      "patterns": [
+        "crates/**",
+        "apps/**",
+        "morphospace/**",
+        "schemas/**",
+        "tools/**",
+        "docs/VALIDATION.md",
+        "docs/WORKFLOW.md"
+      ]
+    },
+    {
+      "id": "focused-source",
+      "profile": "focused",
+      "patterns": [
+        "**"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "fleet-repository-focused",
+      "minimum_profile": "focused",
+      "file": "tools/Test-Repo.ps1",
+      "arguments": [
+        "-Tier",
+        "Quick",
+        "-GuardrailChild"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "fleet-repository-standard",
+      "minimum_profile": "standard",
+      "file": "tools/Test-Repo.ps1",
+      "arguments": [
+        "-Tier",
+        "Standard",
+        "-GuardrailChild"
+      ],
+      "timeout_seconds": 2700
+    },
+    {
+      "id": "fleet-repository-release",
+      "minimum_profile": "release",
+      "file": "tools/Test-Repo.ps1",
+      "arguments": [
+        "-Tier",
+        "Deep",
+        "-GuardrailChild"
+      ],
+      "timeout_seconds": 3600
+    }
+  ],
+  "heartbeat_seconds": 30,
+  "receipt_directory": "artifacts/validation",
+  "forbidden_command_patterns": [
+    "(?i)(^|[\\\\/])adb(?:\\.exe)?$",
+    "(?i)\\b(?:adb|fastboot)\\b",
+    "(?i)Invoke-FleetWifiAdbTwoQuestAcceptance\\.ps1"
+  ]
+}
