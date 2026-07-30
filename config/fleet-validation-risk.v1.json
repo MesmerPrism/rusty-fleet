@@ -25,7 +25,7 @@
       "id": "release-authority",
       "profile": "release",
       "patterns": [
-        ".github/workflows/**",
+        ".github/**",
         ".gitignore",
         "AGENTS.md",
         "Directory.Build.props",
@@ -60,6 +60,8 @@
         "tools/Invoke-FleetWifiAdbTwoQuestAcceptance.ps1",
         "tools/Invoke-FleetValidation.ps1",
         "tools/Test-FleetOnboardingSecurity.ps1",
+        "tools/Test-FleetPullRequestAuthority.ps1",
+        "tools/Test-FleetPullRequestAuthoritySelfTest.ps1",
         "tools/Test-FleetWifiAdbTwoQuestAcceptance.ps1",
         "tools/Test-FleetValidationGuardrails.ps1",
         "tools/Test-WindowsDistribution.ps1",

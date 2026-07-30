@@ -211,12 +211,14 @@ function Assert-FleetProductionValidationConfig {
     $authorityPaths = @(
         ".github/workflows/ci.yml",
         ".github/workflows/deep-validation.yml",
+        ".github/workflows/validation-authority.yml",
         ".gitignore",
         "AGENTS.md",
         "apps/fleet-setup/RustyFleet.Setup.csproj",
         "Directory.Build.props",
         "Directory.Packages.props",
         "config/fleet-validation-risk.v1.json",
+        "config/fleet-pull-request-authority.v1.json",
         "global.json",
         "morphospace/feature.lock.json",
         "morphospace/project.spec.json",
@@ -226,6 +228,7 @@ function Assert-FleetProductionValidationConfig {
         "packaging/windows/Sign-WindowsArtifacts.ps1",
         "schemas/rusty.fleet.change_risk_manifest.v1.schema.json",
         "schemas/rusty.fleet.validation_run_receipt.v1.schema.json",
+        "schemas/rusty.fleet.pull_request_authority_assessment.v1.schema.json",
         "tools/Fleet.ValidationGuardrails.psm1",
         "tools/FleetWifiAdbTwoQuestAcceptance.psm1",
         "tools/Invoke-FleetWifiAdbTwoQuestAcceptance.ps1",
@@ -233,6 +236,8 @@ function Assert-FleetProductionValidationConfig {
         "tools/Test-FleetOnboardingSecurity.ps1",
         "tools/Test-FleetWifiAdbTwoQuestAcceptance.ps1",
         "tools/Test-FleetValidationGuardrails.ps1",
+        "tools/Test-FleetPullRequestAuthority.ps1",
+        "tools/Test-FleetPullRequestAuthoritySelfTest.ps1",
         "tools/Test-WindowsDistribution.ps1",
         "tools/Test-Repo.ps1"
     )

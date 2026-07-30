@@ -70,7 +70,8 @@ base/main-pinned verifier or equivalent external required check before a
 candidate guardrail change can authorize itself.
 
 Windows packaging/signing/publication code, Fleet Setup, and the Windows
-distribution aggregate are release-authority surfaces. Ordinary product code
+distribution aggregate and every `.github/**` path are release-authority
+surfaces. Ordinary product code
 remains `standard`, and ordinary documentation remains `focused`.
 
 Provider-catalog source tests cover exact contract/version/action/owner/receipt

@@ -60,6 +60,16 @@ try {
     $releaseRule = $loweredAuthority.risk_rules | Where-Object id -EQ "release-authority"
     $releaseRule.patterns = @($releaseRule.patterns | Where-Object { $_ -cne "tools/Test-Repo.ps1" })
     $damagedProductionConfigs += $loweredAuthority
+    $narrowedWorkflowAuthority = $config | ConvertTo-Json -Depth 100 |
+        ConvertFrom-Json -Depth 100
+    $narrowedRule = $narrowedWorkflowAuthority.risk_rules |
+        Where-Object id -EQ "release-authority"
+    $narrowedRule.patterns = @(
+        $narrowedRule.patterns | ForEach-Object {
+            if ($_ -ceq ".github/**") { ".github/workflows/**" } else { $_ }
+        }
+    )
+    $damagedProductionConfigs += $narrowedWorkflowAuthority
     foreach ($releaseFloor in @(
         "apps/fleet-setup/**",
         "packaging/windows/**",
@@ -193,8 +203,12 @@ Write-Output "native failure handled by the check"
     Remove-Item -LiteralPath (Join-Path $scratch "config") -Recurse -Force
 
     foreach ($releasePath in @(
+        ".github/CODEOWNERS",
         "apps/fleet-setup/RustyFleet.Setup.csproj",
+        "config/fleet-pull-request-authority.v1.json",
         "packaging/windows/Publish-WindowsRelease.ps1",
+        "schemas/rusty.fleet.pull_request_authority_assessment.v1.schema.json",
+        "tools/Test-FleetPullRequestAuthority.ps1",
         "tools/Test-WindowsDistribution.ps1"
     )) {
         $fullReleasePath = Join-Path $scratch $releasePath
