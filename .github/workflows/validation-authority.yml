@@ -1,5 +1,6 @@
 name: Validation authority
 
+# Disposable negative canary: protected workflow changes require base-owned approval.
 on:
   pull_request_target:
     branches:
