@@ -163,15 +163,15 @@
           "path": "tools/Test-FleetValidationGuardrails.ps1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 39396,
-          "sha256": "8cbce41e0a8b9d6f4616c2616937f70f0329314a81d7f071c94e383796c0bd2f"
+          "size_bytes": 40126,
+          "sha256": "e9b1d895ba54cf3c578ff2c0e4bcc4142f2e3056e981bced2a6820af900cccb4"
         },
         {
           "path": "tools/Test-Repo.ps1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 42270,
-          "sha256": "89f3cf48f428b5c757b70b599bb1b5bbffe359ce335e8a0d4f68bde89ce64294"
+          "size_bytes": 42786,
+          "sha256": "c13beb2812a809b6045fd4843250bab12eb2028967a55e70e28199bd0e1dd4f8"
         }
       ],
       "status": "approved"

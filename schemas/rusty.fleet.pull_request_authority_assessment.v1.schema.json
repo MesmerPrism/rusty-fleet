@@ -61,7 +61,9 @@
         "base_tree",
         "candidate_commit",
         "candidate_tree",
+        "event_merge_commit",
         "merge_commit",
+        "merge_commit_source",
         "merge_tree",
         "merge_parent_commits",
         "head_private_ref",
@@ -117,8 +119,21 @@
         "candidate_tree": {
           "$ref": "#/$defs/objectId"
         },
+        "event_merge_commit": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/objectId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "merge_commit": {
           "$ref": "#/$defs/objectId"
+        },
+        "merge_commit_source": {
+          "const": "server-owned-pr-ref"
         },
         "merge_tree": {
           "$ref": "#/$defs/objectId"

@@ -12,6 +12,7 @@ $ExpectedVerifierCommit = "354545a63e870c3d89254f8fb78f6ed4060a8dc3"
 $ExpectedGuardrailBase = "c023f54805a7d29146d595ede6b8c56e9d33b1cc"
 $ExpectedGuardrailRequiredAncestor = "bee088f24277a5ee3537f04c729639ef204d4827"
 $ExpectedGuardrailArtifactCommit = "3ddfa732b27e91d80eba8cebbe02554d38a97463"
+$ExpectedGuardrailFinalCommit = "3ff9ec49efe72b7faf0018afb6fbb21490e67398"
 $AdapterPath = Join-Path $PSScriptRoot "Test-FleetPullRequestAuthority.ps1"
 $SourceRoot = Split-Path -Parent $PSScriptRoot
 $SourceSchema = Join-Path `
@@ -70,7 +71,10 @@ function Invoke-Process {
             stderr = $stderr
         }
         if (-not $AllowFailure -and $result.exit_code -ne 0) {
-            throw "Self-test process failed: $FilePath`n$($stderr.Trim())"
+            throw (
+                "Self-test process failed: $FilePath (exit $($result.exit_code))`n" +
+                "stdout:`n$($stdout.Trim())`nstderr:`n$($stderr.Trim())"
+            )
         }
         return $result
     } finally {
@@ -157,8 +161,8 @@ function New-EventPayload {
         [Parameter(Mandatory = $true)][string]$BaseCommit,
         [Parameter(Mandatory = $true)][string]$HeadCommit,
         [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string]$MergeCommit,
+        [AllowNull()]
+        [object]$MergeCommit,
         [string]$RepositoryId = "1309815859"
     )
 
@@ -339,6 +343,11 @@ throw "Candidate trap must never execute."
         $baseTree `
         @($base, $head) `
         "Wrong merge tree"
+    $alternateEventMerge = New-CommitTree `
+        $fleetRoot `
+        $headTree `
+        @($base, $head) `
+        "Earlier synthetic server merge"
     $unrelatedHead = New-CommitTree `
         $fleetRoot `
         $headTree `
@@ -382,7 +391,7 @@ throw "Candidate trap must never execute."
             [AllowEmptyString()][string]$CaseMerge = $merge,
             [string]$RefCase = "baseline",
             [string]$PayloadHead = $head,
-            [AllowEmptyString()][string]$PayloadMerge = $merge,
+            [AllowNull()][object]$PayloadMerge = $merge,
             [string]$CaseVerifierRoot = $verifierRoot,
             [string]$ExistingOutput = ""
         )
@@ -470,11 +479,51 @@ throw "Candidate trap must never execute."
     if (Test-Path -LiteralPath $sentinel) {
         throw "Candidate trap executed during static admission."
     }
-    [void](Invoke-Case `
+    $driftedEventMerge = Invoke-Case `
+        -Name "event-merge-drift" `
+        -ExpectSuccess `
+        -CaseMerge $alternateEventMerge `
+        -PayloadMerge $alternateEventMerge
+    $driftedReceipt = Get-Content -Raw -LiteralPath (
+        Join-Path `
+            $driftedEventMerge.output `
+            "fleet-pull-request-authority-assessment.json"
+    ) | ConvertFrom-Json -Depth 40
+    if (
+        [string]$driftedReceipt.pull_request.event_merge_commit -cne
+        $alternateEventMerge -or
+        [string]$driftedReceipt.pull_request.merge_commit -cne $merge -or
+        [string]$driftedReceipt.pull_request.merge_commit_source -cne
+        "server-owned-pr-ref"
+    ) {
+        throw "Event merge drift did not preserve distinct event and ref identities."
+    }
+    $hostedNullEventMerge = Invoke-Case `
         -Name "hosted-null-event-merge" `
         -ExpectSuccess `
         -CaseMerge "" `
-        -PayloadMerge "")
+        -PayloadMerge $null
+    $nullReceipt = Get-Content -Raw -LiteralPath (
+        Join-Path `
+            $hostedNullEventMerge.output `
+            "fleet-pull-request-authority-assessment.json"
+    ) | ConvertFrom-Json -Depth 40
+    if (
+        $null -ne $nullReceipt.pull_request.event_merge_commit -or
+        [string]$nullReceipt.pull_request.merge_commit -cne $merge -or
+        [string]$nullReceipt.pull_request.merge_commit_source -cne
+        "server-owned-pr-ref"
+    ) {
+        throw "Null event merge did not preserve the server-owned ref identity."
+    }
+    [void](Invoke-Case `
+        -Name "malformed-event-merge" `
+        -CaseMerge "" `
+        -PayloadMerge "NOT-A-CANONICAL-OBJECT-ID")
+    [void](Invoke-Case `
+        -Name "event-merge-workflow-mismatch" `
+        -CaseMerge $merge `
+        -PayloadMerge $alternateEventMerge)
     [void](Invoke-Case -Name "wrong-event" -CaseEventName "pull_request")
     [void](Invoke-Case -Name "wrong-action" -CaseAction "closed")
     [void](Invoke-Case -Name "wrong-repository-id" -CaseRepositoryId "1309815858")
@@ -541,6 +590,10 @@ throw "Candidate trap must never execute."
         ToLowerInvariant()
     if (
         [string]$fleetReceipt.external_assessment.sha256 -cne $externalSha -or
+        [string]$fleetReceipt.pull_request.event_merge_commit -cne $merge -or
+        [string]$fleetReceipt.pull_request.merge_commit -cne $merge -or
+        [string]$fleetReceipt.pull_request.merge_commit_source -cne
+        "server-owned-pr-ref" -or
         [bool]$fleetReceipt.candidate_code_executed -or
         [bool]$fleetReceipt.execution_attested -or
         [bool]$fleetReceipt.publication_authority
@@ -566,6 +619,15 @@ throw "Candidate trap must never execute."
     ).stdout.Trim()
     if ($guardrailCommit -cne $ExpectedGuardrailArtifactCommit) {
         throw "Guardrail repository does not contain the exact reviewed commit."
+    }
+    $guardrailFinalCommit = (
+        Invoke-Git $guardrailSource @(
+            "rev-parse",
+            "$ExpectedGuardrailFinalCommit^{commit}"
+        )
+    ).stdout.Trim()
+    if ($guardrailFinalCommit -cne $ExpectedGuardrailFinalCommit) {
+        throw "Guardrail repository does not contain the exact final commit."
     }
     if ((
         Invoke-Git $guardrailSource @(
@@ -636,7 +698,8 @@ throw "Candidate trap must never execute."
             "fetch",
             "--no-tags",
             $guardrailSource,
-            "$ExpectedGuardrailArtifactCommit`:refs/heads/guardrail-candidate"
+            "$ExpectedGuardrailArtifactCommit`:refs/heads/guardrail-candidate",
+            "$ExpectedGuardrailFinalCommit`:refs/heads/guardrail-final"
         ))
         $fetchedGuardrail = (
             Invoke-Git $productionRoot @(
@@ -646,12 +709,30 @@ throw "Candidate trap must never execute."
         if ($fetchedGuardrail -cne $ExpectedGuardrailArtifactCommit) {
             throw "Fetched guardrail candidate changed identity."
         }
+        $fetchedGuardrailFinal = (
+            Invoke-Git $productionRoot @(
+                "rev-parse", "refs/heads/guardrail-final^{commit}"
+            )
+        ).stdout.Trim()
+        if ($fetchedGuardrailFinal -cne $ExpectedGuardrailFinalCommit) {
+            throw "Fetched final guardrail candidate changed identity."
+        }
 
         [void](Invoke-Git $productionRoot @(
             "checkout",
             "-b",
             "production-authority-head",
             $ExpectedGuardrailArtifactCommit
+        ))
+        [void](Invoke-Git $productionRoot @(
+            "checkout",
+            $ExpectedGuardrailFinalCommit,
+            "--",
+            "tools/Test-FleetValidationGuardrails.ps1",
+            "tools/Test-Repo.ps1"
+        ))
+        [void](Invoke-Git $productionRoot @(
+            "commit", "-m", "Apply final reviewed guardrail artifacts"
         ))
         [void](Invoke-Git $productionRoot @(
             "merge", "--no-ff", "--no-commit", $productionBase

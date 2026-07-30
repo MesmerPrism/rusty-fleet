@@ -68,7 +68,7 @@ jobs:
           AUTHORITY_RUN_ATTEMPT: ${{ github.run_attempt }}
           AUTHORITY_JOB: validation_authority
           AUTHORITY_EVENT_PAYLOAD: ${{ github.event_path }}
-          AUTHORITY_ADAPTER_SHA256: 798773c510c877fe7add7de930ae1c464123b1f5cc3833d1daff9dbd926ccdc3
+          AUTHORITY_ADAPTER_SHA256: 4dbb4b7c92169bfd9c6fc446721788979c36c1d3efc0772d87e31ab4c26a46b7
           AUTHORITY_RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           Set-StrictMode -Version Latest
@@ -178,7 +178,7 @@ jobs:
             & git --no-optional-locks -c core.fsmonitor=false -C $fleetRoot `
               cat-file -s $adapterObject
           ).Trim()
-          if ($LASTEXITCODE -ne 0 -or $adapterSize -cne "41125") {
+          if ($LASTEXITCODE -ne 0 -or $adapterSize -cne "41768") {
             throw "Base-owned Fleet authority adapter does not equal the frozen byte count."
           }
 
@@ -246,7 +246,7 @@ jobs:
           }
 
           $adapterItem = Get-Item -LiteralPath $adapterPath
-          if ($adapterItem.Length -ne 41125) {
+          if ($adapterItem.Length -ne 41768) {
             throw "Trusted adapter extraction does not equal the frozen byte count."
           }
           $adapterSha256 = (
