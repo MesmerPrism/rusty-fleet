@@ -1,5 +1,6 @@
 name: Validation authority
 
+# Disposable negative canary: this protected change has no base-owned approval.
 on:
   pull_request_target:
     branches:
