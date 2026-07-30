@@ -12,7 +12,7 @@ $ExpectedVerifierCommit = "354545a63e870c3d89254f8fb78f6ed4060a8dc3"
 $ExpectedGuardrailBase = "c023f54805a7d29146d595ede6b8c56e9d33b1cc"
 $ExpectedGuardrailRequiredAncestor = "bee088f24277a5ee3537f04c729639ef204d4827"
 $ExpectedGuardrailArtifactCommit = "3ddfa732b27e91d80eba8cebbe02554d38a97463"
-$ExpectedGuardrailFinalCommit = "3ff9ec49efe72b7faf0018afb6fbb21490e67398"
+$ExpectedGuardrailFinalCommit = "c63e5718c63fc44e9cc3fe81e5055865c927c620"
 $AdapterPath = Join-Path $PSScriptRoot "Test-FleetPullRequestAuthority.ps1"
 $SourceRoot = Split-Path -Parent $PSScriptRoot
 $SourceSchema = Join-Path `
@@ -728,6 +728,9 @@ throw "Candidate trap must never execute."
             "checkout",
             $ExpectedGuardrailFinalCommit,
             "--",
+            "docs/VALIDATION.md",
+            "schemas/rusty.fleet.validation_run_receipt.v1.schema.json",
+            "tools/Fleet.ValidationGuardrails.psm1",
             "tools/Test-FleetValidationGuardrails.ps1",
             "tools/Test-Repo.ps1"
         ))
