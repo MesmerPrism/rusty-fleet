@@ -860,7 +860,9 @@ try {
     if (Test-Path -LiteralPath $pullRequestAuthoritySelfTest -PathType Leaf) {
         $trustedVerifierRoot = [string]$env:RUSTY_FLEET_TRUSTED_VERIFIER_ROOT
         if ($trustedVerifierRoot) {
-            & $pullRequestAuthoritySelfTest -TrustedVerifierRoot $trustedVerifierRoot
+            & $pullRequestAuthoritySelfTest `
+                -TrustedVerifierRoot $trustedVerifierRoot `
+                -GuardrailCandidateRoot $repoRoot
             if ($LASTEXITCODE -ne 0) {
                 throw "Fleet pull-request authority self-tests failed."
             }
