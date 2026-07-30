@@ -135,13 +135,15 @@ function Invoke-TestBundle {
         [Parameter(Mandatory)][string] $ProviderPath,
         [Parameter(Mandatory)][string] $ProviderSha256,
         [Parameter(Mandatory)][string] $ProviderMetadataDirectory,
+        [ValidateSet("dev", "alpha", "preview", "stable")]
+        [string] $Channel = "dev",
         [string] $SourceRevision = ("1" * 40),
         [string] $SourceTree = ("2" * 40)
     )
 
     & (Join-Path $packagingRoot "New-WindowsBundle.ps1") `
         -Version $Version `
-        -Channel dev `
+        -Channel $Channel `
         -BuildKind unsigned-dev `
         -HostessProviderPath $ProviderPath `
         -HostessProviderSha256 $ProviderSha256 `
@@ -618,6 +620,59 @@ try {
         (Get-RustyFleetSha256 -LiteralPath $archiveOne) -ceq
         (Get-RustyFleetSha256 -LiteralPath $archiveTwo)
     ) "deterministic archives differ"
+
+    $alphaOne = Join-Path $testRoot "alpha-one"
+    $alphaTwo = Join-Path $testRoot "alpha-two"
+    foreach ($alphaOutput in @($alphaOne, $alphaTwo)) {
+        Invoke-TestBundle -Version "0.0.1" -Channel alpha `
+            -OutputDirectory $alphaOutput -ConsoleDirectory $console `
+            -HubPath $hub -FleetctlPath $fleetctl -FleetOnboardPath $fleetOnboard `
+            -ProviderPath $provider -ProviderSha256 $providerSha256 `
+            -ProviderMetadataDirectory $providerMetadata | Out-Null
+    }
+    $alphaBundleName = "RustyFleet-Alpha-0.0.1-win-x64"
+    $alphaArchiveOne = Join-Path $alphaOne "$alphaBundleName.zip"
+    $alphaArchiveTwo = Join-Path $alphaTwo "$alphaBundleName.zip"
+    Assert-Distribution (
+        (Get-RustyFleetSha256 -LiteralPath $alphaArchiveOne) -ceq
+        (Get-RustyFleetSha256 -LiteralPath $alphaArchiveTwo)
+    ) "alpha bundle is not deterministic"
+    $alphaSetupOutput = Join-Path $testRoot "alpha-setup"
+    $alphaSetupRoot = Join-Path $testRoot "alpha-install-root"
+    $alphaSetupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $alphaArchiveOne -DevelopmentInstallRoot $alphaSetupRoot `
+        -OutputDirectory $alphaSetupOutput | ConvertFrom-Json
+    $alphaSetupPath = Join-Path $alphaSetupOutput "RustyFleet-Alpha-Setup.exe"
+    Assert-Distribution (
+        $alphaSetupReceipt.channel -eq "alpha" -and
+        (Test-Path -LiteralPath $alphaSetupPath -PathType Leaf)
+    ) "alpha Setup identity was not built dynamically"
+    $alphaPlan = & $alphaSetupPath --plan --json | ConvertFrom-Json
+    Assert-Distribution (
+        $alphaPlan.product -eq "rusty-fleet-alpha" -and
+        $alphaPlan.channel -eq "alpha"
+    ) "alpha Setup plan identity is not exact"
+    $stableAcceptedAlpha = $false
+    try {
+        & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+            -Version "0.0.1" -Channel stable -BuildKind unsigned-dev `
+            -BundleArchivePath $alphaArchiveOne `
+            -DevelopmentInstallRoot (Join-Path $testRoot "wrong-stable-root") `
+            -OutputDirectory (Join-Path $testRoot "wrong-stable-setup") | Out-Null
+        $stableAcceptedAlpha = $true
+    } catch {}
+    Assert-Distribution (-not $stableAcceptedAlpha) "stable Setup accepted alpha artifact"
+    $alphaAcceptedStable = $false
+    try {
+        & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+            -Version "0.0.0-test.1" -Channel alpha -BuildKind unsigned-dev `
+            -BundleArchivePath $archiveOne `
+            -DevelopmentInstallRoot (Join-Path $testRoot "wrong-alpha-root") `
+            -OutputDirectory (Join-Path $testRoot "wrong-alpha-setup") | Out-Null
+        $alphaAcceptedStable = $true
+    } catch {}
+    Assert-Distribution (-not $alphaAcceptedStable) "alpha Setup accepted stable artifact"
 
     $manifestText = Get-Content `
         -LiteralPath (Join-Path $bundleOne "metadata\release-manifest.json") `

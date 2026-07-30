@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32;
 using System.Text.Json.Serialization;
 using Microsoft.Win32.SafeHandles;
 
@@ -643,6 +644,16 @@ internal static class Installer
             ValidateStateRelease(item, installRoot, guard);
         }
         CommitState(statePath, stateRoot, state, guard);
+        if (ReleaseConfiguration.BuildKind == "signed-release" &&
+            ReleaseConfiguration.Channel == "alpha")
+        {
+            ShellIdentity.Apply(
+                installRoot,
+                Path.Combine(
+                    installRoot,
+                    current.RelativePath.Replace('/', Path.DirectorySeparatorChar)),
+                ReleaseConfiguration.Version);
+        }
         ValidateStateRelease(current, installRoot, guard);
         foreach (var item in history)
         {
@@ -793,6 +804,55 @@ internal static class Installer
         string Update,
         string Rollback,
         bool AutomaticDelete);
+}
+
+internal static class ShellIdentity
+{
+    internal static void Apply(string installRoot, string releaseRoot, string version)
+    {
+        var setupRoot = Path.Combine(installRoot, "setup");
+        Directory.CreateDirectory(setupRoot);
+        var installedSetup = Path.Combine(setupRoot, ReleaseConfiguration.SetupFileName);
+        var runningSetup = Environment.ProcessPath
+            ?? throw new IOException("running Setup path is unavailable");
+        File.Copy(runningSetup, installedSetup, true);
+
+        var programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
+        var shortcutDirectory = Path.Combine(programs, ReleaseConfiguration.DisplayName);
+        Directory.CreateDirectory(shortcutDirectory);
+        CreateShortcut(
+            Path.Combine(shortcutDirectory, $"{ReleaseConfiguration.DisplayName}.lnk"),
+            Path.Combine(releaseRoot, "components", "fleet-console", "RustyFleet.FleetConsole.exe"),
+            releaseRoot);
+        CreateShortcut(
+            Path.Combine(shortcutDirectory, $"{ReleaseConfiguration.DisplayName} Setup.lnk"),
+            installedSetup,
+            setupRoot);
+
+        using var key = Registry.CurrentUser.CreateSubKey(
+            $@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{ReleaseConfiguration.ProductId}",
+            true) ?? throw new IOException("could not create per-user uninstall registration");
+        key.SetValue("DisplayName", ReleaseConfiguration.DisplayName, RegistryValueKind.String);
+        key.SetValue("DisplayVersion", version, RegistryValueKind.String);
+        key.SetValue("InstallLocation", installRoot, RegistryValueKind.String);
+        key.SetValue("UninstallString", $"\"{installedSetup}\"", RegistryValueKind.String);
+        key.SetValue("ModifyPath", $"\"{installedSetup}\"", RegistryValueKind.String);
+        key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+        key.SetValue("Publisher", "Rusty Fleet contributors", RegistryValueKind.String);
+    }
+
+    private static void CreateShortcut(string shortcutPath, string targetPath, string workingDirectory)
+    {
+        var shellType = Type.GetTypeFromProgID("WScript.Shell", throwOnError: true)
+            ?? throw new PlatformNotSupportedException("Windows Script Host is unavailable");
+        dynamic shell = Activator.CreateInstance(shellType)
+            ?? throw new IOException("could not create Windows shortcut owner");
+        dynamic shortcut = shell.CreateShortcut(shortcutPath);
+        shortcut.TargetPath = targetPath;
+        shortcut.WorkingDirectory = workingDirectory;
+        shortcut.Description = ReleaseConfiguration.DisplayName;
+        shortcut.Save();
+    }
 }
 
 internal sealed class DirectoryGuard : IDisposable

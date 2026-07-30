@@ -62,32 +62,43 @@ jobs:
         run: .\tools\Test-WindowsDistribution.ps1
 
       - name: Build complete signed alpha distribution
-        if: inputs.publish_release
         shell: pwsh
         env:
-          FLEET_CODESIGN_CERTIFICATE_PFX_BASE64: ${{ secrets.FLEET_CODESIGN_CERTIFICATE_PFX_BASE64 }}
-          FLEET_CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.FLEET_CODESIGN_CERTIFICATE_PASSWORD }}
-          FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64: ${{ secrets.FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64 }}
+          GH_TOKEN: ${{ secrets.FLEET_ALPHA_WORKFLOW_TOKEN }}
+          PROVIDER_URL: ${{ vars.HOSTESS_PROVIDER_URL }}
+          PROVIDER_SHA256: ${{ vars.HOSTESS_PROVIDER_SHA256 }}
+          PROVIDER_SIGNER: ${{ vars.HOSTESS_SIGNER_THUMBPRINT }}
+          PROVIDER_PROVENANCE: ${{ vars.HOSTESS_PROVENANCE_DOCUMENT_URL }}
+          PROVIDER_LICENSE: ${{ vars.HOSTESS_LICENSE_URL }}
+          PROVIDER_NOTICES: ${{ vars.HOSTESS_THIRD_PARTY_NOTICES_URL }}
         run: |
-          if (-not $env:FLEET_CODESIGN_CERTIFICATE_PFX_BASE64 -or
-              -not $env:FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64) {
-            throw 'protected alpha signing inputs are required'
+          if (-not $env:GH_TOKEN -or -not $env:PROVIDER_URL -or
+              -not $env:PROVIDER_SHA256 -or -not $env:PROVIDER_SIGNER -or
+              -not $env:PROVIDER_PROVENANCE -or -not $env:PROVIDER_LICENSE -or
+              -not $env:PROVIDER_NOTICES) {
+            throw 'protected alpha workflow token and exact owner artifact inputs are required'
           }
-          throw 'Alpha publication remains fail-closed until the owner artifact inputs used by release-windows.yml are supplied to this protected environment.'
-
-      - name: Publish GitHub prerelease (never latest)
-        if: inputs.publish_release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.FLEET_ALPHA_RELEASE_PUBLISH_TOKEN }}
-        run: |
-          if (-not $env:GH_TOKEN) {
-            throw 'alpha publication requires the protected alpha-only token'
+          $before = @(gh run list --workflow release-windows.yml --limit 20 --json databaseId |
+            ConvertFrom-Json | ForEach-Object databaseId)
+          gh workflow run release-windows.yml --ref $env:TAG `
+            -f version=$env:VERSION -f channel=alpha -f signing_mode=signed-release `
+            -f publish_release='${{ inputs.publish_release }}' `
+            -f hostess_provider_url=$env:PROVIDER_URL `
+            -f hostess_provider_sha256=$env:PROVIDER_SHA256 `
+            -f hostess_signer_thumbprint=$env:PROVIDER_SIGNER `
+            -f fleet_signer_thumbprint=$env:FLEET_SIGNER_THUMBPRINT `
+            -f descriptor_signer_spki_sha256=$env:DESCRIPTOR_SIGNER_SPKI_SHA256 `
+            -f hostess_provenance_document_url=$env:PROVIDER_PROVENANCE `
+            -f hostess_license_url=$env:PROVIDER_LICENSE `
+            -f hostess_third_party_notices_url=$env:PROVIDER_NOTICES
+          if ($LASTEXITCODE -ne 0) { throw 'alpha owner workflow dispatch failed' }
+          $run = $null
+          for ($attempt = 0; $attempt -lt 30 -and -not $run; $attempt++) {
+            Start-Sleep -Seconds 2
+            $run = @(gh run list --workflow release-windows.yml --branch $env:TAG --limit 20 --json databaseId |
+              ConvertFrom-Json | Where-Object { $before -notcontains $_.databaseId } |
+              Select-Object -First 1)
           }
-          gh release create $env:TAG `
-            --repo MesmerPrism/rusty-fleet `
-            --title "Rusty Fleet $env:VERSION alpha ${{ inputs.alpha }}" `
-            --prerelease `
-            --verify-tag `
-            .\artifacts\windows-distribution\RustyFleet-Alpha-Setup.exe `
-            .\artifacts\windows-distribution\RustyFleet-Alpha-$env:VERSION-win-x64*
+          if (-not $run) { throw 'dispatched alpha owner workflow was not observable' }
+          gh run watch $run.databaseId --exit-status
+          if ($LASTEXITCODE -ne 0) { throw 'complete alpha owner workflow failed' }

@@ -11,6 +11,9 @@ param(
     [ValidateSet("dev", "alpha", "preview", "stable")]
     [string] $Channel,
 
+    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
+    [string] $ReleaseTag,
+
     [Parameter(Mandatory)]
     [string] $SetupPath,
 
@@ -50,6 +53,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (-not $ReleaseTag) {
+    $ReleaseTag = "v$Version"
+}
+if (($Channel -eq "alpha") -ne ($ReleaseTag -match "-alpha\.")) {
+    throw "release tag does not match the channel"
+}
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 function Assert-ExactProperties {
@@ -572,7 +581,7 @@ try {
     }
     $assetUrl = (
         "https://github.com/MesmerPrism/rusty-fleet/releases/download/" +
-        "v$Version/$setupName"
+        "$ReleaseTag/$setupName"
     )
 
     # Every variable interpolated below is constrained to ASCII identifiers,

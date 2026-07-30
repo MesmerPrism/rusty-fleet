@@ -18,6 +18,9 @@ param(
     [ValidateSet("dev", "alpha", "preview", "stable")]
     [string] $Channel,
 
+    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
+    [string] $ReleaseTag,
+
     [Parameter(Mandatory)]
     [ValidatePattern("^[0-9A-Fa-f]{40}$")]
     [string] $ExpectedFleetSignerThumbprint,
@@ -592,7 +595,10 @@ namespace RustyFleet.Publication
 "@
 }
 
-$tag = "v$Version"
+$tag = if ($ReleaseTag) { $ReleaseTag } else { "v$Version" }
+if (($Channel -eq "alpha") -ne ($tag -match "-alpha\.")) {
+    throw "release tag does not match the channel"
+}
 if (-not $ExpectedRef) {
     $ExpectedRef = "refs/tags/$tag"
 }

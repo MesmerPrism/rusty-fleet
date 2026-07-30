@@ -11,6 +11,9 @@ param(
     [ValidateSet("dev", "alpha", "preview", "stable")]
     [string] $Channel,
 
+    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
+    [string] $ReleaseTag,
+
     [Parameter(Mandatory)]
     [string] $SiteDirectory,
 
@@ -35,6 +38,8 @@ param(
     [Parameter(Mandatory)]
     [string] $OutputDirectory,
 
+    [string] $ExistingDeploymentDirectory,
+
     [string] $PreviousHandoffPath,
 
     [DateTimeOffset] $NowUtc = [DateTimeOffset]::UtcNow,
@@ -47,6 +52,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (-not $ReleaseTag) { $ReleaseTag = "v$Version" }
+if (($Channel -eq "alpha") -ne ($ReleaseTag -match "-alpha\.")) {
+    throw "release tag does not match the channel"
+}
 $productStem = if ($Channel -eq "alpha") { "RustyFleet-Alpha" } else { "RustyFleet" }
 $setupName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.exe" } else { "RustyFleet-Setup.exe" }
 $setupReceiptName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.build-receipt.json" } else { "RustyFleet-Setup.build-receipt.json" }
@@ -288,7 +297,7 @@ if ($preflight.schema -cne
     $preflight.mode -cne "preflight" -or
     $preflight.version -cne $Version -or
     $preflight.channel -cne $Channel -or
-    $preflight.tag -cne "v$Version" -or
+    $preflight.tag -cne $ReleaseTag -or
     $preflight.source_revision -cne $ExpectedSourceRevision -or
     $preflight.source_tree -cne $ExpectedSourceTree -or
     $preflight.descriptor_signer_spki_sha256 -cne
@@ -368,7 +377,7 @@ Assert-ExactProperties -InputObject $payload.asset -Expected @(
 ) -Context "release descriptor asset"
 $expectedSetupUrl = (
     "https://github.com/MesmerPrism/rusty-fleet/releases/download/" +
-    "v$Version/$setupName"
+    "$ReleaseTag/$setupName"
 )
 $nowMs = $NowUtc.ToUniversalTime().ToUnixTimeMilliseconds()
 $minimumRemainingMs = [long] $MinimumRemainingMinutes * 60000
@@ -555,7 +564,7 @@ $handoff = [ordered]@{
     product = "rusty-fleet"
     version = $Version
     channel = $Channel
-    tag = "v$Version"
+    tag = $ReleaseTag
     source_revision = $ExpectedSourceRevision
     source_tree = $ExpectedSourceTree
     descriptor_id = [string] $payload.descriptor_id
@@ -616,6 +625,26 @@ if (Test-Path -LiteralPath $stagingRoot) {
 
 [IO.Directory]::CreateDirectory($stagingRoot) | Out-Null
 try {
+    $preserved = @{}
+    if ($ExistingDeploymentDirectory) {
+        $existingRoot = (Resolve-Path -LiteralPath $ExistingDeploymentDirectory).Path
+        Assert-NoPagesBinary -Root $existingRoot -AllowDescriptorSpki
+        foreach ($file in @(Get-ChildItem -LiteralPath $existingRoot -File -Recurse -Force)) {
+            $relative = [IO.Path]::GetRelativePath($existingRoot, $file.FullName).Replace("\", "/")
+            if ($relative.StartsWith(
+                "Rusty-Fleet/metadata/",
+                [StringComparison]::Ordinal
+            ) -and -not $relative.StartsWith(
+                "Rusty-Fleet/metadata/$Channel/",
+                [StringComparison]::Ordinal
+            )) {
+                $preserved[$relative] = Get-RustyFleetSha256 -LiteralPath $file.FullName
+            }
+        }
+        foreach ($entry in @(Get-ChildItem -LiteralPath $existingRoot -Force)) {
+            Copy-Item -LiteralPath $entry.FullName -Destination $stagingRoot -Recurse -Force
+        }
+    }
     foreach ($directory in @(
         Get-ChildItem -LiteralPath $siteRoot -Directory -Recurse -Force
     )) {
@@ -631,6 +660,12 @@ try {
         Get-ChildItem -LiteralPath $siteRoot -File -Recurse -Force
     )) {
         $relative = [IO.Path]::GetRelativePath($siteRoot, $file.FullName)
+        if ($relative.Replace("\", "/").StartsWith(
+            "Rusty-Fleet/metadata/",
+            [StringComparison]::Ordinal
+        )) {
+            throw "human site input must not own release metadata subtrees"
+        }
         $destination = Join-Path $stagingRoot $relative
         [IO.Directory]::CreateDirectory(
             (Split-Path -Parent $destination)
@@ -649,6 +684,13 @@ try {
     Write-RustyFleetUtf8 `
         -LiteralPath (Join-Path $pagesMetadataRoot "deployment-handoff.json") `
         -Content $handoffText
+    foreach ($entry in $preserved.GetEnumerator()) {
+        $path = Join-Path $stagingRoot $entry.Key
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+            (Get-RustyFleetSha256 -LiteralPath $path) -cne $entry.Value) {
+            throw "complete-site composition changed a non-target channel byte"
+        }
+    }
     Assert-NoPagesBinary -Root $stagingRoot -AllowDescriptorSpki
     [IO.Directory]::Move($stagingRoot, $outputRoot)
 }

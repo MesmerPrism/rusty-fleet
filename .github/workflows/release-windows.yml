@@ -69,10 +69,11 @@ permissions:
 jobs:
   bundle:
     runs-on: windows-latest
-    environment: windows-release
+    environment: ${{ inputs.channel == 'alpha' && 'windows-alpha-release' || 'windows-release' }}
     env:
       VERSION: ${{ inputs.version }}
       CHANNEL: ${{ inputs.channel }}
+      RELEASE_TAG: ${{ github.ref_name }}
       SIGNING_MODE: ${{ inputs.signing_mode }}
       PROVIDER_URL: ${{ inputs.hostess_provider_url }}
       PROVIDER_SHA256: ${{ inputs.hostess_provider_sha256 }}
@@ -134,7 +135,12 @@ jobs:
                   $env:DESCRIPTOR_SIGNER_SPKI_SHA256) {
               throw 'dispatch inputs are not authorized by the revisioned release policy'
             }
-            $tag = "v$env:VERSION"
+            $tag = if ($env:CHANNEL -eq 'alpha') {
+              if ($env:RELEASE_TAG -cnotmatch (
+                '^v' + [regex]::Escape($env:VERSION) + '-alpha\.[1-9][0-9]*$'
+              )) { throw 'alpha release requires exact vX.Y.Z-alpha.N tag' }
+              $env:RELEASE_TAG
+            } else { "v$env:VERSION" }
             if ($env:GITHUB_REF -cne "refs/tags/$tag") {
               throw 'signed release execution requires the exact existing version tag ref'
             }
@@ -296,12 +302,14 @@ jobs:
         shell: pwsh
         run: |
           $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
+          $productStem = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha' } else { 'RustyFleet' }
+          $setupReceiptName = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' }
           $arguments = @{
             Version = $env:VERSION
             Channel = $env:CHANNEL
             BuildKind = $env:SIGNING_MODE
             BundleArchivePath = (
-              Join-Path $output "RustyFleet-$env:VERSION-win-x64.zip"
+              Join-Path $output "$productStem-$env:VERSION-win-x64.zip"
             )
             OutputDirectory = $output
           }
@@ -314,7 +322,7 @@ jobs:
           )
           $setupBuildReceipt = $setupBuildReceiptJson | ConvertFrom-Json -Depth 10
           [IO.File]::WriteAllText(
-            (Join-Path $output 'RustyFleet-Setup.build-receipt.json'),
+            (Join-Path $output $setupReceiptName),
             ($setupBuildReceipt | ConvertTo-Json -Depth 10),
             [Text.UTF8Encoding]::new($false)
           )
@@ -326,9 +334,10 @@ jobs:
           FLEET_SIGNING_PFX_BASE64: ${{ secrets.FLEET_SIGNING_PFX_BASE64 }}
           FLEET_SIGNING_PFX_PASSWORD: ${{ secrets.FLEET_SIGNING_PFX_PASSWORD }}
         run: |
+          $setupName = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.exe' } else { 'RustyFleet-Setup.exe' }
           $setup = Join-Path (
             Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
-          ) 'RustyFleet-Setup.exe'
+          ) $setupName
           $pfx = Join-Path $env:RUNNER_TEMP 'fleet-setup-signing.pfx'
           try {
             [IO.File]::WriteAllBytes(
@@ -383,15 +392,16 @@ jobs:
             .\packaging\windows\New-WindowsReleaseDescriptor.ps1 `
               -Version $env:VERSION `
               -Channel $env:CHANNEL `
+              -ReleaseTag $env:RELEASE_TAG `
               -SetupPath (
                 Join-Path (
                   Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
-                ) 'RustyFleet-Setup.exe'
+                ) $(if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.exe' } else { 'RustyFleet-Setup.exe' })
               ) `
               -SetupBuildReceiptPath (
                 Join-Path (
                   Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
-                ) 'RustyFleet-Setup.build-receipt.json'
+                ) $(if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' })
               ) `
               -ExpectedSetupSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
               -ExpectedSourceRevision $env:GITHUB_SHA `
@@ -423,10 +433,13 @@ jobs:
             throw 'publication input staging root already exists'
           }
           [IO.Directory]::CreateDirectory($stage) | Out-Null
-          $bundleName = "RustyFleet-$env:VERSION-win-x64"
+          $productStem = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha' } else { 'RustyFleet' }
+          $bundleName = "$productStem-$env:VERSION-win-x64"
+          $setupName = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.exe' } else { 'RustyFleet-Setup.exe' }
+          $setupReceiptName = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' }
           $inputs = [ordered]@{
-            'RustyFleet-Setup.exe' = (
-              Join-Path $distribution 'RustyFleet-Setup.exe'
+            $setupName = (
+              Join-Path $distribution $setupName
             )
             "$bundleName.zip" = (
               Join-Path $distribution "$bundleName.zip"
@@ -443,8 +456,8 @@ jobs:
             "$bundleName.validation-receipt.json" = (
               Join-Path $distribution "$bundleName.validation-receipt.json"
             )
-            'RustyFleet-Setup.build-receipt.json' = (
-              Join-Path $distribution 'RustyFleet-Setup.build-receipt.json'
+            $setupReceiptName = (
+              Join-Path $distribution $setupReceiptName
             )
             'release.json' = (Join-Path $descriptor 'release.json')
             'release-descriptor.receipt.json' = (
@@ -478,6 +491,7 @@ jobs:
               -AssetDirectory $stage `
               -Version $env:VERSION `
               -Channel $env:CHANNEL `
+              -ReleaseTag $env:RELEASE_TAG `
               -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
               -ExpectedHostessSignerThumbprint (
                 $env:PROVIDER_SIGNER_THUMBPRINT
@@ -531,6 +545,7 @@ jobs:
             -AssetDirectory .\artifacts\windows-publication `
             -Version $env:VERSION `
             -Channel $env:CHANNEL `
+            -ReleaseTag $env:RELEASE_TAG `
             -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
             -ExpectedHostessSignerThumbprint (
               $env:PROVIDER_SIGNER_THUMBPRINT

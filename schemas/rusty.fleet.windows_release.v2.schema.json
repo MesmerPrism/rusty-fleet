@@ -36,7 +36,10 @@
           "const": "application/vnd.microsoft.portable-executable"
         },
         "name": {
-          "const": "RustyFleet-Setup.exe"
+          "enum": [
+            "RustyFleet-Alpha-Setup.exe",
+            "RustyFleet-Setup.exe"
+          ]
         },
         "sha256": {
           "type": "string",
@@ -53,7 +56,7 @@
         },
         "url": {
           "type": "string",
-          "pattern": "^https://github\\.com/MesmerPrism/rusty-fleet/releases/download/v[0-9]+\\.[0-9]+\\.[0-9]+/RustyFleet-Setup\\.exe$"
+          "pattern": "^https://github\\.com/MesmerPrism/rusty-fleet/releases/download/v[0-9]+\\.[0-9]+\\.[0-9]+(?:-alpha\\.[1-9][0-9]*)?/RustyFleet(?:-Alpha)?-Setup\\.exe$"
         }
       }
     },
@@ -95,5 +98,37 @@
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "channel": { "const": "alpha" } },
+        "required": ["channel"]
+      },
+      "then": {
+        "properties": {
+          "asset": {
+            "properties": {
+              "name": { "const": "RustyFleet-Alpha-Setup.exe" },
+              "url": {
+                "pattern": "/v[0-9]+\\.[0-9]+\\.[0-9]+-alpha\\.[1-9][0-9]*/RustyFleet-Alpha-Setup\\.exe$"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "asset": {
+            "properties": {
+              "name": { "const": "RustyFleet-Setup.exe" },
+              "url": {
+                "pattern": "/v[0-9]+\\.[0-9]+\\.[0-9]+/RustyFleet-Setup\\.exe$"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

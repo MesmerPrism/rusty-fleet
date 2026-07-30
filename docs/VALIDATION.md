@@ -116,6 +116,10 @@ cross-channel rejection, signed descriptor freshness/signer checks, Pages
 replay isolation, deterministic bundles, and never-latest prerelease policy.
 These checks are synthetic and device-free; production publication remains
 disabled in the checked-in trust policy.
+Alpha dynamically builds two complete bundles and compares their archive
+digests, executes the real Setup plan protocol, rejects stable/alpha artifact
+substitution, inspects channel-specific shell registration source, and
+preserves a pre-existing stable Pages sentinel byte-for-byte.
 
 Provider-catalog source tests cover exact contract/version/action/owner/receipt
 bindings, RFC3339 offsets and leap seconds, duplicate IDs, freshness drift,

@@ -237,6 +237,7 @@ function Invoke-PagesFixture {
         [Parameter(Mandatory)][object] $Fixture,
         [Parameter(Mandatory)][string] $OutputDirectory,
         [string] $PreviousHandoffPath,
+        [string] $ExistingDeploymentDirectory,
         [string] $Version = "1.2.3",
         [string] $ExpectedRevision = $sourceRevision,
         [string] $ExpectedSpki = $spkiSha256,
@@ -258,6 +259,9 @@ function Invoke-PagesFixture {
     }
     if ($PreviousHandoffPath) {
         $arguments.PreviousHandoffPath = $PreviousHandoffPath
+    }
+    if ($ExistingDeploymentDirectory) {
+        $arguments.ExistingDeploymentDirectory = $ExistingDeploymentDirectory
     }
     if ($Resume) {
         $arguments.Resume = $true
@@ -281,9 +285,14 @@ try {
         -LifetimeMinutes 1380 `
         -DescriptorId "v1.2.3-preview-first"
     $firstOutput = Join-Path $testRoot "pages-first"
+    $existingSite = Join-Path $testRoot "existing-complete-site"
+    $stableSentinel = Join-Path $existingSite "Rusty-Fleet\metadata\stable\release.json"
+    Write-TestUtf8 -LiteralPath $stableSentinel -Content '{"stable":"byte-exact"}'
+    $stableSentinelHash = Get-RustyFleetSha256 -LiteralPath $stableSentinel
     $firstHandoff = Invoke-PagesFixture `
         -Fixture $first `
-        -OutputDirectory $firstOutput |
+        -OutputDirectory $firstOutput `
+        -ExistingDeploymentDirectory $existingSite |
         ConvertFrom-Json -Depth 20
     $firstHandoffPath = Join-Path $firstOutput (
         "Rusty-Fleet\metadata\preview\deployment-handoff.json"
@@ -293,7 +302,10 @@ try {
         $firstHandoff.deployment_sequence -eq 1 -and
         $firstHandoff.pages_binary_count -eq 0 -and
         @($firstHandoff.release_files).Count -eq 5 -and
-        (Test-Path -LiteralPath $firstHandoffPath -PathType Leaf)
+        (Test-Path -LiteralPath $firstHandoffPath -PathType Leaf) -and
+        (Get-RustyFleetSha256 -LiteralPath (
+            Join-Path $firstOutput "Rusty-Fleet\metadata\stable\release.json"
+        )) -ceq $stableSentinelHash
     ) "initial Pages handoff is not exact"
 
     $resumed = Invoke-PagesFixture `
@@ -464,6 +476,7 @@ try {
         pages_binary_count = 0
         completed_resume_verified = $true
         interrupted_stage_resume_verified = $true
+        stable_subtree_byte_exact = $true
     } | ConvertTo-Json -Depth 5
 }
 finally {
