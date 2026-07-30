@@ -13,7 +13,7 @@ param(
     [Parameter(Mandatory = $true)][string]$BaseRef,
     [Parameter(Mandatory = $true)][string]$BaseCommit,
     [Parameter(Mandatory = $true)][string]$CandidateCommit,
-    [Parameter(Mandatory = $true)][string]$MergeCommit,
+    [AllowEmptyString()][string]$MergeCommit = "",
     [Parameter(Mandatory = $true)][string]$WorkflowRef,
     [Parameter(Mandatory = $true)][string]$WorkflowSha,
     [Parameter(Mandatory = $true)][string]$RunId,
@@ -759,7 +759,9 @@ Assert-Equal $Job $ExpectedJob "job ID"
 Assert-LowerObjectId $EventSha "event SHA"
 Assert-LowerObjectId $BaseCommit "base commit"
 Assert-LowerObjectId $CandidateCommit "candidate commit"
-Assert-LowerObjectId $MergeCommit "merge commit"
+if ($MergeCommit) {
+    Assert-LowerObjectId $MergeCommit "merge commit"
+}
 Assert-LowerObjectId $WorkflowSha "workflow SHA"
 Assert-Equal $EventSha $BaseCommit "event SHA"
 Assert-Equal $WorkflowSha $BaseCommit "workflow SHA"
@@ -818,7 +820,15 @@ Assert-Equal ([string]$event.pull_request.base.repo.full_name) $BaseRepository "
 Assert-Equal ([string]$event.pull_request.base.ref) $BaseRef "payload base ref"
 Assert-Equal ([string]$event.pull_request.base.sha) $BaseCommit "payload base commit"
 Assert-Equal ([string]$event.pull_request.head.sha) $CandidateCommit "payload head commit"
-Assert-Equal ([string]$event.pull_request.merge_commit_sha) $MergeCommit "payload merge commit"
+$payloadMergeCommit = [string]$event.pull_request.merge_commit_sha
+if ($payloadMergeCommit) {
+    Assert-LowerObjectId $payloadMergeCommit "payload merge commit"
+    if ($MergeCommit) {
+        Assert-Equal $payloadMergeCommit $MergeCommit "payload merge commit"
+    } else {
+        $MergeCommit = $payloadMergeCommit
+    }
+}
 
 Assert-GitCheckout `
     -Root $repositoryFull `
@@ -871,7 +881,11 @@ Assert-GitCheckout `
 $resolvedHead = (Invoke-Git $repositoryFull @("rev-parse", "$headRef^{commit}")).stdout.Trim()
 $resolvedMerge = (Invoke-Git $repositoryFull @("rev-parse", "$mergeRef^{commit}")).stdout.Trim()
 Assert-Equal $resolvedHead $CandidateCommit "server-owned PR head ref"
-Assert-Equal $resolvedMerge $MergeCommit "server-owned PR merge ref"
+if ($MergeCommit) {
+    Assert-Equal $resolvedMerge $MergeCommit "server-owned PR merge ref"
+} else {
+    $MergeCommit = $resolvedMerge
+}
 
 $ancestry = Invoke-Git $repositoryFull @(
     "merge-base", "--is-ancestor", $BaseCommit, $CandidateCommit
