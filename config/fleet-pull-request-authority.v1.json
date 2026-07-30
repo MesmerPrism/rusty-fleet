@@ -1,0 +1,181 @@
+{
+  "schema": "rusty.morphospace.workflow.external_validation_authority_policy.v1",
+  "policy_id": "rusty-fleet-pull-request-authority-v1",
+  "repository": "MesmerPrism/rusty-fleet",
+  "mandatory_protected_paths": [
+    ".github/workflows/validation-authority.yml",
+    "config/fleet-pull-request-authority.v1.json",
+    "config/validation-authority/fleet-validation-guardrails-20260730.approval-token.json",
+    "schemas/rusty.fleet.pull_request_authority_assessment.v1.schema.json",
+    "tools/Test-FleetPullRequestAuthority.ps1",
+    "tools/Test-FleetPullRequestAuthoritySelfTest.ps1"
+  ],
+  "protected_rules": [
+    {
+      "rule_id": "all-github-metadata",
+      "match": "prefix",
+      "path": ".github/"
+    },
+    {
+      "rule_id": "approval-token-directory",
+      "match": "prefix",
+      "path": "config/validation-authority/"
+    },
+    {
+      "rule_id": "change-risk-schema",
+      "match": "exact",
+      "path": "schemas/rusty.fleet.change_risk_manifest.v1.schema.json"
+    },
+    {
+      "rule_id": "validation-guardrail-module",
+      "match": "exact",
+      "path": "tools/Fleet.ValidationGuardrails.psm1"
+    },
+    {
+      "rule_id": "validation-guardrail-self-test",
+      "match": "exact",
+      "path": "tools/Test-FleetValidationGuardrails.ps1"
+    },
+    {
+      "rule_id": "validation-invoker",
+      "match": "exact",
+      "path": "tools/Invoke-FleetValidation.ps1"
+    },
+    {
+      "rule_id": "validation-receipt-schema",
+      "match": "exact",
+      "path": "schemas/rusty.fleet.validation_run_receipt.v1.schema.json"
+    },
+    {
+      "rule_id": "validation-repository-gate",
+      "match": "exact",
+      "path": "tools/Test-Repo.ps1"
+    },
+    {
+      "rule_id": "validation-risk-policy",
+      "match": "exact",
+      "path": "config/fleet-validation-risk.v1.json"
+    }
+  ],
+  "approved_change_sets": [
+    {
+      "approval_id": "fleet-validation-guardrails-20260730",
+      "required_ancestor": "bee088f24277a5ee3537f04c729639ef204d4827",
+      "changed_paths": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deep-validation.yml",
+        "AGENTS.md",
+        "README.md",
+        "config/fleet-validation-risk.v1.json",
+        "config/validation-authority/fleet-validation-guardrails-20260730.approval-token.json",
+        "docs/VALIDATION.md",
+        "docs/WORKFLOW.md",
+        "schemas/rusty.fleet.change_risk_manifest.v1.schema.json",
+        "schemas/rusty.fleet.validation_run_receipt.v1.schema.json",
+        "tools/Fleet.ValidationGuardrails.psm1",
+        "tools/Invoke-FleetValidation.ps1",
+        "tools/Test-FleetValidationGuardrails.ps1",
+        "tools/Test-Repo.ps1"
+      ],
+      "artifacts": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 1398,
+          "sha256": "fc3ad657561490a856963aeaeb000830a968ee4bf95487b3fed2717e60ee8b37"
+        },
+        {
+          "path": ".github/workflows/deep-validation.yml",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 548,
+          "sha256": "7be702f29fdd205ccab537fa950f2e5a6bf3c8394d467f3ccfe5eb147669e72d"
+        },
+        {
+          "path": "AGENTS.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 13204,
+          "sha256": "4c45863bac9fc8a048c0ee89aa7cbce57f6a4b6759bed3b0ad9b649f9ca66bbb"
+        },
+        {
+          "path": "README.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 22366,
+          "sha256": "b31b101645fee3b8cd471a92b426fb519f387df0c457396047e74b2ac480118d"
+        },
+        {
+          "path": "config/fleet-validation-risk.v1.json",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 3564,
+          "sha256": "8340ec662aa48fe6050b8587d0e4094e4db8caf7f6e754886108ce539267c366"
+        },
+        {
+          "path": "config/validation-authority/fleet-validation-guardrails-20260730.approval-token.json",
+          "state": "absent"
+        },
+        {
+          "path": "docs/VALIDATION.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 23420,
+          "sha256": "f278eb20c6c3c33c3b40c46a53203fbf009e18e7b7cbb057d8c7be218b83eb11"
+        },
+        {
+          "path": "docs/WORKFLOW.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 10107,
+          "sha256": "58e32e3440d942cc9630ea9714c155b5b78bb17fa7583d14d2877f97417c6d0c"
+        },
+        {
+          "path": "schemas/rusty.fleet.change_risk_manifest.v1.schema.json",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 2262,
+          "sha256": "7b8fc1211a17f1a73d6d47a30c61d0ed3b0bfe81f0249d46de5854805b638f3d"
+        },
+        {
+          "path": "schemas/rusty.fleet.validation_run_receipt.v1.schema.json",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 15094,
+          "sha256": "e4dbc8794f8722d515e8486e3a56019f8e2c3b2928c1de8022678036af8dbd83"
+        },
+        {
+          "path": "tools/Fleet.ValidationGuardrails.psm1",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 77164,
+          "sha256": "ce967f632a8646ef8c7d44e771b3f62800d980ef9cb7c6e65b326061762ac5ce"
+        },
+        {
+          "path": "tools/Invoke-FleetValidation.ps1",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 976,
+          "sha256": "c78a841fa89838bd4f747a8149dd7f280f27b646fac408a79a0e0957fbffaed7"
+        },
+        {
+          "path": "tools/Test-FleetValidationGuardrails.ps1",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 36435,
+          "sha256": "0ea665da395f902ae3df9c32b80569bad0ce3fadfa300753327ad4ed8adf6dc3"
+        },
+        {
+          "path": "tools/Test-Repo.ps1",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 42270,
+          "sha256": "89f3cf48f428b5c757b70b599bb1b5bbffe359ce335e8a0d4f68bde89ce64294"
+        }
+      ],
+      "status": "approved"
+    }
+  ],
+  "status": "active"
+}
