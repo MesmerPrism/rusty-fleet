@@ -106,6 +106,28 @@ function Write-Utf8 {
     )
 }
 
+function Write-DisposableApprovalTokenFixture {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RequiredAncestor
+    )
+
+    $tokenFixture = [pscustomobject][ordered]@{
+        schema = "rusty.fleet.validation_authority_approval_token.v1"
+        approval_id = "fleet-validation-guardrails-20260730"
+        required_ancestor = $RequiredAncestor
+        state = "available"
+        consumption = [pscustomobject][ordered]@{
+            action = "delete-this-file"
+            required_candidate_state = "absent"
+        }
+        limitations = @(
+            "Self-test fixture only; this file carries no authority."
+        )
+    }
+    Write-Utf8 $Path (($tokenFixture | ConvertTo-Json -Depth 10) + "`n")
+}
+
 function Copy-ExactSourceFile {
     param(
         [Parameter(Mandatory = $true)][string]$SourceRoot,
@@ -589,20 +611,9 @@ throw "Candidate trap must never execute."
             "fleet-validation-guardrails-20260730.approval-token.json"
         )
         $tokenPath = Join-Path $productionRoot $tokenRelative
-        $tokenFixture = [pscustomobject][ordered]@{
-            schema = "rusty.fleet.validation_authority_approval_token.v1"
-            approval_id = "fleet-validation-guardrails-20260730"
-            required_ancestor = $ExpectedGuardrailCandidate
-            state = "available"
-            consumption = [pscustomobject][ordered]@{
-                action = "delete-this-file"
-                required_candidate_state = "absent"
-            }
-            limitations = @(
-                "Self-test fixture only; this file carries no authority."
-            )
-        }
-        Write-Utf8 $tokenPath (($tokenFixture | ConvertTo-Json -Depth 10) + "`n")
+        Write-DisposableApprovalTokenFixture `
+            -Path $tokenPath `
+            -RequiredAncestor $ExpectedGuardrailCandidate
         [void](Invoke-Git $productionRoot @("add", "--all"))
         [void](Invoke-Git $productionRoot @(
             "commit", "--allow-empty", "-m", "Bootstrap exact production authority"
@@ -908,7 +919,9 @@ throw "Candidate trap must never execute."
                 )
             }
         }
-        Copy-ExactSourceFile $SourceRoot $productionRoot $tokenRelative
+        Write-DisposableApprovalTokenFixture `
+            -Path $tokenPath `
+            -RequiredAncestor $ExpectedGuardrailCandidate
         [void](Invoke-Git $productionRoot @("add", "--all"))
         [void](Invoke-Git $productionRoot @(
             "commit", "-m", "Create consumed-approval drifted base"
