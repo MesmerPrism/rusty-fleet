@@ -1,0 +1,289 @@
+name: Validation authority
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-authority-${{ github.repository_id }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validation_authority:
+    name: validation-authority/base-owned
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact Fleet base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: MesmerPrism/rusty-fleet
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: fleet-base
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Check out exact shared verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: MesmerPrism/rusty-morphospace-work-environment
+          ref: 354545a63e870c3d89254f8fb78f6ed4060a8dc3
+          path: authority-verifier
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      - name: Run base-owned static admission
+        shell: pwsh
+        env:
+          AUTHORITY_REPOSITORY: ${{ github.repository }}
+          AUTHORITY_REPOSITORY_ID: ${{ github.event.repository.id }}
+          AUTHORITY_REPOSITORY_NODE_ID: ${{ github.event.repository.node_id }}
+          AUTHORITY_PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTHORITY_EVENT_NAME: ${{ github.event_name }}
+          AUTHORITY_EVENT_ACTION: ${{ github.event.action }}
+          AUTHORITY_EVENT_REF: ${{ github.ref }}
+          AUTHORITY_EVENT_SHA: ${{ github.sha }}
+          AUTHORITY_BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          AUTHORITY_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          AUTHORITY_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+          AUTHORITY_CANDIDATE_COMMIT: ${{ github.event.pull_request.head.sha }}
+          AUTHORITY_MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+          AUTHORITY_WORKFLOW_REF: ${{ github.workflow_ref }}
+          AUTHORITY_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          AUTHORITY_RUN_ID: ${{ github.run_id }}
+          AUTHORITY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          AUTHORITY_JOB: validation_authority
+          AUTHORITY_EVENT_PAYLOAD: ${{ github.event_path }}
+          AUTHORITY_ADAPTER_SHA256: 798773c510c877fe7add7de930ae1c464123b1f5cc3833d1daff9dbd926ccdc3
+          AUTHORITY_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+
+          if (
+            $env:GITHUB_ACTIONS -cne "true" -or
+            $env:AUTHORITY_RUNNER_ENVIRONMENT -cne "github-hosted" -or
+            $env:RUNNER_OS -cne "Windows"
+          ) {
+            throw "Validation authority requires a GitHub-hosted Windows runner."
+          }
+
+          function Assert-NoReparseAncestor {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            $current = [IO.Path]::GetFullPath($Path)
+            while (-not [string]::IsNullOrEmpty($current)) {
+              if (Test-Path -LiteralPath $current) {
+                $item = Get-Item -LiteralPath $current -Force
+                if (
+                  ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                  (
+                    $item.PSObject.Properties.Name -contains "LinkType" -and
+                    -not [string]::IsNullOrEmpty([string]$item.LinkType)
+                  )
+                ) {
+                  throw "Trusted staging path contains a reparse point: $current"
+                }
+              }
+              $parent = Split-Path -Parent $current
+              if ([string]::IsNullOrEmpty($parent) -or $parent -eq $current) {
+                break
+              }
+              $current = $parent
+            }
+          }
+
+          $runnerTemp = [IO.Path]::GetFullPath(
+            (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
+          ).TrimEnd(
+            [IO.Path]::DirectorySeparatorChar,
+            [IO.Path]::AltDirectorySeparatorChar
+          )
+          Assert-NoReparseAncestor $runnerTemp
+
+          function New-TrustedStagingDirectory {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            $full = [IO.Path]::GetFullPath($Path)
+            $runnerPrefix = $runnerTemp + [IO.Path]::DirectorySeparatorChar
+            if (-not $full.StartsWith(
+              $runnerPrefix,
+              [StringComparison]::OrdinalIgnoreCase
+            )) {
+              throw "Trusted staging directory escapes RUNNER_TEMP."
+            }
+            if (Test-Path -LiteralPath $full) {
+              throw "Trusted staging directory already exists: $full"
+            }
+            $parent = Split-Path -Parent $full
+            if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+              throw "Trusted staging parent is absent: $parent"
+            }
+            Assert-NoReparseAncestor $parent
+            $null = [IO.Directory]::CreateDirectory($full)
+            Assert-NoReparseAncestor $full
+            return $full
+          }
+
+          $fleetRoot = [IO.Path]::GetFullPath(
+            (Resolve-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "fleet-base")).Path
+          )
+          $verifierRoot = [IO.Path]::GetFullPath(
+            (Resolve-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "authority-verifier")).Path
+          )
+          $baseCommit = [string]$env:AUTHORITY_BASE_COMMIT
+          if ($baseCommit -cnotmatch "^[0-9a-f]{40}$") {
+            throw "Fleet base commit is malformed."
+          }
+          $fleetHead = (
+            & git --no-optional-locks -c core.fsmonitor=false -C $fleetRoot rev-parse HEAD
+          ).Trim()
+          if ($LASTEXITCODE -ne 0 -or $fleetHead -cne $baseCommit) {
+            throw "Fleet checkout does not equal the exact event base."
+          }
+          $fleetDirty = @(
+            & git --no-optional-locks -c core.fsmonitor=false -C $fleetRoot `
+              status --porcelain=v1 -z --untracked-files=all
+          )
+          if ($LASTEXITCODE -ne 0 -or $fleetDirty.Count -ne 0) {
+            throw "Fleet base checkout is dirty."
+          }
+
+          $adapterRelative = "tools/Test-FleetPullRequestAuthority.ps1"
+          $entry = (
+            & git --no-optional-locks -c core.fsmonitor=false -C $fleetRoot `
+              ls-tree $baseCommit -- $adapterRelative
+          ).Trim()
+          $entryPattern = "^(?<mode>100644) blob (?<oid>[0-9a-f]{40})`t" +
+            [regex]::Escape($adapterRelative) + "$"
+          if ($LASTEXITCODE -ne 0 -or $entry -cnotmatch $entryPattern) {
+            throw "Base-owned Fleet authority adapter is absent or not a regular file."
+          }
+          $adapterObject = [string]$Matches.oid
+          $adapterSize = (
+            & git --no-optional-locks -c core.fsmonitor=false -C $fleetRoot `
+              cat-file -s $adapterObject
+          ).Trim()
+          if ($LASTEXITCODE -ne 0 -or $adapterSize -cne "41125") {
+            throw "Base-owned Fleet authority adapter does not equal the frozen byte count."
+          }
+
+          $trustedRoot = New-TrustedStagingDirectory (
+            Join-Path $runnerTemp "trusted-fleet-authority"
+          )
+          $adapterPath = Join-Path $trustedRoot "Test-FleetPullRequestAuthority.ps1"
+          if (Test-Path -LiteralPath $adapterPath) {
+            throw "Trusted adapter destination already exists."
+          }
+
+          $gitPath = @(
+            Get-Command git -CommandType Application -ErrorAction Stop |
+              Select-Object -First 1
+          )[0].Source
+          $start = [Diagnostics.ProcessStartInfo]::new()
+          $start.FileName = $gitPath
+          $start.WorkingDirectory = $fleetRoot
+          $start.UseShellExecute = $false
+          $start.CreateNoWindow = $true
+          $start.RedirectStandardOutput = $true
+          $start.RedirectStandardError = $true
+          $start.Environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+          $start.Environment["GIT_OPTIONAL_LOCKS"] = "0"
+          $start.Environment["GIT_LFS_SKIP_SMUDGE"] = "1"
+          foreach ($argument in @(
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "-C",
+            $fleetRoot,
+            "cat-file",
+            "blob",
+            $adapterObject
+          )) {
+            [void]$start.ArgumentList.Add($argument)
+          }
+
+          $process = [Diagnostics.Process]::Start($start)
+          $output = [IO.FileStream]::new(
+            $adapterPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+          )
+          try {
+            $stderr = $process.StandardError.ReadToEndAsync()
+            $copy = $process.StandardOutput.BaseStream.CopyToAsync($output)
+            if (-not $process.WaitForExit(30000)) {
+              $process.Kill($true)
+              if (-not $process.WaitForExit(5000)) {
+                throw "Trusted adapter extraction could not reap its Git process."
+              }
+              throw "Trusted adapter extraction timed out."
+            }
+            [void]$copy.GetAwaiter().GetResult()
+            $detail = $stderr.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0) {
+              throw "Trusted adapter extraction failed: $($detail.Trim())"
+            }
+            $output.Flush($true)
+          } finally {
+            $output.Dispose()
+            $process.Dispose()
+          }
+
+          $adapterItem = Get-Item -LiteralPath $adapterPath
+          if ($adapterItem.Length -ne 41125) {
+            throw "Trusted adapter extraction does not equal the frozen byte count."
+          }
+          $adapterSha256 = (
+            Get-FileHash -LiteralPath $adapterPath -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+          if ($adapterSha256 -cne [string]$env:AUTHORITY_ADAPTER_SHA256) {
+            throw "Trusted adapter does not equal the base-workflow SHA-256 pin."
+          }
+
+          $outDirectory = Join-Path $env:RUNNER_TEMP (
+            "fleet-validation-authority-$($env:AUTHORITY_RUN_ID)-" +
+            $env:AUTHORITY_RUN_ATTEMPT
+          )
+          $outDirectory = New-TrustedStagingDirectory $outDirectory
+          & $adapterPath `
+            -RepositoryRoot $fleetRoot `
+            -TrustedVerifierRoot $verifierRoot `
+            -PullRequestNumber $env:AUTHORITY_PR_NUMBER `
+            -Repository $env:AUTHORITY_REPOSITORY `
+            -RepositoryId $env:AUTHORITY_REPOSITORY_ID `
+            -RepositoryNodeId $env:AUTHORITY_REPOSITORY_NODE_ID `
+            -EventName $env:AUTHORITY_EVENT_NAME `
+            -EventAction $env:AUTHORITY_EVENT_ACTION `
+            -EventRef $env:AUTHORITY_EVENT_REF `
+            -EventSha $env:AUTHORITY_EVENT_SHA `
+            -BaseRepository $env:AUTHORITY_BASE_REPOSITORY `
+            -BaseRef $env:AUTHORITY_BASE_REF `
+            -BaseCommit $env:AUTHORITY_BASE_COMMIT `
+            -CandidateCommit $env:AUTHORITY_CANDIDATE_COMMIT `
+            -MergeCommit $env:AUTHORITY_MERGE_COMMIT `
+            -WorkflowRef $env:AUTHORITY_WORKFLOW_REF `
+            -WorkflowSha $env:AUTHORITY_WORKFLOW_SHA `
+            -RunId $env:AUTHORITY_RUN_ID `
+            -RunAttempt $env:AUTHORITY_RUN_ATTEMPT `
+            -Job $env:AUTHORITY_JOB `
+            -EventPayloadPath $env:AUTHORITY_EVENT_PAYLOAD `
+            -OutDirectory $outDirectory
+          if ($LASTEXITCODE -ne 0) {
+            throw "Fleet pull-request authority rejected the candidate."
+          }
