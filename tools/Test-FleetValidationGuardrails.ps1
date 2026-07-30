@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $PSScriptRoot "Fleet.ValidationGuardrails.psm1") -Force
+$guardrailModule = Get-Module "Fleet.ValidationGuardrails"
 $receiptSchemaPath = Join-Path $repoRoot `
     "schemas/rusty.fleet.validation_run_receipt.v1.schema.json"
 
@@ -56,6 +57,69 @@ Assert-True (
         [regex]::Escape("--disable-build-servers")
     )).Count -eq 2
 ) "The guarded .NET build and run commands must both ignore persistent build servers."
+
+$completeObservationJob = [pscustomobject]@{ process_id = [int]$PID }
+$completeObservationJob | Add-Member -MemberType ScriptMethod -Name GetProcessIds -Value {
+    @([int]$this.process_id)
+}
+$completeObservation = & $guardrailModule {
+    param($Job)
+    Get-FleetPreTerminationProcessObservation $Job 1
+} $completeObservationJob
+Assert-True (
+    $completeObservation.status -eq "complete" -and
+    $completeObservation.active_process_count -eq 1 -and
+    $completeObservation.budget_ms -eq 1000 -and
+    $completeObservation.elapsed_ms -ge 0 -and
+    $completeObservation.processes.Count -eq 1 -and
+    $completeObservation.processes[0].pid -eq $PID
+) "Complete pre-termination process observation is incoherent."
+
+$partialObservationJob = [pscustomobject]@{ process_id = [int]$PID }
+$partialObservationJob | Add-Member -MemberType ScriptMethod -Name GetProcessIds -Value {
+    @([int]$this.process_id)
+}
+$partialObservation = & $guardrailModule {
+    param($Job)
+    Get-FleetPreTerminationProcessObservation $Job 2
+} $partialObservationJob
+Assert-True (
+    $partialObservation.status -eq "partial" -and
+    $partialObservation.active_process_count -eq 2 -and
+    $partialObservation.processes.Count -eq 1
+) "Partial pre-termination process observation is incoherent."
+
+$truncatedObservationJob = [pscustomobject]@{}
+$truncatedObservationJob | Add-Member -MemberType ScriptMethod -Name GetProcessIds -Value {
+    @(1..65)
+}
+$truncatedObservation = & $guardrailModule {
+    param($Job)
+    Get-FleetPreTerminationProcessObservation $Job 65
+} $truncatedObservationJob
+Assert-True (
+    $truncatedObservation.status -eq "truncated" -and
+    $truncatedObservation.active_process_count -eq 65 -and
+    $truncatedObservation.processes.Count -eq 64 -and
+    $truncatedObservation.processes[0].pid -eq 1 -and
+    $truncatedObservation.processes[63].pid -eq 64
+) "Truncated pre-termination process observation is incoherent."
+
+$unavailableObservationJob = [pscustomobject]@{}
+$unavailableObservationJob | Add-Member -MemberType ScriptMethod -Name GetProcessIds -Value {
+    throw "synthetic observation failure"
+}
+$unavailableObservation = & $guardrailModule {
+    param($Job)
+    Get-FleetPreTerminationProcessObservation $Job 3
+} $unavailableObservationJob
+Assert-True (
+    $unavailableObservation.status -eq "unavailable" -and
+    $unavailableObservation.active_process_count -eq 3 -and
+    $unavailableObservation.budget_ms -eq 1000 -and
+    $unavailableObservation.elapsed_ms -ge 0 -and
+    $unavailableObservation.processes.Count -eq 0
+) "Unavailable pre-termination process observation is incoherent."
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("fleet-validation-{0}" -f [guid]::NewGuid())
 New-Item -ItemType Directory -Path $scratch | Out-Null
@@ -553,7 +617,15 @@ Write-Output "native failure handled by the check"
             $transient.result -eq "passed" -and
             $transient.commands[0].status -eq "passed" -and
             $transient.commands[0].exit_code -eq 0 -and
-            -not $transient.commands[0].cleanup.attempted
+            -not $transient.commands[0].cleanup.attempted -and
+            $transient.commands[0].cleanup.drain_grace_ms -eq 5000 -and
+            $transient.commands[0].cleanup.drain_elapsed_ms -gt 0 -and
+            $transient.commands[0].cleanup.post_exit_active_process_count -gt 0 -and
+            $null -eq $transient.commands[0].cleanup.pre_termination_active_process_count -and
+            $transient.commands[0].cleanup.pre_termination_observation -eq "not-required" -and
+            $transient.commands[0].cleanup.pre_termination_observation_budget_ms -eq 0 -and
+            $transient.commands[0].cleanup.pre_termination_observation_elapsed_ms -eq 0 -and
+            $transient.commands[0].cleanup.pre_termination_processes.Count -eq 0
         ) "A naturally draining owned child produced a false leak failure."
     } finally {
         Remove-Item -LiteralPath $transientConfigPath -Force -ErrorAction SilentlyContinue
@@ -579,8 +651,155 @@ Write-Output "native failure handled by the check"
             $leaking.commands[0].failure_reason -eq "owned-child-leak" -and
             $leaking.commands[0].cleanup.attempted -and
             $leaking.commands[0].cleanup.completed -and
+            $leaking.commands[0].cleanup.drain_grace_ms -eq 5000 -and
+            $leaking.commands[0].cleanup.drain_elapsed_ms -ge 5000 -and
+            $leaking.commands[0].cleanup.post_exit_active_process_count -gt 0 -and
+            $leaking.commands[0].cleanup.pre_termination_active_process_count -gt 0 -and
+            $leaking.commands[0].cleanup.pre_termination_observation -in @(
+                "complete", "truncated", "partial", "unavailable"
+            ) -and
+            $leaking.commands[0].cleanup.pre_termination_observation_budget_ms -eq 1000 -and
+            $leaking.commands[0].cleanup.pre_termination_observation_elapsed_ms -ge 0 -and
+            $leaking.commands[0].cleanup.pre_termination_processes.Count -le 64 -and
             $leaking.commands[0].cleanup.survivors.Count -eq 0
         ) "A persistent owned child did not fail closed after the drain grace."
+        $observedProcesses = @($leaking.commands[0].cleanup.pre_termination_processes)
+        $observedPids = @($observedProcesses | ForEach-Object { [int]$_.pid })
+        Assert-True (
+            (($observedPids -join ",") -ceq (($observedPids | Sort-Object -Unique) -join ","))
+        ) "Pre-termination process evidence is not uniquely PID-sorted."
+        foreach ($observedProcess in $observedProcesses) {
+            Assert-True (
+                (
+                    $observedProcess.lookup_status -eq "observed" -and
+                    $observedProcess.image_basename -cmatch `
+                        "\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z"
+                ) -or (
+                    $observedProcess.lookup_status -eq "unavailable" -and
+                    $null -eq $observedProcess.image_basename
+                )
+            ) "Pre-termination process evidence exposed an unsafe executable identity."
+        }
+        Assert-True (
+            Test-Json -Json ($leaking | ConvertTo-Json -Depth 100) `
+                -SchemaFile $receiptSchemaPath -ErrorAction SilentlyContinue
+        ) "Receipt schema rejected bounded pre-termination process evidence."
+
+        $validDiagnosticVariants = @()
+        $completeDiagnostic = $leaking | ConvertTo-Json -Depth 100 |
+            ConvertFrom-Json -Depth 100
+        $completeDiagnostic.commands[0].cleanup.pre_termination_active_process_count = 1
+        $completeDiagnostic.commands[0].cleanup.pre_termination_observation = "complete"
+        $completeDiagnostic.commands[0].cleanup.pre_termination_processes = @(
+            [ordered]@{ pid = 7; image_basename = "pwsh"; lookup_status = "observed" }
+        )
+        $validDiagnosticVariants += $completeDiagnostic
+        $partialDiagnostic = $leaking | ConvertTo-Json -Depth 100 |
+            ConvertFrom-Json -Depth 100
+        $partialDiagnostic.commands[0].cleanup.pre_termination_active_process_count = 2
+        $partialDiagnostic.commands[0].cleanup.pre_termination_observation = "partial"
+        $partialDiagnostic.commands[0].cleanup.pre_termination_processes = @(
+            [ordered]@{ pid = 8; image_basename = $null; lookup_status = "unavailable" }
+        )
+        $validDiagnosticVariants += $partialDiagnostic
+        $truncatedDiagnostic = $leaking | ConvertTo-Json -Depth 100 |
+            ConvertFrom-Json -Depth 100
+        $truncatedDiagnostic.commands[0].cleanup.pre_termination_active_process_count = 65
+        $truncatedDiagnostic.commands[0].cleanup.pre_termination_observation = "truncated"
+        $truncatedDiagnostic.commands[0].cleanup.pre_termination_processes = @(
+            1..64 | ForEach-Object {
+                [ordered]@{
+                    pid = $_
+                    image_basename = $null
+                    lookup_status = "unavailable"
+                }
+            }
+        )
+        $validDiagnosticVariants += $truncatedDiagnostic
+        $unavailableDiagnosticVariant = $leaking | ConvertTo-Json -Depth 100 |
+            ConvertFrom-Json -Depth 100
+        $unavailableDiagnosticVariant.commands[0].cleanup.pre_termination_active_process_count = 1
+        $unavailableDiagnosticVariant.commands[0].cleanup.pre_termination_observation = "unavailable"
+        $unavailableDiagnosticVariant.commands[0].cleanup.pre_termination_processes = @()
+        $validDiagnosticVariants += $unavailableDiagnosticVariant
+        for (
+            $validDiagnosticIndex = 0;
+            $validDiagnosticIndex -lt $validDiagnosticVariants.Count;
+            $validDiagnosticIndex++
+        ) {
+            Assert-True (
+                Test-FleetValidationRunReceipt -Receipt (
+                    $validDiagnosticVariants[$validDiagnosticIndex]
+                ) -RepositoryRoot $scratch -ConfigPath $leakingConfigPath
+            ) "Valid pre-termination diagnostic $validDiagnosticIndex was rejected."
+            Assert-True (
+                Test-Json -Json (
+                    $validDiagnosticVariants[$validDiagnosticIndex] |
+                        ConvertTo-Json -Depth 100
+                ) -SchemaFile $receiptSchemaPath -ErrorAction SilentlyContinue
+            ) "Receipt schema rejected valid pre-termination diagnostic $validDiagnosticIndex."
+        }
+
+        $diagnosticDamages = @()
+        $unsafeDiagnostic = $leaking | ConvertTo-Json -Depth 100 |
+            ConvertFrom-Json -Depth 100
+        $unsafeDiagnostic.commands[0].cleanup.pre_termination_active_process_count = 1
+        $unsafeDiagnostic.commands[0].cleanup.pre_termination_observation = "complete"
+        $unsafeDiagnostic.commands[0].cleanup.pre_termination_processes = @(
+            [ordered]@{
+                pid = 7
+                image_basename = "..\candidate-controlled.exe"
+                lookup_status = "observed"
+            }
+        )
+        $diagnosticDamages += $unsafeDiagnostic
+        $unsortedDiagnostic = $leaking | ConvertTo-Json -Depth 100 |
+            ConvertFrom-Json -Depth 100
+        $unsortedDiagnostic.commands[0].cleanup.pre_termination_active_process_count = 2
+        $unsortedDiagnostic.commands[0].cleanup.pre_termination_observation = "complete"
+        $unsortedDiagnostic.commands[0].cleanup.pre_termination_processes = @(
+            [ordered]@{ pid = 8; image_basename = "pwsh"; lookup_status = "observed" },
+            [ordered]@{ pid = 8; image_basename = "pwsh"; lookup_status = "observed" }
+        )
+        $diagnosticDamages += $unsortedDiagnostic
+        $unavailableDiagnostic = $leaking | ConvertTo-Json -Depth 100 |
+            ConvertFrom-Json -Depth 100
+        $unavailableDiagnostic.commands[0].cleanup.pre_termination_active_process_count = 1
+        $unavailableDiagnostic.commands[0].cleanup.pre_termination_observation = "unavailable"
+        $unavailableDiagnostic.commands[0].cleanup.pre_termination_processes = @(
+            [ordered]@{ pid = 11; image_basename = $null; lookup_status = "unavailable" }
+        )
+        $diagnosticDamages += $unavailableDiagnostic
+        $oversizedDiagnostic = $leaking | ConvertTo-Json -Depth 100 |
+            ConvertFrom-Json -Depth 100
+        $oversizedDiagnostic.commands[0].cleanup.pre_termination_active_process_count = 65
+        $oversizedDiagnostic.commands[0].cleanup.pre_termination_observation = "truncated"
+        $oversizedDiagnostic.commands[0].cleanup.pre_termination_processes = @(
+            1..65 | ForEach-Object {
+                [ordered]@{
+                    pid = $_
+                    image_basename = $null
+                    lookup_status = "unavailable"
+                }
+            }
+        )
+        $diagnosticDamages += $oversizedDiagnostic
+        for ($diagnosticIndex = 0; $diagnosticIndex -lt $diagnosticDamages.Count; $diagnosticIndex++) {
+            try {
+                Test-FleetValidationRunReceipt -Receipt $diagnosticDamages[$diagnosticIndex] `
+                    -RepositoryRoot $scratch -ConfigPath $leakingConfigPath
+                throw "Damaged pre-termination diagnostic $diagnosticIndex was accepted."
+            } catch {
+                Assert-True (
+                    $_.Exception.Message -match "pre-termination|executable evidence|evidence bound"
+                ) "Damaged diagnostic $diagnosticIndex failed for the wrong reason."
+            }
+            Assert-True (
+                -not (Test-Json -Json (
+                    $diagnosticDamages[$diagnosticIndex] | ConvertTo-Json -Depth 100
+                ) -SchemaFile $receiptSchemaPath -ErrorAction SilentlyContinue)
+            ) "Receipt schema accepted damaged pre-termination diagnostic $diagnosticIndex."
+        }
     } finally {
         Remove-Item -LiteralPath $leakingConfigPath -Force -ErrorAction SilentlyContinue
         if ($leakingPath) {
@@ -668,8 +887,15 @@ Write-Output "native failure handled by the check"
             $failure.result -eq "failed" -and
             $failure.commands[0].status -eq "failed" -and
             $failure.commands[0].exit_code -eq 7 -and
+            $failure.commands[0].failure_reason -eq "nonzero-exit" -and
             $failure.commands[0].cleanup.attempted -and
             $failure.commands[0].cleanup.completed -and
+            $failure.commands[0].cleanup.drain_grace_ms -eq 0 -and
+            $failure.commands[0].cleanup.drain_elapsed_ms -eq 0 -and
+            $null -eq $failure.commands[0].cleanup.post_exit_active_process_count -and
+            $failure.commands[0].cleanup.pre_termination_observation -eq "not-required" -and
+            $failure.commands[0].cleanup.pre_termination_observation_budget_ms -eq 0 -and
+            $failure.commands[0].cleanup.pre_termination_observation_elapsed_ms -eq 0 -and
             $failure.commands[0].cleanup.survivors.Count -eq 0
         ) "Nonzero child failure did not clean its owned process tree."
     } finally {

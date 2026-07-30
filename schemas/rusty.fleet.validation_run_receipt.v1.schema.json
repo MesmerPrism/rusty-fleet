@@ -66,12 +66,150 @@
           "cleanup": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["attempted", "completed", "survivors"],
+            "required": [
+              "attempted",
+              "completed",
+              "drain_grace_ms",
+              "drain_elapsed_ms",
+              "post_exit_active_process_count",
+              "pre_termination_active_process_count",
+              "pre_termination_observation",
+              "pre_termination_observation_budget_ms",
+              "pre_termination_observation_elapsed_ms",
+              "pre_termination_processes",
+              "survivors"
+            ],
             "properties": {
               "attempted": { "type": "boolean" },
               "completed": { "type": "boolean" },
+              "drain_grace_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 5000
+              },
+              "drain_elapsed_ms": { "type": "integer", "minimum": 0 },
+              "post_exit_active_process_count": {
+                "type": ["integer", "null"],
+                "minimum": 0
+              },
+              "pre_termination_active_process_count": {
+                "type": ["integer", "null"],
+                "minimum": 1
+              },
+              "pre_termination_observation": {
+                "enum": [
+                  "not-required",
+                  "complete",
+                  "truncated",
+                  "partial",
+                  "unavailable"
+                ]
+              },
+              "pre_termination_observation_budget_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "pre_termination_observation_elapsed_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "pre_termination_processes": {
+                "type": "array",
+                "maxItems": 64,
+                "uniqueItems": true,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["pid", "image_basename", "lookup_status"],
+                  "properties": {
+                    "pid": { "type": "integer", "minimum": 1 },
+                    "image_basename": {
+                      "type": ["string", "null"],
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                    },
+                    "lookup_status": { "enum": ["observed", "unavailable"] }
+                  },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": { "lookup_status": { "const": "observed" } },
+                        "required": ["lookup_status"]
+                      },
+                      "then": {
+                        "properties": { "image_basename": { "type": "string" } }
+                      },
+                      "else": {
+                        "properties": { "image_basename": { "type": "null" } }
+                      }
+                    }
+                  ]
+                }
+              },
               "survivors": { "type": "array", "items": { "type": "integer" } }
-            }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "pre_termination_observation": { "const": "not-required" }
+                  },
+                  "required": ["pre_termination_observation"]
+                },
+                "then": {
+                  "properties": {
+                    "pre_termination_active_process_count": { "type": "null" },
+                    "pre_termination_observation_budget_ms": { "const": 0 },
+                    "pre_termination_observation_elapsed_ms": { "const": 0 },
+                    "pre_termination_processes": { "maxItems": 0 }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "pre_termination_active_process_count": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "pre_termination_observation_budget_ms": { "const": 1000 }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "pre_termination_observation": { "const": "truncated" }
+                  },
+                  "required": ["pre_termination_observation"]
+                },
+                "then": {
+                  "properties": {
+                    "pre_termination_active_process_count": {
+                      "type": "integer",
+                      "minimum": 65
+                    },
+                    "pre_termination_processes": {
+                      "minItems": 64,
+                      "maxItems": 64
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "pre_termination_observation": { "const": "unavailable" }
+                  },
+                  "required": ["pre_termination_observation"]
+                },
+                "then": {
+                  "properties": {
+                    "pre_termination_processes": { "maxItems": 0 }
+                  }
+                }
+              }
+            ]
           }
         },
         "allOf": [
@@ -92,6 +230,14 @@
                   "properties": {
                     "attempted": { "const": false },
                     "completed": { "const": true },
+                    "drain_grace_ms": { "const": 0 },
+                    "drain_elapsed_ms": { "const": 0 },
+                    "post_exit_active_process_count": { "type": "null" },
+                    "pre_termination_active_process_count": { "type": "null" },
+                    "pre_termination_observation": { "const": "not-required" },
+                    "pre_termination_observation_budget_ms": { "const": 0 },
+                    "pre_termination_observation_elapsed_ms": { "const": 0 },
+                    "pre_termination_processes": { "maxItems": 0 },
                     "survivors": { "maxItems": 0 }
                   }
                 }
@@ -115,6 +261,16 @@
                   "properties": {
                     "attempted": { "const": false },
                     "completed": { "const": true },
+                    "drain_grace_ms": { "const": 5000 },
+                    "post_exit_active_process_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "pre_termination_active_process_count": { "type": "null" },
+                    "pre_termination_observation": { "const": "not-required" },
+                    "pre_termination_observation_budget_ms": { "const": 0 },
+                    "pre_termination_observation_elapsed_ms": { "const": 0 },
+                    "pre_termination_processes": { "maxItems": 0 },
                     "survivors": { "maxItems": 0 }
                   }
                 }
@@ -157,6 +313,36 @@
                 "failure_reason": { "enum": ["timeout", "cleanup-unverified"] },
                 "cleanup": {
                   "properties": { "attempted": { "const": true } }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "failure_reason": { "const": "owned-child-leak" }
+              },
+              "required": ["failure_reason"]
+            },
+            "then": {
+              "properties": {
+                "exit_code": { "const": 0 },
+                "cleanup": {
+                  "properties": {
+                    "drain_grace_ms": { "const": 5000 },
+                    "post_exit_active_process_count": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "pre_termination_active_process_count": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "pre_termination_observation": {
+                      "enum": ["complete", "truncated", "partial", "unavailable"]
+                    },
+                    "pre_termination_observation_budget_ms": { "const": 1000 }
+                  }
                 }
               }
             }

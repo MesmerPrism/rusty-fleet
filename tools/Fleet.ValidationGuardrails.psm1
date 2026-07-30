@@ -560,9 +560,87 @@ function Assert-FleetCommandReceipt {
     $survivors = @($Command.cleanup.survivors)
     $attempted = [bool]$Command.cleanup.attempted
     $completed = [bool]$Command.cleanup.completed
+    $drainGraceMs = [int64]$Command.cleanup.drain_grace_ms
+    $drainElapsedMs = [int64]$Command.cleanup.drain_elapsed_ms
+    $postExitActive = $Command.cleanup.post_exit_active_process_count
+    $preTerminationActive = $Command.cleanup.pre_termination_active_process_count
+    $preTerminationObservation = [string]$Command.cleanup.pre_termination_observation
+    $preTerminationObservationBudgetMs =
+        [int64]$Command.cleanup.pre_termination_observation_budget_ms
+    $preTerminationObservationElapsedMs =
+        [int64]$Command.cleanup.pre_termination_observation_elapsed_ms
+    $preTerminationProcesses = @($Command.cleanup.pre_termination_processes)
     if ((-not $attempted -and (-not $completed -or $survivors.Count -ne 0)) -or
         ($completed -and $survivors.Count -ne 0)) {
         throw "Fleet command receipt has incoherent cleanup evidence."
+    }
+    if (
+        $drainGraceMs -lt 0 -or
+        $drainElapsedMs -lt 0 -or
+        $preTerminationObservationBudgetMs -lt 0 -or
+        $preTerminationObservationElapsedMs -lt 0 -or
+        $preTerminationObservation -cnotin @(
+            "not-required", "complete", "truncated", "partial", "unavailable"
+        )
+    ) {
+        throw "Fleet command receipt has invalid descendant-drain evidence."
+    }
+    if ($preTerminationProcesses.Count -gt 64) {
+        throw "Fleet command receipt exceeds the pre-termination process evidence bound."
+    }
+    $priorPid = 0
+    foreach ($process in $preTerminationProcesses) {
+        $processIdValue = [int64]$process.pid
+        $lookupStatus = [string]$process.lookup_status
+        $imageBasename = $process.image_basename
+        if (
+            $processIdValue -le $priorPid -or
+            $lookupStatus -cnotin @("observed", "unavailable")
+        ) {
+            throw "Fleet command receipt has unsorted or invalid pre-termination process evidence."
+        }
+        if (
+            ($lookupStatus -ceq "observed" -and (
+                $null -eq $imageBasename -or
+                ([string]$imageBasename) -cnotmatch "\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z"
+            )) -or
+            ($lookupStatus -ceq "unavailable" -and $null -ne $imageBasename)
+        ) {
+            throw "Fleet command receipt has unsafe pre-termination executable evidence."
+        }
+        $priorPid = $processIdValue
+    }
+    if ($preTerminationObservation -ceq "not-required") {
+        if (
+            $null -ne $preTerminationActive -or
+            $preTerminationObservationBudgetMs -ne 0 -or
+            $preTerminationObservationElapsedMs -ne 0 -or
+            $preTerminationProcesses.Count -ne 0
+        ) {
+            throw "Fleet command receipt has unexpected pre-termination evidence."
+        }
+    } else {
+        if (
+            $null -eq $preTerminationActive -or
+            [int64]$preTerminationActive -lt 1 -or
+            $preTerminationObservationBudgetMs -ne 1000
+        ) {
+            throw "Fleet command receipt lacks the active-process count for termination evidence."
+        }
+        if (
+            ($preTerminationObservation -ceq "complete" -and
+                $preTerminationProcesses.Count -ne [int64]$preTerminationActive) -or
+            ($preTerminationObservation -ceq "truncated" -and (
+                $preTerminationProcesses.Count -ne 64 -or
+                [int64]$preTerminationActive -le 64
+            )) -or
+            ($preTerminationObservation -ceq "partial" -and
+                $preTerminationProcesses.Count -ge [int64]$preTerminationActive) -or
+            ($preTerminationObservation -ceq "unavailable" -and
+                $preTerminationProcesses.Count -ne 0)
+        ) {
+            throw "Fleet command receipt has incoherent pre-termination observation evidence."
+        }
     }
 
     if ($status -cin @("planned", "not_run")) {
@@ -574,7 +652,11 @@ function Assert-FleetCommandReceipt {
             [bool]$Command.timed_out -or
             $null -ne $Command.failure_reason -or
             $attempted -or
-            -not $completed
+            -not $completed -or
+            $drainGraceMs -ne 0 -or
+            $drainElapsedMs -ne 0 -or
+            $null -ne $postExitActive -or
+            $preTerminationObservation -cne "not-required"
         ) {
             throw "Fleet non-executed command receipt contains execution evidence."
         }
@@ -598,7 +680,12 @@ function Assert-FleetCommandReceipt {
             [bool]$Command.timed_out -or
             $null -ne $Command.failure_reason -or
             $attempted -or
-            -not $completed
+            -not $completed -or
+            $drainGraceMs -ne 5000 -or
+            $null -eq $postExitActive -or
+            [int64]$postExitActive -lt 0 -or
+            $null -ne $preTerminationActive -or
+            $preTerminationObservation -cne "not-required"
         ) {
             throw "Fleet passing command receipt has incoherent execution evidence."
         }
@@ -618,6 +705,34 @@ function Assert-FleetCommandReceipt {
         ) {
             throw "Fleet failed command receipt has incoherent execution evidence."
         }
+        if (
+            $reason -ceq "owned-child-leak" -and (
+                [int]$Command.exit_code -ne 0 -or
+                $drainGraceMs -ne 5000 -or
+                $null -eq $postExitActive -or
+                [int64]$postExitActive -lt 1 -or
+                $null -eq $preTerminationActive -or
+                [int64]$preTerminationActive -lt 1 -or
+                $preTerminationObservation -ceq "not-required"
+            )
+        ) {
+            throw (
+                "Fleet owned-child leak receipt lacks bounded diagnostic evidence " +
+                "(grace_ms={0}, post_exit={1}, pre_termination={2}, observation={3})." -f
+                $drainGraceMs, $postExitActive, $preTerminationActive,
+                $preTerminationObservation
+            )
+        }
+        if (
+            $reason -ceq "nonzero-exit" -and (
+                $drainGraceMs -ne 0 -or
+                $drainElapsedMs -ne 0 -or
+                $null -ne $postExitActive -or
+                $preTerminationObservation -cne "not-required"
+            )
+        ) {
+            throw "Fleet nonzero-exit receipt contains descendant-drain evidence."
+        }
         return
     }
 
@@ -628,7 +743,11 @@ function Assert-FleetCommandReceipt {
         $timeoutReason -cnotin @("timeout", "cleanup-unverified") -or
         -not $attempted -or
         ($timeoutReason -ceq "cleanup-unverified" -and $completed) -or
-        ($timeoutReason -ceq "timeout" -and -not $completed)
+        ($timeoutReason -ceq "timeout" -and -not $completed) -or
+        $drainGraceMs -ne 0 -or
+        $drainElapsedMs -ne 0 -or
+        $null -ne $postExitActive -or
+        $preTerminationObservation -cne "not-required"
     ) {
         throw "Fleet timed-out command receipt has incoherent execution evidence."
     }
@@ -1477,6 +1596,76 @@ namespace RustyFleet
 '@
 }
 
+function Get-FleetPreTerminationProcessObservation {
+    param(
+        [Parameter(Mandatory)][object] $Job,
+        [Parameter(Mandatory)][int] $KnownActiveProcessCount
+    )
+    $maximumEntries = 64
+    $lookupBudgetMilliseconds = 1000
+    $observationStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $processIds = @(
+            $Job.GetProcessIds() |
+                ForEach-Object { [int]$_ } |
+                Sort-Object -Unique
+        )
+    } catch {
+        $observationStopwatch.Stop()
+        return [ordered]@{
+            status = "unavailable"
+            active_process_count = [Math]::Max(1, $KnownActiveProcessCount)
+            budget_ms = $lookupBudgetMilliseconds
+            elapsed_ms = [int64]$observationStopwatch.ElapsedMilliseconds
+            processes = @()
+        }
+    }
+
+    $activeProcessCount = [Math]::Max($KnownActiveProcessCount, $processIds.Count)
+    $selectedProcessIds = @($processIds | Select-Object -First $maximumEntries)
+    $processes = @()
+    foreach ($processId in $selectedProcessIds) {
+        $imageBasename = $null
+        $lookupStatus = "unavailable"
+        if ($observationStopwatch.ElapsedMilliseconds -lt $lookupBudgetMilliseconds) {
+            $process = $null
+            try {
+                $process = [Diagnostics.Process]::GetProcessById($processId)
+                $candidateBasename = [string]$process.ProcessName
+                if ($candidateBasename -cmatch "\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z") {
+                    $imageBasename = $candidateBasename
+                    $lookupStatus = "observed"
+                }
+            } catch {
+                # Exit and access races are expected; the Job membership remains authoritative.
+            } finally {
+                if ($process) { $process.Dispose() }
+            }
+        }
+        $processes += [ordered]@{
+            pid = [int]$processId
+            image_basename = $imageBasename
+            lookup_status = $lookupStatus
+        }
+    }
+    $observationStopwatch.Stop()
+
+    $status = if ($processIds.Count -gt $maximumEntries) {
+        "truncated"
+    } elseif ($processIds.Count -ne $activeProcessCount) {
+        "partial"
+    } else {
+        "complete"
+    }
+    [ordered]@{
+        status = $status
+        active_process_count = [int]$activeProcessCount
+        budget_ms = $lookupBudgetMilliseconds
+        elapsed_ms = [int64]$observationStopwatch.ElapsedMilliseconds
+        processes = $processes
+    }
+}
+
 function Invoke-FleetGuardrailCheck {
     param(
         [string] $RepositoryRoot,
@@ -1502,6 +1691,14 @@ function Invoke-FleetGuardrailCheck {
     $cleanupAttempted = $false
     $cleanupCompleted = $true
     $survivors = @()
+    $drainGraceMs = 0
+    $drainElapsedMs = 0
+    $postExitActiveProcessCount = $null
+    $preTerminationActiveProcessCount = $null
+    $preTerminationObservation = "not-required"
+    $preTerminationObservationBudgetMs = 0
+    $preTerminationObservationElapsedMs = 0
+    $preTerminationProcesses = @()
     $ownedChildLeak = $false
     $failureReason = $null
     $exitCode = $null
@@ -1545,16 +1742,48 @@ function Invoke-FleetGuardrailCheck {
         }
         if (-not $timedOut) {
             $exitCode = $job.ExitCode
-            if ($exitCode -eq 0 -and $job.ActiveProcessCount -gt 0) {
-                $exitDrainDeadline = [DateTimeOffset]::UtcNow.AddSeconds(5)
+            if ($exitCode -eq 0) {
+                $drainGraceMs = 5000
+                $postExitActiveProcessCount = [int]$job.ActiveProcessCount
+            }
+            if ($exitCode -eq 0 -and $postExitActiveProcessCount -gt 0) {
+                $exitDrainStarted = [DateTimeOffset]::UtcNow
+                $exitDrainDeadline = $exitDrainStarted.AddMilliseconds($drainGraceMs)
                 while (
                     $job.ActiveProcessCount -gt 0 -and
                     [DateTimeOffset]::UtcNow -lt $exitDrainDeadline
                 ) {
                     Start-Sleep -Milliseconds 100
                 }
+                $drainElapsedMs = [int64](
+                    ([DateTimeOffset]::UtcNow - $exitDrainStarted).TotalMilliseconds
+                )
             }
-            $ownedChildLeak = $job.ActiveProcessCount -gt 0
+            $ownedChildLeak = $exitCode -eq 0 -and $job.ActiveProcessCount -gt 0
+            if ($ownedChildLeak) {
+                $knownActiveProcessCount = [int]$job.ActiveProcessCount
+                $observationStopwatch = [Diagnostics.Stopwatch]::StartNew()
+                try {
+                    $observation = Get-FleetPreTerminationProcessObservation `
+                        $job $knownActiveProcessCount
+                    $preTerminationActiveProcessCount =
+                        [int]$observation.active_process_count
+                    $preTerminationObservation = [string]$observation.status
+                    $preTerminationObservationBudgetMs = [int]$observation.budget_ms
+                    $preTerminationObservationElapsedMs =
+                        [int64]$observation.elapsed_ms
+                    $preTerminationProcesses = @($observation.processes)
+                } catch {
+                    $observationStopwatch.Stop()
+                    $preTerminationActiveProcessCount =
+                        [Math]::Max(1, $knownActiveProcessCount)
+                    $preTerminationObservation = "unavailable"
+                    $preTerminationObservationBudgetMs = 1000
+                    $preTerminationObservationElapsedMs =
+                        [int64]$observationStopwatch.ElapsedMilliseconds
+                    $preTerminationProcesses = @()
+                }
+            }
         }
         if ($timedOut -or $exitCode -ne 0 -or $ownedChildLeak) {
             $cleanupAttempted = $true
@@ -1601,6 +1830,16 @@ function Invoke-FleetGuardrailCheck {
             cleanup = [ordered]@{
                 attempted = $cleanupAttempted
                 completed = (-not $cleanupAttempted) -or $cleanupCompleted
+                drain_grace_ms = [int]$drainGraceMs
+                drain_elapsed_ms = [int64]$drainElapsedMs
+                post_exit_active_process_count = $postExitActiveProcessCount
+                pre_termination_active_process_count = $preTerminationActiveProcessCount
+                pre_termination_observation = $preTerminationObservation
+                pre_termination_observation_budget_ms =
+                    [int]$preTerminationObservationBudgetMs
+                pre_termination_observation_elapsed_ms =
+                    [int64]$preTerminationObservationElapsedMs
+                pre_termination_processes = @($preTerminationProcesses)
                 survivors = @($survivors | ForEach-Object { [int]$_ })
             }
         }
@@ -1761,7 +2000,19 @@ function Invoke-FleetValidationGuardrail {
                 arguments = @($check.arguments); timeout_seconds = [int]$check.timeout_seconds
                 status = "planned"; exit_code = $null; started_at = $null; finished_at = $null
                 duration_ms = $null; timed_out = $false; failure_reason = $null
-                cleanup = [ordered]@{ attempted = $false; completed = $true; survivors = @() }
+                cleanup = [ordered]@{
+                    attempted = $false
+                    completed = $true
+                    drain_grace_ms = 0
+                    drain_elapsed_ms = 0
+                    post_exit_active_process_count = $null
+                    pre_termination_active_process_count = $null
+                    pre_termination_observation = "not-required"
+                    pre_termination_observation_budget_ms = 0
+                    pre_termination_observation_elapsed_ms = 0
+                    pre_termination_processes = @()
+                    survivors = @()
+                }
         }
     }
     $targets = if ($Execute) {

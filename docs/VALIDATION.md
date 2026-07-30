@@ -48,7 +48,14 @@ Object before resuming it. After a successful root exit, descendants receive
 at most five seconds to drain naturally while remaining kernel-owned. Timeout,
 nonzero exit, or a descendant still active after that grace period terminates
 the complete process tree; inability to prove zero remaining Job Object
-processes fails the run.
+processes fails the run. A persistent-descendant failure records the active
+counts before and after the grace period plus at most 64 PID-sorted
+pre-termination entries. Each entry contains only a PID, a conservatively
+validated executable basename when available, and an explicit lookup status;
+command lines, paths, arguments, environment, and user identities are never
+captured. The receipt records the one-second observation budget and actual
+elapsed time. Observation is best-effort, cannot prevent termination, and
+never weakens the Job membership decision or zero-survivor requirement.
 
 The atomic `rusty.fleet.validation_run_receipt.v1` records requested,
 required, and effective profiles; configuration SHA-256; Git evidence;
