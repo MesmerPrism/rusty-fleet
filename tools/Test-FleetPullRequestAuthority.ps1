@@ -819,15 +819,27 @@ Assert-Equal ([string]$event.pull_request.number) ([string]$PullRequestNumber) "
 Assert-Equal ([string]$event.pull_request.base.repo.full_name) $BaseRepository "payload base repository"
 Assert-Equal ([string]$event.pull_request.base.ref) $BaseRef "payload base ref"
 Assert-Equal ([string]$event.pull_request.base.sha) $BaseCommit "payload base commit"
-Assert-Equal ([string]$event.pull_request.head.sha) $CandidateCommit "payload head commit"
-$payloadMergeCommit = [string]$event.pull_request.merge_commit_sha
-if ($payloadMergeCommit) {
-    Assert-LowerObjectId $payloadMergeCommit "payload merge commit"
-    if ($MergeCommit) {
-        Assert-Equal $payloadMergeCommit $MergeCommit "payload merge commit"
-    } else {
-        $MergeCommit = $payloadMergeCommit
+$eventHeadCommit = [string]$event.pull_request.head.sha
+Assert-Equal $eventHeadCommit $CandidateCommit "payload head commit"
+$payloadMergeProperty = $event.pull_request.PSObject.Properties[
+    "merge_commit_sha"
+]
+if ($null -eq $payloadMergeProperty) {
+    throw "Payload merge commit field is absent."
+}
+$eventMergeCommit = $null
+if ($null -ne $payloadMergeProperty.Value) {
+    if ($payloadMergeProperty.Value -isnot [string]) {
+        throw "Payload merge commit must be null or a canonical object ID."
     }
+    $eventMergeCommit = [string]$payloadMergeProperty.Value
+    Assert-LowerObjectId $eventMergeCommit "payload merge commit"
+    if (-not $MergeCommit) {
+        throw "Payload merge commit is present but the workflow argument is absent."
+    }
+    Assert-Equal $eventMergeCommit $MergeCommit "payload merge commit workflow argument"
+} elseif ($MergeCommit) {
+    throw "Payload merge commit is null but the workflow argument is present."
 }
 
 Assert-GitCheckout `
@@ -880,12 +892,9 @@ Assert-GitCheckout `
 
 $resolvedHead = (Invoke-Git $repositoryFull @("rev-parse", "$headRef^{commit}")).stdout.Trim()
 $resolvedMerge = (Invoke-Git $repositoryFull @("rev-parse", "$mergeRef^{commit}")).stdout.Trim()
-Assert-Equal $resolvedHead $CandidateCommit "server-owned PR head ref"
-if ($MergeCommit) {
-    Assert-Equal $resolvedMerge $MergeCommit "server-owned PR merge ref"
-} else {
-    $MergeCommit = $resolvedMerge
-}
+Assert-LowerObjectId $resolvedHead "server-owned PR head ref"
+Assert-LowerObjectId $resolvedMerge "server-owned PR merge ref"
+Assert-Equal $resolvedHead $eventHeadCommit "server-owned PR head ref to event head"
 
 $ancestry = Invoke-Git $repositoryFull @(
     "merge-base", "--is-ancestor", $BaseCommit, $CandidateCommit
@@ -895,7 +904,7 @@ if ($ancestry.exit_code -ne 0) {
 }
 $parentLine = (
     Invoke-Git $repositoryFull @(
-        "show", "-s", "--format=%P", $MergeCommit
+        "show", "-s", "--format=%P", $resolvedMerge
     )
 ).stdout.Trim()
 [string[]]$mergeParents = @($parentLine -split " ")
@@ -907,7 +916,7 @@ if (
     throw "Server-owned PR merge must have exact parents [base, head]."
 }
 $candidateIdentity = Get-GitIdentity $repositoryFull $CandidateCommit "candidate"
-$mergeIdentity = Get-GitIdentity $repositoryFull $MergeCommit "merge"
+$mergeIdentity = Get-GitIdentity $repositoryFull $resolvedMerge "merge"
 Assert-Equal $mergeIdentity.tree $candidateIdentity.tree "PR merge tree"
 
 $trustedRoot = Join-Path $outputFull "_trusted"
@@ -1066,7 +1075,9 @@ $assessment = [pscustomobject][ordered]@{
         base_tree = $baseIdentity.tree
         candidate_commit = $candidateIdentity.commit
         candidate_tree = $candidateIdentity.tree
+        event_merge_commit = $eventMergeCommit
         merge_commit = $mergeIdentity.commit
+        merge_commit_source = "server-owned-pr-ref"
         merge_tree = $mergeIdentity.tree
         merge_parent_commits = @($mergeParents)
         head_private_ref = $headRef

@@ -28,8 +28,9 @@ The base-owned workflow:
   directory before execution;
 - fetches only the server-owned numeric pull-request head and merge refs into a
   private ref namespace;
-- verifies the event head, exact two-parent merge order, and merge-tree equality
-  with the candidate tree;
+- verifies the event head, records a nullable event-time synthetic merge ID,
+  then treats the freshly fetched merge ref as authoritative while proving its
+  exact two-parent order and tree equality with the candidate tree;
 - invokes the shared external authority verifier pinned at commit
   `354545a63e870c3d89254f8fb78f6ed4060a8dc3`, tree
   `1cf79cd4478e5dd5b940729b917a8beea41dac40`; and
@@ -64,9 +65,12 @@ separate human or repository-owner decision.
 
 GitHub supplies the repository identity, immutable event fields, numeric pull
 request number, and server-owned `refs/pull/<number>/{head,merge}` refs. The
-base branch owns the workflow, Fleet adapter, policy, wrapper schema, and
-self-test. The published work-environment commit owns the generic policy
-schema, external assessment schema, and static verifier.
+event's `merge_commit_sha` may be null and may name an earlier synthetic merge
+than a later fetch of the server-owned merge ref; the assessment records both
+without equating them. The base branch owns the workflow, Fleet adapter,
+policy, wrapper schema, and self-test. The published work-environment commit
+owns the generic policy schema, external assessment schema, and static
+verifier.
 
 The shared verifier is pinned by commit, tree, Git blob object, byte count, and
 SHA-256:
@@ -146,7 +150,7 @@ pin.
 | --- | --- | --- |
 | Candidate workflow executes before review | `pull_request_target` base workflow; no candidate checkout or execution | Same Actions app can emit a same-name check |
 | Fork/ref substitution | Numeric server-owned PR refs plus exact event-head comparison | GitHub remains the ref and event authority |
-| Synthetic merge substitution | Exact two-parent order and merge-tree equality | A conflicted PR fails closed |
+| Synthetic merge substitution or regeneration | Event merge ID is observational; freshly fetched numeric merge ref is authoritative and must have exact parent order and tree equality | A conflicted PR fails closed |
 | Base checkout text conversion | Trusted executables and schemas are extracted from exact Git blobs | Runner and Git are still trusted computing base |
 | Approval replay | Candidate-only required ancestor plus required token deletion | New protected work needs a new base-owned approval |
 | Candidate validation confused with admission | Receipt fixes execution and publication claims to false | Separate trusted execution evidence is still required |
