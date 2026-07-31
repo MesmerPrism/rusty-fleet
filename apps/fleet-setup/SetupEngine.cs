@@ -711,15 +711,43 @@ internal static class Installer
                     "installed release channel does not match this Setup identity");
             }
         }
-        var shellTransaction = ShellIdentity.Remove(installRoot);
         guard.Dispose();
+        var quarantine = QuarantineInstallRoot(installRoot);
+        ShellIdentityTransaction shellTransaction;
         try
         {
-            DeleteInstallRoot(installRoot);
+            shellTransaction = ShellIdentity.Remove(installRoot);
+        }
+        catch
+        {
+            RestoreQuarantine(installRoot, quarantine);
+            throw;
+        }
+        try
+        {
+            ShellIdentity.InjectUninstallFailure("uninstall_delete_root");
+            if (!DeleteQuarantine(quarantine))
+            {
+                shellTransaction.Commit();
+                shellTransaction.Dispose();
+                var receiptName = WriteUninstallRecoveryReceipt(
+                    installRoot,
+                    quarantine);
+                return new UninstallResult(
+                    "rusty.fleet.windows_setup_uninstall_result.v2",
+                    "recoverable_cleanup",
+                    "uninstall",
+                    ReleaseConfiguration.ProductId,
+                    ReleaseConfiguration.Channel,
+                    false,
+                    Path.GetFileName(quarantine),
+                    receiptName);
+            }
             shellTransaction.Commit();
         }
         catch
         {
+            RestoreQuarantine(installRoot, quarantine);
             shellTransaction.Dispose();
             throw;
         }
@@ -730,19 +758,86 @@ internal static class Installer
             "uninstall",
             ReleaseConfiguration.ProductId,
             ReleaseConfiguration.Channel,
-            false);
+            false,
+            null,
+            null);
     }
 
-    private static void DeleteInstallRoot(string installRoot)
+    private static string QuarantineInstallRoot(string installRoot)
     {
-        ShellIdentity.InjectUninstallFailure("uninstall_delete_root");
+        var exactRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot));
+        var parent = Directory.GetParent(exactRoot)?.FullName
+            ?? throw new IOException("install root has no quarantine parent");
+        var quarantineName =
+            $".{ReleaseConfiguration.ProductId}-uninstall-{Guid.NewGuid():N}";
+        var quarantine = Path.GetFullPath(Path.Combine(parent, quarantineName));
+        if (!string.Equals(
+                Path.GetDirectoryName(quarantine),
+                Path.TrimEndingDirectorySeparator(parent),
+                StringComparison.OrdinalIgnoreCase) ||
+            Directory.Exists(quarantine) ||
+            File.Exists(quarantine))
+        {
+            throw new IOException("uninstall quarantine identity is not unique and exact");
+        }
+        Directory.Move(exactRoot, quarantine);
+        try
+        {
+            RejectReparseTree(quarantine);
+            return quarantine;
+        }
+        catch
+        {
+            Directory.Move(quarantine, exactRoot);
+            throw;
+        }
+    }
+
+    private static void RestoreQuarantine(string installRoot, string quarantine)
+    {
+        if (Directory.Exists(installRoot) || !Directory.Exists(quarantine))
+        {
+            throw new IOException("uninstall quarantine cannot be restored exactly");
+        }
+        Directory.Move(quarantine, installRoot);
+    }
+
+    private static void RejectReparseTree(string root)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.TryPop(out var path))
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new IOException("uninstall quarantine contains a reparse point");
+            }
+            if (Directory.Exists(path))
+            {
+                foreach (var child in Directory.EnumerateFileSystemEntries(path))
+                {
+                    pending.Push(child);
+                }
+            }
+        }
+    }
+
+    private static bool DeleteQuarantine(string quarantine)
+    {
+        if (ReleaseConfiguration.DevelopmentShellFailurePoint ==
+            "uninstall_partial_delete")
+        {
+            var statePath = Path.Combine(quarantine, "state", "current.json");
+            File.Delete(statePath);
+            return false;
+        }
         IOException? last = null;
         for (var attempt = 0; attempt < 100; attempt++)
         {
             try
             {
-                Directory.Delete(installRoot, recursive: true);
-                return;
+                Directory.Delete(quarantine, recursive: true);
+                return true;
             }
             catch (IOException exception)
             {
@@ -750,7 +845,34 @@ internal static class Installer
                 Thread.Sleep(100);
             }
         }
-        throw new IOException("installed Fleet tree could not be removed", last);
+        _ = last;
+        return false;
+    }
+
+    private static string WriteUninstallRecoveryReceipt(
+        string installRoot,
+        string quarantine)
+    {
+        var parent = Directory.GetParent(Path.GetFullPath(installRoot))?.FullName
+            ?? throw new IOException("install root has no recovery parent");
+        var quarantineName = Path.GetFileName(quarantine);
+        var receiptName = $"{quarantineName}.recovery.json";
+        var receiptPath = Path.Combine(parent, receiptName);
+        var receipt = new
+        {
+            schema = "rusty.fleet.windows_uninstall_recovery.v1",
+            result = "recoverable_cleanup",
+            product = ReleaseConfiguration.ProductId,
+            channel = ReleaseConfiguration.Channel,
+            quarantine = quarantineName,
+            shell_identity_present = false,
+            retry = "remove_owned_quarantine_after_review",
+        };
+        File.WriteAllText(
+            receiptPath,
+            JsonSerializer.Serialize(receipt) + "\n",
+            new UTF8Encoding(false));
+        return receiptName;
     }
 
     private static InstallState? ReadAndValidateState(
@@ -886,7 +1008,9 @@ internal sealed record UninstallResult(
     string Action,
     string Product,
     string Channel,
-    bool RestartRequired);
+    bool RestartRequired,
+    string? Quarantine,
+    string? RecoveryReceipt);
 
 internal sealed class ShellIdentityTransaction : IDisposable
 {

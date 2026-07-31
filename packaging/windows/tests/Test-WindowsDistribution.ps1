@@ -742,6 +742,95 @@ try {
         ) "$uninstallFailure did not restore registry and shortcut identity"
     }
 
+    $partialShellRoot = Join-Path $testRoot "shell-uninstall-partial"
+    $partialInstallRoot = Join-Path $testRoot "install-uninstall-partial"
+    $partialSetupOutput = Join-Path $testRoot "setup-uninstall-partial"
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $alphaArchiveOne `
+        -DevelopmentInstallRoot $partialInstallRoot `
+        -DevelopmentShellTestRoot $partialShellRoot `
+        -DevelopmentShellFailurePoint uninstall_partial_delete `
+        -OutputDirectory $partialSetupOutput | Out-Null
+    $partialSetup = Join-Path $partialSetupOutput "RustyFleet-Alpha-Setup.exe"
+    $partialInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $partialSetup -Answer i
+    )
+    Assert-Distribution (
+        $partialInstall.exit_code -eq 0
+    ) "partial-delete recovery fixture did not install"
+    $partialResult = & $partialSetup --uninstall | ConvertFrom-Json
+    $partialParent = Split-Path -Parent $partialInstallRoot
+    $partialQuarantine = Join-Path $partialParent $partialResult.quarantine
+    $partialRecovery = Join-Path $partialParent $partialResult.recovery_receipt
+    $partialReceipt = Get-Content -LiteralPath $partialRecovery -Raw |
+        ConvertFrom-Json
+    Assert-Distribution (
+        $partialResult.result -eq "recoverable_cleanup" -and
+        $partialResult.quarantine -cmatch
+            '^\.rusty-fleet-alpha-uninstall-[0-9a-f]{32}$' -and
+        $partialResult.recovery_receipt -ceq
+            "$($partialResult.quarantine).recovery.json" -and
+        -not (Test-Path -LiteralPath $partialInstallRoot) -and
+        (Test-Path -LiteralPath $partialQuarantine -PathType Container) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $partialQuarantine "state\current.json"
+        )) -and
+        $partialReceipt.result -eq "recoverable_cleanup" -and
+        $partialReceipt.quarantine -ceq $partialResult.quarantine -and
+        $partialReceipt.shell_identity_present -eq $false -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $partialShellRoot "Registry\rusty-fleet-alpha.json"
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $partialShellRoot "Programs\Rusty Fleet Alpha"
+        ))
+    ) "partial recursive deletion restored shell identity or lost recovery state"
+
+    $reparseShellRoot = Join-Path $testRoot "shell-uninstall-reparse"
+    $reparseInstallRoot = Join-Path $testRoot "install-uninstall-reparse"
+    $reparseSetupOutput = Join-Path $testRoot "setup-uninstall-reparse"
+    $quarantinesBeforeReparse = @(
+        Get-ChildItem `
+            -LiteralPath (Split-Path -Parent $reparseInstallRoot) `
+            -Directory |
+            Where-Object Name -Like '.rusty-fleet-alpha-uninstall-*'
+    ).Count
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $alphaArchiveOne `
+        -DevelopmentInstallRoot $reparseInstallRoot `
+        -DevelopmentShellTestRoot $reparseShellRoot `
+        -OutputDirectory $reparseSetupOutput | Out-Null
+    $reparseSetup = Join-Path $reparseSetupOutput "RustyFleet-Alpha-Setup.exe"
+    $reparseInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $reparseSetup -Answer i
+    )
+    Assert-Distribution (
+        $reparseInstall.exit_code -eq 0
+    ) "reparse rejection fixture did not install"
+    $reparseTarget = Join-Path $testRoot "reparse-target"
+    [IO.Directory]::CreateDirectory($reparseTarget) | Out-Null
+    $reparsePath = Join-Path $reparseInstallRoot "unowned-junction"
+    New-Item `
+        -ItemType Junction `
+        -Path $reparsePath `
+        -Target $reparseTarget | Out-Null
+    & $reparseSetup --uninstall *> $null
+    Assert-Distribution (
+        $LASTEXITCODE -ne 0 -and
+        (Test-Path -LiteralPath $reparseInstallRoot -PathType Container) -and
+        (Test-Path -LiteralPath (
+            Join-Path $reparseShellRoot "Registry\rusty-fleet-alpha.json"
+        )) -and
+        @(
+            Get-ChildItem `
+                -LiteralPath (Split-Path -Parent $reparseInstallRoot) `
+                -Directory |
+                Where-Object Name -Like '.rusty-fleet-alpha-uninstall-*'
+        ).Count -eq $quarantinesBeforeReparse
+    ) "reparse-bearing install root entered uninstall quarantine"
+
     $failedShellRoot = Join-Path $testRoot "failed-shell"
     $failedInstallRoot = Join-Path $testRoot "failed-shell-install"
     $failedSetupOutput = Join-Path $testRoot "failed-shell-setup"

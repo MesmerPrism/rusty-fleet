@@ -275,6 +275,7 @@ jobs:
             -AssetDirectory $stage `
             -Version $env:VERSION `
             -Channel $env:CHANNEL `
+            -ReleaseTag $env:RESOLVED_RELEASE_TAG `
             -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
             -ExpectedHostessSignerThumbprint $env:HOSTESS_SIGNER_THUMBPRINT `
             -ExpectedDescriptorSignerSpkiSha256 (
@@ -304,6 +305,9 @@ jobs:
               [string] $response.Content,
               [Text.UTF8Encoding]::new($false)
             )
+          }
+          elseif ($response.StatusCode -ne 404) {
+            throw 'prior Pages metadata handoff lookup failed closed'
           }
 
       - name: Preserve deployed non-target metadata subtrees

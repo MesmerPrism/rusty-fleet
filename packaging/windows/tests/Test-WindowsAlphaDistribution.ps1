@@ -28,6 +28,8 @@ Assert-Alpha (
     $pagesWorkflow -match '\$tag = \$env:RESOLVED_RELEASE_TAG' -and
     $pagesWorkflow -match '-ReleaseTag \$env:RESOLVED_RELEASE_TAG' -and
     $pagesWorkflow -match
+        '(?s)Publish-WindowsRelease\.ps1.*-Channel \$env:CHANNEL.*-ReleaseTag \$env:RESOLVED_RELEASE_TAG' -and
+    $pagesWorkflow -match
         ([regex]::Escape('$productStem = if ($env:CHANNEL -ceq ''alpha'')')) -and
     $pagesWorkflow -match "'RustyFleet-Alpha'" -and
     $pagesWorkflow -match '\$setupName = "\$productStem-Setup\.exe"' -and
@@ -37,7 +39,8 @@ Assert-Alpha (
         '(?m)^\s+\$bundle = "RustyFleet-\$env:VERSION-win-x64"$' -and
     $pagesWorkflow -match 'ReleaseTag = \$env:RESOLVED_RELEASE_TAG' -and
     $pagesWorkflow -notmatch 'ExpectedRef "refs/tags/v\$env:VERSION"' -and
-    $pagesWorkflow -notmatch '(?m)^\s+elseif \(\$response\.StatusCode'
+    $pagesWorkflow -match
+        'elseif \(\$response\.StatusCode -ne 404\) \{\s*throw ''prior Pages metadata handoff lookup failed closed'''
 ) "Pages does not retain the exact resolved alpha tag or contains a detached branch"
 $workflowLines = $pagesWorkflow -split '\r?\n'
 $workflowPowerShell = [Collections.Generic.List[string]]::new()

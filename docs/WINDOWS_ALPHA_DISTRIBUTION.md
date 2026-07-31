@@ -42,9 +42,13 @@ stable `vX.Y.Z` tag. Other failures, malformed tags, and alpha tags reject.
 Rollback rewrites shortcut and uninstall-registration readback from the
 activated historical release, including that release's version. Uninstall
 snapshots the complete channel-owned shortcut directory and uninstall
-registration before removal. Shortcut removal, registry removal, and
-install-root deletion remain one transaction; a failure restores the prior
-shell identity byte-for-byte so Setup remains discoverable and retryable.
+registration before removal. The fully validated, reparse-free install root is
+first renamed atomically on the same volume to a unique product-owned
+quarantine beside the original root. A failure before recursive deletion
+renames it back and restores shell identity byte-for-byte. Once recursive
+deletion has started, failure never recreates shortcuts to damaged content:
+shell identity stays absent and Setup returns `recoverable_cleanup` with the
+exact quarantine and adjacent recovery-receipt names for reviewed cleanup.
 
 Checked-in production signing policy remains disabled. Synthetic tests use
 ephemeral keys and no fallback production key exists.
