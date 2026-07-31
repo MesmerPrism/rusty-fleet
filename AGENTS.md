@@ -90,8 +90,8 @@ The runnable local surface is documented in
 [docs/M1_LOCAL_MONITORING.md](docs/M1_LOCAL_MONITORING.md).
 The first participating-app operation and its recovery boundary are documented
 in [docs/M2_KIOSK_SHOW_CONTROLS.md](docs/M2_KIOSK_SHOW_CONTROLS.md).
-The full-product alpha distribution and stable-isolation rules are documented
-in [docs/WINDOWS_ALPHA_DISTRIBUTION.md](docs/WINDOWS_ALPHA_DISTRIBUTION.md).
+The full-product Stable/Labs distribution axes and isolation rules are
+documented in [docs/WINDOWS_LABS_DISTRIBUTION.md](docs/WINDOWS_LABS_DISTRIBUTION.md).
 
 ## Ownership
 

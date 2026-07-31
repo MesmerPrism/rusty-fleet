@@ -100,7 +100,7 @@ contract:
 RustyFleet-Setup.exe --plan --json
 ```
 
-That command returns exactly the schema, product, version, channel, SHA-256 of
+That command returns exactly the schema, product, version, distribution track, SHA-256 of
 the Setup executable, and readiness flag; it never changes the install root.
 Run the executable with no arguments for the visible prompt. `I` performs a
 new install or update, `R` selects the previous release, and `N` exits without
@@ -158,7 +158,7 @@ filename-to-SHA-256-and-size inventory.
 
 The immutable `release-descriptor.receipt.json` is Fleet's owner metadata
 asset. Its closed v3 contract binds the exact release tag, the
-channel-specific installation identity (`rusty-fleet-alpha` for alpha and
+channel-specific installation identity (`rusty-fleet-labs` for Labs and
 `rusty-fleet` otherwise), and one `complete-product` primary artifact with
 exact name, SHA-256, byte length, and immutable tag-addressed URL. The older
 scalar Setup bindings remain independently checked for continuity.
@@ -221,7 +221,8 @@ receipt's exact tag, installation identity, and complete-product artifact
 against the target channel and release inventory before copying the owner
 metadata byte-for-byte. Its
 `rusty.fleet.windows_release_metadata_handoff.v1` output carries only fixed
-relative filenames, hashes, sizes, owners, version/channel, exact source
+relative filenames, hashes, sizes, owners, version plus exact product channel,
+Fleet channel, maturity, and transport distribution track, exact source
 commit/tree, freshness, and prior-handoff lineage. It names Setup and its build
 receipt as `github_releases` authority assets without copying either binary to
 Pages. A completed output is idempotently resumable; an explicitly resumed
@@ -235,7 +236,8 @@ protected `windows-release-metadata` environment:
 | Variable | Exact meaning |
 | --- | --- |
 | `FLEET_METADATA_VERSION` | Numeric three-component release version |
-| `FLEET_METADATA_CHANNEL` | `dev`, `preview`, or `stable` |
+| `FLEET_METADATA_CHANNEL` | `dev`, `labs`, or `stable` distribution track |
+| `FLEET_METADATA_MATURITY` | `alpha`, `beta`, `rc`, or `released` |
 | `FLEET_METADATA_SOURCE_REVISION` | Full 40-hex commit resolved by `v<version>` |
 | `FLEET_METADATA_SOURCE_TREE` | Full 40-hex tree for that exact commit |
 | `FLEET_SIGNER_THUMBPRINT` | Reviewed uppercase Fleet Authenticode thumbprint |

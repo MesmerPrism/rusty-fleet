@@ -68,7 +68,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private PackageInstallReleaseOperation? _currentPackageOperation;
     private string _packageManifestUrl = string.Empty;
     private string _packageName = string.Empty;
-    private string _packageRolloutRing = "alpha";
+    private string _packageRolloutRing = "labs";
     private string _packageOperationSummaryText = "No package operation preview";
     private string _packageOperationStatusText =
         "Enter a signed manifest URL and package identity, then select exact devices";

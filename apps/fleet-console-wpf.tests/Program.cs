@@ -565,9 +565,9 @@ internal static class Program
                 StringComparer.Ordinal);
             var packageBatch = operationWorkspace.BatchSelectionText;
             operationWorkspace.PackageManifestUrl =
-                "https://updates.example.invalid/alpha/envelope.json";
+                "https://updates.example.invalid/labs/envelope.json";
             operationWorkspace.PackageName = "org.example.kiosk";
-            operationWorkspace.PackageRolloutRing = "alpha";
+            operationWorkspace.PackageRolloutRing = "labs";
             operationWorkspace.PreviewPackageInstallReleaseAsync()
                 .GetAwaiter()
                 .GetResult();

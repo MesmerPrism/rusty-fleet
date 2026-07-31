@@ -13,10 +13,10 @@
     "fleet_revision": 7,
     "release": {
       "kind": "manifest_url",
-      "manifest_url": "http://updates.example.invalid/alpha/envelope.json"
+      "manifest_url": "http://updates.example.invalid/labs/envelope.json"
     },
     "expected_package_name": "org.example.kiosk",
-    "expected_rollout_ring": "alpha",
+    "expected_rollout_ring": "labs",
     "owner_contract": {
       "owner_repo_id": "rusty-quest-copy",
       "capability_id": "rusty-quest.package-updater",
@@ -82,10 +82,10 @@
         "owner_action_request_id": "package-owner-1",
         "release": {
           "kind": "manifest_url",
-          "manifest_url": "http://updates.example.invalid/alpha/envelope.json"
+          "manifest_url": "http://updates.example.invalid/labs/envelope.json"
         },
         "expected_package_name": "org.example.other",
-        "expected_rollout_ring": "alpha",
+        "expected_rollout_ring": "labs",
         "expires_at_ms": 61000
       },
       "invocation_acknowledgement": null,

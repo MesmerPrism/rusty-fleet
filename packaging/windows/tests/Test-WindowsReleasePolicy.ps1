@@ -227,7 +227,7 @@ if ($pagesWorkflowText -notmatch "(?m)^permissions:\n  contents: read$" -or
     throw "Pages workflow does not preserve the protected renewal boundary"
 }
 $requiredPagesAuthorityEvidence = @(
-    "rusty.fleet.windows_release_metadata_handoff.v1",
+    "rusty.fleet.windows_release_metadata_handoff.v2",
     "publication preflight asset inventory is not closed",
     "release descriptor RSA-PSS signature is invalid",
     "release metadata renewal is stale, downgraded, or replayed",

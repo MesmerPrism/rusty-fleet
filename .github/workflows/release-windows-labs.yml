@@ -1,4 +1,4 @@
-name: Windows alpha release
+name: Windows Labs release
 
 on:
   workflow_dispatch:
@@ -21,16 +21,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-alpha-release-${{ inputs.version }}-${{ inputs.alpha }}
+  group: windows-labs-release-${{ inputs.version }}-${{ inputs.alpha }}
   cancel-in-progress: false
 
 jobs:
   alpha:
-    environment: windows-alpha-release
+    environment: windows-labs-release
     runs-on: windows-latest
     env:
       VERSION: ${{ inputs.version }}
-      CHANNEL: alpha
+      CHANNEL: labs
       TAG: v${{ inputs.version }}-alpha.${{ inputs.alpha }}
       FLEET_SIGNER_THUMBPRINT: ${{ vars.FLEET_SIGNER_THUMBPRINT }}
       HOSTESS_SIGNER_THUMBPRINT: ${{ vars.HOSTESS_SIGNER_THUMBPRINT }}
@@ -61,10 +61,10 @@ jobs:
         shell: pwsh
         run: .\tools\Test-WindowsDistribution.ps1
 
-      - name: Build complete signed alpha distribution
+      - name: Build complete signed Labs distribution
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.FLEET_ALPHA_WORKFLOW_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLEET_LABS_WORKFLOW_TOKEN }}
           PROVIDER_URL: ${{ vars.HOSTESS_PROVIDER_URL }}
           PROVIDER_SHA256: ${{ vars.HOSTESS_PROVIDER_SHA256 }}
           PROVIDER_SIGNER: ${{ vars.HOSTESS_SIGNER_THUMBPRINT }}
@@ -76,12 +76,12 @@ jobs:
               -not $env:PROVIDER_SHA256 -or -not $env:PROVIDER_SIGNER -or
               -not $env:PROVIDER_PROVENANCE -or -not $env:PROVIDER_LICENSE -or
               -not $env:PROVIDER_NOTICES) {
-            throw 'protected alpha workflow token and exact owner artifact inputs are required'
+            throw 'protected Labs workflow token and exact owner artifact inputs are required'
           }
           $before = @(gh run list --workflow release-windows.yml --limit 20 --json databaseId |
             ConvertFrom-Json | ForEach-Object databaseId)
           gh workflow run release-windows.yml --ref $env:TAG `
-            -f version=$env:VERSION -f channel=alpha -f signing_mode=signed-release `
+            -f version=$env:VERSION -f channel=labs -f maturity=alpha -f signing_mode=signed-release `
             -f publish_release='${{ inputs.publish_release }}' `
             -f hostess_provider_url=$env:PROVIDER_URL `
             -f hostess_provider_sha256=$env:PROVIDER_SHA256 `
@@ -91,7 +91,7 @@ jobs:
             -f hostess_provenance_document_url=$env:PROVIDER_PROVENANCE `
             -f hostess_license_url=$env:PROVIDER_LICENSE `
             -f hostess_third_party_notices_url=$env:PROVIDER_NOTICES
-          if ($LASTEXITCODE -ne 0) { throw 'alpha owner workflow dispatch failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Labs owner workflow dispatch failed' }
           $run = $null
           for ($attempt = 0; $attempt -lt 30 -and -not $run; $attempt++) {
             Start-Sleep -Seconds 2
@@ -99,6 +99,6 @@ jobs:
               ConvertFrom-Json | Where-Object { $before -notcontains $_.databaseId } |
               Select-Object -First 1)
           }
-          if (-not $run) { throw 'dispatched alpha owner workflow was not observable' }
+          if (-not $run) { throw 'dispatched Labs owner workflow was not observable' }
           gh run watch $run.databaseId --exit-status
-          if ($LASTEXITCODE -ne 0) { throw 'complete alpha owner workflow failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'complete Labs owner workflow failed' }

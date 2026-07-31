@@ -56,7 +56,7 @@ function Invoke-PublicationAuthority {
         -Mode $Mode `
         -AssetDirectory $InputRoot `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -ExpectedFleetSignerThumbprint $FleetSigner `
         -ExpectedHostessSignerThumbprint $HostessSigner `
         -ExpectedDescriptorSignerSpkiSha256 $DescriptorSpki `
@@ -73,8 +73,8 @@ Import-Module (
     Join-Path $PSScriptRoot "WindowsCertificateFixture.psm1"
 ) -Force
 foreach ($case in @(
-    [pscustomobject]@{ channel = "preview"; tag = "v9.9.9" },
-    [pscustomobject]@{ channel = "alpha"; tag = "v9.9.9-alpha.1" }
+    [pscustomobject]@{ channel = "dev"; maturity = "released"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "labs"; maturity = "alpha"; tag = "v9.9.9-alpha.1" }
 )) {
     $message = ""
     try {
@@ -83,6 +83,7 @@ foreach ($case in @(
             -AssetDirectory "missing-assets" `
             -Version "1.2.3" `
             -Channel $case.channel `
+            -Maturity $case.maturity `
             -ReleaseTag $case.tag `
             -ExpectedFleetSignerThumbprint ("A" * 40) `
             -ExpectedHostessSignerThumbprint ("B" * 40) `
@@ -428,7 +429,7 @@ public static class ProviderFixture { }
     $distributionRoot = Join-Path $testRoot "distribution"
     & (Join-Path $packagingRoot "New-WindowsBundle.ps1") `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -BuildKind signed-release `
         -HostessProviderPath $providerPath `
         -HostessProviderSha256 $providerSha256 `
@@ -454,7 +455,7 @@ public static class ProviderFixture { }
         Join-Path $packagingRoot "New-WindowsSetup.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -BuildKind signed-release `
         -BundleArchivePath (
             Join-Path $distributionRoot "RustyFleet-1.2.3-win-x64.zip"
@@ -490,7 +491,7 @@ public static class ProviderFixture { }
     $descriptorRoot = Join-Path $testRoot "descriptor"
     & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -SetupPath $setupPath `
         -SetupBuildReceiptPath $setupReceiptPath `
         -ExpectedSetupSignerThumbprint $signerThumbprint `
@@ -499,7 +500,7 @@ public static class ProviderFixture { }
         -DescriptorPrivateKeyPemPath $descriptorKeyPath `
         -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
         -OutputDirectory $descriptorRoot `
-        -DescriptorId "v1.2.3-preview-publication-test" `
+        -DescriptorId "v1.2.3-dev-publication-test" `
         -IssuedAtUtc $testNow.AddMinutes(-5) `
         -LifetimeMinutes 1380 |
         Out-Null
@@ -560,7 +561,7 @@ exit 99
         @($preflight.assets).Count -eq 10 -and
         @($preflight.assets.name | Sort-Object -Unique).Count -eq 10 -and
         $ownerReleaseMetadata.schema -ceq
-            "rusty.fleet.windows_release_descriptor_receipt.v3" -and
+            "rusty.fleet.windows_release_descriptor_receipt.v4" -and
         $ownerReleaseMetadata.release_tag -ceq "v1.2.3" -and
         $ownerReleaseMetadata.installation_identity -ceq "rusty-fleet" -and
         $ownerReleaseMetadata.primary_artifact.role -ceq
@@ -592,7 +593,7 @@ exit 99
         Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -SiteDirectory $siteRoot `
         -MetadataDirectory $descriptorRoot `
         -PublicationPreflightReceiptPath $preflightPath `
@@ -603,11 +604,15 @@ exit 99
         -NowUtc $testNow |
         ConvertFrom-Json -Depth 20
     $firstHandoffPath = Join-Path $pagesOutput (
-        "Rusty-Fleet\metadata\preview\deployment-handoff.json"
+        "Rusty-Fleet\metadata\dev\deployment-handoff.json"
     )
     Assert-Publication (
         $firstHandoff.schema -eq
-            "rusty.fleet.windows_release_metadata_handoff.v1" -and
+            "rusty.fleet.windows_release_metadata_handoff.v2" -and
+        $firstHandoff.product_channel -eq "stable" -and
+        $firstHandoff.maturity -eq "released" -and
+        $firstHandoff.channel -eq "dev" -and
+        $firstHandoff.distribution_track -eq "local-development" -and
         $firstHandoff.result -eq "pass" -and
         $firstHandoff.deployment_sequence -eq 1 -and
         $firstHandoff.pages_binary_count -eq 0 -and
@@ -624,7 +629,7 @@ exit 99
         Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -SiteDirectory $siteRoot `
         -MetadataDirectory $descriptorRoot `
         -PublicationPreflightReceiptPath $preflightPath `
@@ -651,7 +656,7 @@ exit 99
         Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -SiteDirectory $siteRoot `
         -MetadataDirectory $descriptorRoot `
         -PublicationPreflightReceiptPath $preflightPath `
@@ -667,7 +672,7 @@ exit 99
         -not (Test-Path -LiteralPath $interruptedStage) -and
         (Test-Path -LiteralPath (
             Join-Path $interruptedOutput (
-                "Rusty-Fleet\metadata\preview\release.json"
+                "Rusty-Fleet\metadata\dev\release.json"
             )
         ))
     ) "interrupted Pages deployment did not rebuild and resume exactly"
@@ -681,7 +686,7 @@ exit 99
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
-            -Channel preview `
+            -Channel dev `
             -SiteDirectory $badSite `
             -MetadataDirectory $descriptorRoot `
             -PublicationPreflightReceiptPath $preflightPath `
@@ -721,7 +726,7 @@ exit 99
         try {
             & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
                 -Version $wrongBoundary.version `
-                -Channel preview `
+                -Channel dev `
                 -SiteDirectory $siteRoot `
                 -MetadataDirectory $descriptorRoot `
                 -PublicationPreflightReceiptPath $preflightPath `
@@ -758,7 +763,7 @@ exit 99
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
-            -Channel preview `
+            -Channel dev `
             -SiteDirectory $siteRoot `
             -MetadataDirectory $damagedMetadata `
             -PublicationPreflightReceiptPath $preflightPath `
@@ -777,7 +782,7 @@ exit 99
     $staleMetadata = Join-Path $testRoot "stale-metadata"
     & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -SetupPath $setupPath `
         -SetupBuildReceiptPath $setupReceiptPath `
         -ExpectedSetupSignerThumbprint $signerThumbprint `
@@ -786,7 +791,7 @@ exit 99
         -DescriptorPrivateKeyPemPath $descriptorKeyPath `
         -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
         -OutputDirectory $staleMetadata `
-        -DescriptorId "v1.2.3-preview-stale-test" `
+        -DescriptorId "v1.2.3-dev-stale-test" `
         -IssuedAtUtc $testNow.AddDays(-2) `
         -LifetimeMinutes 60 |
         Out-Null
@@ -823,7 +828,7 @@ exit 99
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
-            -Channel preview `
+            -Channel dev `
             -SiteDirectory $siteRoot `
             -MetadataDirectory $staleMetadata `
             -PublicationPreflightReceiptPath $stalePreflightPath `
@@ -842,7 +847,7 @@ exit 99
     $renewalMetadata = Join-Path $testRoot "renewal-metadata"
     & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -SetupPath $setupPath `
         -SetupBuildReceiptPath $setupReceiptPath `
         -ExpectedSetupSignerThumbprint $signerThumbprint `
@@ -851,7 +856,7 @@ exit 99
         -DescriptorPrivateKeyPemPath $descriptorKeyPath `
         -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
         -OutputDirectory $renewalMetadata `
-        -DescriptorId "v1.2.3-preview-renewal-test" `
+        -DescriptorId "v1.2.3-dev-renewal-test" `
         -IssuedAtUtc $testNow.AddMinutes(5) `
         -LifetimeMinutes 1380 |
         Out-Null
@@ -889,7 +894,7 @@ exit 99
         Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -SiteDirectory $siteRoot `
         -MetadataDirectory $renewalMetadata `
         -PublicationPreflightReceiptPath $renewalPreflightPath `
@@ -905,7 +910,7 @@ exit 99
         $renewalHandoff.previous_handoff_sha256 -cmatch
             "^[0-9a-f]{64}$" -and
         $renewalHandoff.descriptor_id -ceq
-            "v1.2.3-preview-renewal-test" -and
+            "v1.2.3-dev-renewal-test" -and
         $renewalHandoff.expires_at_ms -gt $firstHandoff.expires_at_ms
     ) "fresh release metadata did not renew the Pages handoff"
 
@@ -913,7 +918,7 @@ exit 99
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
-            -Channel preview `
+            -Channel dev `
             -SiteDirectory $siteRoot `
             -MetadataDirectory $descriptorRoot `
             -PublicationPreflightReceiptPath $preflightPath `
@@ -1049,7 +1054,7 @@ exit 99
             name = "installation-identity"
             apply = {
                 param($value)
-                $value.installation_identity = "rusty-fleet-alpha"
+                $value.installation_identity = "rusty-fleet-labs"
             }
         },
         [pscustomobject]@{

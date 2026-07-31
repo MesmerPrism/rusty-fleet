@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/schemas/rusty.fleet.windows_release.v3.schema.json",
+  "title": "Rusty Fleet Windows release payload v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["asset", "channel", "descriptor_id", "distribution_track", "expires_at_ms", "issued_at_ms", "maturity", "product", "product_channel", "schema", "validity_duration_ms", "version"],
+  "properties": {
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installer_protocol", "media_type", "name", "sha256", "signer_certificate_sha256", "size_bytes", "url"],
+      "properties": {
+        "installer_protocol": { "const": "rusty.fleet.guided_setup.v1" },
+        "media_type": { "const": "application/vnd.microsoft.portable-executable" },
+        "name": { "enum": ["RustyFleet-Labs-Setup.exe", "RustyFleet-Setup.exe"] },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "signer_certificate_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 536870912 },
+        "url": { "type": "string", "pattern": "^https://github\\.com/MesmerPrism/rusty-fleet/releases/download/v[0-9]+\\.[0-9]+\\.[0-9]+(?:(?:-alpha|-beta|-rc)\\.[1-9][0-9]*)?/RustyFleet(?:-Labs)?-Setup\\.exe$" }
+      }
+    },
+    "channel": { "enum": ["dev", "labs", "stable"] },
+    "descriptor_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$" },
+    "distribution_track": { "enum": ["local-development", "github-prerelease", "github-release"] },
+    "expires_at_ms": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "issued_at_ms": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "maturity": { "enum": ["alpha", "beta", "rc", "released"] },
+    "product": { "enum": ["rusty-fleet", "rusty-fleet-labs"] },
+    "product_channel": { "enum": ["stable", "labs"] },
+    "schema": { "const": "rusty.fleet.windows_release.v3" },
+    "validity_duration_ms": { "type": "integer", "minimum": 1, "maximum": 86400000 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+  },
+  "allOf": [{
+    "if": { "properties": { "product_channel": { "const": "labs" } }, "required": ["product_channel"] },
+    "then": { "properties": {
+      "product": { "const": "rusty-fleet-labs" },
+      "channel": { "const": "labs" },
+      "distribution_track": { "const": "github-prerelease" },
+      "asset": { "properties": { "name": { "const": "RustyFleet-Labs-Setup.exe" }, "url": { "pattern": "/RustyFleet-Labs-Setup\\.exe$" } } }
+    } },
+    "else": { "properties": {
+      "product": { "const": "rusty-fleet" },
+      "channel": { "enum": ["dev", "stable"] },
+      "distribution_track": { "enum": ["local-development", "github-release"] },
+      "asset": { "properties": { "name": { "const": "RustyFleet-Setup.exe" }, "url": { "pattern": "/RustyFleet-Setup\\.exe$" } } }
+    } }
+  }, {
+    "if": { "properties": { "channel": { "const": "dev" } }, "required": ["channel"] },
+    "then": { "properties": { "product_channel": { "const": "stable" }, "distribution_track": { "const": "local-development" } } }
+  }, {
+    "if": { "properties": { "channel": { "const": "labs" } }, "required": ["channel"] },
+    "then": { "properties": { "product_channel": { "const": "labs" }, "distribution_track": { "const": "github-prerelease" } } }
+  }, {
+    "if": { "properties": { "channel": { "const": "stable" } }, "required": ["channel"] },
+    "then": { "properties": { "product_channel": { "const": "stable" }, "distribution_track": { "const": "github-release" } } }
+  }]
+}

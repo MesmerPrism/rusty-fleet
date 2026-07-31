@@ -8,8 +8,11 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "alpha", "preview", "stable")]
+    [ValidateSet("dev", "labs", "stable")]
     [string] $Channel,
+
+    [ValidateSet("alpha", "beta", "rc", "released")]
+    [string] $Maturity = "released",
 
     [Parameter(Mandatory)]
     [ValidateSet("unsigned-dev", "signed-release")]
@@ -47,9 +50,15 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 $archive = (Resolve-Path -LiteralPath $BundleArchivePath).Path
-$productStem = if ($Channel -eq "alpha") { "RustyFleet-Alpha" } else { "RustyFleet" }
-$setupFileName = if ($Channel -eq "alpha") {
-    "RustyFleet-Alpha-Setup.exe"
+$productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
+$distributionTrack = switch ($Channel) {
+    "dev" { "local-development" }
+    "labs" { "github-prerelease" }
+    "stable" { "github-release" }
+}
+$productStem = if ($Channel -eq "labs") { "RustyFleet-Labs" } else { "RustyFleet" }
+$setupFileName = if ($Channel -eq "labs") {
+    "RustyFleet-Labs-Setup.exe"
 }
 else {
     "RustyFleet-Setup.exe"
@@ -74,9 +83,11 @@ try {
     $manifestPath = Join-Path $inspectionBundleRoot "metadata\release-manifest.json"
     $manifest = Get-Content -LiteralPath $manifestPath -Raw |
         ConvertFrom-Json -Depth 30
-    if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v1" -or
+    if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v2" -or
         $manifest.version -cne $Version -or
-        $manifest.channel -cne $Channel -or
+        $manifest.product_channel -cne $productChannel -or
+        $manifest.maturity -cne $Maturity -or
+        $manifest.distribution_track -cne $distributionTrack -or
         $manifest.build.kind -cne $BuildKind -or
         $manifest.source.revision -cnotmatch "^[0-9a-f]{40}$" -or
         $manifest.source.tree -cnotmatch "^[0-9a-f]{40}$") {
@@ -158,10 +169,13 @@ internal static class ReleaseConfiguration
     internal static readonly string ManifestSha256 = "$manifestSha256";
     internal static readonly string FleetSignerThumbprint = "$fleetSigner";
     internal static readonly string HostessSignerThumbprint = "$hostessSigner";
-    internal static readonly string ProductId = "$(if ($Channel -eq "alpha") { "rusty-fleet-alpha" } else { "rusty-fleet" })";
-    internal static readonly string DisplayName = "$(if ($Channel -eq "alpha") { "Rusty Fleet Alpha" } else { "Rusty Fleet" })";
+    internal static readonly string ProductId = "$(if ($Channel -eq "labs") { "rusty-fleet-labs" } else { "rusty-fleet" })";
+    internal static readonly string ProductChannel = "$productChannel";
+    internal static readonly string Maturity = "$Maturity";
+    internal static readonly string DistributionTrack = "$distributionTrack";
+    internal static readonly string DisplayName = "$(if ($Channel -eq "labs") { "Rusty Fleet Labs" } else { "Rusty Fleet" })";
     internal static readonly string SetupFileName = "$setupFileName";
-    internal static readonly string InstallDirectoryName = "$(if ($Channel -eq "alpha") { "RustyFleetAlpha" } else { "RustyFleet" })";
+    internal static readonly string InstallDirectoryName = "$(if ($Channel -eq "labs") { "RustyFleetLabs" } else { "RustyFleet" })";
     internal static readonly string DevelopmentInstallRoot = "$developmentRoot";
     internal static readonly int DevelopmentTestPauseAfterRetainMs = $DevelopmentTestPauseAfterRetainMs;
     internal static readonly string DevelopmentShellTestRoot = "$developmentShellRoot";
@@ -200,10 +214,13 @@ internal static class ReleaseConfiguration
         -LiteralPath $destination `
         -ExpectedPayloadSize (Get-Item -LiteralPath $destination).Length
     [ordered]@{
-        schema = "rusty.fleet.windows_setup_build_receipt.v1"
+        schema = "rusty.fleet.windows_setup_build_receipt.v2"
         result = "pass"
         version = $Version
         channel = $Channel
+        product_channel = $productChannel
+        maturity = $Maturity
+        distribution_track = $distributionTrack
         build_kind = $BuildKind
         setup_sha256 = Get-RustyFleetSha256 -LiteralPath $destination
         bundle_sha256 = $archiveSha256

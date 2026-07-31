@@ -30,6 +30,7 @@ jobs:
     env:
       VERSION: ${{ vars.FLEET_METADATA_VERSION }}
       CHANNEL: ${{ vars.FLEET_METADATA_CHANNEL }}
+      MATURITY: ${{ vars.FLEET_METADATA_MATURITY }}
       RELEASE_TAG: ${{ vars.FLEET_METADATA_TAG }}
       SOURCE_REVISION: ${{ vars.FLEET_METADATA_SOURCE_REVISION }}
       SOURCE_TREE: ${{ vars.FLEET_METADATA_SOURCE_TREE }}
@@ -59,7 +60,8 @@ jobs:
         shell: pwsh
         run: |
           if ($env:VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
-              $env:CHANNEL -cnotmatch '^(?:dev|alpha|preview|stable)$' -or
+              $env:CHANNEL -cnotmatch '^(?:dev|labs|stable)$' -or
+              $env:MATURITY -cnotmatch '^(?:alpha|beta|rc|released)$' -or
               $env:SOURCE_REVISION -cnotmatch '^[0-9a-f]{40}$' -or
               $env:SOURCE_TREE -cnotmatch '^[0-9a-f]{40}$' -or
               $env:FLEET_SIGNER_THUMBPRINT -cnotmatch '^[0-9A-F]{40}$' -or
@@ -68,9 +70,13 @@ jobs:
             throw 'renewal public trust inputs are absent or malformed'
           }
           $tag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { "v$env:VERSION" }
-          if (($env:CHANNEL -eq 'alpha') -ne
-              ($tag -match '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[1-9][0-9]*$')) {
-            throw 'metadata tag does not match its channel'
+          $tagPattern = if ($env:MATURITY -eq 'released') {
+            '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          } else {
+            '^v[0-9]+\.[0-9]+\.[0-9]+-' + $env:MATURITY + '\.[1-9][0-9]*$'
+          }
+          if ($tag -cnotmatch $tagPattern) {
+            throw 'metadata tag does not match its explicit maturity'
           }
           "RESOLVED_RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           & git switch --detach $tag
@@ -134,8 +140,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'exact GitHub Release asset download failed'
           }
-          $productStem = if ($env:CHANNEL -ceq 'alpha') {
-            'RustyFleet-Alpha'
+          $productStem = if ($env:CHANNEL -ceq 'labs') {
+            'RustyFleet-Labs'
           } else {
             'RustyFleet'
           }
@@ -185,8 +191,8 @@ jobs:
           $download = Join-Path $env:RUNNER_TEMP 'fleet-release-assets'
           $metadata = Join-Path $env:RUNNER_TEMP 'fleet-renewed-metadata'
           $key = Join-Path $env:RUNNER_TEMP 'fleet-descriptor-signing-key.pem'
-          $productStem = if ($env:CHANNEL -ceq 'alpha') {
-            'RustyFleet-Alpha'
+          $productStem = if ($env:CHANNEL -ceq 'labs') {
+            'RustyFleet-Labs'
           } else {
             'RustyFleet'
           }
@@ -207,6 +213,7 @@ jobs:
             .\packaging\windows\New-WindowsReleaseDescriptor.ps1 `
               -Version $env:VERSION `
               -Channel $env:CHANNEL `
+              -Maturity $env:MATURITY `
             -ReleaseTag $env:RESOLVED_RELEASE_TAG `
               -SetupPath (Join-Path $download $setupName) `
               -SetupBuildReceiptPath (
@@ -237,8 +244,8 @@ jobs:
           $metadata = Join-Path $env:RUNNER_TEMP 'fleet-renewed-metadata'
           $stage = Join-Path $env:RUNNER_TEMP 'fleet-renewal-preflight'
           [IO.Directory]::CreateDirectory($stage) | Out-Null
-          $productStem = if ($env:CHANNEL -ceq 'alpha') {
-            'RustyFleet-Alpha'
+          $productStem = if ($env:CHANNEL -ceq 'labs') {
+            'RustyFleet-Labs'
           } else {
             'RustyFleet'
           }
@@ -275,6 +282,7 @@ jobs:
             -AssetDirectory $stage `
             -Version $env:VERSION `
             -Channel $env:CHANNEL `
+            -Maturity $env:MATURITY `
             -ReleaseTag $env:RESOLVED_RELEASE_TAG `
             -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
             -ExpectedHostessSignerThumbprint $env:HOSTESS_SIGNER_THUMBPRINT `
@@ -315,7 +323,7 @@ jobs:
         run: |
           $existing = Join-Path $env:RUNNER_TEMP 'fleet-existing-pages'
           [IO.Directory]::CreateDirectory($existing) | Out-Null
-          foreach ($channel in @('dev','alpha','preview','stable')) {
+          foreach ($channel in @('dev','labs','stable')) {
             if ($channel -ceq $env:CHANNEL) { continue }
             foreach ($name in @('release.json','release-descriptor.receipt.json','release-descriptor.spki.der','deployment-handoff.json')) {
               $uri = "https://mesmerprism.com/Rusty-Fleet/metadata/$channel/$name"
@@ -336,7 +344,8 @@ jobs:
         run: |
           $arguments = @{
             Version = $env:VERSION
-            Channel = $env:CHANNEL
+            channel = $env:CHANNEL
+            Maturity = $env:MATURITY
             SiteDirectory = (Join-Path $env:RUNNER_TEMP 'fleet-public-site')
             MetadataDirectory = (
               Join-Path $env:RUNNER_TEMP 'fleet-renewed-metadata'

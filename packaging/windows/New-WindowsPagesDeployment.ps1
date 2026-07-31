@@ -8,10 +8,13 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "alpha", "preview", "stable")]
+    [ValidateSet("dev", "labs", "stable")]
     [string] $Channel,
 
-    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
+    [ValidateSet("alpha", "beta", "rc", "released")]
+    [string] $Maturity = "released",
+
+    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:(?:-alpha|-beta|-rc)\.[1-9][0-9]*)?$")]
     [string] $ReleaseTag,
 
     [Parameter(Mandatory)]
@@ -53,19 +56,25 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 if (-not $ReleaseTag) { $ReleaseTag = "v$Version" }
-$expectedReleaseTagPattern = if ($Channel -eq "alpha") {
-    "^v$([regex]::Escape($Version))-alpha\.[1-9][0-9]*$"
+$expectedReleaseTagPattern = if ($Maturity -eq "released") {
+    "^v$([regex]::Escape($Version))$"
 }
 else {
-    "^v$([regex]::Escape($Version))$"
+    "^v$([regex]::Escape($Version))-$Maturity\.[1-9][0-9]*$"
 }
 if ($ReleaseTag -cnotmatch $expectedReleaseTagPattern) {
     throw "release tag does not bind the exact version and channel"
 }
-$productStem = if ($Channel -eq "alpha") { "RustyFleet-Alpha" } else { "RustyFleet" }
-$setupName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.exe" } else { "RustyFleet-Setup.exe" }
-$setupReceiptName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.build-receipt.json" } else { "RustyFleet-Setup.build-receipt.json" }
-$installationIdentity = if ($Channel -eq "alpha") { "rusty-fleet-alpha" } else { "rusty-fleet" }
+$productStem = if ($Channel -eq "labs") { "RustyFleet-Labs" } else { "RustyFleet" }
+$setupName = if ($Channel -eq "labs") { "RustyFleet-Labs-Setup.exe" } else { "RustyFleet-Setup.exe" }
+$setupReceiptName = if ($Channel -eq "labs") { "RustyFleet-Labs-Setup.build-receipt.json" } else { "RustyFleet-Setup.build-receipt.json" }
+$installationIdentity = if ($Channel -eq "labs") { "rusty-fleet-labs" } else { "rusty-fleet" }
+$productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
+$distributionTrack = switch ($Channel) {
+    "dev" { "local-development" }
+    "labs" { "github-prerelease" }
+    "stable" { "github-release" }
+}
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 function Assert-ExactProperties {
@@ -157,7 +166,7 @@ function Assert-NoPagesBinary {
         $isAllowedSpki = (
             $AllowDescriptorSpki -and
             $relative -cmatch (
-                "^Rusty-Fleet/metadata/(?:dev|alpha|preview|stable)/" +
+                "^Rusty-Fleet/metadata/(?:dev|labs|stable)/" +
                 "release-descriptor\.spki\.der$"
             )
         )
@@ -279,6 +288,9 @@ Assert-ExactProperties -InputObject $preflight -Expected @(
     "mode",
     "version",
     "channel",
+    "product_channel",
+    "maturity",
+    "distribution_track",
     "tag",
     "source_revision",
     "source_tree",
@@ -299,11 +311,13 @@ Assert-ExactProperties -InputObject $preflight -Expected @(
     "uploaded_asset_count"
 ) -Context "publication preflight receipt"
 if ($preflight.schema -cne
-        "rusty.fleet.windows_publication_receipt.v1" -or
+        "rusty.fleet.windows_publication_receipt.v2" -or
     $preflight.result -cne "pass" -or
     $preflight.mode -cne "preflight" -or
     $preflight.version -cne $Version -or
-    $preflight.channel -cne $Channel -or
+    $preflight.product_channel -cne $productChannel -or
+    $preflight.maturity -cne $Maturity -or
+    $preflight.distribution_track -cne $distributionTrack -or
     $preflight.tag -cne $ReleaseTag -or
     $preflight.source_revision -cne $ExpectedSourceRevision -or
     $preflight.source_tree -cne $ExpectedSourceTree -or
@@ -341,7 +355,7 @@ Assert-ExactProperties -InputObject $envelope -Expected @(
     "signer_spki_sha256"
 ) -Context "release descriptor envelope"
 if ($envelope.schema -cne
-        "rusty.fleet.release_descriptor_envelope.v2" -or
+        "rusty.fleet.release_descriptor_envelope.v3" -or
     $envelope.signer_spki_sha256 -cne
         $ExpectedDescriptorSignerSpkiSha256) {
     throw "release descriptor signer identity is not exact"
@@ -365,10 +379,13 @@ catch {
 Assert-ExactProperties -InputObject $payload -Expected @(
     "asset",
     "channel",
+    "distribution_track",
     "descriptor_id",
     "expires_at_ms",
     "issued_at_ms",
+    "maturity",
     "product",
+    "product_channel",
     "schema",
     "validity_duration_ms",
     "version"
@@ -388,10 +405,13 @@ $expectedSetupUrl = (
 )
 $nowMs = $NowUtc.ToUniversalTime().ToUnixTimeMilliseconds()
 $minimumRemainingMs = [long] $MinimumRemainingMinutes * 60000
-if ($payload.schema -cne "rusty.fleet.windows_release.v2" -or
-    $payload.product -cne "rusty-fleet" -or
+if ($payload.schema -cne "rusty.fleet.windows_release.v3" -or
+    $payload.product -cne $installationIdentity -or
     $payload.version -cne $Version -or
+    $payload.product_channel -cne $productChannel -or
+    $payload.maturity -cne $Maturity -or
     $payload.channel -cne $Channel -or
+    $payload.distribution_track -cne $distributionTrack -or
     $payload.descriptor_id -isnot [string] -or
     $payload.descriptor_id -cnotmatch "^[A-Za-z0-9._-]{1,128}$" -or
     [long] $payload.issued_at_ms -le 0 -or
@@ -455,6 +475,9 @@ Assert-ExactProperties -InputObject $descriptorReceipt -Expected @(
     "descriptor_id",
     "version",
     "channel",
+    "product_channel",
+    "maturity",
+    "distribution_track",
     "release_tag",
     "installation_identity",
     "primary_artifact",
@@ -486,10 +509,13 @@ Assert-ExactProperties -InputObject $descriptorReceipt.primary_artifact -Expecte
     "url"
 ) -Context "release descriptor primary artifact"
 if ($descriptorReceipt.schema -cne
-        "rusty.fleet.windows_release_descriptor_receipt.v3" -or
+        "rusty.fleet.windows_release_descriptor_receipt.v4" -or
     $descriptorReceipt.result -cne "pass" -or
     $descriptorReceipt.version -cne $Version -or
+    $descriptorReceipt.product_channel -cne $productChannel -or
+    $descriptorReceipt.maturity -cne $Maturity -or
     $descriptorReceipt.channel -cne $Channel -or
+    $descriptorReceipt.distribution_track -cne $distributionTrack -or
     $descriptorReceipt.release_tag -cne $ReleaseTag -or
     $descriptorReceipt.installation_identity -cne
         $installationIdentity -or
@@ -538,6 +564,9 @@ if ($PreviousHandoffPath) {
         "product",
         "version",
         "channel",
+        "product_channel",
+        "maturity",
+        "distribution_track",
         "tag",
         "source_revision",
         "source_tree",
@@ -554,10 +583,12 @@ if ($PreviousHandoffPath) {
         "release_files"
     ) -Context "previous Pages handoff"
     if ($previous.schema -cne
-            "rusty.fleet.windows_release_metadata_handoff.v1" -or
+            "rusty.fleet.windows_release_metadata_handoff.v2" -or
         $previous.result -cne "pass" -or
-        $previous.product -cne "rusty-fleet" -or
-        $previous.channel -cne $Channel -or
+        $previous.product -cne $installationIdentity -or
+        $previous.product_channel -cne $productChannel -or
+        $previous.maturity -cne $Maturity -or
+        $previous.distribution_track -cne $distributionTrack -or
         $previous.version -isnot [string] -or
         $previous.version -cnotmatch "^[0-9]+\.[0-9]+\.[0-9]+$" -or
         [version] $Version -lt [version] $previous.version -or
@@ -610,14 +641,17 @@ $deploymentId = (
     "$Channel-$($descriptorSha256.Substring(0, 24))"
 )
 $handoff = [ordered]@{
-    schema = "rusty.fleet.windows_release_metadata_handoff.v1"
+    schema = "rusty.fleet.windows_release_metadata_handoff.v2"
     result = "pass"
     deployment_id = $deploymentId
     deployment_sequence = $deploymentSequence
     previous_handoff_sha256 = $previousHandoffSha256
-    product = "rusty-fleet"
+    product = $installationIdentity
     version = $Version
+    product_channel = $productChannel
+    maturity = $Maturity
     channel = $Channel
+    distribution_track = $distributionTrack
     tag = $ReleaseTag
     source_revision = $ExpectedSourceRevision
     source_tree = $ExpectedSourceTree

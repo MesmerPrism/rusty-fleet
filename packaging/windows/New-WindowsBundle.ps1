@@ -17,8 +17,11 @@ param(
     [Parameter(Mandatory)]
     [string] $HostessProviderMetadataDirectory,
 
-    [ValidateSet("dev", "alpha", "preview", "stable")]
+    [ValidateSet("dev", "labs", "stable")]
     [string] $Channel = "dev",
+
+    [ValidateSet("alpha", "beta", "rc", "released")]
+    [string] $Maturity = "released",
 
     [ValidateSet("unsigned-dev", "signed-release")]
     [string] $BuildKind = "unsigned-dev",
@@ -48,6 +51,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
+$distributionTrack = switch ($Channel) {
+    "dev" { "local-development" }
+    "labs" { "github-prerelease" }
+    "stable" { "github-release" }
+}
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 foreach ($pair in @(
@@ -225,8 +234,8 @@ try {
         throw "signed-release requires RequireAuthenticodeSignatures"
     }
 
-    $bundleName = if ($Channel -eq "alpha") {
-        "RustyFleet-Alpha-$Version-win-x64"
+    $bundleName = if ($Channel -eq "labs") {
+        "RustyFleet-Labs-$Version-win-x64"
     }
     else {
         "RustyFleet-$Version-win-x64"
@@ -398,10 +407,13 @@ try {
 
     $archiveAsset = "$bundleName.zip"
     $manifest = [ordered]@{
-        schema = "rusty.fleet.windows_release_manifest.v1"
+        schema = "rusty.fleet.windows_release_manifest.v2"
         product_id = "rusty-fleet"
         version = $Version
         channel = $Channel
+        product_channel = $productChannel
+        maturity = $Maturity
+        distribution_track = $distributionTrack
         platform = "windows"
         architecture = "x64"
         source = [ordered]@{
@@ -446,15 +458,15 @@ try {
         payload = $payload
         install = [ordered]@{
             mode = "per_user_side_by_side"
-            default_root = if ($Channel -eq "alpha") {
-                "%LOCALAPPDATA%/RustyFleetAlpha"
+            default_root = if ($Channel -eq "labs") {
+                "%LOCALAPPDATA%/RustyFleetLabs"
             }
             else {
                 "%LOCALAPPDATA%/RustyFleet"
             }
             activation = "explicit_operator_start"
-            authority = if ($Channel -eq "alpha") {
-                "RustyFleet-Alpha-Setup.exe"
+            authority = if ($Channel -eq "labs") {
+                "RustyFleet-Labs-Setup.exe"
             }
             else {
                 "RustyFleet-Setup.exe"
@@ -466,6 +478,9 @@ try {
         update = [ordered]@{
             strategy = "setup_owned_side_by_side_manifest"
             channel = $Channel
+            product_channel = $productChannel
+            maturity = $Maturity
+            distribution_track = $distributionTrack
             manifest_asset = "$bundleName.manifest.json"
             checksums_asset = "$bundleName.checksums.sha256"
             validation_receipt_asset = "$bundleName.validation-receipt.json"

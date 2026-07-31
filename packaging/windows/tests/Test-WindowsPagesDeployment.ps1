@@ -39,14 +39,15 @@ function ConvertTo-TestBase64Url([byte[]] $Bytes) {
 $packagingRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
 foreach ($case in @(
-    [pscustomobject]@{ channel = "preview"; tag = "v9.9.9" },
-    [pscustomobject]@{ channel = "alpha"; tag = "v9.9.9-alpha.1" }
+    [pscustomobject]@{ channel = "dev"; maturity = "released"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "labs"; maturity = "alpha"; tag = "v9.9.9-alpha.1" }
 )) {
     $message = ""
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
             -Channel $case.channel `
+            -Maturity $case.maturity `
             -ReleaseTag $case.tag `
             -SiteDirectory "missing-site" `
             -MetadataDirectory "missing-metadata" `
@@ -107,12 +108,15 @@ function New-PagesMetadataFixture {
             $setupSignerCertificateSha256 + '",' +
         '"size_bytes":1234,' +
         '"url":"' + $assetUrl + '"},' +
-        '"channel":"preview",' +
+        '"channel":"dev",' +
+        '"distribution_track":"local-development",' +
         '"descriptor_id":"' + $DescriptorId + '",' +
         '"expires_at_ms":' + $expiresAtMs + ',' +
         '"issued_at_ms":' + $issuedAtMs + ',' +
+        '"maturity":"released",' +
         '"product":"rusty-fleet",' +
-        '"schema":"rusty.fleet.windows_release.v2",' +
+        '"product_channel":"stable",' +
+        '"schema":"rusty.fleet.windows_release.v3",' +
         '"validity_duration_ms":' + $durationMs + ',' +
         '"version":"1.2.3"}'
     )
@@ -123,7 +127,7 @@ function New-PagesMetadataFixture {
         [Security.Cryptography.RSASignaturePadding]::Pss
     )
     $envelope = [ordered]@{
-        schema = "rusty.fleet.release_descriptor_envelope.v2"
+        schema = "rusty.fleet.release_descriptor_envelope.v3"
         payload_base64url = ConvertTo-TestBase64Url $payloadBytes
         signature_base64url = ConvertTo-TestBase64Url $signatureBytes
         signer_spki_sha256 = $spkiSha256
@@ -135,11 +139,14 @@ function New-PagesMetadataFixture {
     $spkiPath = Join-Path $metadataRoot "release-descriptor.spki.der"
     [IO.File]::WriteAllBytes($spkiPath, $spkiBytes)
     $receipt = [ordered]@{
-        schema = "rusty.fleet.windows_release_descriptor_receipt.v3"
+        schema = "rusty.fleet.windows_release_descriptor_receipt.v4"
         result = "pass"
         descriptor_id = $DescriptorId
         version = "1.2.3"
-        channel = "preview"
+        product_channel = "stable"
+        maturity = "released"
+        channel = "dev"
+        distribution_track = "local-development"
         release_tag = "v1.2.3"
         installation_identity = "rusty-fleet"
         primary_artifact = [ordered]@{
@@ -168,7 +175,7 @@ function New-PagesMetadataFixture {
         descriptor_sha256 = Get-TestSha256 $descriptorPath
         canonical_payload = "rfc8785_jcs_closed_shape"
         signature = "rsa_pss_sha256"
-        pages_path = "Rusty-Fleet/metadata/preview/release.json"
+        pages_path = "Rusty-Fleet/metadata/dev/release.json"
         asset_url = $assetUrl
     }
     $receiptPath = Join-Path $metadataRoot (
@@ -232,11 +239,14 @@ function New-PagesMetadataFixture {
         }
     ) | Sort-Object name
     $preflight = [ordered]@{
-        schema = "rusty.fleet.windows_publication_receipt.v1"
+        schema = "rusty.fleet.windows_publication_receipt.v2"
         result = "pass"
         mode = "preflight"
         version = "1.2.3"
-        channel = "preview"
+        product_channel = "stable"
+        maturity = "released"
+        channel = "dev"
+        distribution_track = "local-development"
         tag = "v1.2.3"
         source_revision = $sourceRevision
         source_tree = $sourceTree
@@ -281,7 +291,7 @@ function Invoke-PagesFixture {
 
     $arguments = @{
         Version = $Version
-        Channel = "preview"
+        Channel = "dev"
         SiteDirectory = $siteRoot
         MetadataDirectory = $Fixture.metadata_root
         PublicationPreflightReceiptPath = $Fixture.preflight_path
@@ -317,7 +327,7 @@ try {
         -Name "first" `
         -IssuedAtUtc $now.AddMinutes(-5) `
         -LifetimeMinutes 1380 `
-        -DescriptorId "v1.2.3-preview-first"
+        -DescriptorId "v1.2.3-dev-first"
     $firstOutput = Join-Path $testRoot "pages-first"
     $existingSite = Join-Path $testRoot "existing-complete-site"
     $stableSentinel = Join-Path $existingSite "Rusty-Fleet\metadata\stable\release.json"
@@ -329,7 +339,7 @@ try {
         -ExistingDeploymentDirectory $existingSite |
         ConvertFrom-Json -Depth 20
     $firstHandoffPath = Join-Path $firstOutput (
-        "Rusty-Fleet\metadata\preview\deployment-handoff.json"
+        "Rusty-Fleet\metadata\dev\deployment-handoff.json"
     )
     Assert-Pages (
         $firstHandoff.result -eq "pass" -and
@@ -343,7 +353,7 @@ try {
         (
             Get-Content -LiteralPath (
                 Join-Path $firstOutput (
-                    "Rusty-Fleet\metadata\preview\" +
+                    "Rusty-Fleet\metadata\dev\" +
                     "release-descriptor.receipt.json"
                 )
             ) -Raw | ConvertFrom-Json
@@ -446,7 +456,7 @@ try {
             name = "installation-identity"
             apply = {
                 param($value)
-                $value.installation_identity = "rusty-fleet-alpha"
+                $value.installation_identity = "rusty-fleet-labs"
             }
         },
         [pscustomobject]@{
@@ -540,7 +550,7 @@ try {
         -Name "stale" `
         -IssuedAtUtc $now.AddDays(-2) `
         -LifetimeMinutes 60 `
-        -DescriptorId "v1.2.3-preview-stale"
+        -DescriptorId "v1.2.3-dev-stale"
     $staleRejected = $false
     try {
         Invoke-PagesFixture `
@@ -557,7 +567,7 @@ try {
         -Name "renewal" `
         -IssuedAtUtc $now.AddMinutes(5) `
         -LifetimeMinutes 1380 `
-        -DescriptorId "v1.2.3-preview-renewal"
+        -DescriptorId "v1.2.3-dev-renewal"
     $renewed = Invoke-PagesFixture `
         -Fixture $renewal `
         -OutputDirectory (Join-Path $testRoot "pages-renewal") `
@@ -567,7 +577,7 @@ try {
     Assert-Pages (
         $renewed.deployment_sequence -eq 2 -and
         $renewed.previous_handoff_sha256 -cmatch "^[0-9a-f]{64}$" -and
-        $renewed.descriptor_id -ceq "v1.2.3-preview-renewal" -and
+        $renewed.descriptor_id -ceq "v1.2.3-dev-renewal" -and
         $renewed.expires_at_ms -gt $firstHandoff.expires_at_ms
     ) "fresh release metadata did not renew"
 

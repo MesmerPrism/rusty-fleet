@@ -10,13 +10,22 @@ on:
       channel:
         description: Release channel
         required: true
-        default: alpha
+        default: labs
         type: choice
         options:
           - dev
-          - alpha
-          - preview
+          - labs
           - stable
+      maturity:
+        description: Release maturity
+        required: true
+        default: released
+        type: choice
+        options:
+          - alpha
+          - beta
+          - rc
+          - released
       signing_mode:
         description: Unsigned developer bundle or Authenticode-verified release
         required: true
@@ -69,10 +78,11 @@ permissions:
 jobs:
   bundle:
     runs-on: windows-latest
-    environment: ${{ inputs.channel == 'alpha' && 'windows-alpha-release' || 'windows-release' }}
+    environment: ${{ inputs.channel == 'labs' && 'windows-labs-release' || 'windows-release' }}
     env:
       VERSION: ${{ inputs.version }}
       CHANNEL: ${{ inputs.channel }}
+      MATURITY: ${{ inputs.maturity }}
       RELEASE_TAG: ${{ github.ref_name }}
       SIGNING_MODE: ${{ inputs.signing_mode }}
       PROVIDER_URL: ${{ inputs.hostess_provider_url }}
@@ -135,12 +145,11 @@ jobs:
                   $env:DESCRIPTOR_SIGNER_SPKI_SHA256) {
               throw 'dispatch inputs are not authorized by the revisioned release policy'
             }
-            $tag = if ($env:CHANNEL -eq 'alpha') {
-              if ($env:RELEASE_TAG -cnotmatch (
-                '^v' + [regex]::Escape($env:VERSION) + '-alpha\.[1-9][0-9]*$'
-              )) { throw 'alpha release requires exact vX.Y.Z-alpha.N tag' }
-              $env:RELEASE_TAG
-            } else { "v$env:VERSION" }
+            $suffix = if ($env:MATURITY -eq 'released') { '' } else { "-$env:MATURITY\.[1-9][0-9]*" }
+            if ($env:RELEASE_TAG -cnotmatch (
+                '^v' + [regex]::Escape($env:VERSION) + $suffix + '$'
+              )) { throw 'release tag does not match its explicit maturity' }
+            $tag = $env:RELEASE_TAG
             if ($env:GITHUB_REF -cne "refs/tags/$tag") {
               throw 'signed release execution requires the exact existing version tag ref'
             }
@@ -272,7 +281,8 @@ jobs:
           $provider = Join-Path $env:RUNNER_TEMP 'rusty-hostess-hotspot-provider.exe'
           $arguments = @{
             Version = $env:VERSION
-            Channel = $env:CHANNEL
+            channel = $env:CHANNEL
+            Maturity = $env:MATURITY
             BuildKind = $env:SIGNING_MODE
             HostessProviderPath = $provider
             HostessProviderSha256 = $env:PROVIDER_SHA256
@@ -302,11 +312,12 @@ jobs:
         shell: pwsh
         run: |
           $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
-          $productStem = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha' } else { 'RustyFleet' }
-          $setupReceiptName = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' }
+          $productStem = if ($env:CHANNEL -eq 'labs') { 'RustyFleet-Labs' } else { 'RustyFleet' }
+          $setupReceiptName = if ($env:CHANNEL -eq 'labs') { 'RustyFleet-Labs-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' }
           $arguments = @{
             Version = $env:VERSION
-            Channel = $env:CHANNEL
+            channel = $env:CHANNEL
+            Maturity = $env:MATURITY
             BuildKind = $env:SIGNING_MODE
             BundleArchivePath = (
               Join-Path $output "$productStem-$env:VERSION-win-x64.zip"
@@ -334,7 +345,7 @@ jobs:
           FLEET_SIGNING_PFX_BASE64: ${{ secrets.FLEET_SIGNING_PFX_BASE64 }}
           FLEET_SIGNING_PFX_PASSWORD: ${{ secrets.FLEET_SIGNING_PFX_PASSWORD }}
         run: |
-          $setupName = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.exe' } else { 'RustyFleet-Setup.exe' }
+          $setupName = if ($env:CHANNEL -eq 'labs') { 'RustyFleet-Labs-Setup.exe' } else { 'RustyFleet-Setup.exe' }
           $setup = Join-Path (
             Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
           ) $setupName
@@ -392,16 +403,17 @@ jobs:
             .\packaging\windows\New-WindowsReleaseDescriptor.ps1 `
               -Version $env:VERSION `
               -Channel $env:CHANNEL `
+              -Maturity $env:MATURITY `
               -ReleaseTag $env:RELEASE_TAG `
               -SetupPath (
                 Join-Path (
                   Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
-                ) $(if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.exe' } else { 'RustyFleet-Setup.exe' })
+                ) $(if ($env:CHANNEL -eq 'labs') { 'RustyFleet-Labs-Setup.exe' } else { 'RustyFleet-Setup.exe' })
               ) `
               -SetupBuildReceiptPath (
                 Join-Path (
                   Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows-distribution'
-                ) $(if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' })
+                ) $(if ($env:CHANNEL -eq 'labs') { 'RustyFleet-Labs-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' })
               ) `
               -ExpectedSetupSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
               -ExpectedSourceRevision $env:GITHUB_SHA `
@@ -433,10 +445,10 @@ jobs:
             throw 'publication input staging root already exists'
           }
           [IO.Directory]::CreateDirectory($stage) | Out-Null
-          $productStem = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha' } else { 'RustyFleet' }
+          $productStem = if ($env:CHANNEL -eq 'labs') { 'RustyFleet-Labs' } else { 'RustyFleet' }
           $bundleName = "$productStem-$env:VERSION-win-x64"
-          $setupName = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.exe' } else { 'RustyFleet-Setup.exe' }
-          $setupReceiptName = if ($env:CHANNEL -eq 'alpha') { 'RustyFleet-Alpha-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' }
+          $setupName = if ($env:CHANNEL -eq 'labs') { 'RustyFleet-Labs-Setup.exe' } else { 'RustyFleet-Setup.exe' }
+          $setupReceiptName = if ($env:CHANNEL -eq 'labs') { 'RustyFleet-Labs-Setup.build-receipt.json' } else { 'RustyFleet-Setup.build-receipt.json' }
           $inputs = [ordered]@{
             $setupName = (
               Join-Path $distribution $setupName
@@ -491,6 +503,7 @@ jobs:
               -AssetDirectory $stage `
               -Version $env:VERSION `
               -Channel $env:CHANNEL `
+              -Maturity $env:MATURITY `
               -ReleaseTag $env:RELEASE_TAG `
               -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
               -ExpectedHostessSignerThumbprint (
@@ -545,6 +558,7 @@ jobs:
             -AssetDirectory .\artifacts\windows-publication `
             -Version $env:VERSION `
             -Channel $env:CHANNEL `
+            -Maturity $env:MATURITY `
             -ReleaseTag $env:RELEASE_TAG `
             -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
             -ExpectedHostessSignerThumbprint (

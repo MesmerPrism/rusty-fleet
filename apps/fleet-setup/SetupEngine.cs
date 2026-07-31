@@ -87,15 +87,28 @@ internal sealed class ReleaseDefinition
         var receiptSha256 = Hash(receiptBytes);
         using var document = ParseJson(manifestBytes, "release manifest");
         var root = document.RootElement;
-        RequireString(root, "schema", "rusty.fleet.windows_release_manifest.v1");
+        RequireString(root, "schema", "rusty.fleet.windows_release_manifest.v2");
         RequireString(root, "product_id", "rusty-fleet");
         RequireString(root, "platform", "windows");
         RequireString(root, "architecture", "x64");
         var version = RequiredString(root, "version");
         var channel = RequiredString(root, "channel");
-        if (channel is not ("dev" or "alpha" or "preview" or "stable"))
+        if (channel is not ("dev" or "labs" or "stable"))
         {
             throw new InvalidDataException("release manifest channel is invalid");
+        }
+        var productChannel = RequiredString(root, "product_channel");
+        var distributionTrack = RequiredString(root, "distribution_track");
+        var maturity = RequiredString(root, "maturity");
+        if (productChannel is not ("stable" or "labs") ||
+            maturity is not ("alpha" or "beta" or "rc" or "released") ||
+            distributionTrack is not ("local-development" or "github-prerelease" or "github-release") ||
+            (channel == "labs") != (productChannel == "labs") ||
+            (channel == "dev") != (distributionTrack == "local-development") ||
+            (channel == "labs") != (distributionTrack == "github-prerelease") ||
+            (channel == "stable") != (distributionTrack == "github-release"))
+        {
+            throw new InvalidDataException("release manifest channel axes are invalid");
         }
         var buildKind = RequiredString(root.GetProperty("build"), "kind");
         if (buildKind is not ("unsigned-dev" or "signed-release"))
@@ -116,8 +129,8 @@ internal sealed class ReleaseDefinition
         RequireString(
             root.GetProperty("install"),
             "authority",
-            channel == "alpha"
-                ? "RustyFleet-Alpha-Setup.exe"
+            channel == "labs"
+                ? "RustyFleet-Labs-Setup.exe"
                 : "RustyFleet-Setup.exe");
 
         var componentIds = root.GetProperty("components")
@@ -450,8 +463,8 @@ internal sealed class EmbeddedBundle
     {
         var entries = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
         var windowsNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var productStem = ReleaseConfiguration.Channel == "alpha"
-            ? "RustyFleet-Alpha"
+        var productStem = ReleaseConfiguration.Channel == "labs"
+            ? "RustyFleet-Labs"
             : "RustyFleet";
         var prefix = $"{productStem}-{ReleaseConfiguration.Version}-win-x64/";
         foreach (var entry in zip.Entries)

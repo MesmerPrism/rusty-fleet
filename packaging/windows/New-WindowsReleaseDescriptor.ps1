@@ -8,10 +8,13 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "alpha", "preview", "stable")]
+    [ValidateSet("dev", "labs", "stable")]
     [string] $Channel,
 
-    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
+    [ValidateSet("alpha", "beta", "rc", "released")]
+    [string] $Maturity = "released",
+
+    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:(?:-alpha|-beta|-rc)\.[1-9][0-9]*)?$")]
     [string] $ReleaseTag,
 
     [Parameter(Mandatory)]
@@ -56,16 +59,22 @@ $ErrorActionPreference = "Stop"
 if (-not $ReleaseTag) {
     $ReleaseTag = "v$Version"
 }
-$expectedReleaseTagPattern = if ($Channel -eq "alpha") {
-    "^v$([regex]::Escape($Version))-alpha\.[1-9][0-9]*$"
+$expectedReleaseTagPattern = if ($Maturity -eq "released") {
+    "^v$([regex]::Escape($Version))$"
 }
 else {
-    "^v$([regex]::Escape($Version))$"
+    "^v$([regex]::Escape($Version))-$Maturity\.[1-9][0-9]*$"
 }
 if ($ReleaseTag -cnotmatch $expectedReleaseTagPattern) {
     throw "release tag does not bind the exact version and channel"
 }
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
+$productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
+$distributionTrack = switch ($Channel) {
+    "dev" { "local-development" }
+    "labs" { "github-prerelease" }
+    "stable" { "github-release" }
+}
 
 function Assert-ExactProperties {
     param(
@@ -395,14 +404,14 @@ namespace RustyFleet.Release
 }
 
 $setup = (Resolve-Path -LiteralPath $SetupPath).Path
-$setupName = if ($Channel -eq "alpha") {
-    "RustyFleet-Alpha-Setup.exe"
+$setupName = if ($Channel -eq "labs") {
+    "RustyFleet-Labs-Setup.exe"
 }
 else {
     "RustyFleet-Setup.exe"
 }
-$installationIdentity = if ($Channel -eq "alpha") {
-    "rusty-fleet-alpha"
+$installationIdentity = if ($Channel -eq "labs") {
+    "rusty-fleet-labs"
 }
 else {
     "rusty-fleet"
@@ -429,6 +438,9 @@ Assert-ExactProperties -InputObject $buildReceipt -Expected @(
     "result",
     "version",
     "channel",
+    "product_channel",
+    "maturity",
+    "distribution_track",
     "build_kind",
     "setup_sha256",
     "bundle_sha256",
@@ -440,10 +452,12 @@ Assert-ExactProperties -InputObject $buildReceipt -Expected @(
     "canonical_pe_payload_size_bytes",
     "distribution_eligibility"
 ) -Context "Setup build receipt"
-if ($buildReceipt.schema -cne "rusty.fleet.windows_setup_build_receipt.v1" -or
+if ($buildReceipt.schema -cne "rusty.fleet.windows_setup_build_receipt.v2" -or
     $buildReceipt.result -cne "pass" -or
     $buildReceipt.version -cne $Version -or
-    $buildReceipt.channel -cne $Channel -or
+    $buildReceipt.product_channel -cne $productChannel -or
+    $buildReceipt.maturity -cne $Maturity -or
+    $buildReceipt.distribution_track -cne $distributionTrack -or
     $buildReceipt.build_kind -cne "signed-release" -or
     $buildReceipt.source_revision -cne $ExpectedSourceRevision -or
     $buildReceipt.source_tree -cne $ExpectedSourceTree -or
@@ -610,11 +624,14 @@ try {
         '"size_bytes":' + $setupInfo.Length + ',' +
         '"url":"' + $assetUrl + '"},' +
         '"channel":"' + $Channel + '",' +
+        '"distribution_track":"' + $distributionTrack + '",' +
         '"descriptor_id":"' + $DescriptorId + '",' +
         '"expires_at_ms":' + $expiresAtMs + ',' +
         '"issued_at_ms":' + $issuedAtMs + ',' +
-        '"product":"rusty-fleet",' +
-        '"schema":"rusty.fleet.windows_release.v2",' +
+        '"maturity":"' + $Maturity + '",' +
+        '"product":"' + $installationIdentity + '",' +
+        '"product_channel":"' + $productChannel + '",' +
+        '"schema":"rusty.fleet.windows_release.v3",' +
         '"validity_duration_ms":' + $validityDurationMs + ',' +
         '"version":"' + $Version + '"}'
     )
@@ -639,7 +656,7 @@ try {
             Replace("/", "_")
     }
     $envelope = [ordered]@{
-        schema = "rusty.fleet.release_descriptor_envelope.v2"
+        schema = "rusty.fleet.release_descriptor_envelope.v3"
         payload_base64url = ConvertTo-Base64Url $payloadBytes
         signature_base64url = ConvertTo-Base64Url $signatureBytes
         signer_spki_sha256 = $spkiSha256
@@ -662,11 +679,14 @@ try {
     Write-RustyFleetUtf8 -LiteralPath $descriptorPath -Content $envelopeText
     [IO.File]::WriteAllBytes($publicKeyPath, $spki)
     $receipt = [ordered]@{
-        schema = "rusty.fleet.windows_release_descriptor_receipt.v3"
+        schema = "rusty.fleet.windows_release_descriptor_receipt.v4"
         result = "pass"
         descriptor_id = $DescriptorId
         version = $Version
+        product_channel = $productChannel
+        maturity = $Maturity
         channel = $Channel
+        distribution_track = $distributionTrack
         release_tag = $ReleaseTag
         installation_identity = $installationIdentity
         primary_artifact = [ordered]@{

@@ -135,8 +135,10 @@ function Invoke-TestBundle {
         [Parameter(Mandatory)][string] $ProviderPath,
         [Parameter(Mandatory)][string] $ProviderSha256,
         [Parameter(Mandatory)][string] $ProviderMetadataDirectory,
-        [ValidateSet("dev", "alpha", "preview", "stable")]
+        [ValidateSet("dev", "labs", "stable")]
         [string] $Channel = "dev",
+        [ValidateSet("alpha", "beta", "rc", "released")]
+        [string] $Maturity = "released",
         [string] $SourceRevision = ("1" * 40),
         [string] $SourceTree = ("2" * 40)
     )
@@ -144,6 +146,7 @@ function Invoke-TestBundle {
     & (Join-Path $packagingRoot "New-WindowsBundle.ps1") `
         -Version $Version `
         -Channel $Channel `
+        -Maturity $Maturity `
         -BuildKind unsigned-dev `
         -HostessProviderPath $ProviderPath `
         -HostessProviderSha256 $ProviderSha256 `
@@ -621,94 +624,100 @@ try {
         (Get-RustyFleetSha256 -LiteralPath $archiveTwo)
     ) "deterministic archives differ"
 
-    $alphaOne = Join-Path $testRoot "alpha-one"
-    $alphaTwo = Join-Path $testRoot "alpha-two"
-    foreach ($alphaOutput in @($alphaOne, $alphaTwo)) {
-        Invoke-TestBundle -Version "0.0.1" -Channel alpha `
-            -OutputDirectory $alphaOutput -ConsoleDirectory $console `
+    $labsOne = Join-Path $testRoot "labs-one"
+    $labsTwo = Join-Path $testRoot "labs-two"
+    foreach ($labsOutput in @($labsOne, $labsTwo)) {
+        Invoke-TestBundle -Version "0.0.1" -Channel labs -Maturity alpha `
+            -OutputDirectory $labsOutput -ConsoleDirectory $console `
             -HubPath $hub -FleetctlPath $fleetctl -FleetOnboardPath $fleetOnboard `
             -ProviderPath $provider -ProviderSha256 $providerSha256 `
             -ProviderMetadataDirectory $providerMetadata | Out-Null
     }
-    $alphaBundleName = "RustyFleet-Alpha-0.0.1-win-x64"
-    $alphaArchiveOne = Join-Path $alphaOne "$alphaBundleName.zip"
-    $alphaArchiveTwo = Join-Path $alphaTwo "$alphaBundleName.zip"
+    $labsBundleName = "RustyFleet-Labs-0.0.1-win-x64"
+    $labsArchiveOne = Join-Path $labsOne "$labsBundleName.zip"
+    $labsArchiveTwo = Join-Path $labsTwo "$labsBundleName.zip"
     Assert-Distribution (
-        (Get-RustyFleetSha256 -LiteralPath $alphaArchiveOne) -ceq
-        (Get-RustyFleetSha256 -LiteralPath $alphaArchiveTwo)
-    ) "alpha bundle is not deterministic"
-    $alphaManifest = Get-Content -LiteralPath (
-        Join-Path $alphaOne "$alphaBundleName\metadata\release-manifest.json"
+        (Get-RustyFleetSha256 -LiteralPath $labsArchiveOne) -ceq
+        (Get-RustyFleetSha256 -LiteralPath $labsArchiveTwo)
+    ) "Labs bundle is not deterministic"
+    $labsManifest = Get-Content -LiteralPath (
+        Join-Path $labsOne "$labsBundleName\metadata\release-manifest.json"
     ) -Raw | ConvertFrom-Json -Depth 30
     Assert-Distribution (
-        $alphaManifest.channel -eq "alpha" -and
-        $alphaManifest.install.default_root -ceq
-            "%LOCALAPPDATA%/RustyFleetAlpha" -and
-        $alphaManifest.install.authority -ceq
-            "RustyFleet-Alpha-Setup.exe"
-    ) "alpha manifest does not bind the isolated install identity"
-    $alphaSetupOutput = Join-Path $testRoot "alpha-setup"
-    $alphaSetupRoot = Join-Path $testRoot "alpha-install-root"
-    $alphaSetupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
-        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
-        -BundleArchivePath $alphaArchiveOne -DevelopmentInstallRoot $alphaSetupRoot `
-        -OutputDirectory $alphaSetupOutput | ConvertFrom-Json
-    $alphaSetupPath = Join-Path $alphaSetupOutput "RustyFleet-Alpha-Setup.exe"
+        $labsManifest.product_channel -eq "labs" -and
+        $labsManifest.maturity -eq "alpha" -and
+        $labsManifest.channel -eq "labs" -and
+        $labsManifest.distribution_track -eq "github-prerelease" -and
+        $labsManifest.install.default_root -ceq
+            "%LOCALAPPDATA%/RustyFleetLabs" -and
+        $labsManifest.install.authority -ceq
+            "RustyFleet-Labs-Setup.exe"
+    ) "Labs manifest does not bind the isolated install identity"
+    $labsSetupOutput = Join-Path $testRoot "labs-setup"
+    $labsSetupRoot = Join-Path $testRoot "labs-install-root"
+    $labsSetupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne -DevelopmentInstallRoot $labsSetupRoot `
+        -OutputDirectory $labsSetupOutput | ConvertFrom-Json
+    $labsSetupPath = Join-Path $labsSetupOutput "RustyFleet-Labs-Setup.exe"
     Assert-Distribution (
-        $alphaSetupReceipt.channel -eq "alpha" -and
-        (Test-Path -LiteralPath $alphaSetupPath -PathType Leaf)
-    ) "alpha Setup identity was not built dynamically"
-    $alphaPlan = & $alphaSetupPath --plan --json | ConvertFrom-Json
+        $labsSetupReceipt.product_channel -eq "labs" -and
+        $labsSetupReceipt.maturity -eq "alpha" -and
+        $labsSetupReceipt.channel -eq "labs" -and
+        $labsSetupReceipt.distribution_track -eq "github-prerelease" -and
+        (Test-Path -LiteralPath $labsSetupPath -PathType Leaf)
+    ) "Labs Setup identity was not built dynamically"
+    $labsPlan = & $labsSetupPath --plan --json | ConvertFrom-Json
     Assert-Distribution (
-        $alphaPlan.product -eq "rusty-fleet-alpha" -and
-        $alphaPlan.channel -eq "alpha"
-    ) "alpha Setup plan identity is not exact"
-    $alphaInstall = Complete-TestSetup -Process (
-        Start-TestSetup -LiteralPath $alphaSetupPath -Answer i
+        $labsPlan.product -eq "rusty-fleet-labs" -and
+        $labsPlan.channel -eq "labs"
+    ) "Labs Setup plan identity is not exact"
+    $labsInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $labsSetupPath -Answer i
     )
-    Assert-Distribution ($alphaInstall.exit_code -eq 0) "alpha Setup install failed"
+    Assert-Distribution ($labsInstall.exit_code -eq 0) "Labs Setup install failed"
 
     $shellRoot = Join-Path $testRoot "isolated-shell"
-    $shellInstallRoot = Join-Path $testRoot "alpha-shell-install"
-    $shellSetupOutput = Join-Path $testRoot "alpha-shell-setup"
+    $shellInstallRoot = Join-Path $testRoot "labs-shell-install"
+    $shellSetupOutput = Join-Path $testRoot "labs-shell-setup"
     & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
-        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
-        -BundleArchivePath $alphaArchiveOne `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
         -DevelopmentInstallRoot $shellInstallRoot `
         -DevelopmentShellTestRoot $shellRoot `
         -OutputDirectory $shellSetupOutput | Out-Null
-    $shellSetupPath = Join-Path $shellSetupOutput "RustyFleet-Alpha-Setup.exe"
+    $shellSetupPath = Join-Path $shellSetupOutput "RustyFleet-Labs-Setup.exe"
     $shellInstall = Complete-TestSetup -Process (
         Start-TestSetup -LiteralPath $shellSetupPath -Answer i
     )
-    $alphaRegistry = Join-Path $shellRoot "Registry\rusty-fleet-alpha.json"
+    $labsRegistry = Join-Path $shellRoot "Registry\rusty-fleet-labs.json"
     $stableRegistry = Join-Path $shellRoot "Registry\rusty-fleet.json"
     $stableShortcut = Join-Path $shellRoot "Programs\Rusty Fleet\stable.lnk"
     [IO.Directory]::CreateDirectory((Split-Path -Parent $stableRegistry)) | Out-Null
     [IO.Directory]::CreateDirectory((Split-Path -Parent $stableShortcut)) | Out-Null
     Write-TestArtifact -LiteralPath $stableRegistry -Content '{"stable":true}'
     Write-TestArtifact -LiteralPath $stableShortcut -Content "stable"
-    $registration = Get-Content -LiteralPath $alphaRegistry -Raw |
+    $registration = Get-Content -LiteralPath $labsRegistry -Raw |
         ConvertFrom-Json
     Assert-Distribution (
         $shellInstall.exit_code -eq 0 -and
         $registration.UninstallString -match ' --uninstall$' -and
         $registration.InstallLocation -ceq $shellInstallRoot -and
         (Test-Path -LiteralPath (
-            Join-Path $shellRoot "Programs\Rusty Fleet Alpha\Rusty Fleet Alpha.lnk"
+            Join-Path $shellRoot "Programs\Rusty Fleet Labs\Rusty Fleet Labs.lnk"
         ))
-    ) "alpha shell identity or explicit uninstall registration is incomplete"
+    ) "Labs shell identity or explicit uninstall registration is incomplete"
     $uninstall = & $shellSetupPath --uninstall | ConvertFrom-Json
     Assert-Distribution (
         $uninstall.result -eq "pass" -and
-        $uninstall.product -eq "rusty-fleet-alpha" -and
-        -not (Test-Path -LiteralPath $alphaRegistry) -and
+        $uninstall.product -eq "rusty-fleet-labs" -and
+        -not (Test-Path -LiteralPath $labsRegistry) -and
         -not (Test-Path -LiteralPath (
-            Join-Path $shellRoot "Programs\Rusty Fleet Alpha"
+            Join-Path $shellRoot "Programs\Rusty Fleet Labs"
         )) -and
         (Test-Path -LiteralPath $stableRegistry) -and
         (Test-Path -LiteralPath $stableShortcut)
-    ) "alpha uninstall did not remain isolated from stable shell identity"
+    ) "Labs uninstall did not remain isolated from stable shell identity"
 
     foreach ($uninstallFailure in @(
         "uninstall_after_shortcuts",
@@ -718,15 +727,15 @@ try {
         $failureInstallRoot = Join-Path $testRoot "install-$uninstallFailure"
         $failureSetupOutput = Join-Path $testRoot "setup-$uninstallFailure"
         & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
-            -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
-            -BundleArchivePath $alphaArchiveOne `
+            -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+            -BundleArchivePath $labsArchiveOne `
             -DevelopmentInstallRoot $failureInstallRoot `
             -DevelopmentShellTestRoot $failureShellRoot `
             -DevelopmentShellFailurePoint $uninstallFailure `
             -OutputDirectory $failureSetupOutput | Out-Null
         $failureSetup = Join-Path (
             $failureSetupOutput
-        ) "RustyFleet-Alpha-Setup.exe"
+        ) "RustyFleet-Labs-Setup.exe"
         $failureInstall = Complete-TestSetup -Process (
             Start-TestSetup -LiteralPath $failureSetup -Answer i
         )
@@ -735,10 +744,10 @@ try {
         ) "uninstall recovery fixture did not install"
         $failureRegistry = Join-Path (
             $failureShellRoot
-        ) "Registry\rusty-fleet-alpha.json"
+        ) "Registry\rusty-fleet-labs.json"
         $failureShortcut = Join-Path (
             $failureShellRoot
-        ) "Programs\Rusty Fleet Alpha\Rusty Fleet Alpha.lnk"
+        ) "Programs\Rusty Fleet Labs\Rusty Fleet Labs.lnk"
         $registryBefore = Get-RustyFleetSha256 -LiteralPath $failureRegistry
         $shortcutBefore = Get-RustyFleetSha256 -LiteralPath $failureShortcut
         & $failureSetup --uninstall *> $null
@@ -756,13 +765,13 @@ try {
     $partialInstallRoot = Join-Path $testRoot "install-uninstall-partial"
     $partialSetupOutput = Join-Path $testRoot "setup-uninstall-partial"
     & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
-        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
-        -BundleArchivePath $alphaArchiveOne `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
         -DevelopmentInstallRoot $partialInstallRoot `
         -DevelopmentShellTestRoot $partialShellRoot `
         -DevelopmentShellFailurePoint uninstall_partial_delete `
         -OutputDirectory $partialSetupOutput | Out-Null
-    $partialSetup = Join-Path $partialSetupOutput "RustyFleet-Alpha-Setup.exe"
+    $partialSetup = Join-Path $partialSetupOutput "RustyFleet-Labs-Setup.exe"
     $partialInstall = Complete-TestSetup -Process (
         Start-TestSetup -LiteralPath $partialSetup -Answer i
     )
@@ -778,7 +787,7 @@ try {
     Assert-Distribution (
         $partialResult.result -eq "recoverable_cleanup" -and
         $partialResult.quarantine -cmatch
-            '^\.rusty-fleet-alpha-uninstall-[0-9a-f]{32}$' -and
+            '^\.rusty-fleet-labs-uninstall-[0-9a-f]{32}$' -and
         $partialResult.recovery_receipt -ceq
             "$($partialResult.quarantine).recovery.json" -and
         -not (Test-Path -LiteralPath $partialInstallRoot) -and
@@ -790,10 +799,10 @@ try {
         $partialReceipt.quarantine -ceq $partialResult.quarantine -and
         $partialReceipt.shell_identity_present -eq $false -and
         -not (Test-Path -LiteralPath (
-            Join-Path $partialShellRoot "Registry\rusty-fleet-alpha.json"
+            Join-Path $partialShellRoot "Registry\rusty-fleet-labs.json"
         )) -and
         -not (Test-Path -LiteralPath (
-            Join-Path $partialShellRoot "Programs\Rusty Fleet Alpha"
+            Join-Path $partialShellRoot "Programs\Rusty Fleet Labs"
         ))
     ) "partial recursive deletion restored shell identity or lost recovery state"
 
@@ -801,8 +810,8 @@ try {
     $receiptFailureInstallRoot = Join-Path $testRoot "install-receipt-failure"
     $receiptFailureSetupOutput = Join-Path $testRoot "setup-receipt-failure"
     & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
-        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
-        -BundleArchivePath $alphaArchiveOne `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
         -DevelopmentInstallRoot $receiptFailureInstallRoot `
         -DevelopmentShellTestRoot $receiptFailureShellRoot `
         -DevelopmentShellFailurePoint `
@@ -810,7 +819,7 @@ try {
         -OutputDirectory $receiptFailureSetupOutput | Out-Null
     $receiptFailureSetup = Join-Path (
         $receiptFailureSetupOutput
-    ) "RustyFleet-Alpha-Setup.exe"
+    ) "RustyFleet-Labs-Setup.exe"
     $receiptFailureInstall = Complete-TestSetup -Process (
         Start-TestSetup -LiteralPath $receiptFailureSetup -Answer i
     )
@@ -836,11 +845,11 @@ try {
         )) -and
         -not (Test-Path -LiteralPath (
             Join-Path $receiptFailureShellRoot (
-                "Registry\rusty-fleet-alpha.json"
+                "Registry\rusty-fleet-labs.json"
             )
         )) -and
         -not (Test-Path -LiteralPath (
-            Join-Path $receiptFailureShellRoot "Programs\Rusty Fleet Alpha"
+            Join-Path $receiptFailureShellRoot "Programs\Rusty Fleet Labs"
         ))
     ) (
         "recovery receipt failure restored damaged quarantine as canonical " +
@@ -854,15 +863,15 @@ try {
         Get-ChildItem `
             -LiteralPath (Split-Path -Parent $reparseInstallRoot) `
             -Directory |
-            Where-Object Name -Like '.rusty-fleet-alpha-uninstall-*'
+            Where-Object Name -Like '.rusty-fleet-labs-uninstall-*'
     ).Count
     & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
-        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
-        -BundleArchivePath $alphaArchiveOne `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
         -DevelopmentInstallRoot $reparseInstallRoot `
         -DevelopmentShellTestRoot $reparseShellRoot `
         -OutputDirectory $reparseSetupOutput | Out-Null
-    $reparseSetup = Join-Path $reparseSetupOutput "RustyFleet-Alpha-Setup.exe"
+    $reparseSetup = Join-Path $reparseSetupOutput "RustyFleet-Labs-Setup.exe"
     $reparseInstall = Complete-TestSetup -Process (
         Start-TestSetup -LiteralPath $reparseSetup -Answer i
     )
@@ -881,13 +890,13 @@ try {
         $LASTEXITCODE -ne 0 -and
         (Test-Path -LiteralPath $reparseInstallRoot -PathType Container) -and
         (Test-Path -LiteralPath (
-            Join-Path $reparseShellRoot "Registry\rusty-fleet-alpha.json"
+            Join-Path $reparseShellRoot "Registry\rusty-fleet-labs.json"
         )) -and
         @(
             Get-ChildItem `
                 -LiteralPath (Split-Path -Parent $reparseInstallRoot) `
                 -Directory |
-                Where-Object Name -Like '.rusty-fleet-alpha-uninstall-*'
+                Where-Object Name -Like '.rusty-fleet-labs-uninstall-*'
         ).Count -eq $quarantinesBeforeReparse
     ) "reparse-bearing install root entered uninstall quarantine"
 
@@ -895,15 +904,15 @@ try {
     $failedInstallRoot = Join-Path $testRoot "failed-shell-install"
     $failedSetupOutput = Join-Path $testRoot "failed-shell-setup"
     & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
-        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
-        -BundleArchivePath $alphaArchiveOne `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
         -DevelopmentInstallRoot $failedInstallRoot `
         -DevelopmentShellTestRoot $failedShellRoot `
         -DevelopmentShellFailurePoint after_registry `
         -OutputDirectory $failedSetupOutput | Out-Null
     $failedShellInstall = Complete-TestSetup -Process (
         Start-TestSetup `
-            -LiteralPath (Join-Path $failedSetupOutput "RustyFleet-Alpha-Setup.exe") `
+            -LiteralPath (Join-Path $failedSetupOutput "RustyFleet-Labs-Setup.exe") `
             -Answer i
     )
     Assert-Distribution (
@@ -912,48 +921,48 @@ try {
             Join-Path $failedInstallRoot "state\current.json"
         )) -and
         -not (Test-Path -LiteralPath (
-            Join-Path $failedShellRoot "Registry\rusty-fleet-alpha.json"
+            Join-Path $failedShellRoot "Registry\rusty-fleet-labs.json"
         )) -and
         -not (Test-Path -LiteralPath (
-            Join-Path $failedShellRoot "Programs\Rusty Fleet Alpha"
+            Join-Path $failedShellRoot "Programs\Rusty Fleet Labs"
         ))
     ) "shell failure left committed state, shortcuts, or uninstall registration"
 
-    $alphaStatePath = Join-Path $alphaSetupRoot "state\current.json"
-    $alphaState = Get-Content -LiteralPath $alphaStatePath -Raw |
+    $labsStatePath = Join-Path $labsSetupRoot "state\current.json"
+    $labsState = Get-Content -LiteralPath $labsStatePath -Raw |
         ConvertFrom-Json -Depth 20
-    $alphaState.current.relative_path = "../RustyFleet/releases/stable"
+    $labsState.current.relative_path = "../RustyFleet/releases/stable"
     [IO.File]::WriteAllText(
-        $alphaStatePath,
-        (($alphaState | ConvertTo-Json -Depth 20) + "`n"),
+        $labsStatePath,
+        (($labsState | ConvertTo-Json -Depth 20) + "`n"),
         [Text.UTF8Encoding]::new($false)
     )
     $crossChannelPointer = Complete-TestSetup -Process (
-        Start-TestSetup -LiteralPath $alphaSetupPath -Answer i
+        Start-TestSetup -LiteralPath $labsSetupPath -Answer i
     )
     Assert-Distribution (
         $crossChannelPointer.exit_code -ne 0
-    ) "alpha Setup accepted a stable/cross-root current pointer"
-    $stableAcceptedAlpha = $false
+    ) "Labs Setup accepted a Stable/cross-root current pointer"
+    $stableAcceptedLabs = $false
     try {
         & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
             -Version "0.0.1" -Channel stable -BuildKind unsigned-dev `
-            -BundleArchivePath $alphaArchiveOne `
+            -BundleArchivePath $labsArchiveOne `
             -DevelopmentInstallRoot (Join-Path $testRoot "wrong-stable-root") `
             -OutputDirectory (Join-Path $testRoot "wrong-stable-setup") | Out-Null
-        $stableAcceptedAlpha = $true
+        $stableAcceptedLabs = $true
     } catch {}
-    Assert-Distribution (-not $stableAcceptedAlpha) "stable Setup accepted alpha artifact"
-    $alphaAcceptedStable = $false
+    Assert-Distribution (-not $stableAcceptedLabs) "Stable Setup accepted Labs artifact"
+    $labsAcceptedStable = $false
     try {
         & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
-            -Version "0.0.0-test.1" -Channel alpha -BuildKind unsigned-dev `
+            -Version "0.0.0-test.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
             -BundleArchivePath $archiveOne `
-            -DevelopmentInstallRoot (Join-Path $testRoot "wrong-alpha-root") `
-            -OutputDirectory (Join-Path $testRoot "wrong-alpha-setup") | Out-Null
-        $alphaAcceptedStable = $true
+            -DevelopmentInstallRoot (Join-Path $testRoot "wrong-labs-root") `
+            -OutputDirectory (Join-Path $testRoot "wrong-labs-setup") | Out-Null
+        $labsAcceptedStable = $true
     } catch {}
-    Assert-Distribution (-not $alphaAcceptedStable) "alpha Setup accepted stable artifact"
+    Assert-Distribution (-not $labsAcceptedStable) "Labs Setup accepted Stable artifact"
 
     $manifestText = Get-Content `
         -LiteralPath (Join-Path $bundleOne "metadata\release-manifest.json") `
@@ -1037,7 +1046,10 @@ try {
     Assert-Distribution (
         $setupReceipt.result -eq "pass" -and
         $setupReceipt.version -eq "0.0.0-test.1" -and
+        $setupReceipt.product_channel -eq "stable" -and
+        $setupReceipt.maturity -eq "released" -and
         $setupReceipt.channel -eq "dev" -and
+        $setupReceipt.distribution_track -eq "local-development" -and
         $setupReceipt.build_kind -eq "unsigned-dev" -and
         $setupReceipt.bundle_sha256 -ceq (
             Get-RustyFleetSha256 -LiteralPath (
