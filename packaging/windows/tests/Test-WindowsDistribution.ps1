@@ -653,6 +653,25 @@ try {
         $alphaPlan.product -eq "rusty-fleet-alpha" -and
         $alphaPlan.channel -eq "alpha"
     ) "alpha Setup plan identity is not exact"
+    $alphaInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $alphaSetupPath -Answer i
+    )
+    Assert-Distribution ($alphaInstall.exit_code -eq 0) "alpha Setup install failed"
+    $alphaStatePath = Join-Path $alphaSetupRoot "state\current.json"
+    $alphaState = Get-Content -LiteralPath $alphaStatePath -Raw |
+        ConvertFrom-Json -Depth 20
+    $alphaState.current.relative_path = "../RustyFleet/releases/stable"
+    [IO.File]::WriteAllText(
+        $alphaStatePath,
+        (($alphaState | ConvertTo-Json -Depth 20) + "`n"),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $crossChannelPointer = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $alphaSetupPath -Answer i
+    )
+    Assert-Distribution (
+        $crossChannelPointer.exit_code -ne 0
+    ) "alpha Setup accepted a stable/cross-root current pointer"
     $stableAcceptedAlpha = $false
     try {
         & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
