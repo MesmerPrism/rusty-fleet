@@ -700,6 +700,48 @@ try {
         (Test-Path -LiteralPath $stableShortcut)
     ) "alpha uninstall did not remain isolated from stable shell identity"
 
+    foreach ($uninstallFailure in @(
+        "uninstall_after_shortcuts",
+        "uninstall_delete_root"
+    )) {
+        $failureShellRoot = Join-Path $testRoot "shell-$uninstallFailure"
+        $failureInstallRoot = Join-Path $testRoot "install-$uninstallFailure"
+        $failureSetupOutput = Join-Path $testRoot "setup-$uninstallFailure"
+        & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+            -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
+            -BundleArchivePath $alphaArchiveOne `
+            -DevelopmentInstallRoot $failureInstallRoot `
+            -DevelopmentShellTestRoot $failureShellRoot `
+            -DevelopmentShellFailurePoint $uninstallFailure `
+            -OutputDirectory $failureSetupOutput | Out-Null
+        $failureSetup = Join-Path (
+            $failureSetupOutput
+        ) "RustyFleet-Alpha-Setup.exe"
+        $failureInstall = Complete-TestSetup -Process (
+            Start-TestSetup -LiteralPath $failureSetup -Answer i
+        )
+        Assert-Distribution (
+            $failureInstall.exit_code -eq 0
+        ) "uninstall recovery fixture did not install"
+        $failureRegistry = Join-Path (
+            $failureShellRoot
+        ) "Registry\rusty-fleet-alpha.json"
+        $failureShortcut = Join-Path (
+            $failureShellRoot
+        ) "Programs\Rusty Fleet Alpha\Rusty Fleet Alpha.lnk"
+        $registryBefore = Get-RustyFleetSha256 -LiteralPath $failureRegistry
+        $shortcutBefore = Get-RustyFleetSha256 -LiteralPath $failureShortcut
+        & $failureSetup --uninstall *> $null
+        Assert-Distribution (
+            $LASTEXITCODE -ne 0 -and
+            (Test-Path -LiteralPath $failureInstallRoot -PathType Container) -and
+            (Get-RustyFleetSha256 -LiteralPath $failureRegistry) -ceq
+                $registryBefore -and
+            (Get-RustyFleetSha256 -LiteralPath $failureShortcut) -ceq
+                $shortcutBefore
+        ) "$uninstallFailure did not restore registry and shortcut identity"
+    }
+
     $failedShellRoot = Join-Path $testRoot "failed-shell"
     $failedInstallRoot = Join-Path $testRoot "failed-shell-install"
     $failedSetupOutput = Join-Path $testRoot "failed-shell-setup"
@@ -829,12 +871,14 @@ try {
 
     $setupOutput = Join-Path $testRoot "setup"
     $setupInstallRoot = Join-Path $testRoot "setup-installed"
+    $rollbackShellRoot = Join-Path $testRoot "rollback-shell"
     $setupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
         -Version "0.0.0-test.1" `
         -Channel dev `
         -BuildKind unsigned-dev `
         -BundleArchivePath (Join-Path $outputOne "$bundleNameOne.zip") `
         -DevelopmentInstallRoot $setupInstallRoot `
+        -DevelopmentShellTestRoot $rollbackShellRoot `
         -DevelopmentTestPauseAfterRetainMs 2500 `
         -OutputDirectory $setupOutput |
         ConvertFrom-Json
@@ -1018,6 +1062,7 @@ try {
             Join-Path $outputThree "RustyFleet-0.0.0-test.2-win-x64.zip"
         ) `
         -DevelopmentInstallRoot $setupInstallRoot `
+        -DevelopmentShellTestRoot $rollbackShellRoot `
         -DevelopmentTestPauseAfterRetainMs 2500 `
         -OutputDirectory $setupTwoOutput |
         ConvertFrom-Json
@@ -1078,10 +1123,21 @@ try {
     $rollback.Dispose()
     $rolledBackState = Get-Content -LiteralPath $statePath -Raw |
         ConvertFrom-Json
+    $rolledBackRegistration = Get-Content -LiteralPath (
+        Join-Path $rollbackShellRoot "Registry\rusty-fleet.json"
+    ) -Raw | ConvertFrom-Json
+    $rolledBackShortcut = Get-Content -LiteralPath (
+        Join-Path $rollbackShellRoot "Programs\Rusty Fleet\Rusty Fleet.lnk"
+    ) -Raw | ConvertFrom-Json
+    $rolledBackReleaseRoot = Join-Path $setupInstallRoot (
+        $rolledBackState.current.relative_path.Replace("/", "\")
+    )
     Assert-Distribution (
         $rollbackResult.exit_code -eq 0 -and
         $rolledBackState.current.version -eq "0.0.0-test.1" -and
-        $rolledBackState.history[0].version -eq "0.0.0-test.2"
+        $rolledBackState.history[0].version -eq "0.0.0-test.2" -and
+        $rolledBackRegistration.DisplayVersion -eq "0.0.0-test.1" -and
+        $rolledBackShortcut.working_directory -ceq $rolledBackReleaseRoot
     ) "Setup-owned fully verified pointer rollback failed"
 
     $concurrentOne = Start-TestSetup -LiteralPath $setupTwoPath -Answer i

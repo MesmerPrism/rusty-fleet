@@ -27,6 +27,14 @@ Assert-Alpha (
     $pagesWorkflow -match '"RESOLVED_RELEASE_TAG=\$tag" >> \$env:GITHUB_ENV' -and
     $pagesWorkflow -match '\$tag = \$env:RESOLVED_RELEASE_TAG' -and
     $pagesWorkflow -match '-ReleaseTag \$env:RESOLVED_RELEASE_TAG' -and
+    $pagesWorkflow -match
+        ([regex]::Escape('$productStem = if ($env:CHANNEL -ceq ''alpha'')')) -and
+    $pagesWorkflow -match "'RustyFleet-Alpha'" -and
+    $pagesWorkflow -match '\$setupName = "\$productStem-Setup\.exe"' -and
+    $pagesWorkflow -match '\$bundle = "\$productStem-\$env:VERSION-win-x64"' -and
+    $pagesWorkflow -notmatch "(?m)^\s+'RustyFleet-Setup\.exe',$" -and
+    $pagesWorkflow -notmatch
+        '(?m)^\s+\$bundle = "RustyFleet-\$env:VERSION-win-x64"$' -and
     $pagesWorkflow -match 'ReleaseTag = \$env:RESOLVED_RELEASE_TAG' -and
     $pagesWorkflow -notmatch 'ExpectedRef "refs/tags/v\$env:VERSION"' -and
     $pagesWorkflow -notmatch '(?m)^\s+elseif \(\$response\.StatusCode'

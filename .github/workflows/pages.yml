@@ -134,15 +134,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'exact GitHub Release asset download failed'
           }
-          $bundle = "RustyFleet-$env:VERSION-win-x64"
+          $productStem = if ($env:CHANNEL -ceq 'alpha') {
+            'RustyFleet-Alpha'
+          } else {
+            'RustyFleet'
+          }
+          $setupName = "$productStem-Setup.exe"
+          $setupReceiptName = "$productStem-Setup.build-receipt.json"
+          $bundle = "$productStem-$env:VERSION-win-x64"
           $expectedNames = @(
-            'RustyFleet-Setup.exe',
+            $setupName,
             "$bundle.zip",
             "$bundle.zip.sha256",
             "$bundle.manifest.json",
             "$bundle.checksums.sha256",
             "$bundle.validation-receipt.json",
-            'RustyFleet-Setup.build-receipt.json',
+            $setupReceiptName,
             'release.json',
             'release-descriptor.receipt.json',
             'release-descriptor.spki.der'
@@ -178,6 +185,13 @@ jobs:
           $download = Join-Path $env:RUNNER_TEMP 'fleet-release-assets'
           $metadata = Join-Path $env:RUNNER_TEMP 'fleet-renewed-metadata'
           $key = Join-Path $env:RUNNER_TEMP 'fleet-descriptor-signing-key.pem'
+          $productStem = if ($env:CHANNEL -ceq 'alpha') {
+            'RustyFleet-Alpha'
+          } else {
+            'RustyFleet'
+          }
+          $setupName = "$productStem-Setup.exe"
+          $setupReceiptName = "$productStem-Setup.build-receipt.json"
           try {
             [IO.File]::WriteAllBytes(
               $key,
@@ -194,9 +208,9 @@ jobs:
               -Version $env:VERSION `
               -Channel $env:CHANNEL `
             -ReleaseTag $env:RESOLVED_RELEASE_TAG `
-              -SetupPath (Join-Path $download 'RustyFleet-Setup.exe') `
+              -SetupPath (Join-Path $download $setupName) `
               -SetupBuildReceiptPath (
-                Join-Path $download 'RustyFleet-Setup.build-receipt.json'
+                Join-Path $download $setupReceiptName
               ) `
               -ExpectedSetupSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
               -ExpectedSourceRevision $env:SOURCE_REVISION `
@@ -223,15 +237,22 @@ jobs:
           $metadata = Join-Path $env:RUNNER_TEMP 'fleet-renewed-metadata'
           $stage = Join-Path $env:RUNNER_TEMP 'fleet-renewal-preflight'
           [IO.Directory]::CreateDirectory($stage) | Out-Null
-          $bundle = "RustyFleet-$env:VERSION-win-x64"
+          $productStem = if ($env:CHANNEL -ceq 'alpha') {
+            'RustyFleet-Alpha'
+          } else {
+            'RustyFleet'
+          }
+          $setupName = "$productStem-Setup.exe"
+          $setupReceiptName = "$productStem-Setup.build-receipt.json"
+          $bundle = "$productStem-$env:VERSION-win-x64"
           foreach ($name in @(
-            'RustyFleet-Setup.exe',
+            $setupName,
             "$bundle.zip",
             "$bundle.zip.sha256",
             "$bundle.manifest.json",
             "$bundle.checksums.sha256",
             "$bundle.validation-receipt.json",
-            'RustyFleet-Setup.build-receipt.json'
+            $setupReceiptName
           )) {
             Copy-Item `
               -LiteralPath (Join-Path $download $name) `

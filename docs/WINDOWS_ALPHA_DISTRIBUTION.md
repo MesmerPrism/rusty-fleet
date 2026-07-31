@@ -35,7 +35,16 @@ complete site and verifies every non-target metadata byte, especially stable,
 before replacing only the alpha subtree. Renewal resolves the canonical alpha
 tag once and carries it through checkout, remote lookup, publication preflight,
 and Pages handoff. Remote publication also reads back `/releases/latest` after
-visibility and rejects an alpha tag there.
+visibility. An authoritative GitHub `404 Not Found` is accepted when no stable
+release exists; otherwise the endpoint must return a different canonical
+stable `vX.Y.Z` tag. Other failures, malformed tags, and alpha tags reject.
+
+Rollback rewrites shortcut and uninstall-registration readback from the
+activated historical release, including that release's version. Uninstall
+snapshots the complete channel-owned shortcut directory and uninstall
+registration before removal. Shortcut removal, registry removal, and
+install-root deletion remain one transaction; a failure restores the prior
+shell identity byte-for-byte so Setup remains discoverable and retryable.
 
 Checked-in production signing policy remains disabled. Synthetic tests use
 ephemeral keys and no fallback production key exists.

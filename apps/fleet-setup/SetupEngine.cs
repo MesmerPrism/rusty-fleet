@@ -652,7 +652,7 @@ internal static class Installer
                 Path.Combine(
                     installRoot,
                     current.RelativePath.Replace('/', Path.DirectorySeparatorChar)),
-                ReleaseConfiguration.Version);
+                current.Version);
         }
         try
         {
@@ -711,9 +711,19 @@ internal static class Installer
                     "installed release channel does not match this Setup identity");
             }
         }
-        ShellIdentity.Remove(installRoot);
+        var shellTransaction = ShellIdentity.Remove(installRoot);
         guard.Dispose();
-        DeleteInstallRoot(installRoot);
+        try
+        {
+            DeleteInstallRoot(installRoot);
+            shellTransaction.Commit();
+        }
+        catch
+        {
+            shellTransaction.Dispose();
+            throw;
+        }
+        shellTransaction.Dispose();
         return new UninstallResult(
             "rusty.fleet.windows_setup_uninstall_result.v1",
             "pass",
@@ -725,6 +735,7 @@ internal static class Installer
 
     private static void DeleteInstallRoot(string installRoot)
     {
+        ShellIdentity.InjectUninstallFailure("uninstall_delete_root");
         IOException? last = null;
         for (var attempt = 0; attempt < 100; attempt++)
         {
@@ -954,7 +965,7 @@ internal static class ShellIdentity
         }
     }
 
-    internal static void Remove(string installRoot)
+    internal static ShellIdentityTransaction Remove(string installRoot)
     {
         var registeredRoot = ReadRegisteredInstallRoot();
         if (registeredRoot is not null &&
@@ -966,13 +977,27 @@ internal static class ShellIdentity
             throw new InvalidDataException(
                 "uninstall registration belongs to another installation root");
         }
-        DeleteUninstallRegistration();
+        var transaction = new ShellIdentityTransaction();
         var shortcutDirectory = Path.Combine(
             GetProgramsRoot(),
             ReleaseConfiguration.DisplayName);
-        if (Directory.Exists(shortcutDirectory))
+        try
         {
-            Directory.Delete(shortcutDirectory, recursive: true);
+            CaptureDirectoryTree(shortcutDirectory, transaction);
+            CaptureUninstallRegistration(transaction);
+            if (Directory.Exists(shortcutDirectory))
+            {
+                Directory.Delete(shortcutDirectory, recursive: true);
+            }
+            InjectFailure("uninstall_after_shortcuts");
+            DeleteUninstallRegistration();
+            InjectFailure("uninstall_after_registry");
+            return transaction;
+        }
+        catch
+        {
+            transaction.Dispose();
+            throw;
         }
     }
 
@@ -1054,6 +1079,19 @@ internal static class ShellIdentity
         Registry.CurrentUser.DeleteSubKeyTree(
             UninstallRegistryPrefix + ReleaseConfiguration.ProductId,
             throwOnMissingSubKey: false);
+    }
+
+    private static void CaptureUninstallRegistration(
+        ShellIdentityTransaction transaction)
+    {
+        if (!string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot))
+        {
+            CaptureFile(TestRegistryPath, transaction);
+            return;
+        }
+        var keyPath = UninstallRegistryPrefix + ReleaseConfiguration.ProductId;
+        var snapshot = CaptureRegistry(keyPath);
+        transaction.AddRollback(() => RestoreRegistry(keyPath, snapshot));
     }
 
     private static Dictionary<string, (object Value, RegistryValueKind Kind)>?
@@ -1152,6 +1190,34 @@ internal static class ShellIdentity
         });
     }
 
+    private static void CaptureDirectoryTree(
+        string path,
+        ShellIdentityTransaction transaction)
+    {
+        if (!Directory.Exists(path))
+        {
+            return;
+        }
+        var files = Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+            .ToDictionary(
+                file => Path.GetRelativePath(path, file),
+                File.ReadAllBytes,
+                StringComparer.OrdinalIgnoreCase);
+        transaction.AddRollback(() =>
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+            foreach (var (relative, bytes) in files)
+            {
+                var destination = Path.Combine(path, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.WriteAllBytes(destination, bytes);
+            }
+        });
+    }
+
     private static void InjectFailure(string point)
     {
         if (!string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot) &&
@@ -1163,6 +1229,9 @@ internal static class ShellIdentity
             throw new IOException($"synthetic shell identity failure: {point}");
         }
     }
+
+    internal static void InjectUninstallFailure(string point) =>
+        InjectFailure(point);
 }
 
 internal sealed class DirectoryGuard : IDisposable

@@ -27,7 +27,15 @@ param(
     [ValidateRange(0, 10000)]
     [int] $DevelopmentTestPauseAfterRetainMs = 0,
     [string] $DevelopmentShellTestRoot,
-    [ValidateSet("", "after_setup", "after_shortcuts", "after_registry")]
+    [ValidateSet(
+        "",
+        "after_setup",
+        "after_shortcuts",
+        "after_registry",
+        "uninstall_after_shortcuts",
+        "uninstall_after_registry",
+        "uninstall_delete_root"
+    )]
     [string] $DevelopmentShellFailurePoint = "",
     [string] $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 )

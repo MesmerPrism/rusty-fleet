@@ -44,6 +44,7 @@ function New-RemoteTestState {
         fail_visibility = $false
         malformed_visibility = $false
         fail_latest = $false
+        latest_not_found = $false
         latest_tag = "v1.2.2"
         next_release_id = 7001
         releases = @()
@@ -252,6 +253,15 @@ if ($GhArgs[0] -ceq "api") {
         exit 0
     }
     if ($endpoint -ceq "repos/MesmerPrism/rusty-fleet/releases/latest") {
+        if ($state.latest_not_found) {
+            if ($GhArgs -contains "--include") {
+                [Console]::Out.Write(
+                    "HTTP/2.0 404 Not Found`ncontent-type: application/json`n`n" +
+                    '{"message":"Not Found","status":"404"}'
+                )
+            }
+            exit 53
+        }
         if ($state.fail_latest) {
             exit 52
         }
@@ -430,6 +440,29 @@ exit 49
     $latestLookupFailure.fail_latest = $true
     Write-RemoteTestJson $statePath $latestLookupFailure
     Assert-RemoteRejected -Context "latest release lookup failure" -Action {
+        Invoke-RemotePublication -StatePath $statePath -Assets $assetInventory
+    }
+
+    $noStableRelease = New-RemoteTestState
+    $noStableRelease.releases = @(
+        New-RemoteRelease -Assets $exactRemoteAssets
+    )
+    $noStableRelease.latest_not_found = $true
+    Write-RemoteTestJson $statePath $noStableRelease
+    $absentLatest = Invoke-RemotePublication `
+        -StatePath $statePath `
+        -Assets $assetInventory
+    Assert-RemoteTest (
+        $absentLatest.visible_verified
+    ) "authoritative latest-release 404 was not accepted"
+
+    $latestPrereleaseTag = New-RemoteTestState
+    $latestPrereleaseTag.releases = @(
+        New-RemoteRelease -Assets $exactRemoteAssets
+    )
+    $latestPrereleaseTag.latest_tag = "v1.2.2-alpha.4"
+    Write-RemoteTestJson $statePath $latestPrereleaseTag
+    Assert-RemoteRejected -Context "non-stable latest tag" -Action {
         Invoke-RemotePublication -StatePath $statePath -Assets $assetInventory
     }
 
