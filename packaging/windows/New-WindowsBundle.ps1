@@ -446,7 +446,12 @@ try {
         payload = $payload
         install = [ordered]@{
             mode = "per_user_side_by_side"
-            default_root = "%LOCALAPPDATA%/RustyFleet"
+            default_root = if ($Channel -eq "alpha") {
+                "%LOCALAPPDATA%/RustyFleetAlpha"
+            }
+            else {
+                "%LOCALAPPDATA%/RustyFleet"
+            }
             activation = "explicit_operator_start"
             authority = if ($Channel -eq "alpha") {
                 "RustyFleet-Alpha-Setup.exe"

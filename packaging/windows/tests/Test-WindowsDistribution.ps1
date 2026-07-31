@@ -637,6 +637,16 @@ try {
         (Get-RustyFleetSha256 -LiteralPath $alphaArchiveOne) -ceq
         (Get-RustyFleetSha256 -LiteralPath $alphaArchiveTwo)
     ) "alpha bundle is not deterministic"
+    $alphaManifest = Get-Content -LiteralPath (
+        Join-Path $alphaOne "$alphaBundleName\metadata\release-manifest.json"
+    ) -Raw | ConvertFrom-Json -Depth 30
+    Assert-Distribution (
+        $alphaManifest.channel -eq "alpha" -and
+        $alphaManifest.install.default_root -ceq
+            "%LOCALAPPDATA%/RustyFleetAlpha" -and
+        $alphaManifest.install.authority -ceq
+            "RustyFleet-Alpha-Setup.exe"
+    ) "alpha manifest does not bind the isolated install identity"
     $alphaSetupOutput = Join-Path $testRoot "alpha-setup"
     $alphaSetupRoot = Join-Path $testRoot "alpha-install-root"
     $alphaSetupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
@@ -986,6 +996,8 @@ try {
     ) "provider invocation is not exact"
     Assert-Distribution (
         $manifest.install.authority -eq "RustyFleet-Setup.exe" -and
+        $manifest.install.default_root -ceq
+            "%LOCALAPPDATA%/RustyFleet" -and
         $manifest.install.plan_protocol -eq
             "rusty.fleet.guided_installer_plan.v1" -and
         $manifest.update.strategy -eq
