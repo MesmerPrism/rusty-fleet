@@ -56,8 +56,14 @@ $ErrorActionPreference = "Stop"
 if (-not $ReleaseTag) {
     $ReleaseTag = "v$Version"
 }
-if (($Channel -eq "alpha") -ne ($ReleaseTag -match "-alpha\.")) {
-    throw "release tag does not match the channel"
+$expectedReleaseTagPattern = if ($Channel -eq "alpha") {
+    "^v$([regex]::Escape($Version))-alpha\.[1-9][0-9]*$"
+}
+else {
+    "^v$([regex]::Escape($Version))$"
+}
+if ($ReleaseTag -cnotmatch $expectedReleaseTagPattern) {
+    throw "release tag does not bind the exact version and channel"
 }
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
@@ -395,6 +401,12 @@ $setupName = if ($Channel -eq "alpha") {
 else {
     "RustyFleet-Setup.exe"
 }
+$installationIdentity = if ($Channel -eq "alpha") {
+    "rusty-fleet-alpha"
+}
+else {
+    "rusty-fleet"
+}
 if ((Split-Path -Leaf $setup) -cne $setupName) {
     throw "Setup filename does not match the release channel"
 }
@@ -534,7 +546,7 @@ try {
     if ($null -eq $plan -or
         @($plan.PSObject.Properties).Count -ne 6 -or
         $plan.schema -cne "rusty.fleet.guided_installer_plan.v1" -or
-        $plan.product -cne "rusty-fleet" -or
+        $plan.product -cne $installationIdentity -or
         $plan.version -cne $Version -or
         $plan.channel -cne $Channel -or
         $plan.asset_sha256 -cne $setupSha256 -or
@@ -650,11 +662,20 @@ try {
     Write-RustyFleetUtf8 -LiteralPath $descriptorPath -Content $envelopeText
     [IO.File]::WriteAllBytes($publicKeyPath, $spki)
     $receipt = [ordered]@{
-        schema = "rusty.fleet.windows_release_descriptor_receipt.v2"
+        schema = "rusty.fleet.windows_release_descriptor_receipt.v3"
         result = "pass"
         descriptor_id = $DescriptorId
         version = $Version
         channel = $Channel
+        release_tag = $ReleaseTag
+        installation_identity = $installationIdentity
+        primary_artifact = [ordered]@{
+            role = "complete-product"
+            name = $setupName
+            sha256 = $setupSha256
+            bytes = [long] $setupInfo.Length
+            url = $assetUrl
+        }
         issued_at_ms = $issuedAtMs
         expires_at_ms = $expiresAtMs
         validity_duration_ms = $validityDurationMs

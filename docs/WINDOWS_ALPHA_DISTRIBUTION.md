@@ -13,6 +13,15 @@ Setup also owns a `Rusty Fleet Alpha` Start Menu folder and the per-user
 `rusty-fleet-alpha` uninstall registration; both point only into the alpha
 root.
 
+Fleet's owner metadata is the immutable
+`release-descriptor.receipt.json` release asset. Its closed v3 contract binds
+the exact `vX.Y.Z-alpha.N` tag, installation identity `rusty-fleet-alpha`,
+and `RustyFleet-Alpha-Setup.exe` as the one `complete-product` primary
+artifact with exact SHA-256, byte length, and tag-addressed URL. Non-alpha
+releases bind installation identity `rusty-fleet` and
+`RustyFleet-Setup.exe`. Publication preflight and Pages renewal revalidate
+those fields instead of inferring channel identity from filenames alone.
+
 Every signed channel registers an explicit `--uninstall` Setup route under its
 own product identity. Uninstall validates the installed release channel and
 registered install root before removing only that channel's shortcuts,

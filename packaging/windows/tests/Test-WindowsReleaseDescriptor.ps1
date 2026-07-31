@@ -33,6 +33,32 @@ function global:Get-AuthenticodeSignature {
     Get-RustyFleetTestAuthenticodeSignature -LiteralPath $LiteralPath
 }
 $repoRoot = (Resolve-Path (Join-Path $packagingRoot "..\..")).Path
+foreach ($case in @(
+    [pscustomobject]@{ channel = "preview"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "alpha"; tag = "v9.9.9-alpha.1" }
+)) {
+    $message = ""
+    try {
+        & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
+            -Version "1.2.3" `
+            -Channel $case.channel `
+            -ReleaseTag $case.tag `
+            -SetupPath "missing-setup.exe" `
+            -SetupBuildReceiptPath "missing-build-receipt.json" `
+            -ExpectedSetupSignerThumbprint ("A" * 40) `
+            -ExpectedSourceRevision ("1" * 40) `
+            -ExpectedSourceTree ("2" * 40) `
+            -DescriptorPrivateKeyPemPath "missing-key.pem" `
+            -ExpectedDescriptorSignerSpkiSha256 ("3" * 64) `
+            -OutputDirectory "unused-output" | Out-Null
+    }
+    catch {
+        $message = $_.Exception.Message
+    }
+    Assert-Descriptor `
+        ($message -ceq "release tag does not bind the exact version and channel") `
+        "$($case.channel) descriptor accepted a cross-version release tag"
+}
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-descriptor-$([Guid]::NewGuid().ToString('N'))"
 )
@@ -79,12 +105,16 @@ using var stream = new FileStream(
     FileMode.Open,
     FileAccess.Read,
     FileShare.Read);
+var alpha = string.Equals(
+    Path.GetFileName(Environment.ProcessPath),
+    "RustyFleet-Alpha-Setup.exe",
+    StringComparison.Ordinal);
 var plan = new
 {
     schema = "rusty.fleet.guided_installer_plan.v1",
-    product = "rusty-fleet",
+    product = alpha ? "rusty-fleet-alpha" : "rusty-fleet",
     version = "1.2.3",
-    channel = "preview",
+    channel = alpha ? "alpha" : "preview",
     asset_sha256 = Convert.ToHexStringLower(SHA256.HashData(stream)),
     ready = true
 };
@@ -196,8 +226,79 @@ return 0;
     Assert-Descriptor `
         ($receipt.result -eq "pass" -and
             $receipt.signature -eq "rsa_pss_sha256" -and
-            $receipt.canonical_payload -eq "rfc8785_jcs_closed_shape") `
+            $receipt.canonical_payload -eq "rfc8785_jcs_closed_shape" -and
+            $receipt.schema -eq
+                "rusty.fleet.windows_release_descriptor_receipt.v3" -and
+            $receipt.release_tag -ceq "v1.2.3" -and
+            $receipt.installation_identity -ceq "rusty-fleet" -and
+            $receipt.primary_artifact.role -ceq "complete-product" -and
+            $receipt.primary_artifact.name -ceq "RustyFleet-Setup.exe" -and
+            $receipt.primary_artifact.sha256 -ceq
+                (Get-RustyFleetSha256 -LiteralPath $setupPath) -and
+            [long] $receipt.primary_artifact.bytes -eq
+                (Get-Item -LiteralPath $setupPath).Length -and
+            $receipt.primary_artifact.url -ceq
+                $receipt.asset_url) `
         "descriptor receipt is not exact"
+
+    $alphaSetupPath = Join-Path $testRoot "RustyFleet-Alpha-Setup.exe"
+    Copy-Item -LiteralPath $setupPath -Destination $alphaSetupPath
+    Register-RustyFleetTestAuthenticodeSignature `
+        -LiteralPath $alphaSetupPath `
+        -Certificate $signingCertificate
+    $alphaBuildReceiptPath = Join-Path $testRoot (
+        "alpha-setup-build-receipt.json"
+    )
+    $alphaBuildReceipt = $buildReceipt |
+        ConvertTo-Json -Depth 10 |
+        ConvertFrom-Json -Depth 10
+    $alphaBuildReceipt.channel = "alpha"
+    [IO.File]::WriteAllText(
+        $alphaBuildReceiptPath,
+        ($alphaBuildReceipt | ConvertTo-Json -Depth 10),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $alphaReceipt = & (
+        Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1"
+    ) `
+        -Version "1.2.3" `
+        -Channel alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
+        -SetupPath $alphaSetupPath `
+        -SetupBuildReceiptPath $alphaBuildReceiptPath `
+        -ExpectedSetupSignerThumbprint (
+            $setupSignature.SignerCertificate.Thumbprint
+        ) `
+        -ExpectedSourceRevision ("1" * 40) `
+        -ExpectedSourceTree ("2" * 40) `
+        -DescriptorPrivateKeyPemPath $keyPath `
+        -ExpectedDescriptorSignerSpkiSha256 $spkiSha256 `
+        -OutputDirectory (Join-Path $testRoot "alpha-output") `
+        -DescriptorId "v1.2.3-alpha.1-test" `
+        -IssuedAtUtc $issued `
+        -LifetimeMinutes 1380 |
+        ConvertFrom-Json
+    Assert-Descriptor `
+        ($alphaReceipt.schema -ceq
+            "rusty.fleet.windows_release_descriptor_receipt.v3" -and
+            $alphaReceipt.channel -ceq "alpha" -and
+            $alphaReceipt.release_tag -ceq "v1.2.3-alpha.1" -and
+            $alphaReceipt.installation_identity -ceq
+                "rusty-fleet-alpha" -and
+            $alphaReceipt.primary_artifact.role -ceq
+                "complete-product" -and
+            $alphaReceipt.primary_artifact.name -ceq
+                "RustyFleet-Alpha-Setup.exe" -and
+            $alphaReceipt.primary_artifact.sha256 -ceq
+                (Get-RustyFleetSha256 -LiteralPath $alphaSetupPath) -and
+            [long] $alphaReceipt.primary_artifact.bytes -eq
+                (Get-Item -LiteralPath $alphaSetupPath).Length -and
+            $alphaReceipt.primary_artifact.url -ceq (
+                "https://github.com/MesmerPrism/rusty-fleet/" +
+                "releases/download/v1.2.3-alpha.1/" +
+                "RustyFleet-Alpha-Setup.exe"
+            )) `
+        "alpha descriptor receipt is not bound to its isolated release"
 
     $descriptorPath = Join-Path $output "release.json"
     $publicKeyPath = Join-Path $output "release-descriptor.spki.der"
@@ -384,6 +485,10 @@ return 0;
         setup_signer_pin_exact = $true
         canonical_closed_payload = $true
         immutable_asset_url = $true
+        release_tag_exact = $true
+        installation_identity_exact = $true
+        primary_artifact_exact = $true
+        alpha_descriptor_end_to_end = $true
         lifetime_23_hours = $true
         retained_path_substitution_rejected = $true
         overwrite_rejected = $true

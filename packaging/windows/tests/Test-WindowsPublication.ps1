@@ -72,6 +72,32 @@ Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
 Import-Module (
     Join-Path $PSScriptRoot "WindowsCertificateFixture.psm1"
 ) -Force
+foreach ($case in @(
+    [pscustomobject]@{ channel = "preview"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "alpha"; tag = "v9.9.9-alpha.1" }
+)) {
+    $message = ""
+    try {
+        & (Join-Path $packagingRoot "Publish-WindowsRelease.ps1") `
+            -Mode Preflight `
+            -AssetDirectory "missing-assets" `
+            -Version "1.2.3" `
+            -Channel $case.channel `
+            -ReleaseTag $case.tag `
+            -ExpectedFleetSignerThumbprint ("A" * 40) `
+            -ExpectedHostessSignerThumbprint ("B" * 40) `
+            -ExpectedDescriptorSignerSpkiSha256 ("3" * 64) `
+            -ExpectedSourceRevision ("1" * 40) `
+            -ExpectedSourceTree ("2" * 40) `
+            -RepositoryRoot "missing-repository" | Out-Null
+    }
+    catch {
+        $message = $_.Exception.Message
+    }
+    Assert-Publication `
+        ($message -ceq "release tag does not bind the exact version and channel") `
+        "$($case.channel) publication accepted a cross-version release tag"
+}
 function global:Get-AuthenticodeSignature {
     param(
         [Parameter(Mandatory)]
@@ -524,12 +550,27 @@ exit 99
         -DescriptorSpki $descriptorSpkiSha256 `
         -GhExecutable $fakeGh |
         ConvertFrom-Json -Depth 20
+    $ownerReleaseMetadata = Get-Content -LiteralPath (
+        Join-Path $stage "release-descriptor.receipt.json"
+    ) -Raw | ConvertFrom-Json -Depth 20
     Assert-Publication (
         $preflight.result -eq "pass" -and
         $preflight.mode -eq "preflight" -and
         $preflight.asset_count -eq 10 -and
         @($preflight.assets).Count -eq 10 -and
         @($preflight.assets.name | Sort-Object -Unique).Count -eq 10 -and
+        $ownerReleaseMetadata.schema -ceq
+            "rusty.fleet.windows_release_descriptor_receipt.v3" -and
+        $ownerReleaseMetadata.release_tag -ceq "v1.2.3" -and
+        $ownerReleaseMetadata.installation_identity -ceq "rusty-fleet" -and
+        $ownerReleaseMetadata.primary_artifact.role -ceq
+            "complete-product" -and
+        $ownerReleaseMetadata.primary_artifact.name -ceq
+            "RustyFleet-Setup.exe" -and
+        $ownerReleaseMetadata.primary_artifact.sha256 -ceq
+            $preflight.setup_sha256 -and
+        [long] $ownerReleaseMetadata.primary_artifact.bytes -eq
+            (Get-Item -LiteralPath $setupPath).Length -and
         $preflight.token_used -eq $false -and
         $preflight.gh_invoked -eq $false -and
         -not (Test-Path -LiteralPath $fakeGhMarker)
@@ -950,6 +991,7 @@ exit 99
 
     $mutations = [ordered]@{
         release_json = "release.json"
+        descriptor_receipt = "release-descriptor.receipt.json"
         zip = "$bundleName.zip"
         manifest = "$bundleName.manifest.json"
         checksums = "$bundleName.checksums.sha256"
@@ -992,6 +1034,74 @@ exit 99
         Copy-Item `
             -LiteralPath (Join-Path $stage $case.Value) `
             -Destination $casePath `
+            -Force
+    }
+
+    foreach ($metadataMutation in @(
+        [pscustomobject]@{
+            name = "release-tag"
+            apply = {
+                param($value)
+                $value.release_tag = "v1.2.4"
+            }
+        },
+        [pscustomobject]@{
+            name = "installation-identity"
+            apply = {
+                param($value)
+                $value.installation_identity = "rusty-fleet-alpha"
+            }
+        },
+        [pscustomobject]@{
+            name = "primary-artifact"
+            apply = {
+                param($value)
+                $value.primary_artifact.url = (
+                    "https://github.com/MesmerPrism/rusty-fleet/" +
+                    "releases/download/v1.2.4/RustyFleet-Setup.exe"
+                )
+            }
+        }
+    )) {
+        $metadataPath = Join-Path $caseRoot (
+            "release-descriptor.receipt.json"
+        )
+        $metadata = Get-Content -LiteralPath (
+            Join-Path $stage "release-descriptor.receipt.json"
+        ) -Raw | ConvertFrom-Json -Depth 20
+        & $metadataMutation.apply $metadata
+        Write-TestUtf8 `
+            -LiteralPath $metadataPath `
+            -Content (ConvertTo-RustyFleetJson -InputObject $metadata)
+        if (Test-Path -LiteralPath $fakeGhMarker) {
+            Remove-Item -LiteralPath $fakeGhMarker -Force
+        }
+        $metadataRejected = $false
+        try {
+            Invoke-PublicationAuthority `
+                -Mode Publish `
+                -InputRoot $caseRoot `
+                -SourceRepository $sourceRepo `
+                -SourceRevision $sourceRevision `
+                -SourceTree $sourceTree `
+                -FleetSigner $signerThumbprint `
+                -HostessSigner $signerThumbprint `
+                -DescriptorSpki $descriptorSpkiSha256 `
+                -GhExecutable $fakeGh |
+                Out-Null
+        }
+        catch {
+            $metadataRejected = $true
+        }
+        Assert-Publication (
+            $metadataRejected -and
+            -not (Test-Path -LiteralPath $fakeGhMarker)
+        ) "wrong $($metadataMutation.name) reached the release token or gh"
+        Copy-Item `
+            -LiteralPath (
+                Join-Path $stage "release-descriptor.receipt.json"
+            ) `
+            -Destination $metadataPath `
             -Force
     }
 
@@ -1042,6 +1152,8 @@ exit 99
         exact_zip_sidecar_and_full_bundle_validation = $true
         top_level_metadata_byte_equal = $true
         rsa_pss_jcs_descriptor_and_spki_verified = $true
+        owner_release_metadata_verified = $true
+        owner_release_metadata_substitution_rejected_before_gh = $true
         exact_filename_sha256_inventory = $true
         retained_write_and_rename_denied = $true
         release_json_substitution_rejected_before_gh = $true

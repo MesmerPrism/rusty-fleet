@@ -53,12 +53,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 if (-not $ReleaseTag) { $ReleaseTag = "v$Version" }
-if (($Channel -eq "alpha") -ne ($ReleaseTag -match "-alpha\.")) {
-    throw "release tag does not match the channel"
+$expectedReleaseTagPattern = if ($Channel -eq "alpha") {
+    "^v$([regex]::Escape($Version))-alpha\.[1-9][0-9]*$"
+}
+else {
+    "^v$([regex]::Escape($Version))$"
+}
+if ($ReleaseTag -cnotmatch $expectedReleaseTagPattern) {
+    throw "release tag does not bind the exact version and channel"
 }
 $productStem = if ($Channel -eq "alpha") { "RustyFleet-Alpha" } else { "RustyFleet" }
 $setupName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.exe" } else { "RustyFleet-Setup.exe" }
 $setupReceiptName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.build-receipt.json" } else { "RustyFleet-Setup.build-receipt.json" }
+$installationIdentity = if ($Channel -eq "alpha") { "rusty-fleet-alpha" } else { "rusty-fleet" }
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 function Assert-ExactProperties {
@@ -442,11 +449,58 @@ $descriptorReceiptJson = Read-StrictJson `
     -MaximumBytes 65536 `
     -Context "release descriptor receipt"
 $descriptorReceipt = $descriptorReceiptJson.value
+Assert-ExactProperties -InputObject $descriptorReceipt -Expected @(
+    "schema",
+    "result",
+    "descriptor_id",
+    "version",
+    "channel",
+    "release_tag",
+    "installation_identity",
+    "primary_artifact",
+    "issued_at_ms",
+    "expires_at_ms",
+    "validity_duration_ms",
+    "setup_sha256",
+    "setup_size_bytes",
+    "setup_signer_certificate_sha256",
+    "setup_build_receipt_sha256",
+    "source_revision",
+    "source_tree",
+    "canonical_pe_payload_sha256",
+    "canonical_pe_payload_size_bytes",
+    "descriptor_signer_spki_sha256",
+    "descriptor_signer_spki_asset",
+    "payload_sha256",
+    "descriptor_sha256",
+    "canonical_payload",
+    "signature",
+    "pages_path",
+    "asset_url"
+) -Context "release descriptor receipt"
+Assert-ExactProperties -InputObject $descriptorReceipt.primary_artifact -Expected @(
+    "role",
+    "name",
+    "sha256",
+    "bytes",
+    "url"
+) -Context "release descriptor primary artifact"
 if ($descriptorReceipt.schema -cne
-        "rusty.fleet.windows_release_descriptor_receipt.v2" -or
+        "rusty.fleet.windows_release_descriptor_receipt.v3" -or
     $descriptorReceipt.result -cne "pass" -or
     $descriptorReceipt.version -cne $Version -or
     $descriptorReceipt.channel -cne $Channel -or
+    $descriptorReceipt.release_tag -cne $ReleaseTag -or
+    $descriptorReceipt.installation_identity -cne
+        $installationIdentity -or
+    $descriptorReceipt.primary_artifact.role -cne
+        "complete-product" -or
+    $descriptorReceipt.primary_artifact.name -cne $setupName -or
+    $descriptorReceipt.primary_artifact.sha256 -cne
+        $preflight.setup_sha256 -or
+    [long] $descriptorReceipt.primary_artifact.bytes -ne
+        [long] $assetMap[$setupName].size_bytes -or
+    $descriptorReceipt.primary_artifact.url -cne $expectedSetupUrl -or
     $descriptorReceipt.descriptor_id -cne $payload.descriptor_id -or
     [long] $descriptorReceipt.issued_at_ms -ne
         [long] $payload.issued_at_ms -or

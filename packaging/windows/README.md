@@ -156,6 +156,15 @@ copies. It reconstructs the exact JCS v2 payload, verifies RSA-PSS using the
 exported SPKI, checks every descriptor-receipt hash, and builds a closed
 filename-to-SHA-256-and-size inventory.
 
+The immutable `release-descriptor.receipt.json` is Fleet's owner metadata
+asset. Its closed v3 contract binds the exact release tag, the
+channel-specific installation identity (`rusty-fleet-alpha` for alpha and
+`rusty-fleet` otherwise), and one `complete-product` primary artifact with
+exact name, SHA-256, byte length, and immutable tag-addressed URL. The older
+scalar Setup bindings remain independently checked for continuity.
+Publication and Pages staging both reject disagreement between those
+projections, the signed descriptor, and the closed release inventory.
+
 Publish separately resolves the current GitHub tag through a bounded,
 cycle-checked lightweight or annotated-tag chain and requires its terminal
 commit to equal the retained source revision. It performs this check
@@ -207,7 +216,10 @@ Rusty-Fleet/metadata/<channel>/deployment-handoff.json
 
 `New-WindowsPagesDeployment.ps1` rejects stale, downgraded, replayed, or
 wrong-source metadata, requires the token-free closed-release preflight, and
-enforces a binary-free Pages tree. Its
+enforces a binary-free Pages tree. It also revalidates the descriptor
+receipt's exact tag, installation identity, and complete-product artifact
+against the target channel and release inventory before copying the owner
+metadata byte-for-byte. Its
 `rusty.fleet.windows_release_metadata_handoff.v1` output carries only fixed
 relative filenames, hashes, sizes, owners, version/channel, exact source
 commit/tree, freshness, and prior-handoff lineage. It names Setup and its build

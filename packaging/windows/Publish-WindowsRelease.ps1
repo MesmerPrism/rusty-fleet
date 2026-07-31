@@ -57,6 +57,17 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "Publication.Remote.psm1") -Force
 
+$tag = if ($ReleaseTag) { $ReleaseTag } else { "v$Version" }
+$expectedReleaseTagPattern = if ($Channel -eq "alpha") {
+    "^v$([regex]::Escape($Version))-alpha\.[1-9][0-9]*$"
+}
+else {
+    "^v$([regex]::Escape($Version))$"
+}
+if ($tag -cnotmatch $expectedReleaseTagPattern) {
+    throw "release tag does not bind the exact version and channel"
+}
+
 function Assert-ExactProperties {
     param(
         [Parameter(Mandatory)][object] $InputObject,
@@ -595,10 +606,6 @@ namespace RustyFleet.Publication
 "@
 }
 
-$tag = if ($ReleaseTag) { $ReleaseTag } else { "v$Version" }
-if (($Channel -eq "alpha") -ne ($tag -match "-alpha\.")) {
-    throw "release tag does not match the channel"
-}
 if (-not $ExpectedRef) {
     $ExpectedRef = "refs/tags/$tag"
 }
@@ -611,6 +618,7 @@ $assetRoot = (Resolve-Path -LiteralPath $AssetDirectory).Path
 $productStem = if ($Channel -eq "alpha") { "RustyFleet-Alpha" } else { "RustyFleet" }
 $bundleName = "$productStem-$Version-win-x64"
 $setupName = if ($Channel -eq "alpha") { "RustyFleet-Alpha-Setup.exe" } else { "RustyFleet-Setup.exe" }
+$installationIdentity = if ($Channel -eq "alpha") { "rusty-fleet-alpha" } else { "rusty-fleet" }
 $zipName = "$bundleName.zip"
 $zipSidecarName = "$zipName.sha256"
 $manifestName = "$bundleName.manifest.json"
@@ -1041,6 +1049,9 @@ try {
         "descriptor_id",
         "version",
         "channel",
+        "release_tag",
+        "installation_identity",
+        "primary_artifact",
         "issued_at_ms",
         "expires_at_ms",
         "validity_duration_ms",
@@ -1061,12 +1072,29 @@ try {
         "pages_path",
         "asset_url"
     ) -Context "release descriptor receipt"
+    Assert-ExactProperties -InputObject $descriptorReceipt.primary_artifact -Expected @(
+        "role",
+        "name",
+        "sha256",
+        "bytes",
+        "url"
+    ) -Context "release descriptor primary artifact"
     if ($descriptorReceipt.schema -cne
-            "rusty.fleet.windows_release_descriptor_receipt.v2" -or
+            "rusty.fleet.windows_release_descriptor_receipt.v3" -or
         $descriptorReceipt.result -cne "pass" -or
         $descriptorReceipt.descriptor_id -cne $payload.descriptor_id -or
         $descriptorReceipt.version -cne $Version -or
         $descriptorReceipt.channel -cne $Channel -or
+        $descriptorReceipt.release_tag -cne $tag -or
+        $descriptorReceipt.installation_identity -cne
+            $installationIdentity -or
+        $descriptorReceipt.primary_artifact.role -cne
+            "complete-product" -or
+        $descriptorReceipt.primary_artifact.name -cne $setupName -or
+        $descriptorReceipt.primary_artifact.sha256 -cne $setupSha256 -or
+        [long] $descriptorReceipt.primary_artifact.bytes -ne
+            $assets.Length($setupName) -or
+        $descriptorReceipt.primary_artifact.url -cne $expectedAssetUrl -or
         [long] $descriptorReceipt.issued_at_ms -ne
             [long] $payload.issued_at_ms -or
         [long] $descriptorReceipt.expires_at_ms -ne

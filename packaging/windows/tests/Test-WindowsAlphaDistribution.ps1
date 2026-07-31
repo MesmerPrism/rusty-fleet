@@ -16,10 +16,25 @@ $pagesWorkflow = Read-Repo ".github/workflows/pages.yml"
 $stableWorkflow = Read-Repo ".github/workflows/release-windows.yml"
 $alphaWorkflow = Read-Repo ".github/workflows/release-windows-alpha.yml"
 $publication = Read-Repo "packaging/windows/Publish-WindowsRelease.ps1"
+$descriptor = Read-Repo "packaging/windows/New-WindowsReleaseDescriptor.ps1"
 $schema = Read-Repo "schemas/rusty.fleet.windows_release.v2.schema.json" | ConvertFrom-Json -Depth 20
 Assert-Alpha (@($schema.properties.channel.enum) -ccontains "alpha") "release schema does not admit alpha"
 Assert-Alpha ($bundle -match 'RustyFleet-Alpha-\$Version-win-x64' -and $setup -match 'RustyFleet-Alpha-Setup\.exe') "alpha artifacts are not independently named"
 Assert-Alpha ($setup -match 'rusty-fleet-alpha' -and $setup -match 'Rusty Fleet Alpha' -and $setup -match 'RustyFleetAlpha') "alpha installation identity is incomplete"
+Assert-Alpha (
+    $descriptor -match '\$plan\.product -cne \$installationIdentity' -and
+    $descriptor -match
+        'schema = "rusty\.fleet\.windows_release_descriptor_receipt\.v3"' -and
+    $descriptor -match 'release_tag = \$ReleaseTag' -and
+    $descriptor -match 'installation_identity = \$installationIdentity' -and
+    $descriptor -match 'role = "complete-product"' -and
+    $descriptor -match 'name = \$setupName' -and
+    $descriptor -match 'bytes = \[long\] \$setupInfo\.Length' -and
+    $publication -match
+        '\$descriptorReceipt\.release_tag -cne \$tag' -and
+    $pages -match
+        '\$descriptorReceipt\.release_tag -cne \$ReleaseTag'
+) "owner release metadata does not bind the exact alpha release identity"
 Assert-Alpha ($program -match 'ReleaseConfiguration\.InstallDirectoryName' -and $program -match 'ReleaseConfiguration\.ProductId' -and $engine -match 'channel is not \("dev" or "alpha" or "preview" or "stable"\)') "Setup does not bind alpha identity or preview compatibility"
 Assert-Alpha ($engine -match 'SpecialFolder\.Programs' -and $engine -match 'CurrentVersion\\Uninstall' -and $engine -match 'ReleaseConfiguration\.DisplayName' -and $engine -match 'ReleaseConfiguration\.ProductId') "channel-specific shortcuts or uninstall registration are absent"
 Assert-Alpha ($pages -match 'metadata/\$Channel/release\.json' -and $pages -match 'dev\|alpha\|preview\|stable') "Pages metadata is not channel isolated"
@@ -81,4 +96,4 @@ foreach ($scriptTextValue in $workflowPowerShell) {
 Assert-Alpha ($alphaWorkflow -match 'environment: windows-alpha-release' -and $alphaWorkflow -match 'gh workflow run release-windows\.yml' -and $alphaWorkflow -notmatch 'intentional workflow stop' -and $publication -match '-Prerelease \(\$Channel -cne "stable"\)') "alpha workflow does not delegate the complete never-latest owner release"
 Assert-Alpha ($stableWorkflow -match 'vX\.Y\.Z-alpha\.N' -and $stableWorkflow -match 'inputs\.channel == ''alpha''') "alpha tag or protected environment routing is incomplete"
 Assert-Alpha ($stableWorkflow -match "inputs\.publish_release && inputs\.signing_mode == 'signed-release'") "stable publication gate changed"
-[ordered]@{schema="rusty.fleet.windows_alpha_distribution_test.v1";result="pass";complete_product_bundle=$true;alpha_identity_isolated=$true;preview_compatibility="deprecated_input_only";stable_identity_preserved=$true;prerelease_never_latest=$true;production_policy_enabled=$false} | ConvertTo-Json -Depth 5
+[ordered]@{schema="rusty.fleet.windows_alpha_distribution_test.v1";result="pass";complete_product_bundle=$true;alpha_identity_isolated=$true;owner_release_metadata_exact=$true;preview_compatibility="deprecated_input_only";stable_identity_preserved=$true;prerelease_never_latest=$true;production_policy_enabled=$false} | ConvertTo-Json -Depth 5

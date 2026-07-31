@@ -38,6 +38,31 @@ function ConvertTo-TestBase64Url([byte[]] $Bytes) {
 
 $packagingRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
+foreach ($case in @(
+    [pscustomobject]@{ channel = "preview"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "alpha"; tag = "v9.9.9-alpha.1" }
+)) {
+    $message = ""
+    try {
+        & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
+            -Version "1.2.3" `
+            -Channel $case.channel `
+            -ReleaseTag $case.tag `
+            -SiteDirectory "missing-site" `
+            -MetadataDirectory "missing-metadata" `
+            -PublicationPreflightReceiptPath "missing-preflight.json" `
+            -ExpectedSourceRevision ("1" * 40) `
+            -ExpectedSourceTree ("2" * 40) `
+            -ExpectedDescriptorSignerSpkiSha256 ("3" * 64) `
+            -OutputDirectory "unused-pages-output" | Out-Null
+    }
+    catch {
+        $message = $_.Exception.Message
+    }
+    Assert-Pages `
+        ($message -ceq "release tag does not bind the exact version and channel") `
+        "$($case.channel) Pages staging accepted a cross-version release tag"
+}
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-pages-test-$([Guid]::NewGuid().ToString('N'))"
 )
@@ -110,11 +135,20 @@ function New-PagesMetadataFixture {
     $spkiPath = Join-Path $metadataRoot "release-descriptor.spki.der"
     [IO.File]::WriteAllBytes($spkiPath, $spkiBytes)
     $receipt = [ordered]@{
-        schema = "rusty.fleet.windows_release_descriptor_receipt.v2"
+        schema = "rusty.fleet.windows_release_descriptor_receipt.v3"
         result = "pass"
         descriptor_id = $DescriptorId
         version = "1.2.3"
         channel = "preview"
+        release_tag = "v1.2.3"
+        installation_identity = "rusty-fleet"
+        primary_artifact = [ordered]@{
+            role = "complete-product"
+            name = "RustyFleet-Setup.exe"
+            sha256 = $setupSha256
+            bytes = 1234
+            url = $assetUrl
+        }
         issued_at_ms = $issuedAtMs
         expires_at_ms = $expiresAtMs
         validity_duration_ms = $durationMs
@@ -305,7 +339,15 @@ try {
         (Test-Path -LiteralPath $firstHandoffPath -PathType Leaf) -and
         (Get-RustyFleetSha256 -LiteralPath (
             Join-Path $firstOutput "Rusty-Fleet\metadata\stable\release.json"
-        )) -ceq $stableSentinelHash
+        )) -ceq $stableSentinelHash -and
+        (
+            Get-Content -LiteralPath (
+                Join-Path $firstOutput (
+                    "Rusty-Fleet\metadata\preview\" +
+                    "release-descriptor.receipt.json"
+                )
+            ) -Raw | ConvertFrom-Json
+        ).primary_artifact.role -ceq "complete-product"
     ) "initial Pages handoff is not exact"
 
     $resumed = Invoke-PagesFixture `
@@ -392,6 +434,82 @@ try {
         Assert-Pages $rejected "Pages accepted a wrong $($wrong.name) binding"
     }
 
+    foreach ($ownerMutation in @(
+        [pscustomobject]@{
+            name = "release-tag"
+            apply = {
+                param($value)
+                $value.release_tag = "v1.2.4"
+            }
+        },
+        [pscustomobject]@{
+            name = "installation-identity"
+            apply = {
+                param($value)
+                $value.installation_identity = "rusty-fleet-alpha"
+            }
+        },
+        [pscustomobject]@{
+            name = "primary-artifact"
+            apply = {
+                param($value)
+                $value.primary_artifact.bytes = 1235
+            }
+        }
+    )) {
+        $ownerRoot = Join-Path $testRoot (
+            "owner-metadata-$($ownerMutation.name)"
+        )
+        Copy-Item `
+            -LiteralPath $first.metadata_root `
+            -Destination $ownerRoot `
+            -Recurse
+        $ownerReceiptPath = Join-Path $ownerRoot (
+            "release-descriptor.receipt.json"
+        )
+        $ownerReceipt = Get-Content -LiteralPath $ownerReceiptPath -Raw |
+            ConvertFrom-Json -Depth 20
+        & $ownerMutation.apply $ownerReceipt
+        Write-TestUtf8 `
+            -LiteralPath $ownerReceiptPath `
+            -Content (ConvertTo-RustyFleetJson -InputObject $ownerReceipt)
+        $ownerPreflight = Get-Content -LiteralPath $first.preflight_path -Raw |
+            ConvertFrom-Json -Depth 20
+        $ownerReceiptSha256 = Get-TestSha256 $ownerReceiptPath
+        $ownerReceiptSize = (Get-Item -LiteralPath $ownerReceiptPath).Length
+        $ownerReceiptAsset = @(
+            $ownerPreflight.assets |
+                Where-Object name -CEQ "release-descriptor.receipt.json"
+        )
+        $ownerReceiptAsset[0].sha256 = $ownerReceiptSha256
+        $ownerReceiptAsset[0].size_bytes = $ownerReceiptSize
+        $ownerPreflight.descriptor_receipt_sha256 = $ownerReceiptSha256
+        $ownerPreflightPath = Join-Path $testRoot (
+            "owner-preflight-$($ownerMutation.name).json"
+        )
+        Write-TestUtf8 `
+            -LiteralPath $ownerPreflightPath `
+            -Content (ConvertTo-RustyFleetJson -InputObject $ownerPreflight)
+        $ownerRejected = $false
+        try {
+            Invoke-PagesFixture `
+                -Fixture ([pscustomobject]@{
+                    metadata_root = $ownerRoot
+                    preflight_path = $ownerPreflightPath
+                }) `
+                -OutputDirectory (
+                    Join-Path $testRoot "pages-owner-$($ownerMutation.name)"
+                ) |
+                Out-Null
+        }
+        catch {
+            $ownerRejected = $true
+        }
+        Assert-Pages `
+            $ownerRejected `
+            "Pages accepted wrong owner $($ownerMutation.name)"
+    }
+
     $damaged = Join-Path $testRoot "damaged"
     Copy-Item `
         -LiteralPath $first.metadata_root `
@@ -472,6 +590,8 @@ try {
         renewal_verified = $true
         stale_metadata_rejected = $true
         wrong_source_tag_asset_signer_rejected = $true
+        owner_release_identity_verified = $true
+        owner_release_identity_substitution_rejected = $true
         replay_rejected = $true
         pages_binary_count = 0
         completed_resume_verified = $true
