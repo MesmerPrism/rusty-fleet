@@ -72,6 +72,7 @@ jobs:
               ($tag -match '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[1-9][0-9]*$')) {
             throw 'metadata tag does not match its channel'
           }
+          "RESOLVED_RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           & git switch --detach $tag
           if ($LASTEXITCODE -ne 0) {
             throw 'exact release tag checkout failed'
@@ -106,7 +107,7 @@ jobs:
         shell: pwsh
         run: |
           Import-Module .\packaging\windows\Publication.Remote.psm1 -Force
-          $tag = "v$env:VERSION"
+          $tag = $env:RESOLVED_RELEASE_TAG
           $download = Join-Path $env:RUNNER_TEMP 'fleet-release-assets'
           if (Test-Path -LiteralPath $download) {
             throw 'release download directory already exists'
@@ -192,7 +193,7 @@ jobs:
             .\packaging\windows\New-WindowsReleaseDescriptor.ps1 `
               -Version $env:VERSION `
               -Channel $env:CHANNEL `
-              -ReleaseTag $env:RELEASE_TAG `
+            -ReleaseTag $env:RESOLVED_RELEASE_TAG `
               -SetupPath (Join-Path $download 'RustyFleet-Setup.exe') `
               -SetupBuildReceiptPath (
                 Join-Path $download 'RustyFleet-Setup.build-receipt.json'
@@ -261,7 +262,7 @@ jobs:
             -ExpectedSourceRevision $env:SOURCE_REVISION `
             -ExpectedSourceTree $env:SOURCE_TREE `
             -RepositoryRoot $env:GITHUB_WORKSPACE `
-            -ExpectedRef "refs/tags/v$env:VERSION"
+            -ExpectedRef "refs/tags/$env:RESOLVED_RELEASE_TAG"
           [IO.File]::WriteAllText(
             (Join-Path $env:RUNNER_TEMP 'metadata-preflight.json'),
             $receipt,
@@ -305,10 +306,6 @@ jobs:
               }
             }
           }
-          elseif ($response.StatusCode -ne 404) {
-            throw 'prior Pages metadata handoff lookup failed closed'
-          }
-
       - name: Stage a binary-free resumable Pages artifact
         shell: pwsh
         run: |
@@ -333,7 +330,7 @@ jobs:
             ExistingDeploymentDirectory = (
               Join-Path $env:RUNNER_TEMP 'fleet-existing-pages'
             )
-            ReleaseTag = $env:RELEASE_TAG
+            ReleaseTag = $env:RESOLVED_RELEASE_TAG
           }
           $previous = Join-Path $env:RUNNER_TEMP 'previous-handoff.json'
           if (Test-Path -LiteralPath $previous -PathType Leaf) {

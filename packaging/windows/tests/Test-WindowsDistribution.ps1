@@ -657,6 +657,77 @@ try {
         Start-TestSetup -LiteralPath $alphaSetupPath -Answer i
     )
     Assert-Distribution ($alphaInstall.exit_code -eq 0) "alpha Setup install failed"
+
+    $shellRoot = Join-Path $testRoot "isolated-shell"
+    $shellInstallRoot = Join-Path $testRoot "alpha-shell-install"
+    $shellSetupOutput = Join-Path $testRoot "alpha-shell-setup"
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $alphaArchiveOne `
+        -DevelopmentInstallRoot $shellInstallRoot `
+        -DevelopmentShellTestRoot $shellRoot `
+        -OutputDirectory $shellSetupOutput | Out-Null
+    $shellSetupPath = Join-Path $shellSetupOutput "RustyFleet-Alpha-Setup.exe"
+    $shellInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $shellSetupPath -Answer i
+    )
+    $alphaRegistry = Join-Path $shellRoot "Registry\rusty-fleet-alpha.json"
+    $stableRegistry = Join-Path $shellRoot "Registry\rusty-fleet.json"
+    $stableShortcut = Join-Path $shellRoot "Programs\Rusty Fleet\stable.lnk"
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $stableRegistry)) | Out-Null
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $stableShortcut)) | Out-Null
+    Write-TestArtifact -LiteralPath $stableRegistry -Content '{"stable":true}'
+    Write-TestArtifact -LiteralPath $stableShortcut -Content "stable"
+    $registration = Get-Content -LiteralPath $alphaRegistry -Raw |
+        ConvertFrom-Json
+    Assert-Distribution (
+        $shellInstall.exit_code -eq 0 -and
+        $registration.UninstallString -match ' --uninstall$' -and
+        $registration.InstallLocation -ceq $shellInstallRoot -and
+        (Test-Path -LiteralPath (
+            Join-Path $shellRoot "Programs\Rusty Fleet Alpha\Rusty Fleet Alpha.lnk"
+        ))
+    ) "alpha shell identity or explicit uninstall registration is incomplete"
+    $uninstall = & $shellSetupPath --uninstall | ConvertFrom-Json
+    Assert-Distribution (
+        $uninstall.result -eq "pass" -and
+        $uninstall.product -eq "rusty-fleet-alpha" -and
+        -not (Test-Path -LiteralPath $alphaRegistry) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $shellRoot "Programs\Rusty Fleet Alpha"
+        )) -and
+        (Test-Path -LiteralPath $stableRegistry) -and
+        (Test-Path -LiteralPath $stableShortcut)
+    ) "alpha uninstall did not remain isolated from stable shell identity"
+
+    $failedShellRoot = Join-Path $testRoot "failed-shell"
+    $failedInstallRoot = Join-Path $testRoot "failed-shell-install"
+    $failedSetupOutput = Join-Path $testRoot "failed-shell-setup"
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $alphaArchiveOne `
+        -DevelopmentInstallRoot $failedInstallRoot `
+        -DevelopmentShellTestRoot $failedShellRoot `
+        -DevelopmentShellFailurePoint after_registry `
+        -OutputDirectory $failedSetupOutput | Out-Null
+    $failedShellInstall = Complete-TestSetup -Process (
+        Start-TestSetup `
+            -LiteralPath (Join-Path $failedSetupOutput "RustyFleet-Alpha-Setup.exe") `
+            -Answer i
+    )
+    Assert-Distribution (
+        $failedShellInstall.exit_code -ne 0 -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $failedInstallRoot "state\current.json"
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $failedShellRoot "Registry\rusty-fleet-alpha.json"
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $failedShellRoot "Programs\Rusty Fleet Alpha"
+        ))
+    ) "shell failure left committed state, shortcuts, or uninstall registration"
+
     $alphaStatePath = Join-Path $alphaSetupRoot "state\current.json"
     $alphaState = Get-Content -LiteralPath $alphaStatePath -Raw |
         ConvertFrom-Json -Depth 20

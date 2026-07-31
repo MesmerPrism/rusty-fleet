@@ -643,17 +643,28 @@ internal static class Installer
         {
             ValidateStateRelease(item, installRoot, guard);
         }
-        CommitState(statePath, stateRoot, state, guard);
-        if (ReleaseConfiguration.BuildKind == "signed-release" &&
-            ReleaseConfiguration.Channel == "alpha")
+        ShellIdentityTransaction? shellTransaction = null;
+        if (ReleaseConfiguration.BuildKind == "signed-release" ||
+            !string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot))
         {
-            ShellIdentity.Apply(
+            shellTransaction = ShellIdentity.Apply(
                 installRoot,
                 Path.Combine(
                     installRoot,
                     current.RelativePath.Replace('/', Path.DirectorySeparatorChar)),
                 ReleaseConfiguration.Version);
         }
+        try
+        {
+            CommitState(statePath, stateRoot, state, guard);
+            shellTransaction?.Commit();
+        }
+        catch
+        {
+            shellTransaction?.Dispose();
+            throw;
+        }
+        shellTransaction?.Dispose();
         ValidateStateRelease(current, installRoot, guard);
         foreach (var item in history)
         {
@@ -677,6 +688,58 @@ internal static class Installer
             ServicesRegistered: 0,
             ConfigurationCreated: false,
             OnboardingInvoked: false);
+    }
+
+    public static UninstallResult Uninstall(string installRoot)
+    {
+        using var guard = DirectoryGuard.OpenInstallChain(installRoot);
+        var stateRoot = guard.CreateOrRetainRelative(installRoot, "state");
+        guard.AcquireTransactionLock(Path.Combine(stateRoot, "setup.lock"));
+        var state = ReadAndValidateState(
+            Path.Combine(stateRoot, "current.json"),
+            installRoot,
+            guard) ?? throw new InvalidOperationException("Fleet is not installed");
+        foreach (var item in new[] { state.Current }.Concat(state.History))
+        {
+            var definition = ValidateStateRelease(item, installRoot, guard);
+            if (!string.Equals(
+                    definition.Channel,
+                    ReleaseConfiguration.Channel,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "installed release channel does not match this Setup identity");
+            }
+        }
+        ShellIdentity.Remove(installRoot);
+        guard.Dispose();
+        DeleteInstallRoot(installRoot);
+        return new UninstallResult(
+            "rusty.fleet.windows_setup_uninstall_result.v1",
+            "pass",
+            "uninstall",
+            ReleaseConfiguration.ProductId,
+            ReleaseConfiguration.Channel,
+            false);
+    }
+
+    private static void DeleteInstallRoot(string installRoot)
+    {
+        IOException? last = null;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            try
+            {
+                Directory.Delete(installRoot, recursive: true);
+                return;
+            }
+            catch (IOException exception)
+            {
+                last = exception;
+                Thread.Sleep(100);
+            }
+        }
+        throw new IOException("installed Fleet tree could not be removed", last);
     }
 
     private static InstallState? ReadAndValidateState(
@@ -806,43 +869,245 @@ internal static class Installer
         bool AutomaticDelete);
 }
 
+internal sealed record UninstallResult(
+    string Schema,
+    string Result,
+    string Action,
+    string Product,
+    string Channel,
+    bool RestartRequired);
+
+internal sealed class ShellIdentityTransaction : IDisposable
+{
+    private readonly Stack<Action> rollback = new();
+    private bool committed;
+
+    internal void AddRollback(Action action) => rollback.Push(action);
+    internal void Commit() => committed = true;
+
+    public void Dispose()
+    {
+        if (committed)
+        {
+            return;
+        }
+        while (rollback.TryPop(out var action))
+        {
+            action();
+        }
+    }
+}
+
 internal static class ShellIdentity
 {
-    internal static void Apply(string installRoot, string releaseRoot, string version)
+    private const string UninstallRegistryPrefix =
+        @"Software\Microsoft\Windows\CurrentVersion\Uninstall\";
+
+    internal static ShellIdentityTransaction Apply(
+        string installRoot,
+        string releaseRoot,
+        string version)
     {
-        var setupRoot = Path.Combine(installRoot, "setup");
-        Directory.CreateDirectory(setupRoot);
-        var installedSetup = Path.Combine(setupRoot, ReleaseConfiguration.SetupFileName);
-        var runningSetup = Environment.ProcessPath
-            ?? throw new IOException("running Setup path is unavailable");
-        File.Copy(runningSetup, installedSetup, true);
+        var transaction = new ShellIdentityTransaction();
+        try
+        {
+            var setupRoot = Path.Combine(installRoot, "setup");
+            CaptureDirectory(setupRoot, transaction);
+            Directory.CreateDirectory(setupRoot);
+            var installedSetup = Path.Combine(setupRoot, ReleaseConfiguration.SetupFileName);
+            CaptureFile(installedSetup, transaction);
+            var runningSetup = Environment.ProcessPath
+                ?? throw new IOException("running Setup path is unavailable");
+            File.Copy(runningSetup, installedSetup, true);
+            InjectFailure("after_setup");
 
-        var programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
-        var shortcutDirectory = Path.Combine(programs, ReleaseConfiguration.DisplayName);
-        Directory.CreateDirectory(shortcutDirectory);
-        CreateShortcut(
-            Path.Combine(shortcutDirectory, $"{ReleaseConfiguration.DisplayName}.lnk"),
-            Path.Combine(releaseRoot, "components", "fleet-console", "RustyFleet.FleetConsole.exe"),
-            releaseRoot);
-        CreateShortcut(
-            Path.Combine(shortcutDirectory, $"{ReleaseConfiguration.DisplayName} Setup.lnk"),
-            installedSetup,
-            setupRoot);
+            var programs = GetProgramsRoot();
+            var shortcutDirectory = Path.Combine(programs, ReleaseConfiguration.DisplayName);
+            CaptureDirectory(shortcutDirectory, transaction);
+            Directory.CreateDirectory(shortcutDirectory);
+            CreateShortcut(
+                Path.Combine(shortcutDirectory, $"{ReleaseConfiguration.DisplayName}.lnk"),
+                Path.Combine(
+                    releaseRoot,
+                    "components",
+                    "fleet-console",
+                    "RustyFleet.FleetConsole.exe"),
+                releaseRoot,
+                transaction);
+            CreateShortcut(
+                Path.Combine(
+                    shortcutDirectory,
+                    $"{ReleaseConfiguration.DisplayName} Setup.lnk"),
+                installedSetup,
+                setupRoot,
+                transaction);
+            InjectFailure("after_shortcuts");
 
-        using var key = Registry.CurrentUser.CreateSubKey(
-            $@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{ReleaseConfiguration.ProductId}",
-            true) ?? throw new IOException("could not create per-user uninstall registration");
-        key.SetValue("DisplayName", ReleaseConfiguration.DisplayName, RegistryValueKind.String);
-        key.SetValue("DisplayVersion", version, RegistryValueKind.String);
-        key.SetValue("InstallLocation", installRoot, RegistryValueKind.String);
-        key.SetValue("UninstallString", $"\"{installedSetup}\"", RegistryValueKind.String);
-        key.SetValue("ModifyPath", $"\"{installedSetup}\"", RegistryValueKind.String);
-        key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
-        key.SetValue("Publisher", "Rusty Fleet contributors", RegistryValueKind.String);
+            WriteUninstallRegistration(installRoot, installedSetup, version, transaction);
+            InjectFailure("after_registry");
+            return transaction;
+        }
+        catch
+        {
+            transaction.Dispose();
+            throw;
+        }
     }
 
-    private static void CreateShortcut(string shortcutPath, string targetPath, string workingDirectory)
+    internal static void Remove(string installRoot)
     {
+        var registeredRoot = ReadRegisteredInstallRoot();
+        if (registeredRoot is not null &&
+            !string.Equals(
+                Path.GetFullPath(registeredRoot),
+                Path.GetFullPath(installRoot),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "uninstall registration belongs to another installation root");
+        }
+        DeleteUninstallRegistration();
+        var shortcutDirectory = Path.Combine(
+            GetProgramsRoot(),
+            ReleaseConfiguration.DisplayName);
+        if (Directory.Exists(shortcutDirectory))
+        {
+            Directory.Delete(shortcutDirectory, recursive: true);
+        }
+    }
+
+    private static string GetProgramsRoot() =>
+        string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot)
+            ? Environment.GetFolderPath(Environment.SpecialFolder.Programs)
+            : Path.Combine(ReleaseConfiguration.DevelopmentShellTestRoot, "Programs");
+
+    private static string TestRegistryPath => Path.Combine(
+        ReleaseConfiguration.DevelopmentShellTestRoot,
+        "Registry",
+        $"{ReleaseConfiguration.ProductId}.json");
+
+    private static void WriteUninstallRegistration(
+        string installRoot,
+        string installedSetup,
+        string version,
+        ShellIdentityTransaction transaction)
+    {
+        var values = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["DisplayName"] = ReleaseConfiguration.DisplayName,
+            ["DisplayVersion"] = version,
+            ["InstallLocation"] = installRoot,
+            ["UninstallString"] = $"\"{installedSetup}\" --uninstall",
+            ["ModifyPath"] = $"\"{installedSetup}\"",
+            ["NoRepair"] = 1,
+            ["Publisher"] = "Rusty Fleet contributors",
+        };
+        if (!string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot))
+        {
+            CaptureFile(TestRegistryPath, transaction);
+            Directory.CreateDirectory(Path.GetDirectoryName(TestRegistryPath)!);
+            File.WriteAllText(
+                TestRegistryPath,
+                JsonSerializer.Serialize(values),
+                new UTF8Encoding(false));
+            return;
+        }
+
+        var keyPath = UninstallRegistryPrefix + ReleaseConfiguration.ProductId;
+        var snapshot = CaptureRegistry(keyPath);
+        transaction.AddRollback(() => RestoreRegistry(keyPath, snapshot));
+        using var key = Registry.CurrentUser.CreateSubKey(keyPath, true)
+            ?? throw new IOException("could not create per-user uninstall registration");
+        foreach (var (name, value) in values)
+        {
+            key.SetValue(
+                name,
+                value,
+                value is int ? RegistryValueKind.DWord : RegistryValueKind.String);
+        }
+    }
+
+    private static string? ReadRegisteredInstallRoot()
+    {
+        if (!string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot))
+        {
+            if (!File.Exists(TestRegistryPath))
+            {
+                return null;
+            }
+            using var document = JsonDocument.Parse(File.ReadAllBytes(TestRegistryPath));
+            return document.RootElement.GetProperty("InstallLocation").GetString();
+        }
+        using var key = Registry.CurrentUser.OpenSubKey(
+            UninstallRegistryPrefix + ReleaseConfiguration.ProductId,
+            writable: false);
+        return key?.GetValue("InstallLocation") as string;
+    }
+
+    private static void DeleteUninstallRegistration()
+    {
+        if (!string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot))
+        {
+            File.Delete(TestRegistryPath);
+            return;
+        }
+        Registry.CurrentUser.DeleteSubKeyTree(
+            UninstallRegistryPrefix + ReleaseConfiguration.ProductId,
+            throwOnMissingSubKey: false);
+    }
+
+    private static Dictionary<string, (object Value, RegistryValueKind Kind)>?
+        CaptureRegistry(string keyPath)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(keyPath, writable: false);
+        return key is null
+            ? null
+            : key.GetValueNames().ToDictionary(
+                name => name,
+                name => (
+                    key.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames)
+                        ?? throw new IOException("uninstall registry value disappeared"),
+                    key.GetValueKind(name)),
+                StringComparer.Ordinal);
+    }
+
+    private static void RestoreRegistry(
+        string keyPath,
+        Dictionary<string, (object Value, RegistryValueKind Kind)>? snapshot)
+    {
+        Registry.CurrentUser.DeleteSubKeyTree(keyPath, throwOnMissingSubKey: false);
+        if (snapshot is null)
+        {
+            return;
+        }
+        using var key = Registry.CurrentUser.CreateSubKey(keyPath, true)
+            ?? throw new IOException("could not restore uninstall registration");
+        foreach (var (name, value) in snapshot)
+        {
+            key.SetValue(name, value.Value, value.Kind);
+        }
+    }
+
+    private static void CreateShortcut(
+        string shortcutPath,
+        string targetPath,
+        string workingDirectory,
+        ShellIdentityTransaction transaction)
+    {
+        CaptureFile(shortcutPath, transaction);
+        if (!string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot))
+        {
+            File.WriteAllText(
+                shortcutPath,
+                JsonSerializer.Serialize(new
+                {
+                    target_path = targetPath,
+                    working_directory = workingDirectory,
+                    description = ReleaseConfiguration.DisplayName,
+                }),
+                new UTF8Encoding(false));
+            return;
+        }
         var shellType = Type.GetTypeFromProgID("WScript.Shell", throwOnError: true)
             ?? throw new PlatformNotSupportedException("Windows Script Host is unavailable");
         dynamic shell = Activator.CreateInstance(shellType)
@@ -852,6 +1117,51 @@ internal static class ShellIdentity
         shortcut.WorkingDirectory = workingDirectory;
         shortcut.Description = ReleaseConfiguration.DisplayName;
         shortcut.Save();
+    }
+
+    private static void CaptureFile(string path, ShellIdentityTransaction transaction)
+    {
+        var existed = File.Exists(path);
+        var bytes = existed ? File.ReadAllBytes(path) : null;
+        transaction.AddRollback(() =>
+        {
+            if (existed)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllBytes(path, bytes!);
+            }
+            else
+            {
+                File.Delete(path);
+            }
+        });
+    }
+
+    private static void CaptureDirectory(
+        string path,
+        ShellIdentityTransaction transaction)
+    {
+        var existed = Directory.Exists(path);
+        transaction.AddRollback(() =>
+        {
+            if (!existed && Directory.Exists(path) &&
+                !Directory.EnumerateFileSystemEntries(path).Any())
+            {
+                Directory.Delete(path);
+            }
+        });
+    }
+
+    private static void InjectFailure(string point)
+    {
+        if (!string.IsNullOrEmpty(ReleaseConfiguration.DevelopmentShellTestRoot) &&
+            string.Equals(
+                ReleaseConfiguration.DevelopmentShellFailurePoint,
+                point,
+                StringComparison.Ordinal))
+        {
+            throw new IOException($"synthetic shell identity failure: {point}");
+        }
     }
 }
 

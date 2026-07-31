@@ -43,6 +43,8 @@ function New-RemoteTestState {
         upload_failure_consumed = $false
         fail_visibility = $false
         malformed_visibility = $false
+        fail_latest = $false
+        latest_tag = "v1.2.2"
         next_release_id = 7001
         releases = @()
     }
@@ -249,6 +251,15 @@ if ($GhArgs[0] -ceq "api") {
         Write-Json @($state.releases)
         exit 0
     }
+    if ($endpoint -ceq "repos/MesmerPrism/rusty-fleet/releases/latest") {
+        if ($state.fail_latest) {
+            exit 52
+        }
+        Write-Json ([ordered]@{
+            tag_name = [string] $state.latest_tag
+        })
+        exit 0
+    }
     if ($endpoint -like "repos/*/releases/*" -and
         $GhArgs -contains "PATCH") {
         if ($state.fail_visibility) {
@@ -401,6 +412,26 @@ exit 49
         $createdState.releases[0].draft -eq $false -and
         @($createdState.releases[0].assets).Count -eq $assetInventory.Count
     ) "create, upload, verify, and visibility flow did not close exactly"
+
+    $latestAlphaState = New-RemoteTestState
+    $latestAlphaState.releases = @(
+        New-RemoteRelease -Assets $exactRemoteAssets
+    )
+    $latestAlphaState.latest_tag = "v1.2.3"
+    Write-RemoteTestJson $statePath $latestAlphaState
+    Assert-RemoteRejected -Context "alpha latest release" -Action {
+        Invoke-RemotePublication -StatePath $statePath -Assets $assetInventory
+    }
+
+    $latestLookupFailure = New-RemoteTestState
+    $latestLookupFailure.releases = @(
+        New-RemoteRelease -Assets $exactRemoteAssets
+    )
+    $latestLookupFailure.fail_latest = $true
+    Write-RemoteTestJson $statePath $latestLookupFailure
+    Assert-RemoteRejected -Context "latest release lookup failure" -Action {
+        Invoke-RemotePublication -StatePath $statePath -Assets $assetInventory
+    }
 
     $partialState = New-RemoteTestState
     $partialState.upload_fail_after = 1

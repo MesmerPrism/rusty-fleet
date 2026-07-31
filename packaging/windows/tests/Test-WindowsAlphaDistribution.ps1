@@ -12,6 +12,7 @@ $setup = Read-Repo "packaging/windows/New-WindowsSetup.ps1"
 $engine = Read-Repo "apps/fleet-setup/SetupEngine.cs"
 $program = Read-Repo "apps/fleet-setup/Program.cs"
 $pages = Read-Repo "packaging/windows/New-WindowsPagesDeployment.ps1"
+$pagesWorkflow = Read-Repo ".github/workflows/pages.yml"
 $stableWorkflow = Read-Repo ".github/workflows/release-windows.yml"
 $alphaWorkflow = Read-Repo ".github/workflows/release-windows-alpha.yml"
 $publication = Read-Repo "packaging/windows/Publish-WindowsRelease.ps1"
@@ -22,6 +23,50 @@ Assert-Alpha ($setup -match 'rusty-fleet-alpha' -and $setup -match 'Rusty Fleet 
 Assert-Alpha ($program -match 'ReleaseConfiguration\.InstallDirectoryName' -and $program -match 'ReleaseConfiguration\.ProductId' -and $engine -match 'channel is not \("dev" or "alpha" or "preview" or "stable"\)') "Setup does not bind alpha identity or preview compatibility"
 Assert-Alpha ($engine -match 'SpecialFolder\.Programs' -and $engine -match 'CurrentVersion\\Uninstall' -and $engine -match 'ReleaseConfiguration\.DisplayName' -and $engine -match 'ReleaseConfiguration\.ProductId') "channel-specific shortcuts or uninstall registration are absent"
 Assert-Alpha ($pages -match 'metadata/\$Channel/release\.json' -and $pages -match 'dev\|alpha\|preview\|stable') "Pages metadata is not channel isolated"
+Assert-Alpha (
+    $pagesWorkflow -match '"RESOLVED_RELEASE_TAG=\$tag" >> \$env:GITHUB_ENV' -and
+    $pagesWorkflow -match '\$tag = \$env:RESOLVED_RELEASE_TAG' -and
+    $pagesWorkflow -match '-ReleaseTag \$env:RESOLVED_RELEASE_TAG' -and
+    $pagesWorkflow -match 'ReleaseTag = \$env:RESOLVED_RELEASE_TAG' -and
+    $pagesWorkflow -notmatch 'ExpectedRef "refs/tags/v\$env:VERSION"' -and
+    $pagesWorkflow -notmatch '(?m)^\s+elseif \(\$response\.StatusCode'
+) "Pages does not retain the exact resolved alpha tag or contains a detached branch"
+$workflowLines = $pagesWorkflow -split '\r?\n'
+$workflowPowerShell = [Collections.Generic.List[string]]::new()
+for ($lineIndex = 0; $lineIndex -lt $workflowLines.Count; $lineIndex++) {
+    if ($workflowLines[$lineIndex] -cnotmatch '^\s{8}run:\s*\|$') {
+        continue
+    }
+    $body = [Collections.Generic.List[string]]::new()
+    for ($bodyIndex = $lineIndex + 1; $bodyIndex -lt $workflowLines.Count; $bodyIndex++) {
+        $line = $workflowLines[$bodyIndex]
+        if ($line.Length -ne 0 -and $line -cnotmatch '^\s{10}') {
+            break
+        }
+        $body.Add(($line -replace '^\s{10}', ''))
+    }
+    $workflowPowerShell.Add(($body -join "`n"))
+}
+Assert-Alpha ($workflowPowerShell.Count -gt 0) "Pages PowerShell steps were not found"
+foreach ($scriptTextValue in $workflowPowerShell) {
+    $scriptText = $scriptTextValue
+    $scriptText = [regex]::Replace(
+        $scriptText,
+        '\$\{\{[^}]+\}\}',
+        "'workflow-expression'"
+    )
+    $tokens = $null
+    $errors = $null
+    [void] [Management.Automation.Language.Parser]::ParseInput(
+        $scriptText,
+        [ref] $tokens,
+        [ref] $errors
+    )
+    Assert-Alpha ($errors.Count -eq 0) (
+        "Pages PowerShell step does not parse: " +
+        ($errors | ForEach-Object Message | Select-Object -First 1)
+    )
+}
 Assert-Alpha ($alphaWorkflow -match 'environment: windows-alpha-release' -and $alphaWorkflow -match 'gh workflow run release-windows\.yml' -and $alphaWorkflow -notmatch 'intentional workflow stop' -and $publication -match '-Prerelease \(\$Channel -cne "stable"\)') "alpha workflow does not delegate the complete never-latest owner release"
 Assert-Alpha ($stableWorkflow -match 'vX\.Y\.Z-alpha\.N' -and $stableWorkflow -match 'inputs\.channel == ''alpha''') "alpha tag or protected environment routing is incomplete"
 Assert-Alpha ($stableWorkflow -match "inputs\.publish_release && inputs\.signing_mode == 'signed-release'") "stable publication gate changed"

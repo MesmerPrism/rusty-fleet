@@ -13,6 +13,15 @@ Setup also owns a `Rusty Fleet Alpha` Start Menu folder and the per-user
 `rusty-fleet-alpha` uninstall registration; both point only into the alpha
 root.
 
+Every signed channel registers an explicit `--uninstall` Setup route under its
+own product identity. Uninstall validates the installed release channel and
+registered install root before removing only that channel's shortcuts,
+registration, and install tree. Setup stages its copied authority, shortcuts,
+and uninstall registration before committing `state/current.json`; shell or
+state-commit failure restores the prior files and registry values. Synthetic
+failure injection exists only in unsigned development builds with an isolated
+filesystem-backed shell root.
+
 Stable retains its existing names, identity, root, and metadata path. Setup
 binds the embedded manifest channel and channel-specific Setup authority before
 mutation. `preview` remains accepted only as a deprecated compatibility input;
@@ -23,7 +32,10 @@ provenance, bundle, signing, descriptor, preflight, and publication inputs to
 Fleet's existing distribution owner under `windows-alpha-release`. That owner
 creates a prerelease and never marks it latest. Pages deployment composes the
 complete site and verifies every non-target metadata byte, especially stable,
-before replacing only the alpha subtree.
+before replacing only the alpha subtree. Renewal resolves the canonical alpha
+tag once and carries it through checkout, remote lookup, publication preflight,
+and Pages handoff. Remote publication also reads back `/releases/latest` after
+visibility and rejects an alpha tag there.
 
 Checked-in production signing policy remains disabled. Synthetic tests use
 ephemeral keys and no fallback production key exists.

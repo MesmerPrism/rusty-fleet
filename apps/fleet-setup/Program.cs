@@ -24,13 +24,33 @@ internal static class Program
             }
 
             var planOnly = args.SequenceEqual(["--plan", "--json"], StringComparer.Ordinal);
-            if (!planOnly && args.Length != 0)
+            var uninstall = args.SequenceEqual(["--uninstall"], StringComparer.Ordinal);
+            var uninstallWorker = args.SequenceEqual(
+                ["--uninstall-worker"],
+                StringComparer.Ordinal);
+            if (!planOnly && !uninstall && !uninstallWorker && args.Length != 0)
             {
-                throw new ArgumentException("accepted arguments are exactly: --plan --json");
+                throw new ArgumentException(
+                    "accepted arguments are exactly: --plan --json or --uninstall");
+            }
+
+            var installRoot = ResolveInstallRoot();
+            if (uninstall || uninstallWorker)
+            {
+                if (uninstall && IsInsideInstallRoot(Environment.ProcessPath, installRoot))
+                {
+                    StartUninstallWorker();
+                    Console.WriteLine(
+                        "{\"schema\":\"rusty.fleet.windows_setup_uninstall_handoff.v1\"," +
+                        "\"result\":\"started\"}");
+                    return 0;
+                }
+                var uninstallResult = Installer.Uninstall(installRoot);
+                Console.WriteLine(JsonSerializer.Serialize(uninstallResult, JsonOptions));
+                return 0;
             }
 
             var bundle = EmbeddedBundle.Load();
-            var installRoot = ResolveInstallRoot();
             using var runningSetup = OpenRunningSetup();
             var plan = new SetupPlan(
                 Schema: "rusty.fleet.guided_installer_plan.v1",
@@ -102,6 +122,37 @@ internal static class Program
                 ? Path.GetFullPath(ReleaseConfiguration.DevelopmentInstallRoot)
                 : throw new InvalidDataException(
                     "release Setup contains a development install-root override");
+
+    private static bool IsInsideInstallRoot(string? path, string installRoot)
+    {
+        if (path is null)
+        {
+            return false;
+        }
+        var prefix = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(installRoot)) + Path.DirectorySeparatorChar;
+        return Path.GetFullPath(path).StartsWith(
+            prefix,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void StartUninstallWorker()
+    {
+        var runningSetup = Environment.ProcessPath
+            ?? throw new IOException("running Setup path is unavailable");
+        var workerPath = Path.Combine(
+            Path.GetTempPath(),
+            $"{ReleaseConfiguration.ProductId}-uninstall-{Guid.NewGuid():N}.exe");
+        File.Copy(runningSetup, workerPath, overwrite: false);
+        using var process = System.Diagnostics.Process.Start(
+            new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = workerPath,
+                Arguments = "--uninstall-worker",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            }) ?? throw new IOException("could not start isolated uninstall worker");
+    }
 
     private static FileStream OpenRunningSetup()
     {

@@ -26,6 +26,9 @@ param(
     [string] $DevelopmentInstallRoot,
     [ValidateRange(0, 10000)]
     [int] $DevelopmentTestPauseAfterRetainMs = 0,
+    [string] $DevelopmentShellTestRoot,
+    [ValidateSet("", "after_setup", "after_shortcuts", "after_registry")]
+    [string] $DevelopmentShellFailurePoint = "",
     [string] $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 )
 
@@ -93,8 +96,13 @@ try {
         throw "signed Setup must not carry a development install-root override"
     }
     if ($BuildKind -eq "signed-release" -and
-        $DevelopmentTestPauseAfterRetainMs -ne 0) {
-        throw "signed Setup must not carry a development test pause"
+        ($DevelopmentTestPauseAfterRetainMs -ne 0 -or
+         $DevelopmentShellTestRoot -or
+         $DevelopmentShellFailurePoint)) {
+        throw "signed Setup must not carry development test controls"
+    }
+    if ($DevelopmentShellFailurePoint -and -not $DevelopmentShellTestRoot) {
+        throw "shell failure injection requires an isolated development shell root"
     }
 
     [System.IO.Directory]::CreateDirectory($buildRoot) | Out-Null
@@ -102,6 +110,14 @@ try {
     $manifestSha256 = Get-RustyFleetSha256 -LiteralPath $manifestPath
     $fleetSigner = if ($FleetSignerThumbprint) {
         $FleetSignerThumbprint.ToUpperInvariant()
+    }
+    else {
+        ""
+    }
+    $developmentShellRoot = if ($DevelopmentShellTestRoot) {
+        [IO.Path]::GetFullPath($DevelopmentShellTestRoot).
+            Replace("\", "\\").
+            Replace('"', '\"')
     }
     else {
         ""
@@ -138,6 +154,8 @@ internal static class ReleaseConfiguration
     internal static readonly string InstallDirectoryName = "$(if ($Channel -eq "alpha") { "RustyFleetAlpha" } else { "RustyFleet" })";
     internal static readonly string DevelopmentInstallRoot = "$developmentRoot";
     internal static readonly int DevelopmentTestPauseAfterRetainMs = $DevelopmentTestPauseAfterRetainMs;
+    internal static readonly string DevelopmentShellTestRoot = "$developmentShellRoot";
+    internal static readonly string DevelopmentShellFailurePoint = "$DevelopmentShellFailurePoint";
 }
 "@
     Write-RustyFleetUtf8 -LiteralPath $configPath -Content $config

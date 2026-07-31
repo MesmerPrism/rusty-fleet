@@ -238,7 +238,7 @@ function Resolve-RustyFleetRemoteTagCommit {
         [string] $GitHubRepository,
 
         [Parameter(Mandatory)]
-        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+$")]
+        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
         [string] $Tag,
 
         [Parameter(Mandatory)]
@@ -331,7 +331,7 @@ function Get-RustyFleetRemoteReleaseByTag {
         [string] $GitHubRepository,
 
         [Parameter(Mandatory)]
-        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+$")]
+        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
         [string] $Tag,
 
         [Parameter(Mandatory)]
@@ -493,7 +493,7 @@ function Publish-RustyFleetGitHubRelease {
         [string] $GitHubRepository,
 
         [Parameter(Mandatory)]
-        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+$")]
+        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
         [string] $Tag,
 
         [Parameter(Mandatory)]
@@ -666,6 +666,22 @@ function Publish-RustyFleetGitHubRelease {
     [void] (Assert-RustyFleetRemoteAssetInventory `
         -ExpectedAssets $AssetInventory `
         -RemoteAssets @($visible.assets))
+    if ($Prerelease) {
+        $latest = (Invoke-RustyFleetGhJson `
+            -GhExecutable $GhExecutable `
+            -Arguments @(
+                "api",
+                "--method",
+                "GET",
+                "repos/$GitHubRepository/releases/latest"
+            ) `
+            -Context "latest release isolation lookup").value
+        if (-not (Test-RustyFleetRemoteProperty $latest "tag_name") -or
+            $latest.tag_name -isnot [string] -or
+            $latest.tag_name -ceq $Tag) {
+            throw "prerelease became the repository latest release"
+        }
+    }
     & $AssertLocalState
     [void] (Resolve-RustyFleetRemoteTagCommit `
         -GitHubRepository $GitHubRepository `
