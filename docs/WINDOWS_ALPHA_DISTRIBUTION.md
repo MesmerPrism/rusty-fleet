@@ -49,6 +49,9 @@ renames it back and restores shell identity byte-for-byte. Once recursive
 deletion has started, failure never recreates shortcuts to damaged content:
 shell identity stays absent and Setup returns `recoverable_cleanup` with the
 exact quarantine and adjacent recovery-receipt names for reviewed cleanup.
+Failure to write that receipt cannot cross the irreversible deletion boundary:
+the result instead sets `recovery_receipt_write_failed`, reports no durable
+receipt, and leaves the damaged tree quarantined with shell identity absent.
 
 Checked-in production signing policy remains disabled. Synthetic tests use
 ephemeral keys and no fallback production key exists.

@@ -787,6 +787,56 @@ try {
         ))
     ) "partial recursive deletion restored shell identity or lost recovery state"
 
+    $receiptFailureShellRoot = Join-Path $testRoot "shell-receipt-failure"
+    $receiptFailureInstallRoot = Join-Path $testRoot "install-receipt-failure"
+    $receiptFailureSetupOutput = Join-Path $testRoot "setup-receipt-failure"
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $alphaArchiveOne `
+        -DevelopmentInstallRoot $receiptFailureInstallRoot `
+        -DevelopmentShellTestRoot $receiptFailureShellRoot `
+        -DevelopmentShellFailurePoint `
+            uninstall_partial_delete_receipt_failure `
+        -OutputDirectory $receiptFailureSetupOutput | Out-Null
+    $receiptFailureSetup = Join-Path (
+        $receiptFailureSetupOutput
+    ) "RustyFleet-Alpha-Setup.exe"
+    $receiptFailureInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $receiptFailureSetup -Answer i
+    )
+    Assert-Distribution (
+        $receiptFailureInstall.exit_code -eq 0
+    ) "receipt-write recovery fixture did not install"
+    $receiptFailureResult = & $receiptFailureSetup --uninstall |
+        ConvertFrom-Json
+    $receiptFailureParent = Split-Path -Parent $receiptFailureInstallRoot
+    $receiptFailureQuarantine = Join-Path (
+        $receiptFailureParent
+    ) $receiptFailureResult.quarantine
+    Assert-Distribution (
+        $receiptFailureResult.result -eq "recoverable_cleanup" -and
+        $receiptFailureResult.recovery_receipt_write_failed -eq $true -and
+        $null -eq $receiptFailureResult.recovery_receipt -and
+        -not (Test-Path -LiteralPath $receiptFailureInstallRoot) -and
+        (Test-Path `
+            -LiteralPath $receiptFailureQuarantine `
+            -PathType Container) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $receiptFailureQuarantine "state\current.json"
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $receiptFailureShellRoot (
+                "Registry\rusty-fleet-alpha.json"
+            )
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $receiptFailureShellRoot "Programs\Rusty Fleet Alpha"
+        ))
+    ) (
+        "recovery receipt failure restored damaged quarantine as canonical " +
+        "or recreated shell identity"
+    )
+
     $reparseShellRoot = Join-Path $testRoot "shell-uninstall-reparse"
     $reparseInstallRoot = Join-Path $testRoot "install-uninstall-reparse"
     $reparseSetupOutput = Join-Path $testRoot "setup-uninstall-reparse"

@@ -726,24 +726,6 @@ internal static class Installer
         try
         {
             ShellIdentity.InjectUninstallFailure("uninstall_delete_root");
-            if (!DeleteQuarantine(quarantine))
-            {
-                shellTransaction.Commit();
-                shellTransaction.Dispose();
-                var receiptName = WriteUninstallRecoveryReceipt(
-                    installRoot,
-                    quarantine);
-                return new UninstallResult(
-                    "rusty.fleet.windows_setup_uninstall_result.v2",
-                    "recoverable_cleanup",
-                    "uninstall",
-                    ReleaseConfiguration.ProductId,
-                    ReleaseConfiguration.Channel,
-                    false,
-                    Path.GetFileName(quarantine),
-                    receiptName);
-            }
-            shellTransaction.Commit();
         }
         catch
         {
@@ -751,6 +733,35 @@ internal static class Installer
             shellTransaction.Dispose();
             throw;
         }
+        var deleted = DeleteQuarantine(quarantine);
+        if (!deleted)
+        {
+            shellTransaction.Commit();
+            shellTransaction.Dispose();
+            string? receiptName = null;
+            var receiptWriteFailed = false;
+            try
+            {
+                receiptName = WriteUninstallRecoveryReceipt(
+                    installRoot,
+                    quarantine);
+            }
+            catch
+            {
+                receiptWriteFailed = true;
+            }
+            return new UninstallResult(
+                "rusty.fleet.windows_setup_uninstall_result.v2",
+                "recoverable_cleanup",
+                "uninstall",
+                ReleaseConfiguration.ProductId,
+                ReleaseConfiguration.Channel,
+                false,
+                Path.GetFileName(quarantine),
+                receiptName,
+                receiptWriteFailed);
+        }
+        shellTransaction.Commit();
         shellTransaction.Dispose();
         return new UninstallResult(
             "rusty.fleet.windows_setup_uninstall_result.v1",
@@ -760,7 +771,8 @@ internal static class Installer
             ReleaseConfiguration.Channel,
             false,
             null,
-            null);
+            null,
+            false);
     }
 
     private static string QuarantineInstallRoot(string installRoot)
@@ -824,14 +836,15 @@ internal static class Installer
 
     private static bool DeleteQuarantine(string quarantine)
     {
-        if (ReleaseConfiguration.DevelopmentShellFailurePoint ==
-            "uninstall_partial_delete")
+        if (ReleaseConfiguration.DevelopmentShellFailurePoint is
+            "uninstall_partial_delete" or
+            "uninstall_partial_delete_receipt_failure")
         {
             var statePath = Path.Combine(quarantine, "state", "current.json");
             File.Delete(statePath);
             return false;
         }
-        IOException? last = null;
+        Exception? last = null;
         for (var attempt = 0; attempt < 100; attempt++)
         {
             try
@@ -839,7 +852,8 @@ internal static class Installer
                 Directory.Delete(quarantine, recursive: true);
                 return true;
             }
-            catch (IOException exception)
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
             {
                 last = exception;
                 Thread.Sleep(100);
@@ -853,6 +867,11 @@ internal static class Installer
         string installRoot,
         string quarantine)
     {
+        if (ReleaseConfiguration.DevelopmentShellFailurePoint ==
+            "uninstall_partial_delete_receipt_failure")
+        {
+            throw new IOException("synthetic recovery receipt write failure");
+        }
         var parent = Directory.GetParent(Path.GetFullPath(installRoot))?.FullName
             ?? throw new IOException("install root has no recovery parent");
         var quarantineName = Path.GetFileName(quarantine);
@@ -1010,7 +1029,8 @@ internal sealed record UninstallResult(
     string Channel,
     bool RestartRequired,
     string? Quarantine,
-    string? RecoveryReceipt);
+    string? RecoveryReceipt,
+    bool RecoveryReceiptWriteFailed);
 
 internal sealed class ShellIdentityTransaction : IDisposable
 {

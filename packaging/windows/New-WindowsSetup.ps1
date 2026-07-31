@@ -35,7 +35,8 @@ param(
         "uninstall_after_shortcuts",
         "uninstall_after_registry",
         "uninstall_delete_root",
-        "uninstall_partial_delete"
+        "uninstall_partial_delete",
+        "uninstall_partial_delete_receipt_failure"
     )]
     [string] $DevelopmentShellFailurePoint = "",
     [string] $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
