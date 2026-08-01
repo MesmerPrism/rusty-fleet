@@ -227,9 +227,9 @@ fn preview_arguments() -> Vec<String> {
     [
         "package-preview",
         "manifest-url",
-        "https://updates.example.invalid/alpha/envelope.json",
+        "https://updates.example.invalid/labs/envelope.json",
         "org.example.kiosk",
-        "alpha",
+        "labs",
         "device.quest.1@7",
         "device.quest.2@8",
     ]
@@ -329,7 +329,7 @@ fn package_release_id_is_explicit_and_not_inferred_from_a_url() {
         "release-id",
         "alpha/release-15",
         "org.example.kiosk",
-        "alpha",
+        "labs",
         "device.quest.1@7",
     ]
     .into_iter()

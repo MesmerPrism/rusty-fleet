@@ -15,8 +15,14 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "preview", "stable")]
+    [ValidateSet("dev", "labs", "stable")]
     [string] $Channel,
+
+    [ValidateSet("alpha", "beta", "rc", "released")]
+    [string] $Maturity = "released",
+
+    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:(?:-alpha|-beta|-rc)\.[1-9][0-9]*)?$")]
+    [string] $ReleaseTag,
 
     [Parameter(Mandatory)]
     [ValidatePattern("^[0-9A-Fa-f]{40}$")]
@@ -53,6 +59,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "Publication.Remote.psm1") -Force
+
+$tag = if ($ReleaseTag) { $ReleaseTag } else { "v$Version" }
+$expectedReleaseTagPattern = if ($Maturity -eq "released") {
+    "^v$([regex]::Escape($Version))$"
+}
+else {
+    "^v$([regex]::Escape($Version))-$Maturity\.[1-9][0-9]*$"
+}
+if ($tag -cnotmatch $expectedReleaseTagPattern) {
+    throw "release tag does not bind the exact version and channel"
+}
 
 function Assert-ExactProperties {
     param(
@@ -592,7 +609,6 @@ namespace RustyFleet.Publication
 "@
 }
 
-$tag = "v$Version"
 if (-not $ExpectedRef) {
     $ExpectedRef = "refs/tags/$tag"
 }
@@ -602,14 +618,22 @@ if ($ExpectedRef -cne "refs/tags/$tag") {
 $repoPath = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $script:repoPath = $repoPath
 $assetRoot = (Resolve-Path -LiteralPath $AssetDirectory).Path
-$bundleName = "RustyFleet-$Version-win-x64"
-$setupName = "RustyFleet-Setup.exe"
+$productStem = if ($Channel -eq "labs") { "RustyFleet-Labs" } else { "RustyFleet" }
+$bundleName = "$productStem-$Version-win-x64"
+$setupName = if ($Channel -eq "labs") { "RustyFleet-Labs-Setup.exe" } else { "RustyFleet-Setup.exe" }
+$installationIdentity = if ($Channel -eq "labs") { "rusty-fleet-labs" } else { "rusty-fleet" }
+$productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
+$distributionTrack = switch ($Channel) {
+    "dev" { "local-development" }
+    "labs" { "github-prerelease" }
+    "stable" { "github-release" }
+}
 $zipName = "$bundleName.zip"
 $zipSidecarName = "$zipName.sha256"
 $manifestName = "$bundleName.manifest.json"
 $checksumsName = "$bundleName.checksums.sha256"
 $validationReceiptName = "$bundleName.validation-receipt.json"
-$setupBuildReceiptName = "RustyFleet-Setup.build-receipt.json"
+$setupBuildReceiptName = if ($Channel -eq "labs") { "RustyFleet-Labs-Setup.build-receipt.json" } else { "RustyFleet-Setup.build-receipt.json" }
 $releaseJsonName = "release.json"
 $descriptorReceiptName = "release-descriptor.receipt.json"
 $spkiName = "release-descriptor.spki.der"
@@ -722,6 +746,9 @@ try {
         "result",
         "version",
         "channel",
+        "product_channel",
+        "maturity",
+        "distribution_track",
         "build_kind",
         "setup_sha256",
         "bundle_sha256",
@@ -734,10 +761,12 @@ try {
         "distribution_eligibility"
     ) -Context "Setup build receipt"
     if ($buildReceipt.schema -cne
-            "rusty.fleet.windows_setup_build_receipt.v1" -or
+            "rusty.fleet.windows_setup_build_receipt.v2" -or
         $buildReceipt.result -cne "pass" -or
         $buildReceipt.version -cne $Version -or
-        $buildReceipt.channel -cne $Channel -or
+        $buildReceipt.product_channel -cne $productChannel -or
+        $buildReceipt.maturity -cne $Maturity -or
+        $buildReceipt.distribution_track -cne $distributionTrack -or
         $buildReceipt.build_kind -cne "signed-release" -or
         $buildReceipt.source_revision -cne $ExpectedSourceRevision -or
         $buildReceipt.source_tree -cne $ExpectedSourceTree -or
@@ -832,8 +861,11 @@ try {
         -Bytes $manifestBytes `
         -MaximumBytes (16 * 1024 * 1024) `
         -Context "release manifest"
-    if ($manifest.version -cne $Version -or
-        $manifest.channel -cne $Channel -or
+    if ($manifest.schema -cne "rusty.fleet.windows_release_manifest.v2" -or
+        $manifest.version -cne $Version -or
+        $manifest.product_channel -cne $productChannel -or
+        $manifest.maturity -cne $Maturity -or
+        $manifest.distribution_track -cne $distributionTrack -or
         $manifest.build.kind -cne "signed-release" -or
         $manifest.build.source_tree_clean -ne $true -or
         $manifest.source.revision -cne $ExpectedSourceRevision -or
@@ -903,7 +935,7 @@ try {
         "signer_spki_sha256"
     ) -Context "release descriptor envelope"
     if ($envelope.schema -cne
-            "rusty.fleet.release_descriptor_envelope.v2" -or
+            "rusty.fleet.release_descriptor_envelope.v3" -or
         $envelope.signer_spki_sha256 -cne
             $ExpectedDescriptorSignerSpkiSha256) {
         throw "release descriptor envelope identity is not exact"
@@ -921,10 +953,13 @@ try {
     Assert-ExactProperties -InputObject $payload -Expected @(
         "asset",
         "channel",
+        "distribution_track",
         "descriptor_id",
         "expires_at_ms",
         "issued_at_ms",
+        "maturity",
         "product",
+        "product_channel",
         "schema",
         "validity_duration_ms",
         "version"
@@ -942,10 +977,13 @@ try {
         "https://github.com/$GitHubRepository/releases/download/" +
         "$tag/$setupName"
     )
-    if ($payload.schema -cne "rusty.fleet.windows_release.v2" -or
-        $payload.product -cne "rusty-fleet" -or
+    if ($payload.schema -cne "rusty.fleet.windows_release.v3" -or
+        $payload.product -cne $installationIdentity -or
         $payload.version -cne $Version -or
+        $payload.product_channel -cne $productChannel -or
+        $payload.maturity -cne $Maturity -or
         $payload.channel -cne $Channel -or
+        $payload.distribution_track -cne $distributionTrack -or
         $payload.descriptor_id -cnotmatch "^[A-Za-z0-9._-]{1,128}$" -or
         [long] $payload.issued_at_ms -le 0 -or
         [long] $payload.expires_at_ms -le
@@ -982,17 +1020,20 @@ try {
         '{"asset":{' +
         '"installer_protocol":"rusty.fleet.guided_setup.v1",' +
         '"media_type":"application/vnd.microsoft.portable-executable",' +
-        '"name":"RustyFleet-Setup.exe",' +
+        '"name":"' + $setupName + '",' +
         '"sha256":"' + $setupSha256 + '",' +
         '"signer_certificate_sha256":"' + $setupCertificateSha256 + '",' +
         '"size_bytes":' + [long] $payload.asset.size_bytes + ',' +
         '"url":"' + $expectedAssetUrl + '"},' +
         '"channel":"' + $Channel + '",' +
+        '"distribution_track":"' + $distributionTrack + '",' +
         '"descriptor_id":"' + $payload.descriptor_id + '",' +
         '"expires_at_ms":' + [long] $payload.expires_at_ms + ',' +
         '"issued_at_ms":' + [long] $payload.issued_at_ms + ',' +
-        '"product":"rusty-fleet",' +
-        '"schema":"rusty.fleet.windows_release.v2",' +
+        '"maturity":"' + $Maturity + '",' +
+        '"product":"' + $installationIdentity + '",' +
+        '"product_channel":"' + $productChannel + '",' +
+        '"schema":"rusty.fleet.windows_release.v3",' +
         '"validity_duration_ms":' +
             [long] $payload.validity_duration_ms + ',' +
         '"version":"' + $Version + '"}'
@@ -1034,6 +1075,12 @@ try {
         "descriptor_id",
         "version",
         "channel",
+        "product_channel",
+        "maturity",
+        "distribution_track",
+        "release_tag",
+        "installation_identity",
+        "primary_artifact",
         "issued_at_ms",
         "expires_at_ms",
         "validity_duration_ms",
@@ -1054,12 +1101,32 @@ try {
         "pages_path",
         "asset_url"
     ) -Context "release descriptor receipt"
+    Assert-ExactProperties -InputObject $descriptorReceipt.primary_artifact -Expected @(
+        "role",
+        "name",
+        "sha256",
+        "bytes",
+        "url"
+    ) -Context "release descriptor primary artifact"
     if ($descriptorReceipt.schema -cne
-            "rusty.fleet.windows_release_descriptor_receipt.v2" -or
+            "rusty.fleet.windows_release_descriptor_receipt.v4" -or
         $descriptorReceipt.result -cne "pass" -or
         $descriptorReceipt.descriptor_id -cne $payload.descriptor_id -or
         $descriptorReceipt.version -cne $Version -or
+        $descriptorReceipt.product_channel -cne $productChannel -or
+        $descriptorReceipt.maturity -cne $Maturity -or
         $descriptorReceipt.channel -cne $Channel -or
+        $descriptorReceipt.distribution_track -cne $distributionTrack -or
+        $descriptorReceipt.release_tag -cne $tag -or
+        $descriptorReceipt.installation_identity -cne
+            $installationIdentity -or
+        $descriptorReceipt.primary_artifact.role -cne
+            "complete-product" -or
+        $descriptorReceipt.primary_artifact.name -cne $setupName -or
+        $descriptorReceipt.primary_artifact.sha256 -cne $setupSha256 -or
+        [long] $descriptorReceipt.primary_artifact.bytes -ne
+            $assets.Length($setupName) -or
+        $descriptorReceipt.primary_artifact.url -cne $expectedAssetUrl -or
         [long] $descriptorReceipt.issued_at_ms -ne
             [long] $payload.issued_at_ms -or
         [long] $descriptorReceipt.expires_at_ms -ne
@@ -1152,11 +1219,14 @@ try {
     }
 
     [ordered]@{
-        schema = "rusty.fleet.windows_publication_receipt.v1"
+        schema = "rusty.fleet.windows_publication_receipt.v2"
         result = "pass"
         mode = $Mode.ToLowerInvariant()
         version = $Version
+        product_channel = $productChannel
+        maturity = $Maturity
         channel = $Channel
+        distribution_track = $distributionTrack
         tag = $tag
         source_revision = $ExpectedSourceRevision
         source_tree = $ExpectedSourceTree

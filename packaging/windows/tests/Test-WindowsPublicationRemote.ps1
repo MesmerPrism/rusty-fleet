@@ -43,6 +43,9 @@ function New-RemoteTestState {
         upload_failure_consumed = $false
         fail_visibility = $false
         malformed_visibility = $false
+        fail_latest = $false
+        latest_not_found = $false
+        latest_tag = "v1.2.2"
         next_release_id = 7001
         releases = @()
     }
@@ -249,6 +252,24 @@ if ($GhArgs[0] -ceq "api") {
         Write-Json @($state.releases)
         exit 0
     }
+    if ($endpoint -ceq "repos/MesmerPrism/rusty-fleet/releases/latest") {
+        if ($state.latest_not_found) {
+            if ($GhArgs -contains "--include") {
+                [Console]::Out.Write(
+                    "HTTP/2.0 404 Not Found`ncontent-type: application/json`n`n" +
+                    '{"message":"Not Found","status":"404"}'
+                )
+            }
+            exit 53
+        }
+        if ($state.fail_latest) {
+            exit 52
+        }
+        Write-Json ([ordered]@{
+            tag_name = [string] $state.latest_tag
+        })
+        exit 0
+    }
     if ($endpoint -like "repos/*/releases/*" -and
         $GhArgs -contains "PATCH") {
         if ($state.fail_visibility) {
@@ -401,6 +422,49 @@ exit 49
         $createdState.releases[0].draft -eq $false -and
         @($createdState.releases[0].assets).Count -eq $assetInventory.Count
     ) "create, upload, verify, and visibility flow did not close exactly"
+
+    $latestAlphaState = New-RemoteTestState
+    $latestAlphaState.releases = @(
+        New-RemoteRelease -Assets $exactRemoteAssets
+    )
+    $latestAlphaState.latest_tag = "v1.2.3"
+    Write-RemoteTestJson $statePath $latestAlphaState
+    Assert-RemoteRejected -Context "alpha latest release" -Action {
+        Invoke-RemotePublication -StatePath $statePath -Assets $assetInventory
+    }
+
+    $latestLookupFailure = New-RemoteTestState
+    $latestLookupFailure.releases = @(
+        New-RemoteRelease -Assets $exactRemoteAssets
+    )
+    $latestLookupFailure.fail_latest = $true
+    Write-RemoteTestJson $statePath $latestLookupFailure
+    Assert-RemoteRejected -Context "latest release lookup failure" -Action {
+        Invoke-RemotePublication -StatePath $statePath -Assets $assetInventory
+    }
+
+    $noStableRelease = New-RemoteTestState
+    $noStableRelease.releases = @(
+        New-RemoteRelease -Assets $exactRemoteAssets
+    )
+    $noStableRelease.latest_not_found = $true
+    Write-RemoteTestJson $statePath $noStableRelease
+    $absentLatest = Invoke-RemotePublication `
+        -StatePath $statePath `
+        -Assets $assetInventory
+    Assert-RemoteTest (
+        $absentLatest.visible_verified
+    ) "authoritative latest-release 404 was not accepted"
+
+    $latestPrereleaseTag = New-RemoteTestState
+    $latestPrereleaseTag.releases = @(
+        New-RemoteRelease -Assets $exactRemoteAssets
+    )
+    $latestPrereleaseTag.latest_tag = "v1.2.2-alpha.4"
+    Write-RemoteTestJson $statePath $latestPrereleaseTag
+    Assert-RemoteRejected -Context "non-stable latest tag" -Action {
+        Invoke-RemotePublication -StatePath $statePath -Assets $assetInventory
+    }
 
     $partialState = New-RemoteTestState
     $partialState.upload_fail_after = 1

@@ -230,6 +230,48 @@ function Invoke-RustyFleetGhJson {
     }
 }
 
+function Get-RustyFleetLatestReleaseOrAbsent {
+    param(
+        [Parameter(Mandatory)][string] $GitHubRepository,
+        [Parameter(Mandatory)][string] $GhExecutable
+    )
+
+    $arguments = @(
+        "api",
+        "--method",
+        "GET",
+        "repos/$GitHubRepository/releases/latest"
+    )
+    try {
+        return (Invoke-RustyFleetGhJson `
+            -GhExecutable $GhExecutable `
+            -Arguments $arguments `
+            -Context "latest release isolation lookup").value
+    }
+    catch {
+        $invocation = Get-RustyFleetGhInvocation `
+            -GhExecutable $GhExecutable `
+            -Arguments ($arguments + "--include")
+        try {
+            $result = [RustyFleet.Publication.RemoteBoundedProcessRunner]::Run(
+                $invocation.executable,
+                [string[]] $invocation.arguments,
+                30000,
+                4194304
+            )
+        }
+        catch {
+            throw "latest release isolation lookup failed closed"
+        }
+        if ($result.ExitCode -eq 0 -or
+            $result.StandardOutput -cnotmatch
+                '(?s)^HTTP/\S+\s+404(?:\s|$).*\{\s*"message"\s*:\s*"Not Found"') {
+            throw "latest release isolation lookup failed closed"
+        }
+        return $null
+    }
+}
+
 function Resolve-RustyFleetRemoteTagCommit {
     [CmdletBinding()]
     param(
@@ -238,7 +280,7 @@ function Resolve-RustyFleetRemoteTagCommit {
         [string] $GitHubRepository,
 
         [Parameter(Mandatory)]
-        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+$")]
+        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
         [string] $Tag,
 
         [Parameter(Mandatory)]
@@ -331,7 +373,7 @@ function Get-RustyFleetRemoteReleaseByTag {
         [string] $GitHubRepository,
 
         [Parameter(Mandatory)]
-        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+$")]
+        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
         [string] $Tag,
 
         [Parameter(Mandatory)]
@@ -493,7 +535,7 @@ function Publish-RustyFleetGitHubRelease {
         [string] $GitHubRepository,
 
         [Parameter(Mandatory)]
-        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+$")]
+        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
         [string] $Tag,
 
         [Parameter(Mandatory)]
@@ -666,6 +708,19 @@ function Publish-RustyFleetGitHubRelease {
     [void] (Assert-RustyFleetRemoteAssetInventory `
         -ExpectedAssets $AssetInventory `
         -RemoteAssets @($visible.assets))
+    if ($Prerelease) {
+        $latest = Get-RustyFleetLatestReleaseOrAbsent `
+            -GitHubRepository $GitHubRepository `
+            -GhExecutable $GhExecutable
+        if ($null -ne $latest -and (
+            -not (Test-RustyFleetRemoteProperty $latest "tag_name") -or
+            $latest.tag_name -isnot [string] -or
+            $latest.tag_name -cnotmatch "^v[0-9]+\.[0-9]+\.[0-9]+$" -or
+            $latest.tag_name -ceq $Tag
+        )) {
+            throw "prerelease became the repository latest release"
+        }
+    }
     & $AssertLocalState
     [void] (Resolve-RustyFleetRemoteTagCommit `
         -GitHubRepository $GitHubRepository `

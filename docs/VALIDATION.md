@@ -110,6 +110,18 @@ distribution aggregate and every `.github/**` path are release-authority
 surfaces. Ordinary product code
 remains `standard`, and ordinary documentation remains `focused`.
 
+The Windows distribution aggregate additionally proves the full-product Labs
+identity, explicit Stable default, exact product-channel/maturity/distribution-
+track axes, rejection of legacy alpha/preview selectors, Stable preservation,
+cross-channel rejection, signed descriptor freshness/signer checks, Pages
+replay isolation, deterministic bundles, and never-latest prerelease policy.
+These checks are synthetic and device-free; production publication remains
+disabled in the checked-in trust policy.
+Labs dynamically builds two complete bundles and compares their archive
+digests, executes the real Setup plan protocol, rejects Stable/Labs artifact
+substitution, inspects channel-specific shell registration source, and
+preserves a pre-existing stable Pages sentinel byte-for-byte.
+
 Provider-catalog source tests cover exact contract/version/action/owner/receipt
 bindings, RFC3339 offsets and leap seconds, duplicate IDs, freshness drift,
 stale/future observations, executable vocabulary, artifact swaps, oversized

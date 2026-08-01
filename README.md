@@ -207,6 +207,17 @@ Setup and archives remain GitHub Release assets. The workflow is inert until
 its explicit deployment-enable variable, reviewed public pins, exact release
 identity, and protected descriptor key are configured.
 
+The full-product Windows distribution has persistent `stable` and opt-in
+`labs` product channels. Fleet's release `channel` (`dev|labs|stable`), release
+maturity (`alpha|beta|rc|released`), and transport `distribution_track`
+(`local-development|github-prerelease|github-release`) remain independent; an
+`-alpha.N` tag never selects Labs by itself. Labs uses
+`rusty-fleet-labs`, `RustyFleet-Labs-*`, `%LOCALAPPDATA%\RustyFleetLabs`, and
+`Rusty-Fleet/metadata/labs/release.json`. Stable identities and URLs remain
+unchanged, and legacy `alpha`/`preview` selectors are rejected rather than
+silently mapped. See
+[Windows Stable and Labs Distribution](docs/WINDOWS_LABS_DISTRIBUTION.md).
+
 The deterministic M1 negative-path harness runs four independent devices
 through sleep/wake aging, route loss/recovery, duplicate and stale check-ins,
 agent upgrade, old-epoch replay, and final canonical recovery. The exact

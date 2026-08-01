@@ -38,6 +38,32 @@ function ConvertTo-TestBase64Url([byte[]] $Bytes) {
 
 $packagingRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
+foreach ($case in @(
+    [pscustomobject]@{ channel = "dev"; maturity = "released"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "labs"; maturity = "alpha"; tag = "v9.9.9-alpha.1" }
+)) {
+    $message = ""
+    try {
+        & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
+            -Version "1.2.3" `
+            -Channel $case.channel `
+            -Maturity $case.maturity `
+            -ReleaseTag $case.tag `
+            -SiteDirectory "missing-site" `
+            -MetadataDirectory "missing-metadata" `
+            -PublicationPreflightReceiptPath "missing-preflight.json" `
+            -ExpectedSourceRevision ("1" * 40) `
+            -ExpectedSourceTree ("2" * 40) `
+            -ExpectedDescriptorSignerSpkiSha256 ("3" * 64) `
+            -OutputDirectory "unused-pages-output" | Out-Null
+    }
+    catch {
+        $message = $_.Exception.Message
+    }
+    Assert-Pages `
+        ($message -ceq "release tag does not bind the exact version and channel") `
+        "$($case.channel) Pages staging accepted a cross-version release tag"
+}
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-pages-test-$([Guid]::NewGuid().ToString('N'))"
 )
@@ -82,12 +108,15 @@ function New-PagesMetadataFixture {
             $setupSignerCertificateSha256 + '",' +
         '"size_bytes":1234,' +
         '"url":"' + $assetUrl + '"},' +
-        '"channel":"preview",' +
+        '"channel":"dev",' +
+        '"distribution_track":"local-development",' +
         '"descriptor_id":"' + $DescriptorId + '",' +
         '"expires_at_ms":' + $expiresAtMs + ',' +
         '"issued_at_ms":' + $issuedAtMs + ',' +
+        '"maturity":"released",' +
         '"product":"rusty-fleet",' +
-        '"schema":"rusty.fleet.windows_release.v2",' +
+        '"product_channel":"stable",' +
+        '"schema":"rusty.fleet.windows_release.v3",' +
         '"validity_duration_ms":' + $durationMs + ',' +
         '"version":"1.2.3"}'
     )
@@ -98,7 +127,7 @@ function New-PagesMetadataFixture {
         [Security.Cryptography.RSASignaturePadding]::Pss
     )
     $envelope = [ordered]@{
-        schema = "rusty.fleet.release_descriptor_envelope.v2"
+        schema = "rusty.fleet.release_descriptor_envelope.v3"
         payload_base64url = ConvertTo-TestBase64Url $payloadBytes
         signature_base64url = ConvertTo-TestBase64Url $signatureBytes
         signer_spki_sha256 = $spkiSha256
@@ -110,11 +139,23 @@ function New-PagesMetadataFixture {
     $spkiPath = Join-Path $metadataRoot "release-descriptor.spki.der"
     [IO.File]::WriteAllBytes($spkiPath, $spkiBytes)
     $receipt = [ordered]@{
-        schema = "rusty.fleet.windows_release_descriptor_receipt.v2"
+        schema = "rusty.fleet.windows_release_descriptor_receipt.v4"
         result = "pass"
         descriptor_id = $DescriptorId
         version = "1.2.3"
-        channel = "preview"
+        product_channel = "stable"
+        maturity = "released"
+        channel = "dev"
+        distribution_track = "local-development"
+        release_tag = "v1.2.3"
+        installation_identity = "rusty-fleet"
+        primary_artifact = [ordered]@{
+            role = "complete-product"
+            name = "RustyFleet-Setup.exe"
+            sha256 = $setupSha256
+            bytes = 1234
+            url = $assetUrl
+        }
         issued_at_ms = $issuedAtMs
         expires_at_ms = $expiresAtMs
         validity_duration_ms = $durationMs
@@ -134,7 +175,7 @@ function New-PagesMetadataFixture {
         descriptor_sha256 = Get-TestSha256 $descriptorPath
         canonical_payload = "rfc8785_jcs_closed_shape"
         signature = "rsa_pss_sha256"
-        pages_path = "Rusty-Fleet/metadata/preview/release.json"
+        pages_path = "Rusty-Fleet/metadata/dev/release.json"
         asset_url = $assetUrl
     }
     $receiptPath = Join-Path $metadataRoot (
@@ -198,11 +239,14 @@ function New-PagesMetadataFixture {
         }
     ) | Sort-Object name
     $preflight = [ordered]@{
-        schema = "rusty.fleet.windows_publication_receipt.v1"
+        schema = "rusty.fleet.windows_publication_receipt.v2"
         result = "pass"
         mode = "preflight"
         version = "1.2.3"
-        channel = "preview"
+        product_channel = "stable"
+        maturity = "released"
+        channel = "dev"
+        distribution_track = "local-development"
         tag = "v1.2.3"
         source_revision = $sourceRevision
         source_tree = $sourceTree
@@ -237,6 +281,7 @@ function Invoke-PagesFixture {
         [Parameter(Mandatory)][object] $Fixture,
         [Parameter(Mandatory)][string] $OutputDirectory,
         [string] $PreviousHandoffPath,
+        [string] $ExistingDeploymentDirectory,
         [string] $Version = "1.2.3",
         [string] $ExpectedRevision = $sourceRevision,
         [string] $ExpectedSpki = $spkiSha256,
@@ -246,7 +291,7 @@ function Invoke-PagesFixture {
 
     $arguments = @{
         Version = $Version
-        Channel = "preview"
+        Channel = "dev"
         SiteDirectory = $siteRoot
         MetadataDirectory = $Fixture.metadata_root
         PublicationPreflightReceiptPath = $Fixture.preflight_path
@@ -258,6 +303,9 @@ function Invoke-PagesFixture {
     }
     if ($PreviousHandoffPath) {
         $arguments.PreviousHandoffPath = $PreviousHandoffPath
+    }
+    if ($ExistingDeploymentDirectory) {
+        $arguments.ExistingDeploymentDirectory = $ExistingDeploymentDirectory
     }
     if ($Resume) {
         $arguments.Resume = $true
@@ -279,21 +327,37 @@ try {
         -Name "first" `
         -IssuedAtUtc $now.AddMinutes(-5) `
         -LifetimeMinutes 1380 `
-        -DescriptorId "v1.2.3-preview-first"
+        -DescriptorId "v1.2.3-dev-first"
     $firstOutput = Join-Path $testRoot "pages-first"
+    $existingSite = Join-Path $testRoot "existing-complete-site"
+    $stableSentinel = Join-Path $existingSite "Rusty-Fleet\metadata\stable\release.json"
+    Write-TestUtf8 -LiteralPath $stableSentinel -Content '{"stable":"byte-exact"}'
+    $stableSentinelHash = Get-RustyFleetSha256 -LiteralPath $stableSentinel
     $firstHandoff = Invoke-PagesFixture `
         -Fixture $first `
-        -OutputDirectory $firstOutput |
+        -OutputDirectory $firstOutput `
+        -ExistingDeploymentDirectory $existingSite |
         ConvertFrom-Json -Depth 20
     $firstHandoffPath = Join-Path $firstOutput (
-        "Rusty-Fleet\metadata\preview\deployment-handoff.json"
+        "Rusty-Fleet\metadata\dev\deployment-handoff.json"
     )
     Assert-Pages (
         $firstHandoff.result -eq "pass" -and
         $firstHandoff.deployment_sequence -eq 1 -and
         $firstHandoff.pages_binary_count -eq 0 -and
         @($firstHandoff.release_files).Count -eq 5 -and
-        (Test-Path -LiteralPath $firstHandoffPath -PathType Leaf)
+        (Test-Path -LiteralPath $firstHandoffPath -PathType Leaf) -and
+        (Get-RustyFleetSha256 -LiteralPath (
+            Join-Path $firstOutput "Rusty-Fleet\metadata\stable\release.json"
+        )) -ceq $stableSentinelHash -and
+        (
+            Get-Content -LiteralPath (
+                Join-Path $firstOutput (
+                    "Rusty-Fleet\metadata\dev\" +
+                    "release-descriptor.receipt.json"
+                )
+            ) -Raw | ConvertFrom-Json
+        ).primary_artifact.role -ceq "complete-product"
     ) "initial Pages handoff is not exact"
 
     $resumed = Invoke-PagesFixture `
@@ -380,6 +444,82 @@ try {
         Assert-Pages $rejected "Pages accepted a wrong $($wrong.name) binding"
     }
 
+    foreach ($ownerMutation in @(
+        [pscustomobject]@{
+            name = "release-tag"
+            apply = {
+                param($value)
+                $value.release_tag = "v1.2.4"
+            }
+        },
+        [pscustomobject]@{
+            name = "installation-identity"
+            apply = {
+                param($value)
+                $value.installation_identity = "rusty-fleet-labs"
+            }
+        },
+        [pscustomobject]@{
+            name = "primary-artifact"
+            apply = {
+                param($value)
+                $value.primary_artifact.bytes = 1235
+            }
+        }
+    )) {
+        $ownerRoot = Join-Path $testRoot (
+            "owner-metadata-$($ownerMutation.name)"
+        )
+        Copy-Item `
+            -LiteralPath $first.metadata_root `
+            -Destination $ownerRoot `
+            -Recurse
+        $ownerReceiptPath = Join-Path $ownerRoot (
+            "release-descriptor.receipt.json"
+        )
+        $ownerReceipt = Get-Content -LiteralPath $ownerReceiptPath -Raw |
+            ConvertFrom-Json -Depth 20
+        & $ownerMutation.apply $ownerReceipt
+        Write-TestUtf8 `
+            -LiteralPath $ownerReceiptPath `
+            -Content (ConvertTo-RustyFleetJson -InputObject $ownerReceipt)
+        $ownerPreflight = Get-Content -LiteralPath $first.preflight_path -Raw |
+            ConvertFrom-Json -Depth 20
+        $ownerReceiptSha256 = Get-TestSha256 $ownerReceiptPath
+        $ownerReceiptSize = (Get-Item -LiteralPath $ownerReceiptPath).Length
+        $ownerReceiptAsset = @(
+            $ownerPreflight.assets |
+                Where-Object name -CEQ "release-descriptor.receipt.json"
+        )
+        $ownerReceiptAsset[0].sha256 = $ownerReceiptSha256
+        $ownerReceiptAsset[0].size_bytes = $ownerReceiptSize
+        $ownerPreflight.descriptor_receipt_sha256 = $ownerReceiptSha256
+        $ownerPreflightPath = Join-Path $testRoot (
+            "owner-preflight-$($ownerMutation.name).json"
+        )
+        Write-TestUtf8 `
+            -LiteralPath $ownerPreflightPath `
+            -Content (ConvertTo-RustyFleetJson -InputObject $ownerPreflight)
+        $ownerRejected = $false
+        try {
+            Invoke-PagesFixture `
+                -Fixture ([pscustomobject]@{
+                    metadata_root = $ownerRoot
+                    preflight_path = $ownerPreflightPath
+                }) `
+                -OutputDirectory (
+                    Join-Path $testRoot "pages-owner-$($ownerMutation.name)"
+                ) |
+                Out-Null
+        }
+        catch {
+            $ownerRejected = $true
+        }
+        Assert-Pages `
+            $ownerRejected `
+            "Pages accepted wrong owner $($ownerMutation.name)"
+    }
+
     $damaged = Join-Path $testRoot "damaged"
     Copy-Item `
         -LiteralPath $first.metadata_root `
@@ -410,7 +550,7 @@ try {
         -Name "stale" `
         -IssuedAtUtc $now.AddDays(-2) `
         -LifetimeMinutes 60 `
-        -DescriptorId "v1.2.3-preview-stale"
+        -DescriptorId "v1.2.3-dev-stale"
     $staleRejected = $false
     try {
         Invoke-PagesFixture `
@@ -427,7 +567,7 @@ try {
         -Name "renewal" `
         -IssuedAtUtc $now.AddMinutes(5) `
         -LifetimeMinutes 1380 `
-        -DescriptorId "v1.2.3-preview-renewal"
+        -DescriptorId "v1.2.3-dev-renewal"
     $renewed = Invoke-PagesFixture `
         -Fixture $renewal `
         -OutputDirectory (Join-Path $testRoot "pages-renewal") `
@@ -437,7 +577,7 @@ try {
     Assert-Pages (
         $renewed.deployment_sequence -eq 2 -and
         $renewed.previous_handoff_sha256 -cmatch "^[0-9a-f]{64}$" -and
-        $renewed.descriptor_id -ceq "v1.2.3-preview-renewal" -and
+        $renewed.descriptor_id -ceq "v1.2.3-dev-renewal" -and
         $renewed.expires_at_ms -gt $firstHandoff.expires_at_ms
     ) "fresh release metadata did not renew"
 
@@ -460,10 +600,13 @@ try {
         renewal_verified = $true
         stale_metadata_rejected = $true
         wrong_source_tag_asset_signer_rejected = $true
+        owner_release_identity_verified = $true
+        owner_release_identity_substitution_rejected = $true
         replay_rejected = $true
         pages_binary_count = 0
         completed_resume_verified = $true
         interrupted_stage_resume_verified = $true
+        stable_subtree_byte_exact = $true
     } | ConvertTo-Json -Depth 5
 }
 finally {

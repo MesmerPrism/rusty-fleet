@@ -33,6 +33,33 @@ function global:Get-AuthenticodeSignature {
     Get-RustyFleetTestAuthenticodeSignature -LiteralPath $LiteralPath
 }
 $repoRoot = (Resolve-Path (Join-Path $packagingRoot "..\..")).Path
+foreach ($case in @(
+    [pscustomobject]@{ channel = "dev"; maturity = "released"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "labs"; maturity = "alpha"; tag = "v9.9.9-alpha.1" }
+)) {
+    $message = ""
+    try {
+        & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
+            -Version "1.2.3" `
+            -Channel $case.channel `
+            -Maturity $case.maturity `
+            -ReleaseTag $case.tag `
+            -SetupPath "missing-setup.exe" `
+            -SetupBuildReceiptPath "missing-build-receipt.json" `
+            -ExpectedSetupSignerThumbprint ("A" * 40) `
+            -ExpectedSourceRevision ("1" * 40) `
+            -ExpectedSourceTree ("2" * 40) `
+            -DescriptorPrivateKeyPemPath "missing-key.pem" `
+            -ExpectedDescriptorSignerSpkiSha256 ("3" * 64) `
+            -OutputDirectory "unused-output" | Out-Null
+    }
+    catch {
+        $message = $_.Exception.Message
+    }
+    Assert-Descriptor `
+        ($message -ceq "release tag does not bind the exact version and channel") `
+        "$($case.channel) descriptor accepted a cross-version release tag"
+}
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     "rusty-fleet-descriptor-$([Guid]::NewGuid().ToString('N'))"
 )
@@ -79,12 +106,16 @@ using var stream = new FileStream(
     FileMode.Open,
     FileAccess.Read,
     FileShare.Read);
+var labs = string.Equals(
+    Path.GetFileName(Environment.ProcessPath),
+    "RustyFleet-Labs-Setup.exe",
+    StringComparison.Ordinal);
 var plan = new
 {
     schema = "rusty.fleet.guided_installer_plan.v1",
-    product = "rusty-fleet",
+    product = labs ? "rusty-fleet-labs" : "rusty-fleet",
     version = "1.2.3",
-    channel = "preview",
+    channel = labs ? "labs" : "dev",
     asset_sha256 = Convert.ToHexStringLower(SHA256.HashData(stream)),
     ready = true
 };
@@ -141,10 +172,13 @@ return 0;
 
     $buildReceiptPath = Join-Path $testRoot "setup-build-receipt.json"
     $buildReceipt = [ordered]@{
-        schema = "rusty.fleet.windows_setup_build_receipt.v1"
+        schema = "rusty.fleet.windows_setup_build_receipt.v2"
         result = "pass"
         version = "1.2.3"
-        channel = "preview"
+        product_channel = "stable"
+        maturity = "released"
+        channel = "dev"
+        distribution_track = "local-development"
         build_kind = "signed-release"
         setup_sha256 = $unsignedSetupSha256
         bundle_sha256 = "3" * 64
@@ -180,7 +214,7 @@ return 0;
     )
     $receipt = & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
         -Version "1.2.3" `
-        -Channel preview `
+        -Channel dev `
         -SetupPath $setupPath `
         -SetupBuildReceiptPath $buildReceiptPath `
         -ExpectedSetupSignerThumbprint $setupSignature.SignerCertificate.Thumbprint `
@@ -196,8 +230,85 @@ return 0;
     Assert-Descriptor `
         ($receipt.result -eq "pass" -and
             $receipt.signature -eq "rsa_pss_sha256" -and
-            $receipt.canonical_payload -eq "rfc8785_jcs_closed_shape") `
+            $receipt.canonical_payload -eq "rfc8785_jcs_closed_shape" -and
+            $receipt.schema -eq
+                "rusty.fleet.windows_release_descriptor_receipt.v4" -and
+            $receipt.release_tag -ceq "v1.2.3" -and
+            $receipt.installation_identity -ceq "rusty-fleet" -and
+            $receipt.primary_artifact.role -ceq "complete-product" -and
+            $receipt.primary_artifact.name -ceq "RustyFleet-Setup.exe" -and
+            $receipt.primary_artifact.sha256 -ceq
+                (Get-RustyFleetSha256 -LiteralPath $setupPath) -and
+            [long] $receipt.primary_artifact.bytes -eq
+                (Get-Item -LiteralPath $setupPath).Length -and
+            $receipt.primary_artifact.url -ceq
+                $receipt.asset_url) `
         "descriptor receipt is not exact"
+
+    $labsSetupPath = Join-Path $testRoot "RustyFleet-Labs-Setup.exe"
+    Copy-Item -LiteralPath $setupPath -Destination $labsSetupPath
+    Register-RustyFleetTestAuthenticodeSignature `
+        -LiteralPath $labsSetupPath `
+        -Certificate $signingCertificate
+    $labsBuildReceiptPath = Join-Path $testRoot (
+        "labs-setup-build-receipt.json"
+    )
+    $labsBuildReceipt = $buildReceipt |
+        ConvertTo-Json -Depth 10 |
+        ConvertFrom-Json -Depth 10
+    $labsBuildReceipt.product_channel = "labs"
+    $labsBuildReceipt.maturity = "alpha"
+    $labsBuildReceipt.channel = "labs"
+    $labsBuildReceipt.distribution_track = "github-prerelease"
+    [IO.File]::WriteAllText(
+        $labsBuildReceiptPath,
+        ($labsBuildReceipt | ConvertTo-Json -Depth 10),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $labsReceipt = & (
+        Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1"
+    ) `
+        -Version "1.2.3" `
+        -Channel labs -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
+        -SetupPath $labsSetupPath `
+        -SetupBuildReceiptPath $labsBuildReceiptPath `
+        -ExpectedSetupSignerThumbprint (
+            $setupSignature.SignerCertificate.Thumbprint
+        ) `
+        -ExpectedSourceRevision ("1" * 40) `
+        -ExpectedSourceTree ("2" * 40) `
+        -DescriptorPrivateKeyPemPath $keyPath `
+        -ExpectedDescriptorSignerSpkiSha256 $spkiSha256 `
+        -OutputDirectory (Join-Path $testRoot "labs-output") `
+        -DescriptorId "v1.2.3-alpha.1-test" `
+        -IssuedAtUtc $issued `
+        -LifetimeMinutes 1380 |
+        ConvertFrom-Json
+    Assert-Descriptor `
+        ($labsReceipt.schema -ceq
+            "rusty.fleet.windows_release_descriptor_receipt.v4" -and
+            $labsReceipt.product_channel -ceq "labs" -and
+            $labsReceipt.maturity -ceq "alpha" -and
+            $labsReceipt.channel -ceq "labs" -and
+            $labsReceipt.distribution_track -ceq "github-prerelease" -and
+            $labsReceipt.release_tag -ceq "v1.2.3-alpha.1" -and
+            $labsReceipt.installation_identity -ceq
+                "rusty-fleet-labs" -and
+            $labsReceipt.primary_artifact.role -ceq
+                "complete-product" -and
+            $labsReceipt.primary_artifact.name -ceq
+                "RustyFleet-Labs-Setup.exe" -and
+            $labsReceipt.primary_artifact.sha256 -ceq
+                (Get-RustyFleetSha256 -LiteralPath $labsSetupPath) -and
+            [long] $labsReceipt.primary_artifact.bytes -eq
+                (Get-Item -LiteralPath $labsSetupPath).Length -and
+            $labsReceipt.primary_artifact.url -ceq (
+                "https://github.com/MesmerPrism/rusty-fleet/" +
+                "releases/download/v1.2.3-alpha.1/" +
+                "RustyFleet-Labs-Setup.exe"
+            )) `
+        "Labs descriptor receipt is not bound to its isolated release"
 
     $descriptorPath = Join-Path $output "release.json"
     $publicKeyPath = Join-Path $output "release-descriptor.spki.der"
@@ -206,7 +317,7 @@ return 0;
     $payloadBytes = ConvertFrom-Base64Url $envelope.payload_base64url
     $signatureBytes = ConvertFrom-Base64Url $envelope.signature_base64url
     Assert-Descriptor `
-        ($envelope.schema -eq "rusty.fleet.release_descriptor_envelope.v2" -and
+        ($envelope.schema -eq "rusty.fleet.release_descriptor_envelope.v3" -and
             $envelope.signer_spki_sha256 -ceq $spkiSha256 -and
             $receipt.descriptor_signer_spki_asset -ceq
                 "release-descriptor.spki.der" -and
@@ -232,8 +343,10 @@ return 0;
             [StringComparison]::Ordinal
         ) -and
             $payloadText.EndsWith(
-                ',"product":"rusty-fleet",' +
-                '"schema":"rusty.fleet.windows_release.v2",' +
+                ',"maturity":"released",' +
+                '"product":"rusty-fleet",' +
+                '"product_channel":"stable",' +
+                '"schema":"rusty.fleet.windows_release.v3",' +
                 '"validity_duration_ms":82800000,' +
                 '"version":"1.2.3"}',
                 [StringComparison]::Ordinal
@@ -241,6 +354,10 @@ return 0;
             $payload.asset.url -eq
                 "https://github.com/MesmerPrism/rusty-fleet/releases/download/v1.2.3/RustyFleet-Setup.exe" -and
             $payload.asset.name -eq "RustyFleet-Setup.exe" -and
+            $payload.product_channel -eq "stable" -and
+            $payload.maturity -eq "released" -and
+            $payload.channel -eq "dev" -and
+            $payload.distribution_track -eq "local-development" -and
             $payload.asset.installer_protocol -eq "rusty.fleet.guided_setup.v1" -and
             $payload.validity_duration_ms -eq 82800000 -and
             ($payload.expires_at_ms - $payload.issued_at_ms) -eq
@@ -320,7 +437,7 @@ return 0;
     try {
         & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
             -Version "1.2.3" `
-            -Channel preview `
+            -Channel dev `
             -SetupPath $setupPath `
             -SetupBuildReceiptPath $buildReceiptPath `
             -ExpectedSetupSignerThumbprint ("0" * 40) `
@@ -339,7 +456,7 @@ return 0;
     try {
         & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
             -Version "1.2.3" `
-            -Channel preview `
+            -Channel dev `
             -SetupPath $setupPath `
             -SetupBuildReceiptPath $buildReceiptPath `
             -ExpectedSetupSignerThumbprint $setupSignature.SignerCertificate.Thumbprint `
@@ -358,7 +475,7 @@ return 0;
     try {
         & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
             -Version "1.2.3" `
-            -Channel preview `
+            -Channel dev `
             -SetupPath $setupPath `
             -SetupBuildReceiptPath $buildReceiptPath `
             -ExpectedSetupSignerThumbprint $setupSignature.SignerCertificate.Thumbprint `
@@ -384,6 +501,10 @@ return 0;
         setup_signer_pin_exact = $true
         canonical_closed_payload = $true
         immutable_asset_url = $true
+        release_tag_exact = $true
+        installation_identity_exact = $true
+        primary_artifact_exact = $true
+        labs_descriptor_end_to_end = $true
         lifetime_23_hours = $true
         retained_path_substitution_rejected = $true
         overwrite_rejected = $true

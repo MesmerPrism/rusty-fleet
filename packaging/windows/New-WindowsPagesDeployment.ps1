@@ -8,8 +8,14 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "preview", "stable")]
+    [ValidateSet("dev", "labs", "stable")]
     [string] $Channel,
+
+    [ValidateSet("alpha", "beta", "rc", "released")]
+    [string] $Maturity = "released",
+
+    [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:(?:-alpha|-beta|-rc)\.[1-9][0-9]*)?$")]
+    [string] $ReleaseTag,
 
     [Parameter(Mandatory)]
     [string] $SiteDirectory,
@@ -35,6 +41,8 @@ param(
     [Parameter(Mandatory)]
     [string] $OutputDirectory,
 
+    [string] $ExistingDeploymentDirectory,
+
     [string] $PreviousHandoffPath,
 
     [DateTimeOffset] $NowUtc = [DateTimeOffset]::UtcNow,
@@ -47,6 +55,26 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (-not $ReleaseTag) { $ReleaseTag = "v$Version" }
+$expectedReleaseTagPattern = if ($Maturity -eq "released") {
+    "^v$([regex]::Escape($Version))$"
+}
+else {
+    "^v$([regex]::Escape($Version))-$Maturity\.[1-9][0-9]*$"
+}
+if ($ReleaseTag -cnotmatch $expectedReleaseTagPattern) {
+    throw "release tag does not bind the exact version and channel"
+}
+$productStem = if ($Channel -eq "labs") { "RustyFleet-Labs" } else { "RustyFleet" }
+$setupName = if ($Channel -eq "labs") { "RustyFleet-Labs-Setup.exe" } else { "RustyFleet-Setup.exe" }
+$setupReceiptName = if ($Channel -eq "labs") { "RustyFleet-Labs-Setup.build-receipt.json" } else { "RustyFleet-Setup.build-receipt.json" }
+$installationIdentity = if ($Channel -eq "labs") { "rusty-fleet-labs" } else { "rusty-fleet" }
+$productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
+$distributionTrack = switch ($Channel) {
+    "dev" { "local-development" }
+    "labs" { "github-prerelease" }
+    "stable" { "github-release" }
+}
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 function Assert-ExactProperties {
@@ -138,7 +166,7 @@ function Assert-NoPagesBinary {
         $isAllowedSpki = (
             $AllowDescriptorSpki -and
             $relative -cmatch (
-                "^Rusty-Fleet/metadata/(?:dev|preview|stable)/" +
+                "^Rusty-Fleet/metadata/(?:dev|labs|stable)/" +
                 "release-descriptor\.spki\.der$"
             )
         )
@@ -162,13 +190,13 @@ function Get-ReleaseAssetMap {
     param([Parameter(Mandatory)][object] $Preflight)
 
     $expectedNames = @(
-        "RustyFleet-Setup.exe",
-        "RustyFleet-$Version-win-x64.zip",
-        "RustyFleet-$Version-win-x64.zip.sha256",
-        "RustyFleet-$Version-win-x64.manifest.json",
-        "RustyFleet-$Version-win-x64.checksums.sha256",
-        "RustyFleet-$Version-win-x64.validation-receipt.json",
-        "RustyFleet-Setup.build-receipt.json",
+        $setupName,
+        "$productStem-$Version-win-x64.zip",
+        "$productStem-$Version-win-x64.zip.sha256",
+        "$productStem-$Version-win-x64.manifest.json",
+        "$productStem-$Version-win-x64.checksums.sha256",
+        "$productStem-$Version-win-x64.validation-receipt.json",
+        $setupReceiptName,
         "release.json",
         "release-descriptor.receipt.json",
         "release-descriptor.spki.der"
@@ -260,6 +288,9 @@ Assert-ExactProperties -InputObject $preflight -Expected @(
     "mode",
     "version",
     "channel",
+    "product_channel",
+    "maturity",
+    "distribution_track",
     "tag",
     "source_revision",
     "source_tree",
@@ -280,12 +311,14 @@ Assert-ExactProperties -InputObject $preflight -Expected @(
     "uploaded_asset_count"
 ) -Context "publication preflight receipt"
 if ($preflight.schema -cne
-        "rusty.fleet.windows_publication_receipt.v1" -or
+        "rusty.fleet.windows_publication_receipt.v2" -or
     $preflight.result -cne "pass" -or
     $preflight.mode -cne "preflight" -or
     $preflight.version -cne $Version -or
-    $preflight.channel -cne $Channel -or
-    $preflight.tag -cne "v$Version" -or
+    $preflight.product_channel -cne $productChannel -or
+    $preflight.maturity -cne $Maturity -or
+    $preflight.distribution_track -cne $distributionTrack -or
+    $preflight.tag -cne $ReleaseTag -or
     $preflight.source_revision -cne $ExpectedSourceRevision -or
     $preflight.source_tree -cne $ExpectedSourceTree -or
     $preflight.descriptor_signer_spki_sha256 -cne
@@ -322,7 +355,7 @@ Assert-ExactProperties -InputObject $envelope -Expected @(
     "signer_spki_sha256"
 ) -Context "release descriptor envelope"
 if ($envelope.schema -cne
-        "rusty.fleet.release_descriptor_envelope.v2" -or
+        "rusty.fleet.release_descriptor_envelope.v3" -or
     $envelope.signer_spki_sha256 -cne
         $ExpectedDescriptorSignerSpkiSha256) {
     throw "release descriptor signer identity is not exact"
@@ -346,10 +379,13 @@ catch {
 Assert-ExactProperties -InputObject $payload -Expected @(
     "asset",
     "channel",
+    "distribution_track",
     "descriptor_id",
     "expires_at_ms",
     "issued_at_ms",
+    "maturity",
     "product",
+    "product_channel",
     "schema",
     "validity_duration_ms",
     "version"
@@ -365,14 +401,17 @@ Assert-ExactProperties -InputObject $payload.asset -Expected @(
 ) -Context "release descriptor asset"
 $expectedSetupUrl = (
     "https://github.com/MesmerPrism/rusty-fleet/releases/download/" +
-    "v$Version/RustyFleet-Setup.exe"
+    "$ReleaseTag/$setupName"
 )
 $nowMs = $NowUtc.ToUniversalTime().ToUnixTimeMilliseconds()
 $minimumRemainingMs = [long] $MinimumRemainingMinutes * 60000
-if ($payload.schema -cne "rusty.fleet.windows_release.v2" -or
-    $payload.product -cne "rusty-fleet" -or
+if ($payload.schema -cne "rusty.fleet.windows_release.v3" -or
+    $payload.product -cne $installationIdentity -or
     $payload.version -cne $Version -or
+    $payload.product_channel -cne $productChannel -or
+    $payload.maturity -cne $Maturity -or
     $payload.channel -cne $Channel -or
+    $payload.distribution_track -cne $distributionTrack -or
     $payload.descriptor_id -isnot [string] -or
     $payload.descriptor_id -cnotmatch "^[A-Za-z0-9._-]{1,128}$" -or
     [long] $payload.issued_at_ms -le 0 -or
@@ -386,10 +425,10 @@ if ($payload.schema -cne "rusty.fleet.windows_release.v2" -or
         "rusty.fleet.guided_setup.v1" -or
     $payload.asset.media_type -cne
         "application/vnd.microsoft.portable-executable" -or
-    $payload.asset.name -cne "RustyFleet-Setup.exe" -or
+    $payload.asset.name -cne $setupName -or
     $payload.asset.sha256 -cne $preflight.setup_sha256 -or
     [long] $payload.asset.size_bytes -ne
-        [long] $assetMap["RustyFleet-Setup.exe"].size_bytes -or
+        [long] $assetMap[$setupName].size_bytes -or
     $payload.asset.url -cne $expectedSetupUrl -or
     $payload.asset.signer_certificate_sha256 -isnot [string] -or
     $payload.asset.signer_certificate_sha256 -cnotmatch "^[0-9a-f]{64}$") {
@@ -430,11 +469,64 @@ $descriptorReceiptJson = Read-StrictJson `
     -MaximumBytes 65536 `
     -Context "release descriptor receipt"
 $descriptorReceipt = $descriptorReceiptJson.value
+Assert-ExactProperties -InputObject $descriptorReceipt -Expected @(
+    "schema",
+    "result",
+    "descriptor_id",
+    "version",
+    "channel",
+    "product_channel",
+    "maturity",
+    "distribution_track",
+    "release_tag",
+    "installation_identity",
+    "primary_artifact",
+    "issued_at_ms",
+    "expires_at_ms",
+    "validity_duration_ms",
+    "setup_sha256",
+    "setup_size_bytes",
+    "setup_signer_certificate_sha256",
+    "setup_build_receipt_sha256",
+    "source_revision",
+    "source_tree",
+    "canonical_pe_payload_sha256",
+    "canonical_pe_payload_size_bytes",
+    "descriptor_signer_spki_sha256",
+    "descriptor_signer_spki_asset",
+    "payload_sha256",
+    "descriptor_sha256",
+    "canonical_payload",
+    "signature",
+    "pages_path",
+    "asset_url"
+) -Context "release descriptor receipt"
+Assert-ExactProperties -InputObject $descriptorReceipt.primary_artifact -Expected @(
+    "role",
+    "name",
+    "sha256",
+    "bytes",
+    "url"
+) -Context "release descriptor primary artifact"
 if ($descriptorReceipt.schema -cne
-        "rusty.fleet.windows_release_descriptor_receipt.v2" -or
+        "rusty.fleet.windows_release_descriptor_receipt.v4" -or
     $descriptorReceipt.result -cne "pass" -or
     $descriptorReceipt.version -cne $Version -or
+    $descriptorReceipt.product_channel -cne $productChannel -or
+    $descriptorReceipt.maturity -cne $Maturity -or
     $descriptorReceipt.channel -cne $Channel -or
+    $descriptorReceipt.distribution_track -cne $distributionTrack -or
+    $descriptorReceipt.release_tag -cne $ReleaseTag -or
+    $descriptorReceipt.installation_identity -cne
+        $installationIdentity -or
+    $descriptorReceipt.primary_artifact.role -cne
+        "complete-product" -or
+    $descriptorReceipt.primary_artifact.name -cne $setupName -or
+    $descriptorReceipt.primary_artifact.sha256 -cne
+        $preflight.setup_sha256 -or
+    [long] $descriptorReceipt.primary_artifact.bytes -ne
+        [long] $assetMap[$setupName].size_bytes -or
+    $descriptorReceipt.primary_artifact.url -cne $expectedSetupUrl -or
     $descriptorReceipt.descriptor_id -cne $payload.descriptor_id -or
     [long] $descriptorReceipt.issued_at_ms -ne
         [long] $payload.issued_at_ms -or
@@ -472,6 +564,9 @@ if ($PreviousHandoffPath) {
         "product",
         "version",
         "channel",
+        "product_channel",
+        "maturity",
+        "distribution_track",
         "tag",
         "source_revision",
         "source_tree",
@@ -488,10 +583,12 @@ if ($PreviousHandoffPath) {
         "release_files"
     ) -Context "previous Pages handoff"
     if ($previous.schema -cne
-            "rusty.fleet.windows_release_metadata_handoff.v1" -or
+            "rusty.fleet.windows_release_metadata_handoff.v2" -or
         $previous.result -cne "pass" -or
-        $previous.product -cne "rusty-fleet" -or
-        $previous.channel -cne $Channel -or
+        $previous.product -cne $installationIdentity -or
+        $previous.product_channel -cne $productChannel -or
+        $previous.maturity -cne $Maturity -or
+        $previous.distribution_track -cne $distributionTrack -or
         $previous.version -isnot [string] -or
         $previous.version -cnotmatch "^[0-9]+\.[0-9]+\.[0-9]+$" -or
         [version] $Version -lt [version] $previous.version -or
@@ -516,14 +613,14 @@ if ($PreviousHandoffPath) {
 $releaseFiles = @(
     Get-HandoffReleaseFile `
         -Role "setup" `
-        -Name "RustyFleet-Setup.exe" `
+        -Name $setupName `
         -Authority "github_releases" `
-        -Asset $assetMap["RustyFleet-Setup.exe"]
+        -Asset $assetMap[$setupName]
     Get-HandoffReleaseFile `
         -Role "setup_build_receipt" `
-        -Name "RustyFleet-Setup.build-receipt.json" `
+        -Name $setupReceiptName `
         -Authority "github_releases" `
-        -Asset $assetMap["RustyFleet-Setup.build-receipt.json"]
+        -Asset $assetMap[$setupReceiptName]
     Get-HandoffReleaseFile `
         -Role "descriptor" `
         -Name "release.json" `
@@ -544,15 +641,18 @@ $deploymentId = (
     "$Channel-$($descriptorSha256.Substring(0, 24))"
 )
 $handoff = [ordered]@{
-    schema = "rusty.fleet.windows_release_metadata_handoff.v1"
+    schema = "rusty.fleet.windows_release_metadata_handoff.v2"
     result = "pass"
     deployment_id = $deploymentId
     deployment_sequence = $deploymentSequence
     previous_handoff_sha256 = $previousHandoffSha256
-    product = "rusty-fleet"
+    product = $installationIdentity
     version = $Version
+    product_channel = $productChannel
+    maturity = $Maturity
     channel = $Channel
-    tag = "v$Version"
+    distribution_track = $distributionTrack
+    tag = $ReleaseTag
     source_revision = $ExpectedSourceRevision
     source_tree = $ExpectedSourceTree
     descriptor_id = [string] $payload.descriptor_id
@@ -613,6 +713,26 @@ if (Test-Path -LiteralPath $stagingRoot) {
 
 [IO.Directory]::CreateDirectory($stagingRoot) | Out-Null
 try {
+    $preserved = @{}
+    if ($ExistingDeploymentDirectory) {
+        $existingRoot = (Resolve-Path -LiteralPath $ExistingDeploymentDirectory).Path
+        Assert-NoPagesBinary -Root $existingRoot -AllowDescriptorSpki
+        foreach ($file in @(Get-ChildItem -LiteralPath $existingRoot -File -Recurse -Force)) {
+            $relative = [IO.Path]::GetRelativePath($existingRoot, $file.FullName).Replace("\", "/")
+            if ($relative.StartsWith(
+                "Rusty-Fleet/metadata/",
+                [StringComparison]::Ordinal
+            ) -and -not $relative.StartsWith(
+                "Rusty-Fleet/metadata/$Channel/",
+                [StringComparison]::Ordinal
+            )) {
+                $preserved[$relative] = Get-RustyFleetSha256 -LiteralPath $file.FullName
+            }
+        }
+        foreach ($entry in @(Get-ChildItem -LiteralPath $existingRoot -Force)) {
+            Copy-Item -LiteralPath $entry.FullName -Destination $stagingRoot -Recurse -Force
+        }
+    }
     foreach ($directory in @(
         Get-ChildItem -LiteralPath $siteRoot -Directory -Recurse -Force
     )) {
@@ -628,6 +748,12 @@ try {
         Get-ChildItem -LiteralPath $siteRoot -File -Recurse -Force
     )) {
         $relative = [IO.Path]::GetRelativePath($siteRoot, $file.FullName)
+        if ($relative.Replace("\", "/").StartsWith(
+            "Rusty-Fleet/metadata/",
+            [StringComparison]::Ordinal
+        )) {
+            throw "human site input must not own release metadata subtrees"
+        }
         $destination = Join-Path $stagingRoot $relative
         [IO.Directory]::CreateDirectory(
             (Split-Path -Parent $destination)
@@ -646,6 +772,13 @@ try {
     Write-RustyFleetUtf8 `
         -LiteralPath (Join-Path $pagesMetadataRoot "deployment-handoff.json") `
         -Content $handoffText
+    foreach ($entry in $preserved.GetEnumerator()) {
+        $path = Join-Path $stagingRoot $entry.Key
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+            (Get-RustyFleetSha256 -LiteralPath $path) -cne $entry.Value) {
+            throw "complete-site composition changed a non-target channel byte"
+        }
+    }
     Assert-NoPagesBinary -Root $stagingRoot -AllowDescriptorSpki
     [IO.Directory]::Move($stagingRoot, $outputRoot)
 }

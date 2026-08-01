@@ -135,13 +135,18 @@ function Invoke-TestBundle {
         [Parameter(Mandatory)][string] $ProviderPath,
         [Parameter(Mandatory)][string] $ProviderSha256,
         [Parameter(Mandatory)][string] $ProviderMetadataDirectory,
+        [ValidateSet("dev", "labs", "stable")]
+        [string] $Channel = "dev",
+        [ValidateSet("alpha", "beta", "rc", "released")]
+        [string] $Maturity = "released",
         [string] $SourceRevision = ("1" * 40),
         [string] $SourceTree = ("2" * 40)
     )
 
     & (Join-Path $packagingRoot "New-WindowsBundle.ps1") `
         -Version $Version `
-        -Channel dev `
+        -Channel $Channel `
+        -Maturity $Maturity `
         -BuildKind unsigned-dev `
         -HostessProviderPath $ProviderPath `
         -HostessProviderSha256 $ProviderSha256 `
@@ -619,6 +624,346 @@ try {
         (Get-RustyFleetSha256 -LiteralPath $archiveTwo)
     ) "deterministic archives differ"
 
+    $labsOne = Join-Path $testRoot "labs-one"
+    $labsTwo = Join-Path $testRoot "labs-two"
+    foreach ($labsOutput in @($labsOne, $labsTwo)) {
+        Invoke-TestBundle -Version "0.0.1" -Channel labs -Maturity alpha `
+            -OutputDirectory $labsOutput -ConsoleDirectory $console `
+            -HubPath $hub -FleetctlPath $fleetctl -FleetOnboardPath $fleetOnboard `
+            -ProviderPath $provider -ProviderSha256 $providerSha256 `
+            -ProviderMetadataDirectory $providerMetadata | Out-Null
+    }
+    $labsBundleName = "RustyFleet-Labs-0.0.1-win-x64"
+    $labsArchiveOne = Join-Path $labsOne "$labsBundleName.zip"
+    $labsArchiveTwo = Join-Path $labsTwo "$labsBundleName.zip"
+    Assert-Distribution (
+        (Get-RustyFleetSha256 -LiteralPath $labsArchiveOne) -ceq
+        (Get-RustyFleetSha256 -LiteralPath $labsArchiveTwo)
+    ) "Labs bundle is not deterministic"
+    $labsManifest = Get-Content -LiteralPath (
+        Join-Path $labsOne "$labsBundleName\metadata\release-manifest.json"
+    ) -Raw | ConvertFrom-Json -Depth 30
+    Assert-Distribution (
+        $labsManifest.product_channel -eq "labs" -and
+        $labsManifest.maturity -eq "alpha" -and
+        $labsManifest.channel -eq "labs" -and
+        $labsManifest.distribution_track -eq "github-prerelease" -and
+        $labsManifest.install.default_root -ceq
+            "%LOCALAPPDATA%/RustyFleetLabs" -and
+        $labsManifest.install.authority -ceq
+            "RustyFleet-Labs-Setup.exe"
+    ) "Labs manifest does not bind the isolated install identity"
+    $labsSetupOutput = Join-Path $testRoot "labs-setup"
+    $labsSetupRoot = Join-Path $testRoot "labs-install-root"
+    $labsSetupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne -DevelopmentInstallRoot $labsSetupRoot `
+        -OutputDirectory $labsSetupOutput | ConvertFrom-Json
+    $labsSetupPath = Join-Path $labsSetupOutput "RustyFleet-Labs-Setup.exe"
+    Assert-Distribution (
+        $labsSetupReceipt.product_channel -eq "labs" -and
+        $labsSetupReceipt.maturity -eq "alpha" -and
+        $labsSetupReceipt.channel -eq "labs" -and
+        $labsSetupReceipt.distribution_track -eq "github-prerelease" -and
+        (Test-Path -LiteralPath $labsSetupPath -PathType Leaf)
+    ) "Labs Setup identity was not built dynamically"
+    $labsPlan = & $labsSetupPath --plan --json | ConvertFrom-Json
+    Assert-Distribution (
+        $labsPlan.product -eq "rusty-fleet-labs" -and
+        $labsPlan.channel -eq "labs"
+    ) "Labs Setup plan identity is not exact"
+    $labsInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $labsSetupPath -Answer i
+    )
+    Assert-Distribution ($labsInstall.exit_code -eq 0) "Labs Setup install failed"
+
+    $shellRoot = Join-Path $testRoot "isolated-shell"
+    $shellInstallRoot = Join-Path $testRoot "labs-shell-install"
+    $shellSetupOutput = Join-Path $testRoot "labs-shell-setup"
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
+        -DevelopmentInstallRoot $shellInstallRoot `
+        -DevelopmentShellTestRoot $shellRoot `
+        -OutputDirectory $shellSetupOutput | Out-Null
+    $shellSetupPath = Join-Path $shellSetupOutput "RustyFleet-Labs-Setup.exe"
+    $shellInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $shellSetupPath -Answer i
+    )
+    $labsRegistry = Join-Path $shellRoot "Registry\rusty-fleet-labs.json"
+    $stableRegistry = Join-Path $shellRoot "Registry\rusty-fleet.json"
+    $stableShortcut = Join-Path $shellRoot "Programs\Rusty Fleet\stable.lnk"
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $stableRegistry)) | Out-Null
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $stableShortcut)) | Out-Null
+    Write-TestArtifact -LiteralPath $stableRegistry -Content '{"stable":true}'
+    Write-TestArtifact -LiteralPath $stableShortcut -Content "stable"
+    $registration = Get-Content -LiteralPath $labsRegistry -Raw |
+        ConvertFrom-Json
+    Assert-Distribution (
+        $shellInstall.exit_code -eq 0 -and
+        $registration.UninstallString -match ' --uninstall$' -and
+        $registration.InstallLocation -ceq $shellInstallRoot -and
+        (Test-Path -LiteralPath (
+            Join-Path $shellRoot "Programs\Rusty Fleet Labs\Rusty Fleet Labs.lnk"
+        ))
+    ) "Labs shell identity or explicit uninstall registration is incomplete"
+    $uninstall = & $shellSetupPath --uninstall | ConvertFrom-Json
+    Assert-Distribution (
+        $uninstall.result -eq "pass" -and
+        $uninstall.product -eq "rusty-fleet-labs" -and
+        -not (Test-Path -LiteralPath $labsRegistry) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $shellRoot "Programs\Rusty Fleet Labs"
+        )) -and
+        (Test-Path -LiteralPath $stableRegistry) -and
+        (Test-Path -LiteralPath $stableShortcut)
+    ) "Labs uninstall did not remain isolated from stable shell identity"
+
+    foreach ($uninstallFailure in @(
+        "uninstall_after_shortcuts",
+        "uninstall_delete_root"
+    )) {
+        $failureShellRoot = Join-Path $testRoot "shell-$uninstallFailure"
+        $failureInstallRoot = Join-Path $testRoot "install-$uninstallFailure"
+        $failureSetupOutput = Join-Path $testRoot "setup-$uninstallFailure"
+        & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+            -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+            -BundleArchivePath $labsArchiveOne `
+            -DevelopmentInstallRoot $failureInstallRoot `
+            -DevelopmentShellTestRoot $failureShellRoot `
+            -DevelopmentShellFailurePoint $uninstallFailure `
+            -OutputDirectory $failureSetupOutput | Out-Null
+        $failureSetup = Join-Path (
+            $failureSetupOutput
+        ) "RustyFleet-Labs-Setup.exe"
+        $failureInstall = Complete-TestSetup -Process (
+            Start-TestSetup -LiteralPath $failureSetup -Answer i
+        )
+        Assert-Distribution (
+            $failureInstall.exit_code -eq 0
+        ) "uninstall recovery fixture did not install"
+        $failureRegistry = Join-Path (
+            $failureShellRoot
+        ) "Registry\rusty-fleet-labs.json"
+        $failureShortcut = Join-Path (
+            $failureShellRoot
+        ) "Programs\Rusty Fleet Labs\Rusty Fleet Labs.lnk"
+        $registryBefore = Get-RustyFleetSha256 -LiteralPath $failureRegistry
+        $shortcutBefore = Get-RustyFleetSha256 -LiteralPath $failureShortcut
+        & $failureSetup --uninstall *> $null
+        Assert-Distribution (
+            $LASTEXITCODE -ne 0 -and
+            (Test-Path -LiteralPath $failureInstallRoot -PathType Container) -and
+            (Get-RustyFleetSha256 -LiteralPath $failureRegistry) -ceq
+                $registryBefore -and
+            (Get-RustyFleetSha256 -LiteralPath $failureShortcut) -ceq
+                $shortcutBefore
+        ) "$uninstallFailure did not restore registry and shortcut identity"
+    }
+
+    $partialShellRoot = Join-Path $testRoot "shell-uninstall-partial"
+    $partialInstallRoot = Join-Path $testRoot "install-uninstall-partial"
+    $partialSetupOutput = Join-Path $testRoot "setup-uninstall-partial"
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
+        -DevelopmentInstallRoot $partialInstallRoot `
+        -DevelopmentShellTestRoot $partialShellRoot `
+        -DevelopmentShellFailurePoint uninstall_partial_delete `
+        -OutputDirectory $partialSetupOutput | Out-Null
+    $partialSetup = Join-Path $partialSetupOutput "RustyFleet-Labs-Setup.exe"
+    $partialInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $partialSetup -Answer i
+    )
+    Assert-Distribution (
+        $partialInstall.exit_code -eq 0
+    ) "partial-delete recovery fixture did not install"
+    $partialResult = & $partialSetup --uninstall | ConvertFrom-Json
+    $partialParent = Split-Path -Parent $partialInstallRoot
+    $partialQuarantine = Join-Path $partialParent $partialResult.quarantine
+    $partialRecovery = Join-Path $partialParent $partialResult.recovery_receipt
+    $partialReceipt = Get-Content -LiteralPath $partialRecovery -Raw |
+        ConvertFrom-Json
+    Assert-Distribution (
+        $partialResult.result -eq "recoverable_cleanup" -and
+        $partialResult.quarantine -cmatch
+            '^\.rusty-fleet-labs-uninstall-[0-9a-f]{32}$' -and
+        $partialResult.recovery_receipt -ceq
+            "$($partialResult.quarantine).recovery.json" -and
+        -not (Test-Path -LiteralPath $partialInstallRoot) -and
+        (Test-Path -LiteralPath $partialQuarantine -PathType Container) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $partialQuarantine "state\current.json"
+        )) -and
+        $partialReceipt.result -eq "recoverable_cleanup" -and
+        $partialReceipt.quarantine -ceq $partialResult.quarantine -and
+        $partialReceipt.shell_identity_present -eq $false -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $partialShellRoot "Registry\rusty-fleet-labs.json"
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $partialShellRoot "Programs\Rusty Fleet Labs"
+        ))
+    ) "partial recursive deletion restored shell identity or lost recovery state"
+
+    $receiptFailureShellRoot = Join-Path $testRoot "shell-receipt-failure"
+    $receiptFailureInstallRoot = Join-Path $testRoot "install-receipt-failure"
+    $receiptFailureSetupOutput = Join-Path $testRoot "setup-receipt-failure"
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
+        -DevelopmentInstallRoot $receiptFailureInstallRoot `
+        -DevelopmentShellTestRoot $receiptFailureShellRoot `
+        -DevelopmentShellFailurePoint `
+            uninstall_partial_delete_receipt_failure `
+        -OutputDirectory $receiptFailureSetupOutput | Out-Null
+    $receiptFailureSetup = Join-Path (
+        $receiptFailureSetupOutput
+    ) "RustyFleet-Labs-Setup.exe"
+    $receiptFailureInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $receiptFailureSetup -Answer i
+    )
+    Assert-Distribution (
+        $receiptFailureInstall.exit_code -eq 0
+    ) "receipt-write recovery fixture did not install"
+    $receiptFailureResult = & $receiptFailureSetup --uninstall |
+        ConvertFrom-Json
+    $receiptFailureParent = Split-Path -Parent $receiptFailureInstallRoot
+    $receiptFailureQuarantine = Join-Path (
+        $receiptFailureParent
+    ) $receiptFailureResult.quarantine
+    Assert-Distribution (
+        $receiptFailureResult.result -eq "recoverable_cleanup" -and
+        $receiptFailureResult.recovery_receipt_write_failed -eq $true -and
+        $null -eq $receiptFailureResult.recovery_receipt -and
+        -not (Test-Path -LiteralPath $receiptFailureInstallRoot) -and
+        (Test-Path `
+            -LiteralPath $receiptFailureQuarantine `
+            -PathType Container) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $receiptFailureQuarantine "state\current.json"
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $receiptFailureShellRoot (
+                "Registry\rusty-fleet-labs.json"
+            )
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $receiptFailureShellRoot "Programs\Rusty Fleet Labs"
+        ))
+    ) (
+        "recovery receipt failure restored damaged quarantine as canonical " +
+        "or recreated shell identity"
+    )
+
+    $reparseShellRoot = Join-Path $testRoot "shell-uninstall-reparse"
+    $reparseInstallRoot = Join-Path $testRoot "install-uninstall-reparse"
+    $reparseSetupOutput = Join-Path $testRoot "setup-uninstall-reparse"
+    $quarantinesBeforeReparse = @(
+        Get-ChildItem `
+            -LiteralPath (Split-Path -Parent $reparseInstallRoot) `
+            -Directory |
+            Where-Object Name -Like '.rusty-fleet-labs-uninstall-*'
+    ).Count
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
+        -DevelopmentInstallRoot $reparseInstallRoot `
+        -DevelopmentShellTestRoot $reparseShellRoot `
+        -OutputDirectory $reparseSetupOutput | Out-Null
+    $reparseSetup = Join-Path $reparseSetupOutput "RustyFleet-Labs-Setup.exe"
+    $reparseInstall = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $reparseSetup -Answer i
+    )
+    Assert-Distribution (
+        $reparseInstall.exit_code -eq 0
+    ) "reparse rejection fixture did not install"
+    $reparseTarget = Join-Path $testRoot "reparse-target"
+    [IO.Directory]::CreateDirectory($reparseTarget) | Out-Null
+    $reparsePath = Join-Path $reparseInstallRoot "unowned-junction"
+    New-Item `
+        -ItemType Junction `
+        -Path $reparsePath `
+        -Target $reparseTarget | Out-Null
+    & $reparseSetup --uninstall *> $null
+    Assert-Distribution (
+        $LASTEXITCODE -ne 0 -and
+        (Test-Path -LiteralPath $reparseInstallRoot -PathType Container) -and
+        (Test-Path -LiteralPath (
+            Join-Path $reparseShellRoot "Registry\rusty-fleet-labs.json"
+        )) -and
+        @(
+            Get-ChildItem `
+                -LiteralPath (Split-Path -Parent $reparseInstallRoot) `
+                -Directory |
+                Where-Object Name -Like '.rusty-fleet-labs-uninstall-*'
+        ).Count -eq $quarantinesBeforeReparse
+    ) "reparse-bearing install root entered uninstall quarantine"
+
+    $failedShellRoot = Join-Path $testRoot "failed-shell"
+    $failedInstallRoot = Join-Path $testRoot "failed-shell-install"
+    $failedSetupOutput = Join-Path $testRoot "failed-shell-setup"
+    & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+        -Version "0.0.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+        -BundleArchivePath $labsArchiveOne `
+        -DevelopmentInstallRoot $failedInstallRoot `
+        -DevelopmentShellTestRoot $failedShellRoot `
+        -DevelopmentShellFailurePoint after_registry `
+        -OutputDirectory $failedSetupOutput | Out-Null
+    $failedShellInstall = Complete-TestSetup -Process (
+        Start-TestSetup `
+            -LiteralPath (Join-Path $failedSetupOutput "RustyFleet-Labs-Setup.exe") `
+            -Answer i
+    )
+    Assert-Distribution (
+        $failedShellInstall.exit_code -ne 0 -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $failedInstallRoot "state\current.json"
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $failedShellRoot "Registry\rusty-fleet-labs.json"
+        )) -and
+        -not (Test-Path -LiteralPath (
+            Join-Path $failedShellRoot "Programs\Rusty Fleet Labs"
+        ))
+    ) "shell failure left committed state, shortcuts, or uninstall registration"
+
+    $labsStatePath = Join-Path $labsSetupRoot "state\current.json"
+    $labsState = Get-Content -LiteralPath $labsStatePath -Raw |
+        ConvertFrom-Json -Depth 20
+    $labsState.current.relative_path = "../RustyFleet/releases/stable"
+    [IO.File]::WriteAllText(
+        $labsStatePath,
+        (($labsState | ConvertTo-Json -Depth 20) + "`n"),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $crossChannelPointer = Complete-TestSetup -Process (
+        Start-TestSetup -LiteralPath $labsSetupPath -Answer i
+    )
+    Assert-Distribution (
+        $crossChannelPointer.exit_code -ne 0
+    ) "Labs Setup accepted a Stable/cross-root current pointer"
+    $stableAcceptedLabs = $false
+    try {
+        & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+            -Version "0.0.1" -Channel stable -BuildKind unsigned-dev `
+            -BundleArchivePath $labsArchiveOne `
+            -DevelopmentInstallRoot (Join-Path $testRoot "wrong-stable-root") `
+            -OutputDirectory (Join-Path $testRoot "wrong-stable-setup") | Out-Null
+        $stableAcceptedLabs = $true
+    } catch {}
+    Assert-Distribution (-not $stableAcceptedLabs) "Stable Setup accepted Labs artifact"
+    $labsAcceptedStable = $false
+    try {
+        & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+            -Version "0.0.0-test.1" -Channel labs -Maturity alpha -BuildKind unsigned-dev `
+            -BundleArchivePath $archiveOne `
+            -DevelopmentInstallRoot (Join-Path $testRoot "wrong-labs-root") `
+            -OutputDirectory (Join-Path $testRoot "wrong-labs-setup") | Out-Null
+        $labsAcceptedStable = $true
+    } catch {}
+    Assert-Distribution (-not $labsAcceptedStable) "Labs Setup accepted Stable artifact"
+
     $manifestText = Get-Content `
         -LiteralPath (Join-Path $bundleOne "metadata\release-manifest.json") `
         -Raw
@@ -660,6 +1005,8 @@ try {
     ) "provider invocation is not exact"
     Assert-Distribution (
         $manifest.install.authority -eq "RustyFleet-Setup.exe" -and
+        $manifest.install.default_root -ceq
+            "%LOCALAPPDATA%/RustyFleet" -and
         $manifest.install.plan_protocol -eq
             "rusty.fleet.guided_installer_plan.v1" -and
         $manifest.update.strategy -eq
@@ -684,12 +1031,14 @@ try {
 
     $setupOutput = Join-Path $testRoot "setup"
     $setupInstallRoot = Join-Path $testRoot "setup-installed"
+    $rollbackShellRoot = Join-Path $testRoot "rollback-shell"
     $setupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
         -Version "0.0.0-test.1" `
         -Channel dev `
         -BuildKind unsigned-dev `
         -BundleArchivePath (Join-Path $outputOne "$bundleNameOne.zip") `
         -DevelopmentInstallRoot $setupInstallRoot `
+        -DevelopmentShellTestRoot $rollbackShellRoot `
         -DevelopmentTestPauseAfterRetainMs 2500 `
         -OutputDirectory $setupOutput |
         ConvertFrom-Json
@@ -697,7 +1046,10 @@ try {
     Assert-Distribution (
         $setupReceipt.result -eq "pass" -and
         $setupReceipt.version -eq "0.0.0-test.1" -and
+        $setupReceipt.product_channel -eq "stable" -and
+        $setupReceipt.maturity -eq "released" -and
         $setupReceipt.channel -eq "dev" -and
+        $setupReceipt.distribution_track -eq "local-development" -and
         $setupReceipt.build_kind -eq "unsigned-dev" -and
         $setupReceipt.bundle_sha256 -ceq (
             Get-RustyFleetSha256 -LiteralPath (
@@ -873,6 +1225,7 @@ try {
             Join-Path $outputThree "RustyFleet-0.0.0-test.2-win-x64.zip"
         ) `
         -DevelopmentInstallRoot $setupInstallRoot `
+        -DevelopmentShellTestRoot $rollbackShellRoot `
         -DevelopmentTestPauseAfterRetainMs 2500 `
         -OutputDirectory $setupTwoOutput |
         ConvertFrom-Json
@@ -933,10 +1286,21 @@ try {
     $rollback.Dispose()
     $rolledBackState = Get-Content -LiteralPath $statePath -Raw |
         ConvertFrom-Json
+    $rolledBackRegistration = Get-Content -LiteralPath (
+        Join-Path $rollbackShellRoot "Registry\rusty-fleet.json"
+    ) -Raw | ConvertFrom-Json
+    $rolledBackShortcut = Get-Content -LiteralPath (
+        Join-Path $rollbackShellRoot "Programs\Rusty Fleet\Rusty Fleet.lnk"
+    ) -Raw | ConvertFrom-Json
+    $rolledBackReleaseRoot = Join-Path $setupInstallRoot (
+        $rolledBackState.current.relative_path.Replace("/", "\")
+    )
     Assert-Distribution (
         $rollbackResult.exit_code -eq 0 -and
         $rolledBackState.current.version -eq "0.0.0-test.1" -and
-        $rolledBackState.history[0].version -eq "0.0.0-test.2"
+        $rolledBackState.history[0].version -eq "0.0.0-test.2" -and
+        $rolledBackRegistration.DisplayVersion -eq "0.0.0-test.1" -and
+        $rolledBackShortcut.working_directory -ceq $rolledBackReleaseRoot
     ) "Setup-owned fully verified pointer rollback failed"
 
     $concurrentOne = Start-TestSetup -LiteralPath $setupTwoPath -Answer i

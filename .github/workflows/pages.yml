@@ -30,6 +30,8 @@ jobs:
     env:
       VERSION: ${{ vars.FLEET_METADATA_VERSION }}
       CHANNEL: ${{ vars.FLEET_METADATA_CHANNEL }}
+      MATURITY: ${{ vars.FLEET_METADATA_MATURITY }}
+      RELEASE_TAG: ${{ vars.FLEET_METADATA_TAG }}
       SOURCE_REVISION: ${{ vars.FLEET_METADATA_SOURCE_REVISION }}
       SOURCE_TREE: ${{ vars.FLEET_METADATA_SOURCE_TREE }}
       FLEET_SIGNER_THUMBPRINT: ${{ vars.FLEET_SIGNER_THUMBPRINT }}
@@ -58,7 +60,8 @@ jobs:
         shell: pwsh
         run: |
           if ($env:VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
-              $env:CHANNEL -cnotmatch '^(?:dev|preview|stable)$' -or
+              $env:CHANNEL -cnotmatch '^(?:dev|labs|stable)$' -or
+              $env:MATURITY -cnotmatch '^(?:alpha|beta|rc|released)$' -or
               $env:SOURCE_REVISION -cnotmatch '^[0-9a-f]{40}$' -or
               $env:SOURCE_TREE -cnotmatch '^[0-9a-f]{40}$' -or
               $env:FLEET_SIGNER_THUMBPRINT -cnotmatch '^[0-9A-F]{40}$' -or
@@ -66,7 +69,16 @@ jobs:
               $env:DESCRIPTOR_SIGNER_SPKI_SHA256 -cnotmatch '^[0-9a-f]{64}$') {
             throw 'renewal public trust inputs are absent or malformed'
           }
-          $tag = "v$env:VERSION"
+          $tag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { "v$env:VERSION" }
+          $tagPattern = if ($env:MATURITY -eq 'released') {
+            '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          } else {
+            '^v[0-9]+\.[0-9]+\.[0-9]+-' + $env:MATURITY + '\.[1-9][0-9]*$'
+          }
+          if ($tag -cnotmatch $tagPattern) {
+            throw 'metadata tag does not match its explicit maturity'
+          }
+          "RESOLVED_RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           & git switch --detach $tag
           if ($LASTEXITCODE -ne 0) {
             throw 'exact release tag checkout failed'
@@ -101,7 +113,7 @@ jobs:
         shell: pwsh
         run: |
           Import-Module .\packaging\windows\Publication.Remote.psm1 -Force
-          $tag = "v$env:VERSION"
+          $tag = $env:RESOLVED_RELEASE_TAG
           $download = Join-Path $env:RUNNER_TEMP 'fleet-release-assets'
           if (Test-Path -LiteralPath $download) {
             throw 'release download directory already exists'
@@ -128,15 +140,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'exact GitHub Release asset download failed'
           }
-          $bundle = "RustyFleet-$env:VERSION-win-x64"
+          $productStem = if ($env:CHANNEL -ceq 'labs') {
+            'RustyFleet-Labs'
+          } else {
+            'RustyFleet'
+          }
+          $setupName = "$productStem-Setup.exe"
+          $setupReceiptName = "$productStem-Setup.build-receipt.json"
+          $bundle = "$productStem-$env:VERSION-win-x64"
           $expectedNames = @(
-            'RustyFleet-Setup.exe',
+            $setupName,
             "$bundle.zip",
             "$bundle.zip.sha256",
             "$bundle.manifest.json",
             "$bundle.checksums.sha256",
             "$bundle.validation-receipt.json",
-            'RustyFleet-Setup.build-receipt.json',
+            $setupReceiptName,
             'release.json',
             'release-descriptor.receipt.json',
             'release-descriptor.spki.der'
@@ -172,6 +191,13 @@ jobs:
           $download = Join-Path $env:RUNNER_TEMP 'fleet-release-assets'
           $metadata = Join-Path $env:RUNNER_TEMP 'fleet-renewed-metadata'
           $key = Join-Path $env:RUNNER_TEMP 'fleet-descriptor-signing-key.pem'
+          $productStem = if ($env:CHANNEL -ceq 'labs') {
+            'RustyFleet-Labs'
+          } else {
+            'RustyFleet'
+          }
+          $setupName = "$productStem-Setup.exe"
+          $setupReceiptName = "$productStem-Setup.build-receipt.json"
           try {
             [IO.File]::WriteAllBytes(
               $key,
@@ -187,9 +213,11 @@ jobs:
             .\packaging\windows\New-WindowsReleaseDescriptor.ps1 `
               -Version $env:VERSION `
               -Channel $env:CHANNEL `
-              -SetupPath (Join-Path $download 'RustyFleet-Setup.exe') `
+              -Maturity $env:MATURITY `
+            -ReleaseTag $env:RESOLVED_RELEASE_TAG `
+              -SetupPath (Join-Path $download $setupName) `
               -SetupBuildReceiptPath (
-                Join-Path $download 'RustyFleet-Setup.build-receipt.json'
+                Join-Path $download $setupReceiptName
               ) `
               -ExpectedSetupSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
               -ExpectedSourceRevision $env:SOURCE_REVISION `
@@ -216,15 +244,22 @@ jobs:
           $metadata = Join-Path $env:RUNNER_TEMP 'fleet-renewed-metadata'
           $stage = Join-Path $env:RUNNER_TEMP 'fleet-renewal-preflight'
           [IO.Directory]::CreateDirectory($stage) | Out-Null
-          $bundle = "RustyFleet-$env:VERSION-win-x64"
+          $productStem = if ($env:CHANNEL -ceq 'labs') {
+            'RustyFleet-Labs'
+          } else {
+            'RustyFleet'
+          }
+          $setupName = "$productStem-Setup.exe"
+          $setupReceiptName = "$productStem-Setup.build-receipt.json"
+          $bundle = "$productStem-$env:VERSION-win-x64"
           foreach ($name in @(
-            'RustyFleet-Setup.exe',
+            $setupName,
             "$bundle.zip",
             "$bundle.zip.sha256",
             "$bundle.manifest.json",
             "$bundle.checksums.sha256",
             "$bundle.validation-receipt.json",
-            'RustyFleet-Setup.build-receipt.json'
+            $setupReceiptName
           )) {
             Copy-Item `
               -LiteralPath (Join-Path $download $name) `
@@ -247,6 +282,8 @@ jobs:
             -AssetDirectory $stage `
             -Version $env:VERSION `
             -Channel $env:CHANNEL `
+            -Maturity $env:MATURITY `
+            -ReleaseTag $env:RESOLVED_RELEASE_TAG `
             -ExpectedFleetSignerThumbprint $env:FLEET_SIGNER_THUMBPRINT `
             -ExpectedHostessSignerThumbprint $env:HOSTESS_SIGNER_THUMBPRINT `
             -ExpectedDescriptorSignerSpkiSha256 (
@@ -255,7 +292,7 @@ jobs:
             -ExpectedSourceRevision $env:SOURCE_REVISION `
             -ExpectedSourceTree $env:SOURCE_TREE `
             -RepositoryRoot $env:GITHUB_WORKSPACE `
-            -ExpectedRef "refs/tags/v$env:VERSION"
+            -ExpectedRef "refs/tags/$env:RESOLVED_RELEASE_TAG"
           [IO.File]::WriteAllText(
             (Join-Path $env:RUNNER_TEMP 'metadata-preflight.json'),
             $receipt,
@@ -281,12 +318,34 @@ jobs:
             throw 'prior Pages metadata handoff lookup failed closed'
           }
 
+      - name: Preserve deployed non-target metadata subtrees
+        shell: pwsh
+        run: |
+          $existing = Join-Path $env:RUNNER_TEMP 'fleet-existing-pages'
+          [IO.Directory]::CreateDirectory($existing) | Out-Null
+          foreach ($channel in @('dev','labs','stable')) {
+            if ($channel -ceq $env:CHANNEL) { continue }
+            foreach ($name in @('release.json','release-descriptor.receipt.json','release-descriptor.spki.der','deployment-handoff.json')) {
+              $uri = "https://mesmerprism.com/Rusty-Fleet/metadata/$channel/$name"
+              $response = Invoke-WebRequest -Uri $uri -SkipHttpErrorCheck
+              if ($response.StatusCode -eq 404) { continue }
+              if ($response.StatusCode -ne 200) { throw "existing $channel metadata lookup failed" }
+              $destination = Join-Path $existing "Rusty-Fleet\metadata\$channel\$name"
+              [IO.Directory]::CreateDirectory((Split-Path -Parent $destination)) | Out-Null
+              if ($name.EndsWith('.der')) {
+                [IO.File]::WriteAllBytes($destination, $response.Content)
+              } else {
+                [IO.File]::WriteAllText($destination, [string]$response.Content, [Text.UTF8Encoding]::new($false))
+              }
+            }
+          }
       - name: Stage a binary-free resumable Pages artifact
         shell: pwsh
         run: |
           $arguments = @{
             Version = $env:VERSION
-            Channel = $env:CHANNEL
+            channel = $env:CHANNEL
+            Maturity = $env:MATURITY
             SiteDirectory = (Join-Path $env:RUNNER_TEMP 'fleet-public-site')
             MetadataDirectory = (
               Join-Path $env:RUNNER_TEMP 'fleet-renewed-metadata'
@@ -302,6 +361,10 @@ jobs:
             OutputDirectory = (
               Join-Path $env:RUNNER_TEMP 'fleet-pages-artifact'
             )
+            ExistingDeploymentDirectory = (
+              Join-Path $env:RUNNER_TEMP 'fleet-existing-pages'
+            )
+            ReleaseTag = $env:RESOLVED_RELEASE_TAG
           }
           $previous = Join-Path $env:RUNNER_TEMP 'previous-handoff.json'
           if (Test-Path -LiteralPath $previous -PathType Leaf) {

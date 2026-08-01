@@ -27,8 +27,20 @@ foreach ($requiredPath in @($manifestPath, $checksumsPath, $receiptPath)) {
 
 $manifestText = Get-Content -LiteralPath $manifestPath -Raw
 $manifest = $manifestText | ConvertFrom-Json -Depth 30
-if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v1" -or
+if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v2" -or
     $manifest.product_id -ne "rusty-fleet" -or
+    $manifest.product_channel -notin @("stable", "labs") -or
+    $manifest.maturity -notin @("alpha", "beta", "rc", "released") -or
+    $manifest.channel -notin @("dev", "labs", "stable") -or
+    $manifest.distribution_track -notin @(
+        "local-development", "github-prerelease", "github-release") -or
+    (($manifest.channel -eq "labs") -ne ($manifest.product_channel -eq "labs")) -or
+    (($manifest.channel -eq "dev") -ne
+        ($manifest.distribution_track -eq "local-development")) -or
+    (($manifest.channel -eq "labs") -ne
+        ($manifest.distribution_track -eq "github-prerelease")) -or
+    (($manifest.channel -eq "stable") -ne
+        ($manifest.distribution_track -eq "github-release")) -or
     $manifest.platform -ne "windows" -or
     $manifest.architecture -ne "x64") {
     throw "unsupported Rusty Fleet Windows release manifest identity"
@@ -198,8 +210,14 @@ if ($manifest.build.kind -eq "signed-release") {
     }
 }
 
+$expectedSetupAuthority = if ($manifest.product_channel -eq "labs") {
+    "RustyFleet-Labs-Setup.exe"
+}
+else {
+    "RustyFleet-Setup.exe"
+}
 if ($manifest.install.activation -ne "explicit_operator_start" -or
-    $manifest.install.authority -ne "RustyFleet-Setup.exe" -or
+    $manifest.install.authority -ne $expectedSetupAuthority -or
     $manifest.install.plan_protocol -ne "rusty.fleet.guided_installer_plan.v1" -or
     $manifest.install.service_registration -ne "absent" -or
     $manifest.update.strategy -ne "setup_owned_side_by_side_manifest" -or

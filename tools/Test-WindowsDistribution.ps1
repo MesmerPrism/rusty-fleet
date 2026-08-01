@@ -12,6 +12,7 @@ $distributionTests = @(
     "..\packaging\windows\tests\Test-WindowsReleaseDescriptor.ps1",
     "..\packaging\windows\tests\Test-WindowsReleasePolicy.ps1",
     "..\packaging\windows\tests\Test-WindowsPagesDeployment.ps1"
+    "..\packaging\windows\tests\Test-WindowsLabsDistribution.ps1"
 )
 foreach ($relative in $distributionTests) {
     $distributionTest = Join-Path $PSScriptRoot $relative

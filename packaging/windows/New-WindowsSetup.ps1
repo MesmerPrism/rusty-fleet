@@ -8,8 +8,11 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "preview", "stable")]
+    [ValidateSet("dev", "labs", "stable")]
     [string] $Channel,
+
+    [ValidateSet("alpha", "beta", "rc", "released")]
+    [string] $Maturity = "released",
 
     [Parameter(Mandatory)]
     [ValidateSet("unsigned-dev", "signed-release")]
@@ -26,6 +29,19 @@ param(
     [string] $DevelopmentInstallRoot,
     [ValidateRange(0, 10000)]
     [int] $DevelopmentTestPauseAfterRetainMs = 0,
+    [string] $DevelopmentShellTestRoot,
+    [ValidateSet(
+        "",
+        "after_setup",
+        "after_shortcuts",
+        "after_registry",
+        "uninstall_after_shortcuts",
+        "uninstall_after_registry",
+        "uninstall_delete_root",
+        "uninstall_partial_delete",
+        "uninstall_partial_delete_receipt_failure"
+    )]
+    [string] $DevelopmentShellFailurePoint = "",
     [string] $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 )
 
@@ -34,7 +50,20 @@ $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 
 $archive = (Resolve-Path -LiteralPath $BundleArchivePath).Path
-$expectedArchiveName = "RustyFleet-$Version-win-x64.zip"
+$productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
+$distributionTrack = switch ($Channel) {
+    "dev" { "local-development" }
+    "labs" { "github-prerelease" }
+    "stable" { "github-release" }
+}
+$productStem = if ($Channel -eq "labs") { "RustyFleet-Labs" } else { "RustyFleet" }
+$setupFileName = if ($Channel -eq "labs") {
+    "RustyFleet-Labs-Setup.exe"
+}
+else {
+    "RustyFleet-Setup.exe"
+}
+$expectedArchiveName = "$productStem-$Version-win-x64.zip"
 if ((Split-Path -Leaf $archive) -cne $expectedArchiveName) {
     throw "inner bundle filename must be exactly $expectedArchiveName"
 }
@@ -49,14 +78,16 @@ $buildRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
 try {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $inspectionRoot)
     $inspectionBundleRoot = Join-Path $inspectionRoot (
-        "RustyFleet-$Version-win-x64"
+        "$productStem-$Version-win-x64"
     )
     $manifestPath = Join-Path $inspectionBundleRoot "metadata\release-manifest.json"
     $manifest = Get-Content -LiteralPath $manifestPath -Raw |
         ConvertFrom-Json -Depth 30
-    if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v1" -or
+    if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v2" -or
         $manifest.version -cne $Version -or
-        $manifest.channel -cne $Channel -or
+        $manifest.product_channel -cne $productChannel -or
+        $manifest.maturity -cne $Maturity -or
+        $manifest.distribution_track -cne $distributionTrack -or
         $manifest.build.kind -cne $BuildKind -or
         $manifest.source.revision -cnotmatch "^[0-9a-f]{40}$" -or
         $manifest.source.tree -cnotmatch "^[0-9a-f]{40}$") {
@@ -86,8 +117,13 @@ try {
         throw "signed Setup must not carry a development install-root override"
     }
     if ($BuildKind -eq "signed-release" -and
-        $DevelopmentTestPauseAfterRetainMs -ne 0) {
-        throw "signed Setup must not carry a development test pause"
+        ($DevelopmentTestPauseAfterRetainMs -ne 0 -or
+         $DevelopmentShellTestRoot -or
+         $DevelopmentShellFailurePoint)) {
+        throw "signed Setup must not carry development test controls"
+    }
+    if ($DevelopmentShellFailurePoint -and -not $DevelopmentShellTestRoot) {
+        throw "shell failure injection requires an isolated development shell root"
     }
 
     [System.IO.Directory]::CreateDirectory($buildRoot) | Out-Null
@@ -95,6 +131,14 @@ try {
     $manifestSha256 = Get-RustyFleetSha256 -LiteralPath $manifestPath
     $fleetSigner = if ($FleetSignerThumbprint) {
         $FleetSignerThumbprint.ToUpperInvariant()
+    }
+    else {
+        ""
+    }
+    $developmentShellRoot = if ($DevelopmentShellTestRoot) {
+        [IO.Path]::GetFullPath($DevelopmentShellTestRoot).
+            Replace("\", "\\").
+            Replace('"', '\"')
     }
     else {
         ""
@@ -125,8 +169,17 @@ internal static class ReleaseConfiguration
     internal static readonly string ManifestSha256 = "$manifestSha256";
     internal static readonly string FleetSignerThumbprint = "$fleetSigner";
     internal static readonly string HostessSignerThumbprint = "$hostessSigner";
+    internal static readonly string ProductId = "$(if ($Channel -eq "labs") { "rusty-fleet-labs" } else { "rusty-fleet" })";
+    internal static readonly string ProductChannel = "$productChannel";
+    internal static readonly string Maturity = "$Maturity";
+    internal static readonly string DistributionTrack = "$distributionTrack";
+    internal static readonly string DisplayName = "$(if ($Channel -eq "labs") { "Rusty Fleet Labs" } else { "Rusty Fleet" })";
+    internal static readonly string SetupFileName = "$setupFileName";
+    internal static readonly string InstallDirectoryName = "$(if ($Channel -eq "labs") { "RustyFleetLabs" } else { "RustyFleet" })";
     internal static readonly string DevelopmentInstallRoot = "$developmentRoot";
     internal static readonly int DevelopmentTestPauseAfterRetainMs = $DevelopmentTestPauseAfterRetainMs;
+    internal static readonly string DevelopmentShellTestRoot = "$developmentShellRoot";
+    internal static readonly string DevelopmentShellFailurePoint = "$DevelopmentShellFailurePoint";
 }
 "@
     Write-RustyFleetUtf8 -LiteralPath $configPath -Content $config
@@ -152,19 +205,22 @@ internal static class ReleaseConfiguration
     [System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
     $destination = Join-Path (
         [System.IO.Path]::GetFullPath($OutputDirectory)
-    ) "RustyFleet-Setup.exe"
+    ) $setupFileName
     if (Test-Path -LiteralPath $destination) {
-        throw "refusing to overwrite an existing RustyFleet-Setup.exe"
+        throw "refusing to overwrite an existing $setupFileName"
     }
     Copy-Item -LiteralPath $built -Destination $destination
     $canonicalPayload = Get-RustyFleetPeCanonicalPayload `
         -LiteralPath $destination `
         -ExpectedPayloadSize (Get-Item -LiteralPath $destination).Length
     [ordered]@{
-        schema = "rusty.fleet.windows_setup_build_receipt.v1"
+        schema = "rusty.fleet.windows_setup_build_receipt.v2"
         result = "pass"
         version = $Version
         channel = $Channel
+        product_channel = $productChannel
+        maturity = $Maturity
+        distribution_track = $distributionTrack
         build_kind = $BuildKind
         setup_sha256 = Get-RustyFleetSha256 -LiteralPath $destination
         bundle_sha256 = $archiveSha256
