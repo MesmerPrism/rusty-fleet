@@ -147,7 +147,10 @@ GitHub Releases is the binary source of truth. Current publication is enabled
 only for Labs. It is blocked unless the workflow runs in `signed-release`
 mode, all five executables and Setup satisfy the centralized exact
 Authenticode assessment, every certificate matches the reviewed subject,
-thumbprint, and certificate SHA-256, and a timestamp is present. The assessment
+thumbprint, and certificate SHA-256, and a timestamp is present. Signing uses
+DigiCert's exact RFC 3161 SignTool endpoint. SignTool validates the signed
+RFC 3161 transaction, and Fleet's assessment rejects a missing embedded
+timestamp. The assessment
 accepts exactly two host-dependent chain shapes: `Valid` with one clean trusted
 self-issued element on a machine that already trusts the certificate, or
 `UnknownError` with one `UntrustedRoot` element elsewhere. Both prove the same
