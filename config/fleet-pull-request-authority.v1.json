@@ -266,7 +266,7 @@
       "status": "approved"
     },
     {
-      "approval_id": "fleet-windows-labs-production-trust-20260801",
+      "approval_id": "fleet-windows-labs-trust-production-20260801",
       "required_ancestor": "2414e44dce47bdad91bb907447b57ac03c4b30e8",
       "changed_paths": [
         ".github/workflows/pages.yml",
