@@ -231,12 +231,18 @@ must say that no supported download or deployed metadata is available.
 The protected Pages workflow renews the 23-hour descriptor every 12 hours and
 may also be dispatched explicitly for `labs` or `stable`. The `dev` channel is
 local-development material and cannot create a release descriptor,
-publication, or Pages deployment. The workflow checks out the exact existing release
-tag for release validation while retaining the human site from the triggering
-main revision. It requires the configured commit, tree, and tagged policy,
-resolves the visible GitHub Release tag to that commit, downloads its complete
-ten-asset inventory, and verifies every remote SHA-256 and size before
-generating new metadata. The unchanged Setup and bundle remain GitHub Release
+publication, or Pages deployment. The workflow checks out the exact existing
+release tag for release validation while retaining the human site from the
+triggering main revision. It requires the configured commit, tree, and tagged
+policy, resolves the visible GitHub Release tag to that commit, downloads its
+complete ten-asset inventory, and verifies every remote SHA-256 and size before
+generating new metadata. It sends only a bounded hash-bound public request to
+the `MesmerPrism.github.io` repository's central projection workflow. That
+workflow reruns Fleet's Pages staging verifier, replaces only the
+`Rusty-Fleet` subtree, preserves the non-target channel and every unrelated
+site byte, commits the projection, and requests the canonical legacy Pages
+build. The Fleet workflow succeeds only after the four public metadata bytes
+match its candidate. The unchanged Setup and bundle remain GitHub Release
 assets. Pages receives only the human site plus:
 
 ```text
@@ -262,9 +268,10 @@ partial owned staging directory is rebuilt from the retained inputs.
 
 Release publication remains bound to the exact public pins in the tagged
 source policy. Metadata deployment remains disabled by default and requires
-the repository variable `FLEET_METADATA_DEPLOYMENT_ENABLED=true`, plus these
-matching public trust inputs in the protected `windows-release-metadata`
-environment:
+the repository variable `FLEET_METADATA_DEPLOYMENT_ENABLED=true`, the
+repository secret `FLEET_RELEASE_PUBLISH_TOKEN` for the exact central
+dispatch, plus these matching public trust inputs in the protected
+`windows-release-metadata` environment:
 
 | Variable | Exact meaning |
 | --- | --- |

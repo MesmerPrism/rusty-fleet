@@ -236,8 +236,10 @@ if ($pagesWorkflowText -notmatch "(?m)^permissions:\n  contents: read$" -or
     $pagesWorkflowText -notmatch [regex]::Escape(
         '${{ secrets.FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64 }}'
     ) -or
-    $pagesWorkflowText -match
-        "secrets\.(?:FLEET_SIGNING_PFX|FLEET_RELEASE_PUBLISH_TOKEN)" -or
+    $pagesWorkflowText -notmatch [regex]::Escape(
+        '${{ secrets.FLEET_RELEASE_PUBLISH_TOKEN }}'
+    ) -or
+    $pagesWorkflowText -match "secrets\.FLEET_SIGNING_PFX" -or
     $pagesWorkflowText -notmatch [regex]::Escape("-Mode Preflight") -or
     $pagesWorkflowText -notmatch [regex]::Escape(
         "New-WindowsPagesDeployment.ps1"
@@ -254,7 +256,22 @@ if ($pagesWorkflowText -notmatch "(?m)^permissions:\n  contents: read$" -or
     $pagesAuthorityText -match 'local-development' -or
     $descriptorAuthorityText -match 'local-development' -or
     $pagesWorkflowText -match
-        "\bgh release (?:create|upload|edit|delete)\b") {
+        "\bgh release (?:create|upload|edit|delete)\b" -or
+    $pagesWorkflowText -match 'actions/(?:configure|deploy)-pages@' -or
+    $pagesWorkflowText -match 'actions/upload-pages-artifact@' -or
+    $pagesWorkflowText -match '(?m)^\s+pages: write$' -or
+    $pagesWorkflowText -match '(?m)^\s+id-token: write$' -or
+    $pagesWorkflowText -notmatch 'rusty\.fleet\.pages_projection_request\.v1' -or
+    $pagesWorkflowText -notmatch 'rusty\.fleet\.pages_projection_dispatch\.v1' -or
+    $pagesWorkflowText -notmatch
+        'repos/MesmerPrism/MesmerPrism\.github\.io/dispatches' -or
+    $pagesWorkflowText -notmatch '\$requestBytes\.Length -gt 45000' -or
+    $pagesWorkflowText -notmatch
+        '\[Text\.Encoding\]::UTF8\.GetByteCount\(\$dispatchText\) -gt 65535' -or
+    $pagesWorkflowText -notmatch
+        'https://mesmerprism\.com/Rusty-Fleet/metadata/' -or
+    $pagesWorkflowText -notmatch
+        'central Pages metadata did not become exactly readable in time') {
     throw "Pages workflow does not preserve the protected renewal boundary"
 }
 $requiredPagesAuthorityEvidence = @(
@@ -290,6 +307,6 @@ foreach ($evidence in $requiredPagesAuthorityEvidence) {
     renewable_pages_metadata = $true
     renewable_pages_channels = @("labs", "stable")
     pages_binary_count = 0
-    metadata_renewal_secret_count = 1
+    metadata_renewal_secret_count = 2
     workflow_newline_forms = @("lf", "crlf")
 } | ConvertTo-Json -Depth 5

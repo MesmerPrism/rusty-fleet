@@ -378,13 +378,6 @@ jobs:
             [Text.UTF8Encoding]::new($false)
           )
 
-      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-
-      - name: Upload binary-free Pages artifact
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
-        with:
-          path: ${{ runner.temp }}/fleet-pages-artifact
-
       - name: Upload renewal evidence only
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -396,16 +389,171 @@ jobs:
             ${{ runner.temp }}/fleet-renewed-metadata/release-descriptor.receipt.json
           if-no-files-found: error
 
-  deploy:
-    needs: prepare
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy exact signed metadata and human documentation
-        id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Dispatch the exact central Pages projection
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_RELEASE_PUBLISH_TOKEN }}
+        run: |
+          if (-not $env:GH_TOKEN) {
+            throw 'central Pages dispatch requires the protected publication token'
+          }
+          $artifact = Join-Path $env:RUNNER_TEMP 'fleet-pages-artifact'
+          $metadata = Join-Path $artifact (
+            "Rusty-Fleet\metadata\$env:CHANNEL"
+          )
+          $sources = [ordered]@{
+            'release.json' = (Join-Path $metadata 'release.json')
+            'release-descriptor.receipt.json' = (
+              Join-Path $metadata 'release-descriptor.receipt.json'
+            )
+            'release-descriptor.spki.der' = (
+              Join-Path $metadata 'release-descriptor.spki.der'
+            )
+            'deployment-handoff.json' = (
+              Join-Path $metadata 'deployment-handoff.json'
+            )
+            'metadata-preflight.json' = (
+              Join-Path $env:RUNNER_TEMP 'metadata-preflight.json'
+            )
+          }
+          $files = @(
+            foreach ($entry in $sources.GetEnumerator()) {
+              if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
+                throw "central Pages input is absent: $($entry.Key)"
+              }
+              $bytes = [IO.File]::ReadAllBytes($entry.Value)
+              [ordered]@{
+                name = $entry.Key
+                sha256 = (
+                  [Convert]::ToHexString(
+                    [Security.Cryptography.SHA256]::HashData($bytes)
+                  ).ToLowerInvariant()
+                )
+                size_bytes = $bytes.Length
+                content_base64 = [Convert]::ToBase64String($bytes)
+              }
+            }
+          )
+          $request = [ordered]@{
+            schema = 'rusty.fleet.pages_projection_request.v1'
+            source_repository = 'MesmerPrism/rusty-fleet'
+            target_repository = 'MesmerPrism/MesmerPrism.github.io'
+            source_run_id = [string] $env:GITHUB_RUN_ID
+            version = $env:VERSION
+            product_channel = $env:CHANNEL
+            maturity = $env:MATURITY
+            distribution_track = if ($env:CHANNEL -ceq 'labs') {
+              'github-prerelease'
+            } else {
+              'github-release'
+            }
+            release_tag = $env:RESOLVED_RELEASE_TAG
+            source_revision = $env:SOURCE_REVISION
+            source_tree = $env:SOURCE_TREE
+            fleet_signer_thumbprint = $env:FLEET_SIGNER_THUMBPRINT
+            hostess_signer_thumbprint = $env:HOSTESS_SIGNER_THUMBPRINT
+            descriptor_signer_spki_sha256 = (
+              $env:DESCRIPTOR_SIGNER_SPKI_SHA256
+            )
+            files = $files
+          }
+          $requestText = $request | ConvertTo-Json -Depth 8 -Compress
+          $requestBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+            $requestText
+          )
+          if ($requestBytes.Length -gt 45000) {
+            throw 'central Pages projection request exceeds its base64-safe bound'
+          }
+          $requestSha256 = [Convert]::ToHexString(
+            [Security.Cryptography.SHA256]::HashData($requestBytes)
+          ).ToLowerInvariant()
+          $dispatch = [ordered]@{
+            event_type = 'fleet-pages-projection'
+            client_payload = [ordered]@{
+              schema = 'rusty.fleet.pages_projection_dispatch.v1'
+              request_sha256 = $requestSha256
+              request_base64 = [Convert]::ToBase64String($requestBytes)
+            }
+          }
+          $dispatchPath = Join-Path $env:RUNNER_TEMP (
+            'fleet-central-pages-dispatch.json'
+          )
+          $dispatchText = $dispatch | ConvertTo-Json -Depth 10 -Compress
+          if ([Text.Encoding]::UTF8.GetByteCount($dispatchText) -gt 65535) {
+            throw 'serialized repository dispatch exceeds GitHub''s payload bound'
+          }
+          [IO.File]::WriteAllText(
+            $dispatchPath,
+            $dispatchText,
+            [Text.UTF8Encoding]::new($false)
+          )
+          try {
+            gh api `
+              --method POST `
+              repos/MesmerPrism/MesmerPrism.github.io/dispatches `
+              --input $dispatchPath | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw 'central Pages projection dispatch failed'
+            }
+          }
+          finally {
+            if (Test-Path -LiteralPath $dispatchPath) {
+              Remove-Item -LiteralPath $dispatchPath -Force
+            }
+          }
+
+      - name: Verify exact public central Pages readback
+        shell: pwsh
+        run: |
+          $metadata = Join-Path $env:RUNNER_TEMP (
+            "fleet-pages-artifact\Rusty-Fleet\metadata\$env:CHANNEL"
+          )
+          $expected = [ordered]@{}
+          foreach ($name in @(
+            'release.json',
+            'release-descriptor.receipt.json',
+            'release-descriptor.spki.der',
+            'deployment-handoff.json'
+          )) {
+            $expected[$name] = (
+              Get-FileHash `
+                -Algorithm SHA256 `
+                -LiteralPath (Join-Path $metadata $name)
+            ).Hash.ToLowerInvariant()
+          }
+          $client = [Net.Http.HttpClient]::new()
+          try {
+            for ($attempt = 1; $attempt -le 120; $attempt++) {
+              $complete = $true
+              foreach ($entry in $expected.GetEnumerator()) {
+                $uri = (
+                  "https://mesmerprism.com/Rusty-Fleet/metadata/" +
+                  "$env:CHANNEL/$($entry.Key)?fleet-renewal=" +
+                  "$env:GITHUB_RUN_ID-$attempt"
+                )
+                try {
+                  $bytes = $client.GetByteArrayAsync($uri).GetAwaiter().GetResult()
+                  $sha256 = [Convert]::ToHexString(
+                    [Security.Cryptography.SHA256]::HashData($bytes)
+                  ).ToLowerInvariant()
+                  if ($sha256 -cne $entry.Value) {
+                    $complete = $false
+                    break
+                  }
+                }
+                catch {
+                  $complete = $false
+                  break
+                }
+              }
+              if ($complete) {
+                'Exact central Pages metadata is publicly readable.'
+                exit 0
+              }
+              Start-Sleep -Seconds 5
+            }
+          }
+          finally {
+            $client.Dispose()
+          }
+          throw 'central Pages metadata did not become exactly readable in time'

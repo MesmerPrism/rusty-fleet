@@ -201,11 +201,14 @@ claimed until the protected workflows produce and independently validate one.
 The Pages handoff is renewable rather than release-run-only: a protected
 12-hour workflow revalidates the exact visible ten-asset GitHub Release,
 tag/commit/tree, tagged trust policy, Authenticode identities, and descriptor
-SPKI before signing fresh 23-hour metadata. It deploys only the human site,
-descriptor, receipt, public SPKI, and a relative hash-bound renewal handoff;
-Setup and archives remain GitHub Release assets. The workflow is inert until
-its explicit deployment-enable variable, reviewed public pins, exact release
-identity, and protected descriptor key are configured.
+SPKI before signing fresh 23-hour metadata. It sends a bounded hash-bound
+request to the central `MesmerPrism.github.io` deployment authority, which
+revalidates the Fleet-owned staging tree and replaces only
+`/Rusty-Fleet/`. Fleet then waits for byte-exact public readback. Setup and
+archives remain GitHub Release assets. The workflow is inert until its
+explicit deployment-enable variable, reviewed public pins, exact release
+identity, protected descriptor key, and protected publication token are
+configured.
 
 The full-product Windows distribution has persistent `stable` and opt-in
 `labs` product channels. Fleet's release `channel` (`dev|labs|stable`), release
