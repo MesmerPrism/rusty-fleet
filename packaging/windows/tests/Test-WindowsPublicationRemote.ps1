@@ -37,6 +37,7 @@ function New-RemoteTestState {
         malformed_tag = $false
         fail_release_list = $false
         malformed_release_list = $false
+        release_visibility_delay_reads = 0
         create_fail_after_state = $false
         create_failure_consumed = $false
         upload_fail_after = 0
@@ -249,6 +250,14 @@ if ($GhArgs[0] -ceq "api") {
             [Console]::Out.Write('{"not":"an-array"}')
             exit 0
         }
+        if (@($state.releases).Count -ne 0 -and
+            [int] $state.release_visibility_delay_reads -gt 0) {
+            $state.release_visibility_delay_reads =
+                [int] $state.release_visibility_delay_reads - 1
+            Save-State
+            Write-Json @()
+            exit 0
+        }
         Write-Json @($state.releases)
         exit 0
     }
@@ -422,6 +431,24 @@ exit 49
         $createdState.releases[0].draft -eq $false -and
         @($createdState.releases[0].assets).Count -eq $assetInventory.Count
     ) "create, upload, verify, and visibility flow did not close exactly"
+
+    $delayedCreateState = New-RemoteTestState
+    $delayedCreateState.release_visibility_delay_reads = 2
+    Write-RemoteTestJson $statePath $delayedCreateState
+    $delayedCreate = Invoke-RemotePublication `
+        -StatePath $statePath `
+        -Assets $assetInventory
+    $delayedCreateReadback = Get-Content -LiteralPath $statePath -Raw |
+        ConvertFrom-Json -Depth 30
+    Assert-RemoteTest (
+        $delayedCreate.draft_verified -and
+        $delayedCreate.visible_verified -and
+        -not $delayedCreate.resumed_draft -and
+        [int] $delayedCreateReadback.release_visibility_delay_reads -eq 0 -and
+        $delayedCreateReadback.releases[0].draft -eq $false -and
+        @($delayedCreateReadback.releases[0].assets).Count -eq
+            $assetInventory.Count
+    ) "delayed draft creation readback did not retry to exact visibility"
 
     $latestAlphaState = New-RemoteTestState
     $latestAlphaState.releases = @(
@@ -804,6 +831,7 @@ exit 49
         schema = "rusty.fleet.windows_publication_remote_test.v1"
         result = "pass"
         create_verify_visible = $true
+        delayed_draft_readback_retried = $true
         partial_create_resumed = $true
         partial_upload_resumed = $true
         complete_draft_resumed_without_upload = $true

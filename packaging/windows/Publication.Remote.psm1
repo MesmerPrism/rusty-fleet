@@ -428,6 +428,42 @@ function Get-RustyFleetRemoteReleaseByTag {
     return $matches[0]
 }
 
+function Wait-RustyFleetRemoteReleaseByTag {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidatePattern("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")]
+        [string] $GitHubRepository,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern("^v[0-9]+\.[0-9]+\.[0-9]+(?:-alpha\.[1-9][0-9]*)?$")]
+        [string] $Tag,
+
+        [Parameter(Mandatory)]
+        [string] $GhExecutable,
+
+        [ValidateRange(1, 120)]
+        [int] $MaximumAttempts = 60,
+
+        [ValidateRange(100, 5000)]
+        [int] $DelayMilliseconds = 1000
+    )
+
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
+        $release = Get-RustyFleetRemoteReleaseByTag `
+            -GitHubRepository $GitHubRepository `
+            -Tag $Tag `
+            -GhExecutable $GhExecutable
+        if ($null -ne $release) {
+            return $release
+        }
+        if ($attempt -lt $MaximumAttempts) {
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+    return $null
+}
+
 function Get-RustyFleetRemoteReleaseId {
     param(
         [Parameter(Mandatory)][object] $Release,
@@ -602,7 +638,7 @@ function Publish-RustyFleetGitHubRelease {
             -GhExecutable $GhExecutable `
             -Arguments $createArguments `
             -Context "draft release creation")
-        $release = Get-RustyFleetRemoteReleaseByTag `
+        $release = Wait-RustyFleetRemoteReleaseByTag `
             -GitHubRepository $GitHubRepository `
             -Tag $Tag `
             -GhExecutable $GhExecutable
