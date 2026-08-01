@@ -18,14 +18,17 @@ param(
 
     [string] $ReleasePolicyPath = (
         Join-Path $PSScriptRoot "trust\release-policy.json"
-    ),
-
-    [string] $TimestampUrl = "https://timestamp.digicert.com"
+    )
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
+
+# DigiCert's RFC 3161 SignTool endpoint is intentionally HTTP. SignTool
+# validates the signed RFC 3161 transaction, and Fleet rejects a missing
+# embedded timestamp after signing.
+$timestampUrl = "http://timestamp.digicert.com"
 
 $channelPolicy = Read-RustyFleetReleaseTrustPolicy `
     -LiteralPath (Resolve-Path -LiteralPath $ReleasePolicyPath).Path `
@@ -75,7 +78,7 @@ try {
             /sha1 $certificate.Thumbprint `
             /fd SHA256 `
             /td SHA256 `
-            /tr $TimestampUrl `
+            /tr $timestampUrl `
             $resolved
         if ($LASTEXITCODE -ne 0) {
             throw "Authenticode signing failed: $(Split-Path -Leaf $resolved)"

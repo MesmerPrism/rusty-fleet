@@ -164,6 +164,14 @@ Assert-Labs (
     $signing -notmatch 'Cert:\\(?:CurrentUser|LocalMachine)\\Root' -and
     $signing -notmatch 'StoreName\]::Root'
 ) "signing workflow may import or mutate a Windows Root store"
+Assert-Labs (
+    $signing -cmatch
+        '\$timestampUrl = "http://timestamp\.digicert\.com"' -and
+    $signing -cmatch '/tr \$timestampUrl' -and
+    $signing -cmatch '/td SHA256' -and
+    $signing -cnotmatch '\[string\] \$TimestampUrl' -and
+    $signing -cnotmatch 'https://timestamp\.digicert\.com'
+) "signing workflow does not use DigiCert's exact RFC 3161 SignTool endpoint"
 [ordered]@{
     schema = "rusty.fleet.windows_labs_distribution_test.v1"
     result = "pass"
