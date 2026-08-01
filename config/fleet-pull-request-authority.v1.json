@@ -341,11 +341,11 @@
         "packaging/windows/tests/Test-WindowsReleasePolicy.ps1"
       ],
       "artifacts": [
-        { "path": ".github/workflows/pages.yml", "state": "present", "mode": "100644", "size_bytes": 23444, "sha256": "6f4f1565e00436e2cb73c6c23ab0cdc9181a642c36b969b9530be3bf1d9f721a" },
-        { "path": "README.md", "state": "present", "mode": "100644", "size_bytes": 23613, "sha256": "4a0ca38befbca0809a04fc5bdea72abdf0859e78cc38be2872140daa4c245ddb" },
-        { "path": "docs/WINDOWS_LABS_DISTRIBUTION.md", "state": "present", "mode": "100644", "size_bytes": 4937, "sha256": "189616e49eacb3157330166f3e0e7ec5f5bae555ba62c2c6a60b877275bfd474" },
-        { "path": "packaging/windows/README.md", "state": "present", "mode": "100644", "size_bytes": 20471, "sha256": "014df9be284d4564f62647f5d084de05f0a16b92b7cde6a902de3094e5a3c557" },
-        { "path": "packaging/windows/tests/Test-WindowsReleasePolicy.ps1", "state": "present", "mode": "100644", "size_bytes": 12781, "sha256": "8410570334b2743ce807146b26a62cacb2ee8f4b995efe825feba3b365fb9698" }
+        { "path": ".github/workflows/pages.yml", "state": "present", "mode": "100644", "size_bytes": 23059, "sha256": "cbdb334e49d37123cb371c01cc440e511d793327e65bf06452ad8116a3c1efaf" },
+        { "path": "README.md", "state": "present", "mode": "100644", "size_bytes": 23200, "sha256": "459226d0d79cfc1a0f1c07521ae082a3db69186b7910860188bd3be4bbb3a273" },
+        { "path": "docs/WINDOWS_LABS_DISTRIBUTION.md", "state": "present", "mode": "100644", "size_bytes": 4861, "sha256": "38e5f2be10cf3ab473a06da9fd59c0ae0f00d9aae3def2701da3000ef5a68e18" },
+        { "path": "packaging/windows/README.md", "state": "present", "mode": "100644", "size_bytes": 20130, "sha256": "7899537ca2174637c5433d8e119e53c98e16823dcf638a5bdf830716c8cf8813" },
+        { "path": "packaging/windows/tests/Test-WindowsReleasePolicy.ps1", "state": "present", "mode": "100644", "size_bytes": 12496, "sha256": "6037e97a908d395efbc296d9daaa87a0fe4c686c2e254189fbd3f8aa9874a3df" }
       ],
       "status": "approved"
     }
