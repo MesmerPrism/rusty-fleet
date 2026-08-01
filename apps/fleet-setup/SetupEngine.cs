@@ -87,7 +87,7 @@ internal sealed class ReleaseDefinition
         var receiptSha256 = Hash(receiptBytes);
         using var document = ParseJson(manifestBytes, "release manifest");
         var root = document.RootElement;
-        RequireString(root, "schema", "rusty.fleet.windows_release_manifest.v2");
+        RequireString(root, "schema", "rusty.fleet.windows_release_manifest.v3");
         RequireString(root, "product_id", "rusty-fleet");
         RequireString(root, "platform", "windows");
         RequireString(root, "architecture", "x64");
@@ -110,7 +110,8 @@ internal sealed class ReleaseDefinition
         {
             throw new InvalidDataException("release manifest channel axes are invalid");
         }
-        var buildKind = RequiredString(root.GetProperty("build"), "kind");
+        var build = root.GetProperty("build");
+        var buildKind = RequiredString(build, "kind");
         if (buildKind is not ("unsigned-dev" or "signed-release"))
         {
             throw new InvalidDataException("release manifest build kind is invalid");
@@ -118,6 +119,41 @@ internal sealed class ReleaseDefinition
         var distribution = root.GetProperty("distribution");
         if (buildKind == "signed-release")
         {
+            RequireBoolean(build, "authenticode_required", true);
+            var authenticode = build.GetProperty("authenticode");
+            RequireString(authenticode, "subject", "CN=MesmerPrism");
+            RequireString(
+                authenticode,
+                "thumbprint",
+                ReleaseConfiguration.FleetSignerThumbprint);
+            RequireString(
+                authenticode,
+                "certificate_sha256",
+                ReleaseConfiguration.SignerCertificateSha256);
+            RequireString(
+                authenticode,
+                "trust_mode",
+                ReleaseConfiguration.AuthenticodeTrustMode);
+            RequireBoolean(
+                authenticode,
+                "self_issued",
+                ReleaseConfiguration.SignerSelfIssued);
+            RequireBoolean(
+                authenticode,
+                "public_trust_claim",
+                ReleaseConfiguration.PublicTrustClaim);
+            RequireBoolean(authenticode, "timestamp_required", true);
+            var chainFlags = authenticode
+                .GetProperty("allowed_chain_status_flags")
+                .EnumerateArray()
+                .Select(value => value.GetString())
+                .ToArray();
+            if (channel == "labs" &&
+                (chainFlags.Length != 1 || chainFlags[0] != "UntrustedRoot"))
+            {
+                throw new InvalidDataException(
+                    "Labs Authenticode chain boundary is not exact");
+            }
             RequireString(distribution, "eligibility", "signed_release");
             RequireBoolean(distribution, "publication_allowed", true);
         }
@@ -183,7 +219,7 @@ internal sealed class ReleaseDefinition
         RequireString(
             receiptRoot,
             "schema",
-            "rusty.fleet.windows_distribution_validation_receipt.v1");
+            "rusty.fleet.windows_distribution_validation_receipt.v2");
         RequireString(receiptRoot, "result", "pass");
         RequireString(receiptRoot, "version", version);
         RequireString(receiptRoot, "manifest_sha256", manifestSha256);
@@ -202,6 +238,23 @@ internal sealed class ReleaseDefinition
             receiptRoot,
             "publication_allowed",
             buildKind == "signed-release");
+        RequireString(
+            receiptRoot,
+            "authenticode_trust_mode",
+            buildKind == "signed-release"
+                ? ReleaseConfiguration.AuthenticodeTrustMode
+                : "unsigned-development");
+        RequireBoolean(
+            receiptRoot,
+            "public_trust_claim",
+            buildKind == "signed-release" && ReleaseConfiguration.PublicTrustClaim);
+        if (buildKind == "signed-release")
+        {
+            RequireString(
+                receiptRoot,
+                "signer_certificate_sha256",
+                ReleaseConfiguration.SignerCertificateSha256);
+        }
 
         var allFiles = new Dictionary<string, InventoryItem>(payload, StringComparer.Ordinal)
         {

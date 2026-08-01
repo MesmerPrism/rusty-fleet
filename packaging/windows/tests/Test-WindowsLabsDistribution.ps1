@@ -17,7 +17,10 @@ $stableWorkflow = Read-Repo ".github/workflows/release-windows.yml"
 $labsWorkflow = Read-Repo ".github/workflows/release-windows-labs.yml"
 $publication = Read-Repo "packaging/windows/Publish-WindowsRelease.ps1"
 $descriptor = Read-Repo "packaging/windows/New-WindowsReleaseDescriptor.ps1"
-$schema = Read-Repo "schemas/rusty.fleet.windows_release.v3.schema.json" | ConvertFrom-Json -Depth 20
+$signing = Read-Repo "packaging/windows/Sign-WindowsArtifacts.ps1"
+$policy = Read-Repo "packaging/windows/trust/release-policy.json" |
+    ConvertFrom-Json -Depth 20
+$schema = Read-Repo "schemas/rusty.fleet.windows_release.v4.schema.json" | ConvertFrom-Json -Depth 20
 Assert-Labs (@($schema.properties.distribution_track.enum) -ccontains "github-prerelease") "release schema does not admit the Labs transport"
 Assert-Labs (@($schema.properties.channel.enum) -ccontains "labs") "release schema does not preserve Fleet channel"
 Assert-Labs (@($schema.properties.product_channel.enum) -ccontains "labs") "release schema lacks the persistent Labs product channel"
@@ -25,21 +28,21 @@ Assert-Labs (@($schema.properties.maturity.enum) -ccontains "alpha") "release sc
 foreach ($obsolete in @("dev", "labs", "stable")) {
     Assert-Labs (@($schema.properties.distribution_track.enum) -cnotcontains $obsolete) "obsolete distribution track '$obsolete' is still admitted"
 }
-$schemaText = Read-Repo "schemas/rusty.fleet.windows_release.v3.schema.json"
+$schemaText = Read-Repo "schemas/rusty.fleet.windows_release.v4.schema.json"
 Assert-Labs (
-    $schemaText -match '"channel": \{ "const": "dev" \}' -and
-    $schemaText -match '"distribution_track": \{ "const": "local-development" \}' -and
     $schemaText -match '"channel": \{ "const": "labs" \}' -and
     $schemaText -match '"distribution_track": \{ "const": "github-prerelease" \}' -and
-    $schemaText -match '"channel": \{ "const": "stable" \}' -and
-    $schemaText -match '"distribution_track": \{ "const": "github-release" \}'
+    $schemaText -match '"authenticode_trust_mode": \{ "const": "exact-pinned-self-issued-untrusted-root-only" \}' -and
+    $schemaText -match '"public_trust_claim": \{ "const": false \}' -and
+    $schemaText -match '"authenticode_trust_mode": \{ "const": "public-chain-only" \}' -and
+    $schemaText -match '"public_trust_claim": \{ "const": true \}'
 ) "release schema does not reject cross-axis substitutions"
 Assert-Labs ($bundle -match 'RustyFleet-Labs-\$Version-win-x64' -and $setup -match 'RustyFleet-Labs-Setup\.exe') "Labs artifacts are not independently named"
 Assert-Labs ($setup -match 'rusty-fleet-labs' -and $setup -match 'Rusty Fleet Labs' -and $setup -match 'RustyFleetLabs') "Labs installation identity is incomplete"
 Assert-Labs (
     $descriptor -match '\$plan\.product -cne \$installationIdentity' -and
     $descriptor -match
-        'schema = "rusty\.fleet\.windows_release_descriptor_receipt\.v4"' -and
+        'schema = "rusty\.fleet\.windows_release_descriptor_receipt\.v5"' -and
     $descriptor -match 'release_tag = \$ReleaseTag' -and
     $descriptor -match 'installation_identity = \$installationIdentity' -and
     $descriptor -match 'role = "complete-product"' -and
@@ -52,7 +55,15 @@ Assert-Labs (
 ) "owner release metadata does not bind the exact Labs release identity"
 Assert-Labs ($program -match 'ReleaseConfiguration\.InstallDirectoryName' -and $program -match 'ReleaseConfiguration\.ProductId' -and $engine -match 'channel is not \("dev" or "labs" or "stable"\)') "Setup does not bind Labs identity"
 Assert-Labs ($engine -match 'SpecialFolder\.Programs' -and $engine -match 'CurrentVersion\\Uninstall' -and $engine -match 'ReleaseConfiguration\.DisplayName' -and $engine -match 'ReleaseConfiguration\.ProductId') "channel-specific shortcuts or uninstall registration are absent"
-Assert-Labs ($pages -match 'metadata/\$Channel/release\.json' -and $pages -match 'local-development' -and $pages -match 'github-prerelease' -and $pages -match 'github-release') "Pages metadata is not channel isolated"
+Assert-Labs (
+    $pages -match 'metadata/\$Channel/release\.json' -and
+    $pages -match '\[ValidateSet\("labs", "stable"\)\]' -and
+    $pages -notmatch 'local-development' -and
+    $pages -match 'github-prerelease' -and
+    $pages -match 'github-release' -and
+    $descriptor -match '\[ValidateSet\("labs", "stable"\)\]' -and
+    $publication -match '\[ValidateSet\("labs", "stable"\)\]'
+) "public release metadata is not isolated to Labs and Stable"
 Assert-Labs (
     $pagesWorkflow -match '"RESOLVED_RELEASE_TAG=\$tag" >> \$env:GITHUB_ENV' -and
     $pagesWorkflow -match '\$tag = \$env:RESOLVED_RELEASE_TAG' -and
@@ -108,7 +119,61 @@ foreach ($scriptTextValue in $workflowPowerShell) {
         ($errors | ForEach-Object Message | Select-Object -First 1)
     )
 }
-Assert-Labs ($labsWorkflow -match 'environment: windows-labs-release' -and $labsWorkflow -match 'gh workflow run release-windows\.yml' -and $labsWorkflow -notmatch 'intentional workflow stop' -and $publication -match '-Prerelease \(\$Channel -cne "stable"\)') "Labs workflow does not delegate the complete never-latest owner release"
+Assert-Labs (
+    $labsWorkflow -match 'environment: windows-labs-release' -and
+    $labsWorkflow -match 'gh workflow run release-windows\.yml' -and
+    $labsWorkflow -match 'HOSTESS_RELEASE_POLICY_URL' -and
+    $labsWorkflow -match
+        'hostess_release_policy_url=\$env:PROVIDER_RELEASE_POLICY' -and
+    $labsWorkflow -notmatch 'intentional workflow stop' -and
+    $publication -match '-Prerelease \(\$Channel -cne "stable"\)'
+) "Labs workflow does not delegate the complete never-latest owner release"
 Assert-Labs ($labsWorkflow -match 'vX\.Y\.Z-alpha\.N' -and $stableWorkflow -match "inputs\.channel == 'labs'") "alpha maturity tag or protected Labs routing is incomplete"
 Assert-Labs ($stableWorkflow -match "inputs\.publish_release && inputs\.signing_mode == 'signed-release'") "stable publication gate changed"
-[ordered]@{schema="rusty.fleet.windows_labs_distribution_test.v1";result="pass";complete_product_bundle=$true;labs_identity_isolated=$true;owner_release_metadata_exact=$true;legacy_preview_not_mapped=$true;stable_identity_preserved=$true;prerelease_never_latest=$true;production_policy_enabled=$false} | ConvertTo-Json -Depth 5
+Assert-Labs (
+    $policy.schema -ceq "rusty.fleet.windows_release_trust_policy.v2" -and
+    $policy.channels.labs.publication_enabled -eq $true -and
+    $policy.channels.labs.authenticode.subject -ceq "CN=MesmerPrism" -and
+    $policy.channels.labs.authenticode.thumbprint -ceq
+        "08A5878AD6E652A94517D2C79144EB2655B0088C" -and
+    $policy.channels.labs.authenticode.certificate_sha256 -ceq
+        "baead63c37e32085c3af19b4c739a6a308d700529f107d40e14fec2c94fe7ddf" -and
+    $policy.channels.labs.authenticode.self_issued -eq $true -and
+    $policy.channels.labs.authenticode.public_trust_claim -eq $false -and
+    $policy.channels.labs.authenticode.trust_mode -ceq
+        "exact-pinned-self-issued-untrusted-root-only" -and
+    $policy.channels.labs.authenticode.timestamp_required -eq $true -and
+    @($policy.channels.labs.authenticode.allowed_chain_status_flags).Count -eq 1 -and
+    @($policy.channels.labs.authenticode.allowed_chain_status_flags)[0] -ceq
+        "UntrustedRoot" -and
+    @($policy.channels.labs.authorized_descriptor_signer_spki_sha256).Count -eq 1 -and
+    @($policy.channels.labs.authorized_descriptor_signer_spki_sha256)[0] -ceq
+        "0b3ef04dc5481d5e0a0a243df298c31052501e014a6e27516c48b95846657d0c" -and
+    $policy.channels.stable.publication_enabled -eq $false -and
+    $policy.channels.stable.authenticode.trust_mode -ceq "public-chain-only" -and
+    $policy.channels.stable.authenticode.public_trust_claim -eq $true -and
+    @($policy.channels.stable.authorized_descriptor_signer_spki_sha256).Count -eq 0
+) "production release policy does not preserve exact Labs-only trust"
+Assert-Labs (
+    $program -match "LABS SIGNATURE NOTICE" -and
+    $program -match "Unknown publisher warning" -and
+    $program -match "Setup never installs or changes a Windows root certificate"
+) "Setup does not disclose the exact self-issued Labs trust boundary"
+Assert-Labs (
+    $signing -match 'Cert:\\CurrentUser\\My' -and
+    $signing -notmatch 'Cert:\\(?:CurrentUser|LocalMachine)\\Root' -and
+    $signing -notmatch 'StoreName\]::Root'
+) "signing workflow may import or mutate a Windows Root store"
+[ordered]@{
+    schema = "rusty.fleet.windows_labs_distribution_test.v1"
+    result = "pass"
+    complete_product_bundle = $true
+    labs_identity_isolated = $true
+    owner_release_metadata_exact = $true
+    legacy_preview_not_mapped = $true
+    stable_identity_preserved = $true
+    prerelease_never_latest = $true
+    labs_policy_enabled = $true
+    stable_policy_enabled = $false
+    self_issued_warning_visible = $true
+} | ConvertTo-Json -Depth 5

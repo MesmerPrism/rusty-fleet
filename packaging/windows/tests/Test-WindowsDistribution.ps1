@@ -377,8 +377,47 @@ try {
     Write-TestArtifact `
         -LiteralPath $providerNotices `
         -Content "Synthetic third-party notices fixture; not release provenance.`n"
+    $providerPolicyPath = Join-Path $providerMetadata (
+        "rusty-hostess-hotspot-provider.release-policy.json"
+    )
+    $providerPolicy = [ordered]@{
+        schema = "rusty.hostess.windows_hotspot.release_policy.v1"
+        product_id = "rusty-hostess-windows-hotspot-provider"
+        signer = [ordered]@{
+            subject = "CN=Synthetic Test Signer"
+            issuer = "CN=Synthetic Test Signer"
+            thumbprint_sha1 = "6" * 40
+            certificate_sha256 = "6" * 64
+            code_signing_eku_oid = "1.3.6.1.5.5.7.3.3"
+            self_issued = $true
+            timestamp_required = $true
+            public_trust_claim = $false
+        }
+        accepted_validation_boundaries = @(
+            [ordered]@{
+                authenticode_status = "valid"
+                chain_trusted = $true
+                chain_element_count = 1
+                chain_status_flags = @()
+            },
+            [ordered]@{
+                authenticode_status = "unknown_error"
+                chain_trusted = $false
+                chain_element_count = 1
+                chain_status_flags = @("UntrustedRoot")
+            }
+        )
+        distribution = [ordered]@{
+            allowed_channels = @("labs")
+            stable_eligible = $false
+        }
+        status = "active"
+    }
+    Write-TestArtifact `
+        -LiteralPath $providerPolicyPath `
+        -Content (ConvertTo-RustyFleetJson -InputObject $providerPolicy)
     $providerProvenance = [ordered]@{
-        schema = "rusty.hostess.windows_hotspot.release_provenance.v1"
+        schema = "rusty.hostess.windows_hotspot.release_provenance.v2"
         product_id = "rusty-hostess-windows-hotspot-provider"
         provider_version = $providerVersion
         artifact = [ordered]@{
@@ -431,10 +470,25 @@ try {
         )
         signing = [ordered]@{
             state = "unsigned"
-            status = "NotSigned"
+            authenticode_status = "not_signed"
             subject = $null
-            thumbprint = $null
-            authorized_thumbprint = $null
+            issuer = $null
+            thumbprint_sha1 = $null
+            certificate_sha256 = $null
+            code_signing_eku_present = $false
+            self_issued = $null
+            timestamp_present = $false
+            chain_trusted = $false
+            chain_element_count = 0
+            chain_status_flags = @()
+            public_trust_claim = $false
+            trust_boundary = "unsigned-development"
+        }
+        release_policy = [ordered]@{
+            asset_name = "rusty-hostess-hotspot-provider.release-policy.json"
+            schema = $providerPolicy.schema
+            sha256 = Get-RustyFleetSha256 -LiteralPath $providerPolicyPath
+            size_bytes = (Get-Item -LiteralPath $providerPolicyPath).Length
         }
         companion_documents = @(
             [ordered]@{
@@ -451,6 +505,8 @@ try {
         distribution = [ordered]@{
             eligibility = "development_only"
             binary_authority = "rusty-hostess-github-releases"
+            allowed_channels = @()
+            stable_eligible = $false
         }
     }
     Write-TestArtifact `
@@ -463,6 +519,7 @@ try {
     [System.IO.Directory]::CreateDirectory($unboundMetadata) | Out-Null
     Copy-Item -LiteralPath $providerLicense -Destination $unboundMetadata
     Copy-Item -LiteralPath $providerNotices -Destination $unboundMetadata
+    Copy-Item -LiteralPath $providerPolicyPath -Destination $unboundMetadata
     $unboundProvenance = (
         ConvertTo-RustyFleetJson -InputObject $providerProvenance |
         ConvertFrom-Json -Depth 30
@@ -481,7 +538,8 @@ try {
             -MetadataDirectory $unboundMetadata `
             -ProviderPath $provider `
             -ProviderSha256 $providerSha256 `
-            -BuildKind unsigned-dev | Out-Null
+            -BuildKind unsigned-dev `
+            -Channel dev | Out-Null
     }
     catch {
         $unboundUnsignedRejected = $true
@@ -494,6 +552,7 @@ try {
     [System.IO.Directory]::CreateDirectory($signedMetadata) | Out-Null
     Copy-Item -LiteralPath $providerLicense -Destination $signedMetadata
     Copy-Item -LiteralPath $providerNotices -Destination $signedMetadata
+    Copy-Item -LiteralPath $providerPolicyPath -Destination $signedMetadata
     $signedProvenance = (
         ConvertTo-RustyFleetJson -InputObject $providerProvenance |
         ConvertFrom-Json -Depth 30
@@ -501,12 +560,22 @@ try {
     $signedProvenance.build.kind = "signed-release"
     $signedProvenance.source.availability_state = "verified_public"
     $signedProvenance.source.verified_at_utc = "2026-07-27T00:00:00Z"
-    $signedProvenance.signing.state = "verified"
-    $signedProvenance.signing.status = "Valid"
+    $signedProvenance.signing.state = "accepted_exact_owner_signature"
+    $signedProvenance.signing.authenticode_status = "unknown_error"
     $signedProvenance.signing.subject = "CN=Synthetic Test Signer"
-    $signedProvenance.signing.thumbprint = "6" * 40
-    $signedProvenance.signing.authorized_thumbprint = "6" * 40
-    $signedProvenance.distribution.eligibility = "signed_release"
+    $signedProvenance.signing.issuer = "CN=Synthetic Test Signer"
+    $signedProvenance.signing.thumbprint_sha1 = "6" * 40
+    $signedProvenance.signing.certificate_sha256 = "6" * 64
+    $signedProvenance.signing.code_signing_eku_present = $true
+    $signedProvenance.signing.self_issued = $true
+    $signedProvenance.signing.timestamp_present = $true
+    $signedProvenance.signing.chain_trusted = $false
+    $signedProvenance.signing.chain_element_count = 1
+    $signedProvenance.signing.chain_status_flags = @("UntrustedRoot")
+    $signedProvenance.signing.trust_boundary =
+        "exact-pinned-self-issued-untrusted-root-only"
+    $signedProvenance.distribution.eligibility = "labs_signed_release"
+    $signedProvenance.distribution.allowed_channels = @("labs")
     Write-TestArtifact `
         -LiteralPath (
             Join-Path $signedMetadata (
@@ -514,32 +583,15 @@ try {
             )
         ) `
         -Content (ConvertTo-RustyFleetJson -InputObject $signedProvenance)
-    & $distributionModule {
-        param($Provenance, $ExpectedSigner)
-        Assert-RustyFleetHostessSignerAuthorization `
-            -Provenance $Provenance `
-            -ObservedSubject "CN=Synthetic Test Signer" `
-            -ObservedThumbprint ("6" * 40) `
-            -ExpectedSignerThumbprint $ExpectedSigner
-    } $signedProvenance ("6" * 40)
-    foreach ($expectedSigner in @($null, ("8" * 40))) {
-        $unauthorizedSignedRejected = $false
-        try {
-            & $distributionModule {
-                param($Provenance, $ExpectedSigner)
-                Assert-RustyFleetHostessSignerAuthorization `
-                    -Provenance $Provenance `
-                    -ObservedSubject "CN=Synthetic Test Signer" `
-                    -ObservedThumbprint ("6" * 40) `
-                    -ExpectedSignerThumbprint $ExpectedSigner
-            } $signedProvenance $expectedSigner
-        }
-        catch {
-            $unauthorizedSignedRejected = $true
-        }
-        Assert-Distribution `
-            $unauthorizedSignedRejected `
-            "signed provenance without the independently authorized signer was accepted"
+    $syntheticAuthPolicy = [pscustomobject][ordered]@{
+        subject = "CN=Synthetic Test Signer"
+        thumbprint = "6" * 40
+        certificate_sha256 = "6" * 64
+        self_issued = $true
+        public_trust_claim = $false
+        trust_mode = "exact-pinned-self-issued-untrusted-root-only"
+        timestamp_required = $true
+        allowed_chain_status_flags = @("UntrustedRoot")
     }
     $physicallyUnsignedReleaseRejected = $false
     try {
@@ -548,7 +600,8 @@ try {
             -ProviderPath $provider `
             -ProviderSha256 $providerSha256 `
             -BuildKind signed-release `
-            -ExpectedSignerThumbprint ("6" * 40) | Out-Null
+            -Channel labs `
+            -AuthenticodePolicy $syntheticAuthPolicy | Out-Null
     }
     catch {
         $physicallyUnsignedReleaseRejected = $true
@@ -994,7 +1047,7 @@ try {
     ) "provider provenance did not bind the supplied artifact"
     Assert-Distribution (
         $manifestProvider[0].provenance.owner_document_schema -eq
-            "rusty.hostess.windows_hotspot.release_provenance.v1" -and
+            "rusty.hostess.windows_hotspot.release_provenance.v2" -and
         $manifestProvider[0].provenance.distribution_eligibility -eq
             "development_only" -and
         $manifest.distribution.publication_allowed -eq $false
@@ -1008,7 +1061,7 @@ try {
         $manifest.install.default_root -ceq
             "%LOCALAPPDATA%/RustyFleet" -and
         $manifest.install.plan_protocol -eq
-            "rusty.fleet.guided_installer_plan.v1" -and
+            "rusty.fleet.guided_installer_plan.v2" -and
         $manifest.update.strategy -eq
             "setup_owned_side_by_side_manifest" -and
         $manifest.update.rollback.supported -eq $true -and
@@ -1082,13 +1135,18 @@ try {
     $setupSha256 = Get-RustyFleetSha256 -LiteralPath $setupPath
     Assert-Distribution (
         $LASTEXITCODE -eq 0 -and
-        $setupPlan.schema -eq "rusty.fleet.guided_installer_plan.v1" -and
+        $setupPlan.schema -eq "rusty.fleet.guided_installer_plan.v2" -and
         $setupPlan.product -eq "rusty-fleet" -and
         $setupPlan.version -eq "0.0.0-test.1" -and
         $setupPlan.channel -eq "dev" -and
         $setupPlan.asset_sha256 -ceq $setupSha256 -and
+        $setupPlan.authenticode_trust_mode -ceq "unsigned-development" -and
+        $null -eq $setupPlan.signer_certificate_sha256 -and
+        $setupPlan.signer_self_issued -eq $false -and
+        $setupPlan.public_trust_claim -eq $false -and
+        $setupPlan.timestamp_required -eq $false -and
         $setupPlan.ready -eq $true -and
-        @($setupPlan.PSObject.Properties).Count -eq 6
+        @($setupPlan.PSObject.Properties).Count -eq 11
     ) "Setup planning contract is not exact"
     Assert-Distribution (
         -not (Test-Path -LiteralPath $setupInstallRoot)

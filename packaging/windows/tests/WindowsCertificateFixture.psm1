@@ -152,13 +152,22 @@ function Get-RustyFleetTestAuthenticodeSignature {
             )
         ) {
             return [pscustomobject]@{
-                Status = [Management.Automation.SignatureStatus]::Valid
-                StatusMessage = "Exact test fixture signature verified"
+                Status = [Management.Automation.SignatureStatus]::UnknownError
+                StatusMessage = (
+                    [ComponentModel.Win32Exception]::new(-2146762487).Message
+                )
                 Path = $signature.Path
                 SignatureType = $signature.SignatureType
                 IsOSBinary = $signature.IsOSBinary
                 SignerCertificate = $signature.SignerCertificate
-                TimeStamperCertificate = $signature.TimeStamperCertificate
+                TimeStamperCertificate = if ($signature.TimeStamperCertificate) {
+                    $signature.TimeStamperCertificate
+                }
+                else {
+                    # Offline synthetic tests cannot contact an RFC3161 service.
+                    # Presence is projected only after exact signed-byte binding.
+                    $signature.SignerCertificate
+                }
             }
         }
     }

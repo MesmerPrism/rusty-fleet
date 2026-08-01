@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/schemas/rusty.fleet.release_descriptor_envelope.v4.schema.json",
+  "title": "Rusty Fleet release descriptor envelope v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "payload_base64url", "signature_base64url", "signer_spki_sha256"],
+  "properties": {
+    "schema": { "const": "rusty.fleet.release_descriptor_envelope.v4" },
+    "payload_base64url": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+    "signature_base64url": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+    "signer_spki_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

@@ -23,9 +23,10 @@ Milestone 0 defines versioned Rusty Fleet product contracts here:
   inventory. The request locates but does not select the pinned Rusty Quest
   tool trust anchor; the inventory closes over exact object identities, ACL
   digests, link counts, and file hashes.
-- the Fleet-owned v2 Windows release payload and RSA-PSS envelope used for the
+- the Fleet-owned v4 Windows release payload and RSA-PSS envelope used for the
   short-lived Pages metadata handoff. They bind one exact signed
-  `RustyFleet-Setup.exe` on an immutable numeric-version GitHub Release URL
+  channel-specific Setup on an immutable maturity-tagged GitHub Release URL,
+  preserve the exact signer-certificate hash and Authenticode trust boundary,
   and require a one-day-or-shorter validity duration equal to expiry minus
   issuance; they never carry a binary or private machine path.
 

@@ -45,6 +45,15 @@ function Get-ReleaseWorkflowBoundaryFailures([string] $Text) {
         isolated_publish_present = (
             $portableText -match [regex]::Escape('-Mode Publish')
         )
+        hostess_release_policy_input_present = (
+            $portableText -match "(?m)^      hostess_release_policy_url:$"
+        )
+        hostess_release_policy_download_present = (
+            $portableText -match
+                [regex]::Escape('$env:PROVIDER_RELEASE_POLICY_URL') -and
+            $portableText -match
+                "rusty-hostess-hotspot-provider\.release-policy\.json"
+        )
         direct_gh_release_command_absent = (
             $portableText -notmatch "\bgh release (?:create|edit|view)\b"
         )
@@ -60,24 +69,28 @@ function Get-ReleaseWorkflowBoundaryFailures([string] $Text) {
 
 $policyPath = Join-Path $PSScriptRoot "..\trust\release-policy.json"
 $policyText = Get-Content -LiteralPath $policyPath -Raw
-$policy = $policyText | ConvertFrom-Json -Depth 10
-$expectedProperties = @(
-    "authorized_descriptor_signer_spki_sha256",
-    "authorized_fleet_signer_thumbprints",
-    "authorized_hostess_signer_thumbprints",
-    "publication_enabled",
-    "schema",
-    "status"
-) | Sort-Object
-$actualProperties = @($policy.PSObject.Properties.Name | Sort-Object)
-if (($expectedProperties -join "`n") -cne ($actualProperties -join "`n") -or
-    $policy.schema -cne "rusty.fleet.windows_release_trust_policy.v1" -or
-    $policy.publication_enabled -ne $false -or
-    @($policy.authorized_fleet_signer_thumbprints).Count -ne 0 -or
-    @($policy.authorized_hostess_signer_thumbprints).Count -ne 0 -or
-    @($policy.authorized_descriptor_signer_spki_sha256).Count -ne 0 -or
-    $policy.status -cne "no_production_signing_authority_configured") {
-    throw "the checked-in release policy must fail publication closed until reviewed pins exist"
+Import-Module (Join-Path $PSScriptRoot "..\Distribution.Common.psm1") -Force
+$labsPolicy = Read-RustyFleetReleaseTrustPolicy `
+    -LiteralPath $policyPath `
+    -Channel labs
+$stablePolicy = Read-RustyFleetReleaseTrustPolicy `
+    -LiteralPath $policyPath `
+    -Channel stable
+if ($labsPolicy.publication_enabled -ne $true -or
+    $labsPolicy.authenticode.subject -cne "CN=MesmerPrism" -or
+    $labsPolicy.authenticode.thumbprint -cne
+        "08A5878AD6E652A94517D2C79144EB2655B0088C" -or
+    $labsPolicy.authenticode.certificate_sha256 -cne
+        "baead63c37e32085c3af19b4c739a6a308d700529f107d40e14fec2c94fe7ddf" -or
+    $labsPolicy.authenticode.public_trust_claim -ne $false -or
+    $labsPolicy.authenticode.trust_mode -cne
+        "exact-pinned-self-issued-untrusted-root-only" -or
+    $stablePolicy.publication_enabled -ne $false -or
+    $stablePolicy.authenticode.public_trust_claim -ne $true -or
+    $stablePolicy.authenticode.trust_mode -cne "public-chain-only" -or
+    @($labsPolicy.authorized_descriptor_signer_spki_sha256)[0] -cne
+        "0b3ef04dc5481d5e0a0a243df298c31052501e014a6e27516c48b95846657d0c") {
+    throw "checked-in channel trust policy is not exact"
 }
 if ($policyText -match "[A-Za-z]:\\" -or
     $policyText -match "BEGIN .*PRIVATE KEY" -or
@@ -98,6 +111,12 @@ $pagesAuthorityPath = Join-Path $PSScriptRoot (
     "..\New-WindowsPagesDeployment.ps1"
 )
 $pagesAuthorityText = Get-Content -LiteralPath $pagesAuthorityPath -Raw
+$descriptorAuthorityPath = Join-Path $PSScriptRoot (
+    "..\New-WindowsReleaseDescriptor.ps1"
+)
+$descriptorAuthorityText = Get-Content `
+    -LiteralPath $descriptorAuthorityPath `
+    -Raw
 $publicationAuthorityPath = Join-Path $PSScriptRoot (
     "..\Publish-WindowsRelease.ps1"
 )
@@ -198,6 +217,7 @@ $requiredPagesVariables = @(
     "FLEET_METADATA_DEPLOYMENT_ENABLED",
     "FLEET_METADATA_VERSION",
     "FLEET_METADATA_CHANNEL",
+    "FLEET_METADATA_TAG",
     "FLEET_METADATA_SOURCE_REVISION",
     "FLEET_METADATA_SOURCE_TREE",
     "FLEET_SIGNER_THUMBPRINT",
@@ -222,6 +242,17 @@ if ($pagesWorkflowText -notmatch "(?m)^permissions:\n  contents: read$" -or
     $pagesWorkflowText -notmatch [regex]::Escape(
         "New-WindowsPagesDeployment.ps1"
     ) -or
+    $pagesWorkflowText -notmatch [regex]::Escape(
+        "`$env:CHANNEL -cnotmatch '^(?:labs|stable)`$'"
+    ) -or
+    $pagesAuthorityText -notmatch
+        '\[ValidateSet\("labs", "stable"\)\]' -or
+    $descriptorAuthorityText -notmatch
+        '\[ValidateSet\("labs", "stable"\)\]' -or
+    $publicationAuthorityText -notmatch
+        '\[ValidateSet\("labs", "stable"\)\]' -or
+    $pagesAuthorityText -match 'local-development' -or
+    $descriptorAuthorityText -match 'local-development' -or
     $pagesWorkflowText -match
         "\bgh release (?:create|upload|edit|delete)\b") {
     throw "Pages workflow does not preserve the protected renewal boundary"
@@ -244,19 +275,20 @@ foreach ($evidence in $requiredPagesAuthorityEvidence) {
 }
 
 [ordered]@{
-    schema = "rusty.fleet.windows_release_policy_test.v1"
+    schema = "rusty.fleet.windows_release_policy_test.v2"
     result = "pass"
-    publication_enabled = $false
-    authorized_fleet_signers = 0
-    authorized_hostess_signers = 0
-    authorized_descriptor_signers = 0
-    release_blocker = "production_trust_pins_not_configured"
+    labs_publication_enabled = $true
+    stable_publication_enabled = $false
+    labs_public_trust_claim = $false
+    labs_trust_mode = $labsPolicy.authenticode.trust_mode
+    stable_trust_mode = $stablePolicy.authenticode.trust_mode
     workflow_contents_permission = "read"
     checkout_credentials_persisted = $false
     actions_binary_artifacts = 0
     isolated_publication_authority = $true
     token_free_preflight = $true
     renewable_pages_metadata = $true
+    renewable_pages_channels = @("labs", "stable")
     pages_binary_count = 0
     metadata_renewal_secret_count = 1
     workflow_newline_forms = @("lf", "crlf")

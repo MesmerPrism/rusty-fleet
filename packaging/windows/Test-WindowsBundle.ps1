@@ -27,7 +27,7 @@ foreach ($requiredPath in @($manifestPath, $checksumsPath, $receiptPath)) {
 
 $manifestText = Get-Content -LiteralPath $manifestPath -Raw
 $manifest = $manifestText | ConvertFrom-Json -Depth 30
-if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v2" -or
+if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v3" -or
     $manifest.product_id -ne "rusty-fleet" -or
     $manifest.product_channel -notin @("stable", "labs") -or
     $manifest.maturity -notin @("alpha", "beta", "rc", "released") -or
@@ -121,7 +121,7 @@ if ($provider.Count -ne 1 -or
         $provider[0].provenance.source_revision
     ) -or
     $provider[0].provenance.owner_document_schema -ne
-        "rusty.hostess.windows_hotspot.release_provenance.v1") {
+        "rusty.hostess.windows_hotspot.release_provenance.v2") {
     throw "Hostess hotspot provider contract or provenance is not exact"
 }
 Assert-RustyFleetSha256 `
@@ -142,13 +142,20 @@ $ownerProvenance = Read-RustyFleetHostessProvenance `
     -ProviderPath $providerPath `
     -ProviderSha256 $provider[0].provenance.artifact_sha256 `
     -BuildKind $manifest.build.kind `
-    -ExpectedSignerThumbprint $ExpectedHostessSignerThumbprint
+    -Channel $manifest.channel `
+    -AuthenticodePolicy $manifest.build.authenticode
 if ($provider[0].provenance.owner_document_path -ne
         "providers/hostess-hotspot-provider/provenance/rusty-hostess-hotspot-provider.provenance.json" -or
     $provider[0].provenance.license_path -ne
         "providers/hostess-hotspot-provider/provenance/LICENSE" -or
     $provider[0].provenance.third_party_notices_path -ne
         "providers/hostess-hotspot-provider/provenance/THIRD-PARTY-NOTICES.txt" -or
+    $provider[0].provenance.release_policy_path -ne
+        "providers/hostess-hotspot-provider/provenance/rusty-hostess-hotspot-provider.release-policy.json" -or
+    $provider[0].provenance.release_policy_schema -ne
+        $ownerProvenance.provenance.release_policy.schema -or
+    $provider[0].provenance.release_policy_sha256 -ne
+        $ownerProvenance.provenance.release_policy.sha256 -or
     $provider[0].provenance.owner_document_sha256 -cne
         $ownerProvenance.provenance_sha256 -or
     $provider[0].provenance.source_repository -ne
@@ -181,8 +188,33 @@ if ($provider[0].provenance.owner_document_path -ne
         @($ownerProvenance.provenance.bundled_native_libraries).Count -or
     $provider[0].provenance.signing_state -ne
         $ownerProvenance.provenance.signing.state -or
-    $provider[0].provenance.authorized_signer_thumbprint -ne
-        $ownerProvenance.provenance.signing.authorized_thumbprint -or
+    $provider[0].provenance.authenticode_status -ne
+        $ownerProvenance.provenance.signing.authenticode_status -or
+    $provider[0].provenance.signer_subject -ne
+        $ownerProvenance.provenance.signing.subject -or
+    $provider[0].provenance.signer_issuer -ne
+        $ownerProvenance.provenance.signing.issuer -or
+    $provider[0].provenance.signer_thumbprint_sha1 -ne
+        $ownerProvenance.provenance.signing.thumbprint_sha1 -or
+    $provider[0].provenance.signer_certificate_sha256 -ne
+        $ownerProvenance.provenance.signing.certificate_sha256 -or
+    $provider[0].provenance.code_signing_eku_present -ne
+        $ownerProvenance.provenance.signing.code_signing_eku_present -or
+    $provider[0].provenance.signer_self_issued -ne
+        $ownerProvenance.provenance.signing.self_issued -or
+    $provider[0].provenance.timestamp_present -ne
+        $ownerProvenance.provenance.signing.timestamp_present -or
+    $provider[0].provenance.chain_trusted -ne
+        $ownerProvenance.provenance.signing.chain_trusted -or
+    $provider[0].provenance.chain_element_count -ne
+        $ownerProvenance.provenance.signing.chain_element_count -or
+    $provider[0].provenance.public_trust_claim -ne
+        $ownerProvenance.provenance.signing.public_trust_claim -or
+    $provider[0].provenance.authenticode_trust_boundary -ne
+        $ownerProvenance.provenance.signing.trust_boundary -or
+    @(Compare-Object `
+        @($provider[0].provenance.chain_status_flags) `
+        @($ownerProvenance.provenance.signing.chain_status_flags)).Count -ne 0 -or
     $provider[0].provenance.distribution_eligibility -ne
         $ownerProvenance.provenance.distribution.eligibility) {
     throw "Fleet projection does not preserve the Hostess owner provenance"
@@ -191,22 +223,39 @@ if ($provider[0].provenance.owner_document_path -ne
 if ($manifest.build.kind -eq "signed-release") {
     if ($manifest.build.authenticode_required -ne $true -or
         $manifest.build.source_tree_clean -ne $true -or
+        $manifest.channel -ne "labs" -or
         $ExpectedFleetSignerThumbprint -cnotmatch "^[0-9A-Fa-f]{40}$" -or
         $manifest.build.authorized_fleet_signer_thumbprint -cne
-            $ExpectedFleetSignerThumbprint.ToUpperInvariant()) {
+            $ExpectedFleetSignerThumbprint.ToUpperInvariant() -or
+        $ExpectedHostessSignerThumbprint.ToUpperInvariant() -cne
+            $manifest.build.authenticode.thumbprint) {
         throw "signed release does not require signatures and a clean source tree"
+    }
+    if ([string]::IsNullOrWhiteSpace(
+            [string] $manifest.build.authenticode.subject
+        ) -or
+        $manifest.build.authenticode.thumbprint -cne
+            $ExpectedFleetSignerThumbprint.ToUpperInvariant() -or
+        $manifest.build.authenticode.certificate_sha256 -cnotmatch
+            "^[0-9a-f]{64}$" -or
+        $manifest.build.authenticode.self_issued -ne $true -or
+        $manifest.build.authenticode.public_trust_claim -ne $false -or
+        $manifest.build.authenticode.trust_mode -cne
+            "exact-pinned-self-issued-untrusted-root-only" -or
+        $manifest.build.authenticode.timestamp_required -ne $true) {
+        throw "signed release Authenticode truth is not exact"
+    }
+    if (@($manifest.build.authenticode.allowed_chain_status_flags).Count -ne 1 -or
+        @($manifest.build.authenticode.allowed_chain_status_flags)[0] -cne
+            "UntrustedRoot") {
+        throw "signed release Authenticode chain truth is not exact"
     }
     foreach ($component in $manifest.components) {
         $executable = Join-Path $bundlePath $component.entrypoint.Replace("/", "\")
-        $signature = Get-AuthenticodeSignature -LiteralPath $executable
-        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-            throw "signed release component does not have a valid Authenticode signature"
-        }
-        if ($component.owner -eq "rusty-fleet" -and
-            $signature.SignerCertificate.Thumbprint -cne
-                $ExpectedFleetSignerThumbprint.ToUpperInvariant()) {
-            throw "signed Fleet component does not match the authorized signer pin"
-        }
+        Get-RustyFleetAuthenticodeAssessment `
+            -LiteralPath $executable `
+            -AuthenticodePolicy $manifest.build.authenticode `
+            -Channel $manifest.channel | Out-Null
     }
 }
 
@@ -218,7 +267,7 @@ else {
 }
 if ($manifest.install.activation -ne "explicit_operator_start" -or
     $manifest.install.authority -ne $expectedSetupAuthority -or
-    $manifest.install.plan_protocol -ne "rusty.fleet.guided_installer_plan.v1" -or
+    $manifest.install.plan_protocol -ne "rusty.fleet.guided_installer_plan.v2" -or
     $manifest.install.service_registration -ne "absent" -or
     $manifest.update.strategy -ne "setup_owned_side_by_side_manifest" -or
     $manifest.update.rollback.supported -ne $true -or
@@ -317,7 +366,7 @@ foreach ($relativePath in $expectedChecksumPaths) {
 
 $receipt = Get-Content -LiteralPath $receiptPath -Raw |
     ConvertFrom-Json -Depth 20
-if ($receipt.schema -ne "rusty.fleet.windows_distribution_validation_receipt.v1" -or
+if ($receipt.schema -ne "rusty.fleet.windows_distribution_validation_receipt.v2" -or
     $receipt.result -ne "pass" -or
     $receipt.version -ne $manifest.version -or
     $receipt.payload_files -ne $inventory.Count -or
@@ -327,7 +376,16 @@ if ($receipt.schema -ne "rusty.fleet.windows_distribution_validation_receipt.v1"
     $receipt.hostess_owner_provenance_sha256 -cne
         $ownerProvenance.provenance_sha256 -or
     $receipt.distribution_eligibility -ne $manifest.distribution.eligibility -or
-    $receipt.publication_allowed -ne $manifest.distribution.publication_allowed) {
+    $receipt.publication_allowed -ne $manifest.distribution.publication_allowed -or
+    $receipt.authenticode_trust_mode -cne $(if ($manifest.build.authenticode) {
+        $manifest.build.authenticode.trust_mode
+    } else { "unsigned-development" }) -or
+    $receipt.public_trust_claim -ne $(if ($manifest.build.authenticode) {
+        $manifest.build.authenticode.public_trust_claim
+    } else { $false }) -or
+    $receipt.signer_certificate_sha256 -cne $(if ($manifest.build.authenticode) {
+        $manifest.build.authenticode.certificate_sha256
+    } else { $null })) {
     throw "distribution validation receipt is not bound to this bundle"
 }
 

@@ -92,6 +92,341 @@ function Assert-RustyFleetExactProperties {
     }
 }
 
+function Read-RustyFleetReleaseTrustPolicy {
+    param(
+        [Parameter(Mandatory)][string] $LiteralPath,
+        [Parameter(Mandatory)][ValidateSet("labs", "stable")]
+        [string] $Channel
+    )
+
+    $policy = Get-Content -LiteralPath $LiteralPath -Raw |
+        ConvertFrom-Json -Depth 20
+    Assert-RustyFleetExactProperties -InputObject $policy -Expected @(
+        "schema", "channels"
+    ) -Context "Fleet release trust policy"
+    Assert-RustyFleetExactProperties -InputObject $policy.channels -Expected @(
+        "labs", "stable"
+    ) -Context "Fleet release trust channels"
+    foreach ($channelName in @("labs", "stable")) {
+        $channelPolicy = $policy.channels.$channelName
+        Assert-RustyFleetExactProperties -InputObject $channelPolicy -Expected @(
+            "publication_enabled",
+            "authenticode",
+            "authorized_descriptor_signer_spki_sha256",
+            "status"
+        ) -Context "Fleet $channelName release trust policy"
+        Assert-RustyFleetExactProperties `
+            -InputObject $channelPolicy.authenticode `
+            -Expected @(
+                "subject",
+                "thumbprint",
+                "certificate_sha256",
+                "self_issued",
+                "public_trust_claim",
+                "trust_mode",
+                "timestamp_required",
+                "allowed_chain_status_flags"
+            ) `
+            -Context "Fleet $channelName Authenticode policy"
+    }
+    if ($policy.schema -cne
+            "rusty.fleet.windows_release_trust_policy.v2") {
+        throw "Fleet release trust policy schema is not supported"
+    }
+
+    $labs = $policy.channels.labs
+    $labsAuth = $labs.authenticode
+    if ($labs.publication_enabled -ne $true -or
+        [string]::IsNullOrWhiteSpace([string] $labsAuth.subject) -or
+        $labsAuth.thumbprint -cnotmatch "^[0-9A-F]{40}$" -or
+        $labsAuth.certificate_sha256 -cnotmatch "^[0-9a-f]{64}$" -or
+        $labsAuth.self_issued -ne $true -or
+        $labsAuth.public_trust_claim -ne $false -or
+        $labsAuth.trust_mode -cne
+            "exact-pinned-self-issued-untrusted-root-only" -or
+        $labsAuth.timestamp_required -ne $true -or
+        @($labsAuth.allowed_chain_status_flags).Count -ne 1 -or
+        @($labsAuth.allowed_chain_status_flags)[0] -cne "UntrustedRoot" -or
+        @($labs.authorized_descriptor_signer_spki_sha256).Count -ne 1 -or
+        @($labs.authorized_descriptor_signer_spki_sha256)[0] -cnotmatch
+            "^[0-9a-f]{64}$" -or
+        $labs.status -cne
+            "labs_exact_pinned_self_issued_signer_configured") {
+        throw "Labs release trust policy is not the exact reviewed authorization"
+    }
+
+    $stable = $policy.channels.stable
+    $stableAuth = $stable.authenticode
+    if ($stable.publication_enabled -ne $false -or
+        $null -ne $stableAuth.subject -or
+        $null -ne $stableAuth.thumbprint -or
+        $null -ne $stableAuth.certificate_sha256 -or
+        $stableAuth.self_issued -ne $false -or
+        $stableAuth.public_trust_claim -ne $true -or
+        $stableAuth.trust_mode -cne "public-chain-only" -or
+        $stableAuth.timestamp_required -ne $true -or
+        @($stableAuth.allowed_chain_status_flags).Count -ne 0 -or
+        @($stable.authorized_descriptor_signer_spki_sha256).Count -ne 0 -or
+        $stable.status -cne "stable_public_chain_signer_not_configured") {
+        throw "Stable release trust policy must remain disabled and public-chain-only"
+    }
+
+    return $policy.channels.$Channel
+}
+
+function Get-RustyFleetCertificateChainAssessment {
+    param(
+        [Parameter(Mandatory)]
+        [Security.Cryptography.X509Certificates.X509Certificate2]
+        $Certificate
+    )
+
+    $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
+    try {
+        $chain.ChainPolicy.RevocationMode =
+            [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        $chain.ChainPolicy.VerificationFlags =
+            [Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
+        [void] $chain.Build($Certificate)
+        return [pscustomobject][ordered]@{
+            chain_status_flags = @(
+                $chain.ChainStatus |
+                    ForEach-Object { [string] $_.Status } |
+                    Sort-Object -Unique
+            )
+            chain_element_count = $chain.ChainElements.Count
+        }
+    }
+    finally {
+        $chain.Dispose()
+    }
+}
+
+function Assert-RustyFleetValidationBoundary {
+    param(
+        [Parameter(Mandatory)][string] $AuthenticodeStatus,
+        [Parameter(Mandatory)][bool] $ChainTrusted,
+        [Parameter(Mandatory)][int] $ChainElementCount,
+        [Parameter(Mandatory)][AllowEmptyCollection()]
+        [string[]] $ChainStatusFlags,
+        [Parameter(Mandatory)][object[]] $AcceptedBoundaries,
+        [Parameter(Mandatory)][string] $Context
+    )
+
+    $matches = @($AcceptedBoundaries | Where-Object {
+        $_.authenticode_status -ceq $AuthenticodeStatus -and
+        $_.chain_trusted -eq $ChainTrusted -and
+        [int] $_.chain_element_count -eq $ChainElementCount -and
+        @(Compare-Object `
+            @($_.chain_status_flags) `
+            @($ChainStatusFlags)).Count -eq 0 -and
+        @($_.chain_status_flags).Count -eq @($ChainStatusFlags).Count
+    })
+    if ($matches.Count -ne 1) {
+        throw "$Context is not one exact accepted validation boundary"
+    }
+    return $matches[0]
+}
+
+function Get-RustyFleetLabsTrustBoundaryLabel {
+    param(
+        [Parameter(Mandatory)][string] $AuthenticodeStatus,
+        [Parameter(Mandatory)][bool] $ChainTrusted,
+        [Parameter(Mandatory)][int] $ChainElementCount,
+        [Parameter(Mandatory)][AllowEmptyCollection()]
+        [string[]] $ChainStatusFlags,
+        [Parameter(Mandatory)][object[]] $AcceptedBoundaries,
+        [Parameter(Mandatory)][string] $Context
+    )
+
+    $boundary = Assert-RustyFleetValidationBoundary `
+        -AuthenticodeStatus $AuthenticodeStatus `
+        -ChainTrusted $ChainTrusted `
+        -ChainElementCount $ChainElementCount `
+        -ChainStatusFlags $ChainStatusFlags `
+        -AcceptedBoundaries $AcceptedBoundaries `
+        -Context $Context
+    if ($boundary.authenticode_status -ceq "valid" -and
+        $boundary.chain_trusted -eq $true -and
+        [int] $boundary.chain_element_count -eq 1 -and
+        @($boundary.chain_status_flags).Count -eq 0) {
+        return "host-chain-valid-no-public-trust-claim"
+    }
+    if ($boundary.authenticode_status -ceq "unknown_error" -and
+        $boundary.chain_trusted -eq $false -and
+        [int] $boundary.chain_element_count -eq 1 -and
+        @($boundary.chain_status_flags).Count -eq 1 -and
+        @($boundary.chain_status_flags)[0] -ceq "UntrustedRoot") {
+        return "exact-pinned-self-issued-untrusted-root-only"
+    }
+    throw "$Context does not map to one exact Labs trust-boundary label"
+}
+
+function Assert-RustyFleetAuthenticodeAssessment {
+    param(
+        [Parameter(Mandatory)][object] $Signature,
+        [Parameter(Mandatory)][object] $AuthenticodePolicy,
+        [Parameter(Mandatory)][ValidateSet("labs", "stable")]
+        [string] $Channel,
+        [Parameter(Mandatory)][AllowEmptyCollection()]
+        [string[]] $ObservedChainStatusFlags,
+        [int] $ObservedChainElementCount = 1
+    )
+
+    if ($null -eq $Signature.SignerCertificate -or
+        $Signature.SignatureType -ne
+            [Management.Automation.SignatureType]::Authenticode) {
+        throw "artifact does not carry an Authenticode signer certificate"
+    }
+    $certificate = $Signature.SignerCertificate
+    $certificateSha256 = [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData($certificate.RawData)
+    ).ToLowerInvariant()
+    $subject = [string] $certificate.Subject
+    $thumbprint = $certificate.Thumbprint.Replace(
+        " ", ""
+    ).ToUpperInvariant()
+    $selfIssued = [Convert]::ToBase64String(
+        $certificate.SubjectName.RawData
+    ) -ceq [Convert]::ToBase64String($certificate.IssuerName.RawData)
+    $codeSigningEkuPresent = @(
+        $certificate.Extensions |
+            Where-Object {
+                $_ -is [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]
+            } |
+            ForEach-Object { $_.EnhancedKeyUsages } |
+            ForEach-Object { $_ } |
+            Where-Object { $_.Value -ceq "1.3.6.1.5.5.7.3.3" }
+    ).Count -gt 0
+    $chainFlags = @($ObservedChainStatusFlags | Sort-Object -Unique)
+    if ($chainFlags.Count -ne @($ObservedChainStatusFlags).Count -or
+        $ObservedChainElementCount -lt 1) {
+        throw "Authenticode certificate chain assessment is not canonical"
+    }
+    if ($AuthenticodePolicy.timestamp_required -eq $true -and
+        $null -eq $Signature.TimeStamperCertificate) {
+        throw "Authenticode signature does not carry the required timestamp"
+    }
+
+    if ($Channel -eq "labs") {
+        $authenticodeStatus = switch ($Signature.Status) {
+            ([Management.Automation.SignatureStatus]::Valid) { "valid" }
+            ([Management.Automation.SignatureStatus]::UnknownError) {
+                "unknown_error"
+            }
+            default { "rejected" }
+        }
+        $acceptedBoundaries = @(
+            [pscustomobject][ordered]@{
+                authenticode_status = "valid"
+                chain_trusted = $true
+                chain_element_count = 1
+                chain_status_flags = @()
+            },
+            [pscustomobject][ordered]@{
+                authenticode_status = "unknown_error"
+                chain_trusted = $false
+                chain_element_count = 1
+                chain_status_flags = @(
+                    $AuthenticodePolicy.allowed_chain_status_flags
+                )
+            }
+        )
+        $chainTrusted = $authenticodeStatus -ceq "valid"
+        $validationBoundary = Get-RustyFleetLabsTrustBoundaryLabel `
+            -AuthenticodeStatus $authenticodeStatus `
+            -ChainTrusted $chainTrusted `
+            -ChainElementCount $ObservedChainElementCount `
+            -ChainStatusFlags $chainFlags `
+            -AcceptedBoundaries $acceptedBoundaries `
+            -Context "Labs current-host Authenticode assessment"
+        if ($AuthenticodePolicy.trust_mode -cne
+                "exact-pinned-self-issued-untrusted-root-only" -or
+            $AuthenticodePolicy.public_trust_claim -ne $false -or
+            $AuthenticodePolicy.self_issued -ne $true -or
+            $subject -cne $AuthenticodePolicy.subject -or
+            $thumbprint -cne $AuthenticodePolicy.thumbprint -or
+            $certificateSha256 -cne
+                $AuthenticodePolicy.certificate_sha256 -or
+            -not $selfIssued -or
+            -not $codeSigningEkuPresent) {
+            throw "Labs Authenticode signature is not the exact pinned self-issued identity"
+        }
+    }
+    elseif ($AuthenticodePolicy.trust_mode -cne "public-chain-only" -or
+        $AuthenticodePolicy.public_trust_claim -ne $true -or
+        $AuthenticodePolicy.self_issued -ne $false -or
+        $Signature.Status -ne
+            [Management.Automation.SignatureStatus]::Valid -or
+        $selfIssued -or
+        [string]::IsNullOrWhiteSpace([string] $AuthenticodePolicy.subject) -or
+        [string]::IsNullOrWhiteSpace([string] $AuthenticodePolicy.thumbprint) -or
+        [string]::IsNullOrWhiteSpace(
+            [string] $AuthenticodePolicy.certificate_sha256
+        ) -or
+        $subject -cne $AuthenticodePolicy.subject -or
+        $thumbprint -cne $AuthenticodePolicy.thumbprint -or
+        $certificateSha256 -cne $AuthenticodePolicy.certificate_sha256 -or
+        -not $codeSigningEkuPresent -or
+        $ObservedChainElementCount -lt 2 -or
+        $chainFlags.Count -ne 0) {
+        throw "Stable Authenticode signature is not valid under a public trust chain"
+    }
+    else {
+        $validationBoundary = "public-chain-valid"
+    }
+
+    $normalizedStatus = switch ($Signature.Status) {
+        ([Management.Automation.SignatureStatus]::Valid) { "valid" }
+        ([Management.Automation.SignatureStatus]::UnknownError) {
+            "unknown_error"
+        }
+        default { "rejected" }
+    }
+    $chainTrusted = $normalizedStatus -ceq "valid"
+
+    [ordered]@{
+        schema = "rusty.fleet.authenticode_assessment.v1"
+        result = "pass"
+        channel = $Channel
+        subject = $subject
+        thumbprint = $thumbprint
+        certificate_sha256 = $certificateSha256
+        code_signing_eku_present = $codeSigningEkuPresent
+        self_issued = $selfIssued
+        public_trust_claim = [bool] $AuthenticodePolicy.public_trust_claim
+        trust_mode = [string] $AuthenticodePolicy.trust_mode
+        validation_boundary = $validationBoundary
+        timestamp_present = $null -ne $Signature.TimeStamperCertificate
+        authenticode_status = $normalizedStatus
+        chain_trusted = $chainTrusted
+        chain_element_count = $ObservedChainElementCount
+        chain_status_flags = $chainFlags
+    }
+}
+
+function Get-RustyFleetAuthenticodeAssessment {
+    param(
+        [Parameter(Mandatory)][string] $LiteralPath,
+        [Parameter(Mandatory)][object] $AuthenticodePolicy,
+        [Parameter(Mandatory)][ValidateSet("labs", "stable")]
+        [string] $Channel
+    )
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $LiteralPath
+    if ($null -eq $signature.SignerCertificate) {
+        throw "artifact does not carry an Authenticode signer certificate"
+    }
+    $chainAssessment = Get-RustyFleetCertificateChainAssessment `
+        -Certificate $signature.SignerCertificate
+    Assert-RustyFleetAuthenticodeAssessment `
+        -Signature $signature `
+        -AuthenticodePolicy $AuthenticodePolicy `
+        -Channel $Channel `
+        -ObservedChainStatusFlags $chainAssessment.chain_status_flags `
+        -ObservedChainElementCount $chainAssessment.chain_element_count
+}
+
 function Get-RustyFleetPeCanonicalPayload {
     param(
         [Parameter(Mandatory)][string] $LiteralPath,
@@ -263,34 +598,6 @@ function ConvertTo-RustyFleetUtcDateTimeOffset {
     return $parsed.ToUniversalTime()
 }
 
-function Assert-RustyFleetHostessSignerAuthorization {
-    param(
-        [Parameter(Mandatory)][object] $Provenance,
-        [Parameter(Mandatory)][string] $ObservedSubject,
-        [Parameter(Mandatory)][string] $ObservedThumbprint,
-        [string] $ExpectedSignerThumbprint
-    )
-
-    $normalizedExpected = if ($ExpectedSignerThumbprint) {
-        $ExpectedSignerThumbprint.Replace(" ", "").ToLowerInvariant()
-    }
-    else {
-        $null
-    }
-    $normalizedObserved = $ObservedThumbprint.Replace(
-        " ",
-        ""
-    ).ToLowerInvariant()
-    if ($normalizedExpected -cnotmatch "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" -or
-        $Provenance.signing.authorized_thumbprint -cne
-            $normalizedExpected -or
-        $Provenance.signing.subject -cne $ObservedSubject -or
-        $Provenance.signing.thumbprint -cne $normalizedObserved -or
-        $normalizedObserved -cne $normalizedExpected) {
-        throw "Hostess signer does not match the independent authorization pin"
-    }
-}
-
 function Read-RustyFleetHostessProvenance {
     param(
         [Parameter(Mandatory)][string] $MetadataDirectory,
@@ -298,7 +605,9 @@ function Read-RustyFleetHostessProvenance {
         [Parameter(Mandatory)][string] $ProviderSha256,
         [Parameter(Mandatory)][ValidateSet("unsigned-dev", "signed-release")]
         [string] $BuildKind,
-        [string] $ExpectedSignerThumbprint
+        [Parameter(Mandatory)][ValidateSet("dev", "labs", "stable")]
+        [string] $Channel,
+        [object] $AuthenticodePolicy
     )
 
     $metadataPath = (Resolve-Path -LiteralPath $MetadataDirectory).Path
@@ -307,6 +616,7 @@ function Read-RustyFleetHostessProvenance {
         provenance = "rusty-hostess-hotspot-provider.provenance.json"
         license = "LICENSE"
         notices = "THIRD-PARTY-NOTICES.txt"
+        policy = "rusty-hostess-hotspot-provider.release-policy.json"
     }
     foreach ($name in $documents.Values) {
         if (-not (Test-Path -LiteralPath (Join-Path $metadataPath $name) -PathType Leaf)) {
@@ -319,7 +629,7 @@ function Read-RustyFleetHostessProvenance {
             Sort-Object
     )
     if (@(Compare-Object ($documents.Values | Sort-Object) $metadataFiles).Count -ne 0) {
-        throw "Hostess owner metadata must contain exactly its three issued documents"
+        throw "Hostess owner metadata must contain exactly its four issued documents"
     }
 
     $provenancePath = Join-Path $metadataPath $documents.provenance
@@ -335,6 +645,7 @@ function Read-RustyFleetHostessProvenance {
         "dependencies",
         "bundled_native_libraries",
         "signing",
+        "release_policy",
         "companion_documents",
         "distribution"
     ) -Context "Hostess provenance"
@@ -361,12 +672,28 @@ function Read-RustyFleetHostessProvenance {
         "canonical_payload_size_bytes"
     ) -Context "Hostess build provenance"
     Assert-RustyFleetExactProperties -InputObject $provenance.signing -Expected @(
-        "state", "status", "subject", "thumbprint", "authorized_thumbprint"
+        "state",
+        "authenticode_status",
+        "subject",
+        "issuer",
+        "thumbprint_sha1",
+        "certificate_sha256",
+        "code_signing_eku_present",
+        "self_issued",
+        "timestamp_present",
+        "chain_trusted",
+        "chain_element_count",
+        "chain_status_flags",
+        "public_trust_claim",
+        "trust_boundary"
     ) -Context "Hostess signing provenance"
+    Assert-RustyFleetExactProperties -InputObject $provenance.release_policy -Expected @(
+        "asset_name", "schema", "sha256", "size_bytes"
+    ) -Context "Hostess release policy evidence"
     Assert-RustyFleetExactProperties -InputObject $provenance.distribution -Expected @(
-        "eligibility", "binary_authority"
+        "eligibility", "binary_authority", "allowed_channels", "stable_eligible"
     ) -Context "Hostess distribution provenance"
-    if ($provenance.schema -ne "rusty.hostess.windows_hotspot.release_provenance.v1" -or
+    if ($provenance.schema -ne "rusty.hostess.windows_hotspot.release_provenance.v2" -or
         $provenance.product_id -ne "rusty-hostess-windows-hotspot-provider" -or
         $provenance.provider_version -cnotmatch
             "^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$") {
@@ -395,6 +722,76 @@ function Read-RustyFleetHostessProvenance {
     Assert-RustyFleetSha256 `
         -Value $provenance.artifact.sha256 `
         -Name "Hostess provenance artifact digest"
+    $providerPolicyPath = Join-Path $metadataPath $documents.policy
+    if ($provenance.release_policy.asset_name -cne $documents.policy -or
+        $provenance.release_policy.schema -cne
+            "rusty.hostess.windows_hotspot.release_policy.v1" -or
+        $provenance.release_policy.sha256 -cne
+            (Get-RustyFleetSha256 -LiteralPath $providerPolicyPath) -or
+        [long] $provenance.release_policy.size_bytes -ne
+            (Get-Item -LiteralPath $providerPolicyPath).Length) {
+        throw "Hostess release policy evidence is not exact"
+    }
+    $providerPolicy = Get-Content -LiteralPath $providerPolicyPath -Raw |
+        ConvertFrom-Json -Depth 20
+    Assert-RustyFleetExactProperties -InputObject $providerPolicy -Expected @(
+        "schema", "product_id", "signer", "accepted_validation_boundaries",
+        "distribution", "status"
+    ) -Context "Hostess release policy"
+    Assert-RustyFleetExactProperties -InputObject $providerPolicy.signer -Expected @(
+        "subject", "issuer", "thumbprint_sha1", "certificate_sha256",
+        "code_signing_eku_oid", "self_issued", "timestamp_required",
+        "public_trust_claim"
+    ) -Context "Hostess release signer policy"
+    Assert-RustyFleetExactProperties -InputObject $providerPolicy.distribution -Expected @(
+        "allowed_channels", "stable_eligible"
+    ) -Context "Hostess release distribution policy"
+    if ($providerPolicy.schema -cne
+            "rusty.hostess.windows_hotspot.release_policy.v1" -or
+        $providerPolicy.product_id -cne
+            "rusty-hostess-windows-hotspot-provider" -or
+        [string]::IsNullOrWhiteSpace([string] $providerPolicy.signer.subject) -or
+        $providerPolicy.signer.issuer -cne $providerPolicy.signer.subject -or
+        $providerPolicy.signer.thumbprint_sha1 -cnotmatch "^[0-9A-F]{40}$" -or
+        $providerPolicy.signer.certificate_sha256 -cnotmatch "^[0-9a-f]{64}$" -or
+        $providerPolicy.signer.code_signing_eku_oid -cne
+            "1.3.6.1.5.5.7.3.3" -or
+        $providerPolicy.signer.self_issued -ne $true -or
+        $providerPolicy.signer.timestamp_required -ne $true -or
+        $providerPolicy.signer.public_trust_claim -ne $false -or
+        @($providerPolicy.distribution.allowed_channels).Count -ne 1 -or
+        @($providerPolicy.distribution.allowed_channels)[0] -cne "labs" -or
+        $providerPolicy.distribution.stable_eligible -ne $false -or
+        $providerPolicy.status -cne "active") {
+        throw "Hostess release policy does not preserve the exact Labs trust boundary"
+    }
+    $boundaries = @($providerPolicy.accepted_validation_boundaries)
+    if ($boundaries.Count -ne 2) {
+        throw "Hostess release policy validation-boundary set is not exact"
+    }
+    foreach ($boundary in $boundaries) {
+        Assert-RustyFleetExactProperties -InputObject $boundary -Expected @(
+            "authenticode_status", "chain_trusted", "chain_element_count",
+            "chain_status_flags"
+        ) -Context "Hostess validation boundary"
+    }
+    $trustedBoundary = @($boundaries | Where-Object {
+        $_.authenticode_status -ceq "valid"
+    })
+    $untrustedBoundary = @($boundaries | Where-Object {
+        $_.authenticode_status -ceq "unknown_error"
+    })
+    if ($trustedBoundary.Count -ne 1 -or
+        $trustedBoundary[0].chain_trusted -ne $true -or
+        [int] $trustedBoundary[0].chain_element_count -ne 1 -or
+        @($trustedBoundary[0].chain_status_flags).Count -ne 0 -or
+        $untrustedBoundary.Count -ne 1 -or
+        $untrustedBoundary[0].chain_trusted -ne $false -or
+        [int] $untrustedBoundary[0].chain_element_count -ne 1 -or
+        @($untrustedBoundary[0].chain_status_flags).Count -ne 1 -or
+        @($untrustedBoundary[0].chain_status_flags)[0] -cne "UntrustedRoot") {
+        throw "Hostess release policy chain-boundary truth is not exact"
+    }
 
     if ($provenance.source.repository -cne
             "https://github.com/MesmerPrism/rusty-hostess" -or
@@ -505,8 +902,10 @@ function Read-RustyFleetHostessProvenance {
         }
     }
 
-    $observedSignature = Get-AuthenticodeSignature -LiteralPath $providerFullPath
     if ($BuildKind -eq "signed-release") {
+        if ($Channel -eq "dev" -or $null -eq $AuthenticodePolicy) {
+            throw "signed Hostess provenance requires an exact release-channel trust policy"
+        }
         $verifiedAtValue = $provenance.source.verified_at_utc
         $verifiedAtValid = try {
             $verifiedAt = ConvertTo-RustyFleetUtcDateTimeOffset `
@@ -521,40 +920,99 @@ function Read-RustyFleetHostessProvenance {
             [string]::IsNullOrWhiteSpace(
                 [string] $verifiedAtValue
             ) -or
-            -not $verifiedAtValid -or
-            $observedSignature.Status -ne
-                [System.Management.Automation.SignatureStatus]::Valid -or
-            $null -eq $observedSignature.SignerCertificate) {
+            -not $verifiedAtValid) {
             throw "Hostess signed release provenance is not independently verified"
         }
-        Assert-RustyFleetHostessSignerAuthorization `
-            -Provenance $provenance `
-            -ObservedSubject $observedSignature.SignerCertificate.Subject `
-            -ObservedThumbprint $observedSignature.SignerCertificate.Thumbprint `
-            -ExpectedSignerThumbprint $ExpectedSignerThumbprint
-        if ($provenance.distribution.eligibility -ne "signed_release" -or
-            $provenance.signing.state -ne "verified" -or
-            $provenance.signing.status -ine "valid" -or
-            [string]::IsNullOrWhiteSpace([string] $provenance.signing.subject) -or
-            [string]::IsNullOrWhiteSpace([string] $provenance.signing.thumbprint)) {
+        if ($providerPolicy.signer.subject -cne $AuthenticodePolicy.subject -or
+            $providerPolicy.signer.issuer -cne $AuthenticodePolicy.subject -or
+            $providerPolicy.signer.thumbprint_sha1 -cne
+                $AuthenticodePolicy.thumbprint -or
+            $providerPolicy.signer.certificate_sha256 -cne
+                $AuthenticodePolicy.certificate_sha256) {
+            throw "Hostess owner policy signer does not match Fleet channel authorization"
+        }
+        $assessment = Get-RustyFleetAuthenticodeAssessment `
+            -LiteralPath $providerFullPath `
+            -AuthenticodePolicy $AuthenticodePolicy `
+            -Channel $Channel
+        $recordedTrustBoundary = Get-RustyFleetLabsTrustBoundaryLabel `
+            -AuthenticodeStatus $provenance.signing.authenticode_status `
+            -ChainTrusted ([bool] $provenance.signing.chain_trusted) `
+            -ChainElementCount (
+                [int] $provenance.signing.chain_element_count
+            ) `
+            -ChainStatusFlags @(
+                $provenance.signing.chain_status_flags
+            ) `
+            -AcceptedBoundaries $boundaries `
+            -Context "Hostess recorded Authenticode assessment"
+        $currentHostTrustBoundary = Get-RustyFleetLabsTrustBoundaryLabel `
+            -AuthenticodeStatus $assessment.authenticode_status `
+            -ChainTrusted ([bool] $assessment.chain_trusted) `
+            -ChainElementCount ([int] $assessment.chain_element_count) `
+            -ChainStatusFlags @($assessment.chain_status_flags) `
+            -AcceptedBoundaries $boundaries `
+            -Context "Hostess current-host Authenticode assessment"
+        if ($currentHostTrustBoundary -cne $assessment.validation_boundary) {
+            throw "Hostess current-host Authenticode boundary is internally inconsistent"
+        }
+        if ($provenance.distribution.eligibility -ne "labs_signed_release" -or
+            @($provenance.distribution.allowed_channels).Count -ne 1 -or
+            @($provenance.distribution.allowed_channels)[0] -cne "labs" -or
+            $provenance.distribution.stable_eligible -ne $false -or
+            $provenance.signing.state -ne "accepted_exact_owner_signature" -or
+            $provenance.signing.subject -cne $assessment.subject -or
+            $provenance.signing.subject -cne $providerPolicy.signer.subject -or
+            $provenance.signing.issuer -cne $providerPolicy.signer.issuer -or
+            $provenance.signing.thumbprint_sha1 -cne
+                $assessment.thumbprint.ToLowerInvariant() -or
+            $provenance.signing.thumbprint_sha1 -cne
+                $providerPolicy.signer.thumbprint_sha1.ToLowerInvariant() -or
+            $provenance.signing.certificate_sha256 -cne
+                $assessment.certificate_sha256 -or
+            $provenance.signing.certificate_sha256 -cne
+                $providerPolicy.signer.certificate_sha256 -or
+            $provenance.signing.code_signing_eku_present -ne
+                $assessment.code_signing_eku_present -or
+            $provenance.signing.code_signing_eku_present -ne $true -or
+            $provenance.signing.self_issued -ne $assessment.self_issued -or
+            $provenance.signing.timestamp_present -ne $true -or
+            $provenance.signing.public_trust_claim -ne
+                $assessment.public_trust_claim -or
+            $provenance.signing.public_trust_claim -ne $false -or
+            $provenance.signing.trust_boundary -cne $recordedTrustBoundary) {
             throw "Hostess provenance does not authorize signed release distribution"
         }
     }
-    elseif ($provenance.distribution.eligibility -ne "development_only" -or
+    else {
+        $observedSignature = Get-AuthenticodeSignature -LiteralPath $providerFullPath
+        if ($provenance.distribution.eligibility -ne "development_only" -or
         $provenance.source.availability_state -cne "unverified_development" -or
         $null -ne $provenance.source.verified_at_utc -or
         $provenance.signing.state -cne "unsigned" -or
-        $provenance.signing.status -ine "notsigned" -or
+        $provenance.signing.authenticode_status -cne "not_signed" -or
         $null -ne $provenance.signing.subject -or
-        $null -ne $provenance.signing.thumbprint -or
-        $null -ne $provenance.signing.authorized_thumbprint -or
+        $null -ne $provenance.signing.issuer -or
+        $null -ne $provenance.signing.thumbprint_sha1 -or
+        $null -ne $provenance.signing.certificate_sha256 -or
+        $provenance.signing.code_signing_eku_present -ne $false -or
+        $null -ne $provenance.signing.self_issued -or
+        $provenance.signing.timestamp_present -ne $false -or
+        $provenance.signing.chain_trusted -ne $false -or
+        [int] $provenance.signing.chain_element_count -ne 0 -or
+        $provenance.signing.public_trust_claim -ne $false -or
+        $provenance.signing.trust_boundary -cne "unsigned-development" -or
+        @($provenance.signing.chain_status_flags).Count -ne 0 -or
+        @($provenance.distribution.allowed_channels).Count -ne 0 -or
+        $provenance.distribution.stable_eligible -ne $false -or
         $observedSignature.Status -ne
             [System.Management.Automation.SignatureStatus]::NotSigned -or
         $provenance.build.unsigned_artifact_sha256 -cne
             $provenance.artifact.sha256 -or
         [long] $provenance.build.unsigned_artifact_size_bytes -ne
             [long] $provenance.artifact.size_bytes) {
-        throw "unsigned Hostess provenance must be an exact development-only artifact"
+            throw "unsigned Hostess provenance must be an exact development-only artifact"
+        }
     }
     if ($provenance.distribution.binary_authority -ne
         "rusty-hostess-github-releases") {
@@ -639,6 +1097,9 @@ Export-ModuleMember -Function @(
     "Assert-RustyFleetSha256",
     "Assert-RustyFleetPayloadPath",
     "Get-RustyFleetPeCanonicalPayload",
+    "Read-RustyFleetReleaseTrustPolicy",
+    "Assert-RustyFleetAuthenticodeAssessment",
+    "Get-RustyFleetAuthenticodeAssessment",
     "Read-RustyFleetHostessProvenance",
     "New-RustyFleetDeterministicZip"
 )

@@ -69,12 +69,15 @@ jobs:
           PROVIDER_SHA256: ${{ vars.HOSTESS_PROVIDER_SHA256 }}
           PROVIDER_SIGNER: ${{ vars.HOSTESS_SIGNER_THUMBPRINT }}
           PROVIDER_PROVENANCE: ${{ vars.HOSTESS_PROVENANCE_DOCUMENT_URL }}
+          PROVIDER_RELEASE_POLICY: ${{ vars.HOSTESS_RELEASE_POLICY_URL }}
           PROVIDER_LICENSE: ${{ vars.HOSTESS_LICENSE_URL }}
           PROVIDER_NOTICES: ${{ vars.HOSTESS_THIRD_PARTY_NOTICES_URL }}
         run: |
           if (-not $env:GH_TOKEN -or -not $env:PROVIDER_URL -or
               -not $env:PROVIDER_SHA256 -or -not $env:PROVIDER_SIGNER -or
-              -not $env:PROVIDER_PROVENANCE -or -not $env:PROVIDER_LICENSE -or
+              -not $env:PROVIDER_PROVENANCE -or
+              -not $env:PROVIDER_RELEASE_POLICY -or
+              -not $env:PROVIDER_LICENSE -or
               -not $env:PROVIDER_NOTICES) {
             throw 'protected Labs workflow token and exact owner artifact inputs are required'
           }
@@ -89,6 +92,7 @@ jobs:
             -f fleet_signer_thumbprint=$env:FLEET_SIGNER_THUMBPRINT `
             -f descriptor_signer_spki_sha256=$env:DESCRIPTOR_SIGNER_SPKI_SHA256 `
             -f hostess_provenance_document_url=$env:PROVIDER_PROVENANCE `
+            -f hostess_release_policy_url=$env:PROVIDER_RELEASE_POLICY `
             -f hostess_license_url=$env:PROVIDER_LICENSE `
             -f hostess_third_party_notices_url=$env:PROVIDER_NOTICES
           if ($LASTEXITCODE -ne 0) { throw 'Labs owner workflow dispatch failed' }
