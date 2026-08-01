@@ -42,9 +42,13 @@ The owner-effective receipt and rollback boundaries are unchanged.
 
 The protected Labs workflow delegates signing, bundle creation, descriptor
 creation, publication preflight, and publication to Fleet's existing Windows
-distribution owner under `windows-labs-release`. Labs releases are prereleases
-and never latest. Pages replaces only the Labs metadata subtree while checking
-that every non-target metadata byte, especially Stable, remains unchanged.
+distribution owner under `windows-labs-release`. Labs releases are
+prereleases and never latest. Renewable metadata crosses to the canonical
+`MesmerPrism.github.io` site only through a hash-bound repository dispatch.
+The central workflow reruns Fleet's staging verifier and replaces only the
+Fleet Labs subtree while checking that every non-target metadata byte,
+especially Stable, remains unchanged. Fleet requires byte-exact public
+readback before the renewal run succeeds.
 
 The checked-in v2 production policy enables only Labs. It authorizes the exact
 `CN=MesmerPrism` Authenticode certificate with SHA-1 thumbprint
