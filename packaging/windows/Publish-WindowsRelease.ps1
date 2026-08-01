@@ -1254,9 +1254,10 @@ try {
         }
         $tokenUsed = $true
         $ghInvoked = $true
+        $sourceAndPolicyGuard = ${function:Assert-SourceAndPolicy}
         $localGuard = {
             $assets.Verify()
-            Assert-SourceAndPolicy -RetainedAssets $assets
+            & $sourceAndPolicyGuard -RetainedAssets $assets
         }.GetNewClosure()
         $remoteResult = Publish-RustyFleetGitHubRelease `
             -GitHubRepository $GitHubRepository `

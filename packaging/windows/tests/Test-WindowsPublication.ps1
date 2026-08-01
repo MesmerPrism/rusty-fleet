@@ -811,6 +811,29 @@ exit 99
         -not (Test-Path -LiteralPath $fakeGhMarker)
     ) "valid publication preflight was not exact and token-free"
 
+    $publishBoundaryError = $null
+    try {
+        Invoke-PublicationAuthority `
+            -Mode Publish `
+            -InputRoot $stage `
+            -SourceRepository $sourceRepo `
+            -SourceRevision $sourceRevision `
+            -SourceTree $sourceTree `
+            -FleetSigner $signerThumbprint `
+            -HostessSigner $signerThumbprint `
+            -DescriptorSpki $descriptorSpkiSha256 `
+            -GhExecutable $fakeGh |
+            Out-Null
+    }
+    catch {
+        $publishBoundaryError = $_.Exception.Message
+    }
+    Assert-Publication (
+        $publishBoundaryError -ceq
+            "remote release tag lookup failed closed" -and
+        (Test-Path -LiteralPath $fakeGhMarker)
+    ) "valid publication did not cross the local-to-remote authority boundary"
+
     $crlfPolicyStage = Join-Path $testRoot "crlf-policy-input"
     Copy-Item -LiteralPath $stage -Destination $crlfPolicyStage -Recurse
     $crlfPolicyPath = Join-Path $crlfPolicyStage "release-policy.json"
