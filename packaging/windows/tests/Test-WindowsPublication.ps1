@@ -70,6 +70,7 @@ function Invoke-PublicationAuthority {
 }
 
 $packagingRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$repositoryRoot = (Resolve-Path (Join-Path $packagingRoot "..\..")).Path
 Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
 Import-Module (
     Join-Path $PSScriptRoot "WindowsCertificateFixture.psm1"
@@ -222,7 +223,16 @@ try {
     }
     Write-TestUtf8 `
         -LiteralPath $policyPath `
-        -Content (ConvertTo-RustyFleetJson -InputObject $policy)
+        -Content (
+            [regex]::Replace(
+                (ConvertTo-RustyFleetJson -InputObject $policy),
+                "\r?\n",
+                "`n"
+            )
+        )
+    Copy-Item `
+        -LiteralPath (Join-Path $repositoryRoot ".gitattributes") `
+        -Destination (Join-Path $sourceRepo ".gitattributes")
     & git init --initial-branch=main $sourceRepo | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "could not initialize publication source fixture"
@@ -236,6 +246,16 @@ try {
     Invoke-TestGit -Repository $sourceRepo -Arguments @(
         "config", "core.autocrlf", "false"
     ) | Out-Null
+    $policyEol = Invoke-TestGit -Repository $sourceRepo -Arguments @(
+        "check-attr",
+        "eol",
+        "--",
+        "packaging/windows/trust/release-policy.json"
+    )
+    Assert-Publication (
+        $policyEol -ceq
+            "packaging/windows/trust/release-policy.json: eol: lf"
+    ) "production attributes do not force release-policy JSON to LF"
     Invoke-TestGit -Repository $sourceRepo -Arguments @("add", ".") | Out-Null
     Invoke-TestGit -Repository $sourceRepo -Arguments @(
         "commit", "-m", "test release authority"
@@ -249,6 +269,53 @@ try {
     $sourceTree = Invoke-TestGit `
         -Repository $sourceRepo `
         -Arguments @("rev-parse", "HEAD^{tree}")
+    $taggedPolicyBlob = Invoke-TestGit `
+        -Repository $sourceRepo `
+        -Arguments @(
+            "rev-parse",
+            "HEAD:packaging/windows/trust/release-policy.json"
+        )
+    $checkedOutPolicyBlob = Invoke-TestGit `
+        -Repository $sourceRepo `
+        -Arguments @("hash-object", "--no-filters", $policyPath)
+    Assert-Publication (
+        $checkedOutPolicyBlob -ceq $taggedPolicyBlob
+    ) "Windows checkout changed the byte-exact tagged release policy"
+    $sourceDirt = Invoke-TestGit `
+        -Repository $sourceRepo `
+        -Arguments @("status", "--porcelain=v1", "--untracked-files=no")
+    Assert-Publication (
+        -not $sourceDirt
+    ) "publication source fixture is dirty after policy materialization: $sourceDirt"
+    $windowsCheckout = Join-Path $testRoot "windows-checkout"
+    & git init --initial-branch=main $windowsCheckout | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "could not initialize Windows checkout fixture"
+    }
+    Invoke-TestGit -Repository $windowsCheckout -Arguments @(
+        "config", "core.autocrlf", "true"
+    ) | Out-Null
+    Invoke-TestGit -Repository $windowsCheckout -Arguments @(
+        "remote", "add", "origin", $sourceRepo
+    ) | Out-Null
+    Invoke-TestGit -Repository $windowsCheckout -Arguments @(
+        "fetch", "--no-tags", "origin", $sourceRevision
+    ) | Out-Null
+    Invoke-TestGit -Repository $windowsCheckout -Arguments @(
+        "checkout", "--detach", "FETCH_HEAD"
+    ) | Out-Null
+    $windowsPolicyPath = Join-Path $windowsCheckout (
+        "packaging\windows\trust\release-policy.json"
+    )
+    $windowsPolicyBlob = Invoke-TestGit `
+        -Repository $windowsCheckout `
+        -Arguments @("hash-object", "--no-filters", $windowsPolicyPath)
+    $windowsDirt = Invoke-TestGit `
+        -Repository $windowsCheckout `
+        -Arguments @("status", "--porcelain=v1", "--untracked-files=no")
+    Assert-Publication (
+        $windowsPolicyBlob -ceq $taggedPolicyBlob -and -not $windowsDirt
+    ) "fresh Windows checkout changed or dirtied the tagged release policy"
 
     $providerRevision = "2" * 40
     $providerVersion = "0.0.0-test.1"
@@ -743,6 +810,45 @@ exit 99
         $preflight.gh_invoked -eq $false -and
         -not (Test-Path -LiteralPath $fakeGhMarker)
     ) "valid publication preflight was not exact and token-free"
+
+    $crlfPolicyStage = Join-Path $testRoot "crlf-policy-input"
+    Copy-Item -LiteralPath $stage -Destination $crlfPolicyStage -Recurse
+    $crlfPolicyPath = Join-Path $crlfPolicyStage "release-policy.json"
+    $crlfPolicy = [regex]::Replace(
+        [IO.File]::ReadAllText($crlfPolicyPath),
+        "\r?\n",
+        "`r`n"
+    )
+    [IO.File]::WriteAllText(
+        $crlfPolicyPath,
+        $crlfPolicy,
+        [Text.UTF8Encoding]::new($false)
+    )
+    if (Test-Path -LiteralPath $fakeGhMarker) {
+        Remove-Item -LiteralPath $fakeGhMarker -Force
+    }
+    $crlfPolicyError = $null
+    try {
+        Invoke-PublicationAuthority `
+            -Mode Publish `
+            -InputRoot $crlfPolicyStage `
+            -SourceRepository $sourceRepo `
+            -SourceRevision $sourceRevision `
+            -SourceTree $sourceTree `
+            -FleetSigner $signerThumbprint `
+            -HostessSigner $signerThumbprint `
+            -DescriptorSpki $descriptorSpkiSha256 `
+            -GhExecutable $fakeGh |
+            Out-Null
+    }
+    catch {
+        $crlfPolicyError = $_.Exception.Message
+    }
+    Assert-Publication (
+        $crlfPolicyError -ceq
+            "staged release policy is not byte-exact to the tagged policy" -and
+        -not (Test-Path -LiteralPath $fakeGhMarker)
+    ) "CRLF release-policy substitution reached publication authority"
 
     $preflightPath = Join-Path $testRoot "publication-preflight.json"
     Write-TestUtf8 `
