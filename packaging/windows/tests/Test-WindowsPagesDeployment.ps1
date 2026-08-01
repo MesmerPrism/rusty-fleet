@@ -39,7 +39,7 @@ function ConvertTo-TestBase64Url([byte[]] $Bytes) {
 $packagingRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Import-Module (Join-Path $packagingRoot "Distribution.Common.psm1") -Force
 foreach ($case in @(
-    [pscustomobject]@{ channel = "dev"; maturity = "released"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "stable"; maturity = "released"; tag = "v9.9.9" },
     [pscustomobject]@{ channel = "labs"; maturity = "alpha"; tag = "v9.9.9-alpha.1" }
 )) {
     $message = ""
@@ -96,27 +96,33 @@ function New-PagesMetadataFixture {
     $durationMs = $expiresAtMs - $issuedAtMs
     $assetUrl = (
         "https://github.com/MesmerPrism/rusty-fleet/releases/download/" +
-        "v1.2.3/RustyFleet-Setup.exe"
+        "v1.2.3-alpha.1/RustyFleet-Labs-Setup.exe"
     )
     $payloadText = (
         '{"asset":{' +
-        '"installer_protocol":"rusty.fleet.guided_setup.v1",' +
+        '"authenticode_trust_mode":"exact-pinned-self-issued-untrusted-root-only",' +
+        '"installer_protocol":"rusty.fleet.guided_setup.v2",' +
         '"media_type":"application/vnd.microsoft.portable-executable",' +
-        '"name":"RustyFleet-Setup.exe",' +
+        '"name":"RustyFleet-Labs-Setup.exe",' +
+        '"public_trust_claim":false,' +
         '"sha256":"' + $setupSha256 + '",' +
         '"signer_certificate_sha256":"' +
             $setupSignerCertificateSha256 + '",' +
+        '"signer_self_issued":true,' +
+        '"signer_subject":"CN=MesmerPrism",' +
+        '"signer_thumbprint":"08A5878AD6E652A94517D2C79144EB2655B0088C",' +
         '"size_bytes":1234,' +
+        '"timestamp_required":true,' +
         '"url":"' + $assetUrl + '"},' +
-        '"channel":"dev",' +
-        '"distribution_track":"local-development",' +
+        '"channel":"labs",' +
+        '"distribution_track":"github-prerelease",' +
         '"descriptor_id":"' + $DescriptorId + '",' +
         '"expires_at_ms":' + $expiresAtMs + ',' +
         '"issued_at_ms":' + $issuedAtMs + ',' +
-        '"maturity":"released",' +
-        '"product":"rusty-fleet",' +
-        '"product_channel":"stable",' +
-        '"schema":"rusty.fleet.windows_release.v3",' +
+        '"maturity":"alpha",' +
+        '"product":"rusty-fleet-labs",' +
+        '"product_channel":"labs",' +
+        '"schema":"rusty.fleet.windows_release.v4",' +
         '"validity_duration_ms":' + $durationMs + ',' +
         '"version":"1.2.3"}'
     )
@@ -127,7 +133,7 @@ function New-PagesMetadataFixture {
         [Security.Cryptography.RSASignaturePadding]::Pss
     )
     $envelope = [ordered]@{
-        schema = "rusty.fleet.release_descriptor_envelope.v3"
+        schema = "rusty.fleet.release_descriptor_envelope.v4"
         payload_base64url = ConvertTo-TestBase64Url $payloadBytes
         signature_base64url = ConvertTo-TestBase64Url $signatureBytes
         signer_spki_sha256 = $spkiSha256
@@ -139,19 +145,19 @@ function New-PagesMetadataFixture {
     $spkiPath = Join-Path $metadataRoot "release-descriptor.spki.der"
     [IO.File]::WriteAllBytes($spkiPath, $spkiBytes)
     $receipt = [ordered]@{
-        schema = "rusty.fleet.windows_release_descriptor_receipt.v4"
+        schema = "rusty.fleet.windows_release_descriptor_receipt.v5"
         result = "pass"
         descriptor_id = $DescriptorId
         version = "1.2.3"
-        product_channel = "stable"
-        maturity = "released"
-        channel = "dev"
-        distribution_track = "local-development"
-        release_tag = "v1.2.3"
-        installation_identity = "rusty-fleet"
+        product_channel = "labs"
+        maturity = "alpha"
+        channel = "labs"
+        distribution_track = "github-prerelease"
+        release_tag = "v1.2.3-alpha.1"
+        installation_identity = "rusty-fleet-labs"
         primary_artifact = [ordered]@{
             role = "complete-product"
-            name = "RustyFleet-Setup.exe"
+            name = "RustyFleet-Labs-Setup.exe"
             sha256 = $setupSha256
             bytes = 1234
             url = $assetUrl
@@ -162,6 +168,12 @@ function New-PagesMetadataFixture {
         setup_sha256 = $setupSha256
         setup_size_bytes = 1234
         setup_signer_certificate_sha256 = $setupSignerCertificateSha256
+        setup_signer_subject = "CN=MesmerPrism"
+        setup_signer_thumbprint = "08A5878AD6E652A94517D2C79144EB2655B0088C"
+        setup_signer_self_issued = $true
+        authenticode_trust_mode = "exact-pinned-self-issued-untrusted-root-only"
+        public_trust_claim = $false
+        timestamp_required = $true
         setup_build_receipt_sha256 = "5" * 64
         source_revision = $sourceRevision
         source_tree = $sourceTree
@@ -175,7 +187,7 @@ function New-PagesMetadataFixture {
         descriptor_sha256 = Get-TestSha256 $descriptorPath
         canonical_payload = "rfc8785_jcs_closed_shape"
         signature = "rsa_pss_sha256"
-        pages_path = "Rusty-Fleet/metadata/dev/release.json"
+        pages_path = "Rusty-Fleet/metadata/labs/release.json"
         asset_url = $assetUrl
     }
     $receiptPath = Join-Path $metadataRoot (
@@ -185,10 +197,10 @@ function New-PagesMetadataFixture {
         -LiteralPath $receiptPath `
         -Content (ConvertTo-RustyFleetJson -InputObject $receipt)
 
-    $bundle = "RustyFleet-1.2.3-win-x64"
+    $bundle = "RustyFleet-Labs-1.2.3-win-x64"
     $assets = @(
         [ordered]@{
-            name = "RustyFleet-Setup.exe"
+            name = "RustyFleet-Labs-Setup.exe"
             sha256 = $setupSha256
             size_bytes = 1234
         },
@@ -218,7 +230,7 @@ function New-PagesMetadataFixture {
             size_bytes = 567
         },
         [ordered]@{
-            name = "RustyFleet-Setup.build-receipt.json"
+            name = "RustyFleet-Labs-Setup.build-receipt.json"
             sha256 = "5" * 64
             size_bytes = 678
         },
@@ -239,15 +251,15 @@ function New-PagesMetadataFixture {
         }
     ) | Sort-Object name
     $preflight = [ordered]@{
-        schema = "rusty.fleet.windows_publication_receipt.v2"
+        schema = "rusty.fleet.windows_publication_receipt.v3"
         result = "pass"
         mode = "preflight"
         version = "1.2.3"
-        product_channel = "stable"
-        maturity = "released"
-        channel = "dev"
-        distribution_track = "local-development"
-        tag = "v1.2.3"
+        product_channel = "labs"
+        maturity = "alpha"
+        channel = "labs"
+        distribution_track = "github-prerelease"
+        tag = "v1.2.3-alpha.1"
         source_revision = $sourceRevision
         source_tree = $sourceTree
         setup_sha256 = $setupSha256
@@ -255,6 +267,11 @@ function New-PagesMetadataFixture {
         descriptor_sha256 = Get-TestSha256 $descriptorPath
         descriptor_receipt_sha256 = Get-TestSha256 $receiptPath
         descriptor_signer_spki_sha256 = $spkiSha256
+        authenticode_trust_mode = "exact-pinned-self-issued-untrusted-root-only"
+        signer_certificate_sha256 = $setupSignerCertificateSha256
+        signer_self_issued = $true
+        public_trust_claim = $false
+        timestamp_required = $true
         asset_count = 10
         assets = $assets
         token_used = $false
@@ -291,7 +308,9 @@ function Invoke-PagesFixture {
 
     $arguments = @{
         Version = $Version
-        Channel = "dev"
+        Channel = "labs"
+        Maturity = "alpha"
+        ReleaseTag = "v1.2.3-alpha.1"
         SiteDirectory = $siteRoot
         MetadataDirectory = $Fixture.metadata_root
         PublicationPreflightReceiptPath = $Fixture.preflight_path
@@ -327,7 +346,7 @@ try {
         -Name "first" `
         -IssuedAtUtc $now.AddMinutes(-5) `
         -LifetimeMinutes 1380 `
-        -DescriptorId "v1.2.3-dev-first"
+        -DescriptorId "v1.2.3-labs-first"
     $firstOutput = Join-Path $testRoot "pages-first"
     $existingSite = Join-Path $testRoot "existing-complete-site"
     $stableSentinel = Join-Path $existingSite "Rusty-Fleet\metadata\stable\release.json"
@@ -339,7 +358,7 @@ try {
         -ExistingDeploymentDirectory $existingSite |
         ConvertFrom-Json -Depth 20
     $firstHandoffPath = Join-Path $firstOutput (
-        "Rusty-Fleet\metadata\dev\deployment-handoff.json"
+        "Rusty-Fleet\metadata\labs\deployment-handoff.json"
     )
     Assert-Pages (
         $firstHandoff.result -eq "pass" -and
@@ -353,7 +372,7 @@ try {
         (
             Get-Content -LiteralPath (
                 Join-Path $firstOutput (
-                    "Rusty-Fleet\metadata\dev\" +
+                    "Rusty-Fleet\metadata\labs\" +
                     "release-descriptor.receipt.json"
                 )
             ) -Raw | ConvertFrom-Json
@@ -456,7 +475,7 @@ try {
             name = "installation-identity"
             apply = {
                 param($value)
-                $value.installation_identity = "rusty-fleet-labs"
+                $value.installation_identity = "rusty-fleet"
             }
         },
         [pscustomobject]@{

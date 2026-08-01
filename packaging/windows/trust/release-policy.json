@@ -1,8 +1,39 @@
 {
-  "schema": "rusty.fleet.windows_release_trust_policy.v1",
-  "publication_enabled": false,
-  "authorized_fleet_signer_thumbprints": [],
-  "authorized_hostess_signer_thumbprints": [],
-  "authorized_descriptor_signer_spki_sha256": [],
-  "status": "no_production_signing_authority_configured"
+  "schema": "rusty.fleet.windows_release_trust_policy.v2",
+  "channels": {
+    "labs": {
+      "publication_enabled": true,
+      "authenticode": {
+        "subject": "CN=MesmerPrism",
+        "thumbprint": "08A5878AD6E652A94517D2C79144EB2655B0088C",
+        "certificate_sha256": "baead63c37e32085c3af19b4c739a6a308d700529f107d40e14fec2c94fe7ddf",
+        "self_issued": true,
+        "public_trust_claim": false,
+        "trust_mode": "exact-pinned-self-issued-untrusted-root-only",
+        "timestamp_required": true,
+        "allowed_chain_status_flags": [
+          "UntrustedRoot"
+        ]
+      },
+      "authorized_descriptor_signer_spki_sha256": [
+        "0b3ef04dc5481d5e0a0a243df298c31052501e014a6e27516c48b95846657d0c"
+      ],
+      "status": "labs_exact_pinned_self_issued_signer_configured"
+    },
+    "stable": {
+      "publication_enabled": false,
+      "authenticode": {
+        "subject": null,
+        "thumbprint": null,
+        "certificate_sha256": null,
+        "self_issued": false,
+        "public_trust_claim": true,
+        "trust_mode": "public-chain-only",
+        "timestamp_required": true,
+        "allowed_chain_status_flags": []
+      },
+      "authorized_descriptor_signer_spki_sha256": [],
+      "status": "stable_public_chain_signer_not_configured"
+    }
+  }
 }

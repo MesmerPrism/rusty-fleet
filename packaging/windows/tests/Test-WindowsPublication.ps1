@@ -56,14 +56,16 @@ function Invoke-PublicationAuthority {
         -Mode $Mode `
         -AssetDirectory $InputRoot `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
         -ExpectedFleetSignerThumbprint $FleetSigner `
         -ExpectedHostessSignerThumbprint $HostessSigner `
         -ExpectedDescriptorSignerSpkiSha256 $DescriptorSpki `
         -ExpectedSourceRevision $SourceRevision `
         -ExpectedSourceTree $SourceTree `
         -RepositoryRoot $SourceRepository `
-        -ExpectedRef "refs/tags/v1.2.3" `
+        -ExpectedRef "refs/tags/v1.2.3-alpha.1" `
         -GhExecutable $GhExecutable
 }
 
@@ -73,7 +75,7 @@ Import-Module (
     Join-Path $PSScriptRoot "WindowsCertificateFixture.psm1"
 ) -Force
 foreach ($case in @(
-    [pscustomobject]@{ channel = "dev"; maturity = "released"; tag = "v9.9.9" },
+    [pscustomobject]@{ channel = "stable"; maturity = "released"; tag = "v9.9.9" },
     [pscustomobject]@{ channel = "labs"; maturity = "alpha"; tag = "v9.9.9-alpha.1" }
 )) {
     $message = ""
@@ -161,8 +163,13 @@ try {
     }
 
     $signingCertificate = New-RustyFleetTestCodeSigningCertificate `
-        -Subject "CN=Rusty Fleet publication test"
+        -Subject "CN=MesmerPrism"
     $signerThumbprint = $signingCertificate.Thumbprint.ToUpperInvariant()
+    $signerCertificateSha256 = [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData(
+            $signingCertificate.RawData
+        )
+    ).ToLowerInvariant()
     $descriptorSpki = $descriptorRsa.ExportSubjectPublicKeyInfo()
     $descriptorSpkiSha256 = [Convert]::ToHexString(
         [Security.Cryptography.SHA256]::HashData($descriptorSpki)
@@ -173,14 +180,45 @@ try {
         "packaging\windows\trust\release-policy.json"
     )
     $policy = [ordered]@{
-        schema = "rusty.fleet.windows_release_trust_policy.v1"
-        publication_enabled = $true
-        authorized_fleet_signer_thumbprints = @($signerThumbprint)
-        authorized_hostess_signer_thumbprints = @($signerThumbprint)
-        authorized_descriptor_signer_spki_sha256 = @(
-            $descriptorSpkiSha256
-        )
-        status = "test_authority_only"
+        schema = "rusty.fleet.windows_release_trust_policy.v2"
+        channels = [ordered]@{
+            labs = [ordered]@{
+                publication_enabled = $true
+                authenticode = [ordered]@{
+                    subject = $signingCertificate.Subject
+                    thumbprint = $signerThumbprint
+                    certificate_sha256 = $signerCertificateSha256
+                    self_issued = $true
+                    public_trust_claim = $false
+                    trust_mode = (
+                        "exact-pinned-self-issued-untrusted-root-only"
+                    )
+                    timestamp_required = $true
+                    allowed_chain_status_flags = @("UntrustedRoot")
+                }
+                authorized_descriptor_signer_spki_sha256 = @(
+                    $descriptorSpkiSha256
+                )
+                status = (
+                    "labs_exact_pinned_self_issued_signer_configured"
+                )
+            }
+            stable = [ordered]@{
+                publication_enabled = $false
+                authenticode = [ordered]@{
+                    subject = $null
+                    thumbprint = $null
+                    certificate_sha256 = $null
+                    self_issued = $false
+                    public_trust_claim = $true
+                    trust_mode = "public-chain-only"
+                    timestamp_required = $true
+                    allowed_chain_status_flags = @()
+                }
+                authorized_descriptor_signer_spki_sha256 = @()
+                status = "stable_public_chain_signer_not_configured"
+            }
+        }
     }
     Write-TestUtf8 `
         -LiteralPath $policyPath `
@@ -203,7 +241,7 @@ try {
         "commit", "-m", "test release authority"
     ) | Out-Null
     Invoke-TestGit -Repository $sourceRepo -Arguments @(
-        "tag", "v1.2.3"
+        "tag", "v1.2.3-alpha.1"
     ) | Out-Null
     $sourceRevision = Invoke-TestGit `
         -Repository $sourceRepo `
@@ -270,7 +308,7 @@ public static class ProviderFixture { }
     $providerSigned = Get-AuthenticodeSignature -LiteralPath $providerPath
     Assert-Publication `
         ($providerSigned.Status -eq
-            [Management.Automation.SignatureStatus]::Valid) `
+            [Management.Automation.SignatureStatus]::UnknownError) `
         "provider fixture could not be signed"
     $providerSha256 = Get-RustyFleetSha256 -LiteralPath $providerPath
     $observedProductVersion = (
@@ -306,8 +344,47 @@ public static class ProviderFixture { }
         -LiteralPath $noticesPath `
         -Content "Synthetic publication test third-party notices.`n"
     $providerSignature = Get-AuthenticodeSignature -LiteralPath $providerPath
+    $providerPolicyPath = Join-Path $metadataRoot (
+        "rusty-hostess-hotspot-provider.release-policy.json"
+    )
+    $providerPolicy = [ordered]@{
+        schema = "rusty.hostess.windows_hotspot.release_policy.v1"
+        product_id = "rusty-hostess-windows-hotspot-provider"
+        signer = [ordered]@{
+            subject = $signingCertificate.Subject
+            issuer = $signingCertificate.Issuer
+            thumbprint_sha1 = $signerThumbprint
+            certificate_sha256 = $signerCertificateSha256
+            code_signing_eku_oid = "1.3.6.1.5.5.7.3.3"
+            self_issued = $true
+            timestamp_required = $true
+            public_trust_claim = $false
+        }
+        accepted_validation_boundaries = @(
+            [ordered]@{
+                authenticode_status = "valid"
+                chain_trusted = $true
+                chain_element_count = 1
+                chain_status_flags = @()
+            },
+            [ordered]@{
+                authenticode_status = "unknown_error"
+                chain_trusted = $false
+                chain_element_count = 1
+                chain_status_flags = @("UntrustedRoot")
+            }
+        )
+        distribution = [ordered]@{
+            allowed_channels = @("labs")
+            stable_eligible = $false
+        }
+        status = "active"
+    }
+    Write-TestUtf8 `
+        -LiteralPath $providerPolicyPath `
+        -Content (ConvertTo-RustyFleetJson -InputObject $providerPolicy)
     $providerProvenance = [ordered]@{
-        schema = "rusty.hostess.windows_hotspot.release_provenance.v1"
+        schema = "rusty.hostess.windows_hotspot.release_provenance.v2"
         product_id = "rusty-hostess-windows-hotspot-provider"
         provider_version = $providerVersion
         artifact = [ordered]@{
@@ -355,11 +432,31 @@ public static class ProviderFixture { }
             }
         )
         signing = [ordered]@{
-            state = "verified"
-            status = "Valid"
+            state = "accepted_exact_owner_signature"
+            authenticode_status = "valid"
             subject = $providerSignature.SignerCertificate.Subject
-            thumbprint = $signerThumbprint.ToLowerInvariant()
-            authorized_thumbprint = $signerThumbprint.ToLowerInvariant()
+            issuer = $providerSignature.SignerCertificate.Issuer
+            thumbprint_sha1 = $signerThumbprint.ToLowerInvariant()
+            certificate_sha256 = $signerCertificateSha256
+            code_signing_eku_present = $true
+            self_issued = $true
+            timestamp_present = $true
+            chain_trusted = $true
+            chain_element_count = 1
+            chain_status_flags = @()
+            public_trust_claim = $false
+            trust_boundary = (
+                "host-chain-valid-no-public-trust-claim"
+            )
+        }
+        release_policy = [ordered]@{
+            asset_name = (
+                "rusty-hostess-hotspot-provider.release-policy.json"
+            )
+            schema = $providerPolicy.schema
+            sha256 = Get-RustyFleetSha256 `
+                -LiteralPath $providerPolicyPath
+            size_bytes = (Get-Item -LiteralPath $providerPolicyPath).Length
         }
         companion_documents = @(
             [ordered]@{
@@ -374,8 +471,10 @@ public static class ProviderFixture { }
             }
         )
         distribution = [ordered]@{
-            eligibility = "signed_release"
+            eligibility = "labs_signed_release"
             binary_authority = "rusty-hostess-github-releases"
+            allowed_channels = @("labs")
+            stable_eligible = $false
         }
     }
     Write-TestUtf8 `
@@ -385,10 +484,69 @@ public static class ProviderFixture { }
             )
         ) `
         -Content (ConvertTo-RustyFleetJson -InputObject $providerProvenance)
+    foreach ($boundaryCase in @(
+        [pscustomobject]@{
+            name = "recorded-valid-mislabeled-untrusted"
+            apply = {
+                param($value)
+                $value.signing.trust_boundary = (
+                    "exact-pinned-self-issued-untrusted-root-only"
+                )
+            }
+        },
+        [pscustomobject]@{
+            name = "recorded-untrusted-mislabeled-valid"
+            apply = {
+                param($value)
+                $value.signing.authenticode_status = "unknown_error"
+                $value.signing.chain_trusted = $false
+                $value.signing.chain_status_flags = @("UntrustedRoot")
+                $value.signing.trust_boundary = (
+                    "host-chain-valid-no-public-trust-claim"
+                )
+            }
+        }
+    )) {
+        $boundaryMetadata = Join-Path $testRoot $boundaryCase.name
+        Copy-Item `
+            -LiteralPath $metadataRoot `
+            -Destination $boundaryMetadata `
+            -Recurse
+        $boundaryProvenancePath = Join-Path $boundaryMetadata (
+            "rusty-hostess-hotspot-provider.provenance.json"
+        )
+        $boundaryProvenance = Get-Content `
+            -LiteralPath $boundaryProvenancePath `
+            -Raw | ConvertFrom-Json -Depth 30
+        & $boundaryCase.apply $boundaryProvenance
+        Write-TestUtf8 `
+            -LiteralPath $boundaryProvenancePath `
+            -Content (
+                ConvertTo-RustyFleetJson -InputObject $boundaryProvenance
+            )
+        $boundaryMessage = ""
+        try {
+            Read-RustyFleetHostessProvenance `
+                -MetadataDirectory $boundaryMetadata `
+                -ProviderPath $providerPath `
+                -ProviderSha256 $providerSha256 `
+                -BuildKind signed-release `
+                -Channel labs `
+                -AuthenticodePolicy $policy.channels.labs.authenticode |
+                    Out-Null
+        }
+        catch {
+            $boundaryMessage = $_.Exception.Message
+        }
+        Assert-Publication (
+            $boundaryMessage -ceq
+                "Hostess provenance does not authorize signed release distribution"
+        ) "$($boundaryCase.name) was not rejected at the recorded trust boundary"
+    }
     $verifiedAtFixture = [DateTimeOffset]::MinValue
     Assert-Publication (
         $providerSignature.Status -eq
-            [Management.Automation.SignatureStatus]::Valid -and
+            [Management.Automation.SignatureStatus]::UnknownError -and
         $null -ne $providerSignature.SignerCertificate -and
         [DateTimeOffset]::TryParse(
             [string] $providerProvenance.source.verified_at_utc,
@@ -414,7 +572,7 @@ public static class ProviderFixture { }
         ) -and
         $parsedProviderProvenance.source.verified_at_utc -is [DateTime] -and
         $recheckedProviderSignature.Status -eq
-            [Management.Automation.SignatureStatus]::Valid -and
+            [Management.Automation.SignatureStatus]::UnknownError -and
         $null -ne $recheckedProviderSignature.SignerCertificate
     ) (
         "parsed provider fixture lost release trust: availability=" +
@@ -429,7 +587,8 @@ public static class ProviderFixture { }
     $distributionRoot = Join-Path $testRoot "distribution"
     & (Join-Path $packagingRoot "New-WindowsBundle.ps1") `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
         -BuildKind signed-release `
         -HostessProviderPath $providerPath `
         -HostessProviderSha256 $providerSha256 `
@@ -455,22 +614,26 @@ public static class ProviderFixture { }
         Join-Path $packagingRoot "New-WindowsSetup.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
         -BuildKind signed-release `
         -BundleArchivePath (
-            Join-Path $distributionRoot "RustyFleet-1.2.3-win-x64.zip"
+            Join-Path $distributionRoot (
+                "RustyFleet-Labs-1.2.3-win-x64.zip"
+            )
         ) `
         -OutputDirectory $distributionRoot `
         -FleetSignerThumbprint $signerThumbprint `
-        -HostessSignerThumbprint $signerThumbprint
+        -HostessSignerThumbprint $signerThumbprint `
+        -ReleasePolicyPath $policyPath
     $setupReceipt = $setupReceiptJson | ConvertFrom-Json -Depth 10
     $setupReceiptPath = Join-Path $distributionRoot (
-        "RustyFleet-Setup.build-receipt.json"
+        "RustyFleet-Labs-Setup.build-receipt.json"
     )
     Write-TestUtf8 `
         -LiteralPath $setupReceiptPath `
         -Content ($setupReceipt | ConvertTo-Json -Depth 10)
-    $setupPath = Join-Path $distributionRoot "RustyFleet-Setup.exe"
+    $setupPath = Join-Path $distributionRoot "RustyFleet-Labs-Setup.exe"
     $signedSetup = Set-AuthenticodeSignature `
         -FilePath $setupPath `
         -Certificate $signingCertificate `
@@ -481,7 +644,7 @@ public static class ProviderFixture { }
     $signedSetup = Get-AuthenticodeSignature -LiteralPath $setupPath
     Assert-Publication `
         ($signedSetup.Status -eq
-            [Management.Automation.SignatureStatus]::Valid) `
+            [Management.Automation.SignatureStatus]::UnknownError) `
         "Setup fixture could not be signed"
 
     $descriptorKeyPath = Join-Path $testRoot "descriptor-key.pem"
@@ -491,23 +654,26 @@ public static class ProviderFixture { }
     $descriptorRoot = Join-Path $testRoot "descriptor"
     & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
         -SetupPath $setupPath `
         -SetupBuildReceiptPath $setupReceiptPath `
         -ExpectedSetupSignerThumbprint $signerThumbprint `
+        -ReleasePolicyPath $policyPath `
         -ExpectedSourceRevision $sourceRevision `
         -ExpectedSourceTree $sourceTree `
         -DescriptorPrivateKeyPemPath $descriptorKeyPath `
         -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
         -OutputDirectory $descriptorRoot `
-        -DescriptorId "v1.2.3-dev-publication-test" `
+        -DescriptorId "v1.2.3-alpha.1-labs-publication-test" `
         -IssuedAtUtc $testNow.AddMinutes(-5) `
         -LifetimeMinutes 1380 |
         Out-Null
 
     $stage = Join-Path $testRoot "publication-input"
     [IO.Directory]::CreateDirectory($stage) | Out-Null
-    $bundleName = "RustyFleet-1.2.3-win-x64"
+    $bundleName = "RustyFleet-Labs-1.2.3-win-x64"
     foreach ($source in @(
         $setupPath,
         (Join-Path $distributionRoot "$bundleName.zip"),
@@ -561,13 +727,14 @@ exit 99
         @($preflight.assets).Count -eq 10 -and
         @($preflight.assets.name | Sort-Object -Unique).Count -eq 10 -and
         $ownerReleaseMetadata.schema -ceq
-            "rusty.fleet.windows_release_descriptor_receipt.v4" -and
-        $ownerReleaseMetadata.release_tag -ceq "v1.2.3" -and
-        $ownerReleaseMetadata.installation_identity -ceq "rusty-fleet" -and
+            "rusty.fleet.windows_release_descriptor_receipt.v5" -and
+        $ownerReleaseMetadata.release_tag -ceq "v1.2.3-alpha.1" -and
+        $ownerReleaseMetadata.installation_identity -ceq
+            "rusty-fleet-labs" -and
         $ownerReleaseMetadata.primary_artifact.role -ceq
             "complete-product" -and
         $ownerReleaseMetadata.primary_artifact.name -ceq
-            "RustyFleet-Setup.exe" -and
+            "RustyFleet-Labs-Setup.exe" -and
         $ownerReleaseMetadata.primary_artifact.sha256 -ceq
             $preflight.setup_sha256 -and
         [long] $ownerReleaseMetadata.primary_artifact.bytes -eq
@@ -593,7 +760,9 @@ exit 99
         Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
         -SiteDirectory $siteRoot `
         -MetadataDirectory $descriptorRoot `
         -PublicationPreflightReceiptPath $preflightPath `
@@ -604,15 +773,15 @@ exit 99
         -NowUtc $testNow |
         ConvertFrom-Json -Depth 20
     $firstHandoffPath = Join-Path $pagesOutput (
-        "Rusty-Fleet\metadata\dev\deployment-handoff.json"
+        "Rusty-Fleet\metadata\labs\deployment-handoff.json"
     )
     Assert-Publication (
         $firstHandoff.schema -eq
             "rusty.fleet.windows_release_metadata_handoff.v2" -and
-        $firstHandoff.product_channel -eq "stable" -and
-        $firstHandoff.maturity -eq "released" -and
-        $firstHandoff.channel -eq "dev" -and
-        $firstHandoff.distribution_track -eq "local-development" -and
+        $firstHandoff.product_channel -eq "labs" -and
+        $firstHandoff.maturity -eq "alpha" -and
+        $firstHandoff.channel -eq "labs" -and
+        $firstHandoff.distribution_track -eq "github-prerelease" -and
         $firstHandoff.result -eq "pass" -and
         $firstHandoff.deployment_sequence -eq 1 -and
         $firstHandoff.pages_binary_count -eq 0 -and
@@ -620,7 +789,7 @@ exit 99
         (Test-Path -LiteralPath $firstHandoffPath -PathType Leaf) -and
         -not (Get-ChildItem -LiteralPath $pagesOutput -Recurse -File |
             Where-Object {
-                $_.Name -ceq "RustyFleet-Setup.exe" -or
+                $_.Name -ceq "RustyFleet-Labs-Setup.exe" -or
                 $_.Extension -cin @(".zip", ".msi", ".dll")
             })
     ) "first Pages metadata deployment handoff is not exact or binary-free"
@@ -629,7 +798,9 @@ exit 99
         Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
         -SiteDirectory $siteRoot `
         -MetadataDirectory $descriptorRoot `
         -PublicationPreflightReceiptPath $preflightPath `
@@ -656,7 +827,9 @@ exit 99
         Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
         -SiteDirectory $siteRoot `
         -MetadataDirectory $descriptorRoot `
         -PublicationPreflightReceiptPath $preflightPath `
@@ -672,7 +845,7 @@ exit 99
         -not (Test-Path -LiteralPath $interruptedStage) -and
         (Test-Path -LiteralPath (
             Join-Path $interruptedOutput (
-                "Rusty-Fleet\metadata\dev\release.json"
+                "Rusty-Fleet\metadata\labs\release.json"
             )
         ))
     ) "interrupted Pages deployment did not rebuild and resume exactly"
@@ -680,13 +853,15 @@ exit 99
     $badSite = Join-Path $testRoot "site-with-binary"
     Copy-Item -LiteralPath $siteRoot -Destination $badSite -Recurse
     Write-TestUtf8 `
-        -LiteralPath (Join-Path $badSite "RustyFleet-Setup.exe") `
+        -LiteralPath (Join-Path $badSite "RustyFleet-Labs-Setup.exe") `
         -Content "binary must not enter Pages"
     $binaryRejected = $false
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
-            -Channel dev `
+            -Channel labs `
+            -Maturity alpha `
+            -ReleaseTag "v1.2.3-alpha.1" `
             -SiteDirectory $badSite `
             -MetadataDirectory $descriptorRoot `
             -PublicationPreflightReceiptPath $preflightPath `
@@ -726,7 +901,9 @@ exit 99
         try {
             & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
                 -Version $wrongBoundary.version `
-                -Channel dev `
+                -Channel labs `
+                -Maturity alpha `
+                -ReleaseTag "v$($wrongBoundary.version)-alpha.1" `
                 -SiteDirectory $siteRoot `
                 -MetadataDirectory $descriptorRoot `
                 -PublicationPreflightReceiptPath $preflightPath `
@@ -763,7 +940,9 @@ exit 99
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
-            -Channel dev `
+            -Channel labs `
+            -Maturity alpha `
+            -ReleaseTag "v1.2.3-alpha.1" `
             -SiteDirectory $siteRoot `
             -MetadataDirectory $damagedMetadata `
             -PublicationPreflightReceiptPath $preflightPath `
@@ -782,16 +961,19 @@ exit 99
     $staleMetadata = Join-Path $testRoot "stale-metadata"
     & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
         -SetupPath $setupPath `
         -SetupBuildReceiptPath $setupReceiptPath `
         -ExpectedSetupSignerThumbprint $signerThumbprint `
+        -ReleasePolicyPath $policyPath `
         -ExpectedSourceRevision $sourceRevision `
         -ExpectedSourceTree $sourceTree `
         -DescriptorPrivateKeyPemPath $descriptorKeyPath `
         -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
         -OutputDirectory $staleMetadata `
-        -DescriptorId "v1.2.3-dev-stale-test" `
+        -DescriptorId "v1.2.3-alpha.1-labs-stale-test" `
         -IssuedAtUtc $testNow.AddDays(-2) `
         -LifetimeMinutes 60 |
         Out-Null
@@ -828,7 +1010,9 @@ exit 99
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
-            -Channel dev `
+            -Channel labs `
+            -Maturity alpha `
+            -ReleaseTag "v1.2.3-alpha.1" `
             -SiteDirectory $siteRoot `
             -MetadataDirectory $staleMetadata `
             -PublicationPreflightReceiptPath $stalePreflightPath `
@@ -847,16 +1031,19 @@ exit 99
     $renewalMetadata = Join-Path $testRoot "renewal-metadata"
     & (Join-Path $packagingRoot "New-WindowsReleaseDescriptor.ps1") `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
         -SetupPath $setupPath `
         -SetupBuildReceiptPath $setupReceiptPath `
         -ExpectedSetupSignerThumbprint $signerThumbprint `
+        -ReleasePolicyPath $policyPath `
         -ExpectedSourceRevision $sourceRevision `
         -ExpectedSourceTree $sourceTree `
         -DescriptorPrivateKeyPemPath $descriptorKeyPath `
         -ExpectedDescriptorSignerSpkiSha256 $descriptorSpkiSha256 `
         -OutputDirectory $renewalMetadata `
-        -DescriptorId "v1.2.3-dev-renewal-test" `
+        -DescriptorId "v1.2.3-alpha.1-labs-renewal-test" `
         -IssuedAtUtc $testNow.AddMinutes(5) `
         -LifetimeMinutes 1380 |
         Out-Null
@@ -894,7 +1081,9 @@ exit 99
         Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1"
     ) `
         -Version "1.2.3" `
-        -Channel dev `
+        -Channel labs `
+        -Maturity alpha `
+        -ReleaseTag "v1.2.3-alpha.1" `
         -SiteDirectory $siteRoot `
         -MetadataDirectory $renewalMetadata `
         -PublicationPreflightReceiptPath $renewalPreflightPath `
@@ -910,7 +1099,7 @@ exit 99
         $renewalHandoff.previous_handoff_sha256 -cmatch
             "^[0-9a-f]{64}$" -and
         $renewalHandoff.descriptor_id -ceq
-            "v1.2.3-dev-renewal-test" -and
+            "v1.2.3-alpha.1-labs-renewal-test" -and
         $renewalHandoff.expires_at_ms -gt $firstHandoff.expires_at_ms
     ) "fresh release metadata did not renew the Pages handoff"
 
@@ -918,7 +1107,9 @@ exit 99
     try {
         & (Join-Path $packagingRoot "New-WindowsPagesDeployment.ps1") `
             -Version "1.2.3" `
-            -Channel dev `
+            -Channel labs `
+            -Maturity alpha `
+            -ReleaseTag "v1.2.3-alpha.1" `
             -SiteDirectory $siteRoot `
             -MetadataDirectory $descriptorRoot `
             -PublicationPreflightReceiptPath $preflightPath `
@@ -936,13 +1127,13 @@ exit 99
     Assert-Publication $replayRejected "Pages accepted a descriptor replay"
 
     $expectedInputNames = @(
-        "RustyFleet-Setup.exe",
+        "RustyFleet-Labs-Setup.exe",
         "$bundleName.zip",
         "$bundleName.zip.sha256",
         "$bundleName.manifest.json",
         "$bundleName.checksums.sha256",
         "$bundleName.validation-receipt.json",
-        "RustyFleet-Setup.build-receipt.json",
+        "RustyFleet-Labs-Setup.build-receipt.json",
         "release.json",
         "release-descriptor.receipt.json",
         "release-descriptor.spki.der",
@@ -1000,7 +1191,7 @@ exit 99
         zip = "$bundleName.zip"
         manifest = "$bundleName.manifest.json"
         checksums = "$bundleName.checksums.sha256"
-        setup_build_receipt = "RustyFleet-Setup.build-receipt.json"
+        setup_build_receipt = "RustyFleet-Labs-Setup.build-receipt.json"
         validation_receipt = "$bundleName.validation-receipt.json"
     }
     $caseRoot = Join-Path $testRoot "mutated-input"
@@ -1054,7 +1245,7 @@ exit 99
             name = "installation-identity"
             apply = {
                 param($value)
-                $value.installation_identity = "rusty-fleet-labs"
+                $value.installation_identity = "rusty-fleet"
             }
         },
         [pscustomobject]@{
@@ -1063,7 +1254,8 @@ exit 99
                 param($value)
                 $value.primary_artifact.url = (
                     "https://github.com/MesmerPrism/rusty-fleet/" +
-                    "releases/download/v1.2.4/RustyFleet-Setup.exe"
+                    "releases/download/v1.2.4/" +
+                    "RustyFleet-Labs-Setup.exe"
                 )
             }
         }
@@ -1154,6 +1346,7 @@ exit 99
         schema = "rusty.fleet.windows_publication_test.v1"
         result = "pass"
         signed_setup_and_canonical_receipt = $true
+        recorded_and_local_authenticode_boundaries_independent = $true
         exact_zip_sidecar_and_full_bundle_validation = $true
         top_level_metadata_byte_equal = $true
         rsa_pss_jcs_descriptor_and_spki_verified = $true

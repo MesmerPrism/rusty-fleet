@@ -26,6 +26,9 @@ param(
 
     [string] $FleetSignerThumbprint,
     [string] $HostessSignerThumbprint,
+    [string] $ReleasePolicyPath = (
+        Join-Path $PSScriptRoot "trust\release-policy.json"
+    ),
     [string] $DevelopmentInstallRoot,
     [ValidateRange(0, 10000)]
     [int] $DevelopmentTestPauseAfterRetainMs = 0,
@@ -48,6 +51,22 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
+$channelPolicy = $null
+if ($BuildKind -eq "signed-release") {
+    if ($Channel -eq "dev") {
+        throw "signed Setup requires Labs or Stable release identity"
+    }
+    $channelPolicy = Read-RustyFleetReleaseTrustPolicy `
+        -LiteralPath (Resolve-Path -LiteralPath $ReleasePolicyPath).Path `
+        -Channel $Channel
+    if ($channelPolicy.publication_enabled -ne $true -or
+        $FleetSignerThumbprint.ToUpperInvariant() -cne
+            $channelPolicy.authenticode.thumbprint -or
+        $HostessSignerThumbprint.ToUpperInvariant() -cne
+            $channelPolicy.authenticode.thumbprint) {
+        throw "signed Setup inputs are not authorized for the selected channel"
+    }
+}
 
 $archive = (Resolve-Path -LiteralPath $BundleArchivePath).Path
 $productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
@@ -83,7 +102,7 @@ try {
     $manifestPath = Join-Path $inspectionBundleRoot "metadata\release-manifest.json"
     $manifest = Get-Content -LiteralPath $manifestPath -Raw |
         ConvertFrom-Json -Depth 30
-    if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v2" -or
+    if ($manifest.schema -ne "rusty.fleet.windows_release_manifest.v3" -or
         $manifest.version -cne $Version -or
         $manifest.product_channel -cne $productChannel -or
         $manifest.maturity -cne $Maturity -or
@@ -149,6 +168,20 @@ try {
     else {
         ""
     }
+    $signerCertificateSha256 = if ($channelPolicy) {
+        $channelPolicy.authenticode.certificate_sha256
+    }
+    else { "" }
+    $authenticodeTrustMode = if ($channelPolicy) {
+        $channelPolicy.authenticode.trust_mode
+    }
+    else { "unsigned-development" }
+    $signerSelfIssued = if ($channelPolicy -and
+        $channelPolicy.authenticode.self_issued) { "true" } else { "false" }
+    $publicTrustClaim = if ($channelPolicy -and
+        $channelPolicy.authenticode.public_trust_claim) { "true" } else { "false" }
+    $timestampRequired = if ($channelPolicy -and
+        $channelPolicy.authenticode.timestamp_required) { "true" } else { "false" }
     $developmentRoot = if ($DevelopmentInstallRoot) {
         [IO.Path]::GetFullPath($DevelopmentInstallRoot).
             Replace("\", "\\").
@@ -169,6 +202,11 @@ internal static class ReleaseConfiguration
     internal static readonly string ManifestSha256 = "$manifestSha256";
     internal static readonly string FleetSignerThumbprint = "$fleetSigner";
     internal static readonly string HostessSignerThumbprint = "$hostessSigner";
+    internal static readonly string SignerCertificateSha256 = "$signerCertificateSha256";
+    internal static readonly string AuthenticodeTrustMode = "$authenticodeTrustMode";
+    internal static readonly bool SignerSelfIssued = $signerSelfIssued;
+    internal static readonly bool PublicTrustClaim = $publicTrustClaim;
+    internal static readonly bool TimestampRequired = $timestampRequired;
     internal static readonly string ProductId = "$(if ($Channel -eq "labs") { "rusty-fleet-labs" } else { "rusty-fleet" })";
     internal static readonly string ProductChannel = "$productChannel";
     internal static readonly string Maturity = "$Maturity";
@@ -214,7 +252,7 @@ internal static class ReleaseConfiguration
         -LiteralPath $destination `
         -ExpectedPayloadSize (Get-Item -LiteralPath $destination).Length
     [ordered]@{
-        schema = "rusty.fleet.windows_setup_build_receipt.v2"
+        schema = "rusty.fleet.windows_setup_build_receipt.v3"
         result = "pass"
         version = $Version
         channel = $Channel
@@ -230,6 +268,21 @@ internal static class ReleaseConfiguration
         source_tree_clean = [bool] $manifest.build.source_tree_clean
         canonical_pe_payload_sha256 = $canonicalPayload.sha256
         canonical_pe_payload_size_bytes = [long] $canonicalPayload.size_bytes
+        authenticode_trust_mode = if ($channelPolicy) {
+            $channelPolicy.authenticode.trust_mode
+        } else { "unsigned-development" }
+        signer_certificate_sha256 = if ($channelPolicy) {
+            $channelPolicy.authenticode.certificate_sha256
+        } else { $null }
+        signer_self_issued = if ($channelPolicy) {
+            [bool] $channelPolicy.authenticode.self_issued
+        } else { $false }
+        public_trust_claim = if ($channelPolicy) {
+            [bool] $channelPolicy.authenticode.public_trust_claim
+        } else { $false }
+        timestamp_required = if ($channelPolicy) {
+            [bool] $channelPolicy.authenticode.timestamp_required
+        } else { $false }
         distribution_eligibility = if ($BuildKind -eq "signed-release") {
             "requires_setup_authenticode_signing"
         }

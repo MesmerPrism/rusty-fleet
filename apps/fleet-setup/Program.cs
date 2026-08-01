@@ -53,11 +53,19 @@ internal static class Program
             var bundle = EmbeddedBundle.Load();
             using var runningSetup = OpenRunningSetup();
             var plan = new SetupPlan(
-                Schema: "rusty.fleet.guided_installer_plan.v1",
+                Schema: "rusty.fleet.guided_installer_plan.v2",
                 Product: ReleaseConfiguration.ProductId,
                 Version: ReleaseConfiguration.Version,
                 Channel: ReleaseConfiguration.Channel,
                 AssetSha256: Convert.ToHexStringLower(SHA256.HashData(runningSetup)),
+                AuthenticodeTrustMode: ReleaseConfiguration.AuthenticodeTrustMode,
+                SignerCertificateSha256: string.IsNullOrEmpty(
+                    ReleaseConfiguration.SignerCertificateSha256)
+                    ? null
+                    : ReleaseConfiguration.SignerCertificateSha256,
+                SignerSelfIssued: ReleaseConfiguration.SignerSelfIssued,
+                PublicTrustClaim: ReleaseConfiguration.PublicTrustClaim,
+                TimestampRequired: ReleaseConfiguration.TimestampRequired,
                 Ready: true);
 
             if (planOnly)
@@ -73,6 +81,20 @@ internal static class Program
             {
                 Console.WriteLine();
                 Console.WriteLine("DEVELOPMENT BUILD: this Setup is not a supported public release.");
+            }
+            else if (!ReleaseConfiguration.PublicTrustClaim)
+            {
+                Console.WriteLine();
+                Console.WriteLine(
+                    "LABS SIGNATURE NOTICE: this build is signed by the exact pinned");
+                Console.WriteLine(
+                    "MesmerPrism certificate, but that certificate is self-issued and");
+                Console.WriteLine(
+                    "does not have a public Windows trust chain. Windows may show an");
+                Console.WriteLine(
+                    "Unknown publisher warning. Confirm MesmerPrism only if you chose Labs.");
+                Console.WriteLine(
+                    "Setup never installs or changes a Windows root certificate.");
             }
             Console.WriteLine();
             Console.WriteLine("Setup changes only the per-user Fleet release pointer. It will not");
@@ -173,5 +195,10 @@ internal static class Program
         string Version,
         string Channel,
         string AssetSha256,
+        string AuthenticodeTrustMode,
+        string? SignerCertificateSha256,
+        bool SignerSelfIssued,
+        bool PublicTrustClaim,
+        bool TimestampRequired,
         bool Ready);
 }

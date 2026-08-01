@@ -15,7 +15,7 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "labs", "stable")]
+    [ValidateSet("labs", "stable")]
     [string] $Channel,
 
     [ValidateSet("alpha", "beta", "rc", "released")]
@@ -624,7 +624,6 @@ $setupName = if ($Channel -eq "labs") { "RustyFleet-Labs-Setup.exe" } else { "Ru
 $installationIdentity = if ($Channel -eq "labs") { "rusty-fleet-labs" } else { "rusty-fleet" }
 $productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
 $distributionTrack = switch ($Channel) {
-    "dev" { "local-development" }
     "labs" { "github-prerelease" }
     "stable" { "github-release" }
 }
@@ -703,26 +702,15 @@ function Assert-SourceAndPolicy {
     if ($tagPolicyBlob.text -cne $stagedPolicyBlob.text) {
         throw "staged release policy is not byte-exact to the tagged policy"
     }
-    $policy = ConvertFrom-StrictUtf8Json `
-        -Bytes ($RetainedAssets.ReadAll($policyName, 65536)) `
-        -MaximumBytes 65536 `
-        -Context "release trust policy"
-    Assert-ExactProperties -InputObject $policy -Expected @(
-        "schema",
-        "publication_enabled",
-        "authorized_fleet_signer_thumbprints",
-        "authorized_hostess_signer_thumbprints",
-        "authorized_descriptor_signer_spki_sha256",
-        "status"
-    ) -Context "release trust policy"
-    if ($policy.schema -cne
-            "rusty.fleet.windows_release_trust_policy.v1" -or
-        $policy.publication_enabled -ne $true -or
-        @($policy.authorized_fleet_signer_thumbprints) -cnotcontains
+    $channelPolicy = Read-RustyFleetReleaseTrustPolicy `
+        -LiteralPath $stagedPolicyPath `
+        -Channel $Channel
+    if ($channelPolicy.publication_enabled -ne $true -or
+        $channelPolicy.authenticode.thumbprint -cne
             $ExpectedFleetSignerThumbprint.ToUpperInvariant() -or
-        @($policy.authorized_hostess_signer_thumbprints) -cnotcontains
+        $channelPolicy.authenticode.thumbprint -cne
             $ExpectedHostessSignerThumbprint.ToUpperInvariant() -or
-        @($policy.authorized_descriptor_signer_spki_sha256) -cnotcontains
+        @($channelPolicy.authorized_descriptor_signer_spki_sha256) -cnotcontains
             $ExpectedDescriptorSignerSpkiSha256) {
         throw "tagged release policy does not authorize publication inputs"
     }
@@ -735,6 +723,9 @@ try {
         $inputNames
     )
     Assert-SourceAndPolicy -RetainedAssets $assets
+    $channelPolicy = Read-RustyFleetReleaseTrustPolicy `
+        -LiteralPath $assets.PathFor($policyName) `
+        -Channel $Channel
 
     $buildReceiptBytes = $assets.ReadAll($setupBuildReceiptName, 65536)
     $buildReceipt = ConvertFrom-StrictUtf8Json `
@@ -758,10 +749,15 @@ try {
         "source_tree_clean",
         "canonical_pe_payload_sha256",
         "canonical_pe_payload_size_bytes",
+        "authenticode_trust_mode",
+        "signer_certificate_sha256",
+        "signer_self_issued",
+        "public_trust_claim",
+        "timestamp_required",
         "distribution_eligibility"
     ) -Context "Setup build receipt"
     if ($buildReceipt.schema -cne
-            "rusty.fleet.windows_setup_build_receipt.v2" -or
+            "rusty.fleet.windows_setup_build_receipt.v3" -or
         $buildReceipt.result -cne "pass" -or
         $buildReceipt.version -cne $Version -or
         $buildReceipt.product_channel -cne $productChannel -or
@@ -771,6 +767,15 @@ try {
         $buildReceipt.source_revision -cne $ExpectedSourceRevision -or
         $buildReceipt.source_tree -cne $ExpectedSourceTree -or
         $buildReceipt.source_tree_clean -ne $true -or
+        $buildReceipt.authenticode_trust_mode -cne
+            $channelPolicy.authenticode.trust_mode -or
+        $buildReceipt.signer_certificate_sha256 -cne
+            $channelPolicy.authenticode.certificate_sha256 -or
+        $buildReceipt.signer_self_issued -ne
+            $channelPolicy.authenticode.self_issued -or
+        $buildReceipt.public_trust_claim -ne
+            $channelPolicy.authenticode.public_trust_claim -or
+        $buildReceipt.timestamp_required -ne $true -or
         $buildReceipt.distribution_eligibility -cne
             "requires_setup_authenticode_signing" -or
         $buildReceipt.setup_sha256 -cnotmatch "^[0-9a-f]{64}$" -or
@@ -861,7 +866,7 @@ try {
         -Bytes $manifestBytes `
         -MaximumBytes (16 * 1024 * 1024) `
         -Context "release manifest"
-    if ($manifest.schema -cne "rusty.fleet.windows_release_manifest.v2" -or
+    if ($manifest.schema -cne "rusty.fleet.windows_release_manifest.v3" -or
         $manifest.version -cne $Version -or
         $manifest.product_channel -cne $productChannel -or
         $manifest.maturity -cne $Maturity -or
@@ -871,7 +876,15 @@ try {
         $manifest.source.revision -cne $ExpectedSourceRevision -or
         $manifest.source.tree -cne $ExpectedSourceTree -or
         $manifest.distribution.publication_allowed -ne $true -or
-        $manifest.distribution.eligibility -cne "signed_release") {
+        $manifest.distribution.eligibility -cne "signed_release" -or
+        $manifest.build.authenticode.thumbprint -cne
+            $channelPolicy.authenticode.thumbprint -or
+        $manifest.build.authenticode.certificate_sha256 -cne
+            $channelPolicy.authenticode.certificate_sha256 -or
+        $manifest.build.authenticode.trust_mode -cne
+            $channelPolicy.authenticode.trust_mode -or
+        $manifest.build.authenticode.public_trust_claim -ne
+            $channelPolicy.authenticode.public_trust_claim) {
         throw "inner manifest is not exact signed-release provenance"
     }
 
@@ -895,7 +908,10 @@ try {
         "credentials_absent",
         "private_configuration_absent",
         "adb_absent",
-        "signatures"
+        "signatures",
+        "authenticode_trust_mode",
+        "public_trust_claim",
+        "signer_certificate_sha256"
     ) -Context "distribution validation receipt"
     if ($validationReceipt.result -cne "pass" -or
         $validationReceipt.version -cne $Version -or
@@ -904,16 +920,22 @@ try {
             $buildReceipt.manifest_sha256 -or
         $validationReceipt.distribution_eligibility -cne "signed_release" -or
         $validationReceipt.publication_allowed -ne $true -or
-        $validationReceipt.signatures -cne "verified") {
+        $validationReceipt.signatures -cne "verified" -or
+        $validationReceipt.authenticode_trust_mode -cne
+            $channelPolicy.authenticode.trust_mode -or
+        $validationReceipt.public_trust_claim -ne
+            $channelPolicy.authenticode.public_trust_claim -or
+        $validationReceipt.signer_certificate_sha256 -cne
+            $channelPolicy.authenticode.certificate_sha256) {
         throw "distribution validation receipt is not publication evidence"
     }
 
-    $setupSignature = Get-AuthenticodeSignature -LiteralPath $setupPath
+    $setupAssessment = Get-RustyFleetAuthenticodeAssessment `
+        -LiteralPath $setupPath `
+        -AuthenticodePolicy $channelPolicy.authenticode `
+        -Channel $Channel
     $assets.Verify()
-    if ($setupSignature.Status -ne
-            [Management.Automation.SignatureStatus]::Valid -or
-        $null -eq $setupSignature.SignerCertificate -or
-        $setupSignature.SignerCertificate.Thumbprint -cne
+    if ($setupAssessment.thumbprint -cne
             $ExpectedFleetSignerThumbprint.ToUpperInvariant()) {
         throw "Setup Authenticode signer is not independently authorized"
     }
@@ -935,7 +957,7 @@ try {
         "signer_spki_sha256"
     ) -Context "release descriptor envelope"
     if ($envelope.schema -cne
-            "rusty.fleet.release_descriptor_envelope.v3" -or
+            "rusty.fleet.release_descriptor_envelope.v4" -or
         $envelope.signer_spki_sha256 -cne
             $ExpectedDescriptorSignerSpkiSha256) {
         throw "release descriptor envelope identity is not exact"
@@ -965,19 +987,25 @@ try {
         "version"
     ) -Context "release descriptor payload"
     Assert-ExactProperties -InputObject $payload.asset -Expected @(
+        "authenticode_trust_mode",
         "installer_protocol",
         "media_type",
         "name",
+        "public_trust_claim",
         "sha256",
         "signer_certificate_sha256",
+        "signer_self_issued",
+        "signer_subject",
+        "signer_thumbprint",
         "size_bytes",
+        "timestamp_required",
         "url"
     ) -Context "release descriptor asset"
     $expectedAssetUrl = (
         "https://github.com/$GitHubRepository/releases/download/" +
         "$tag/$setupName"
     )
-    if ($payload.schema -cne "rusty.fleet.windows_release.v3" -or
+    if ($payload.schema -cne "rusty.fleet.windows_release.v4" -or
         $payload.product -cne $installationIdentity -or
         $payload.version -cne $Version -or
         $payload.product_channel -cne $productChannel -or
@@ -993,7 +1021,16 @@ try {
                 [long] $payload.issued_at_ms) -or
         [long] $payload.validity_duration_ms -gt 86400000 -or
         $payload.asset.installer_protocol -cne
-            "rusty.fleet.guided_setup.v1" -or
+            "rusty.fleet.guided_setup.v2" -or
+        $payload.asset.authenticode_trust_mode -cne
+            $setupAssessment.trust_mode -or
+        $payload.asset.public_trust_claim -ne
+            $setupAssessment.public_trust_claim -or
+        $payload.asset.signer_self_issued -ne
+            $setupAssessment.self_issued -or
+        $payload.asset.signer_subject -cne $setupAssessment.subject -or
+        $payload.asset.signer_thumbprint -cne $setupAssessment.thumbprint -or
+        $payload.asset.timestamp_required -ne $true -or
         $payload.asset.media_type -cne
             "application/vnd.microsoft.portable-executable" -or
         $payload.asset.name -cne $setupName -or
@@ -1007,23 +1044,25 @@ try {
         [long] $payload.expires_at_ms -le $nowMs) {
         throw "release descriptor is not currently fresh"
     }
-    $setupCertificateSha256 = [Convert]::ToHexString(
-        [Security.Cryptography.SHA256]::HashData(
-            $setupSignature.SignerCertificate.RawData
-        )
-    ).ToLowerInvariant()
+    $setupCertificateSha256 = $setupAssessment.certificate_sha256
     if ($payload.asset.signer_certificate_sha256 -cne
         $setupCertificateSha256) {
         throw "descriptor does not bind the exact Setup signer certificate"
     }
     $jcsText = (
         '{"asset":{' +
-        '"installer_protocol":"rusty.fleet.guided_setup.v1",' +
+        '"authenticode_trust_mode":"' + $setupAssessment.trust_mode + '",' +
+        '"installer_protocol":"rusty.fleet.guided_setup.v2",' +
         '"media_type":"application/vnd.microsoft.portable-executable",' +
         '"name":"' + $setupName + '",' +
+        '"public_trust_claim":' + $setupAssessment.public_trust_claim.ToString().ToLowerInvariant() + ',' +
         '"sha256":"' + $setupSha256 + '",' +
         '"signer_certificate_sha256":"' + $setupCertificateSha256 + '",' +
+        '"signer_self_issued":' + $setupAssessment.self_issued.ToString().ToLowerInvariant() + ',' +
+        '"signer_subject":"' + $setupAssessment.subject + '",' +
+        '"signer_thumbprint":"' + $setupAssessment.thumbprint + '",' +
         '"size_bytes":' + [long] $payload.asset.size_bytes + ',' +
+        '"timestamp_required":true,' +
         '"url":"' + $expectedAssetUrl + '"},' +
         '"channel":"' + $Channel + '",' +
         '"distribution_track":"' + $distributionTrack + '",' +
@@ -1033,7 +1072,7 @@ try {
         '"maturity":"' + $Maturity + '",' +
         '"product":"' + $installationIdentity + '",' +
         '"product_channel":"' + $productChannel + '",' +
-        '"schema":"rusty.fleet.windows_release.v3",' +
+        '"schema":"rusty.fleet.windows_release.v4",' +
         '"validity_duration_ms":' +
             [long] $payload.validity_duration_ms + ',' +
         '"version":"' + $Version + '"}'
@@ -1087,6 +1126,12 @@ try {
         "setup_sha256",
         "setup_size_bytes",
         "setup_signer_certificate_sha256",
+        "setup_signer_subject",
+        "setup_signer_thumbprint",
+        "setup_signer_self_issued",
+        "authenticode_trust_mode",
+        "public_trust_claim",
+        "timestamp_required",
         "setup_build_receipt_sha256",
         "source_revision",
         "source_tree",
@@ -1109,7 +1154,7 @@ try {
         "url"
     ) -Context "release descriptor primary artifact"
     if ($descriptorReceipt.schema -cne
-            "rusty.fleet.windows_release_descriptor_receipt.v4" -or
+            "rusty.fleet.windows_release_descriptor_receipt.v5" -or
         $descriptorReceipt.result -cne "pass" -or
         $descriptorReceipt.descriptor_id -cne $payload.descriptor_id -or
         $descriptorReceipt.version -cne $Version -or
@@ -1138,6 +1183,17 @@ try {
             $assets.Length($setupName) -or
         $descriptorReceipt.setup_signer_certificate_sha256 -cne
             $setupCertificateSha256 -or
+        $descriptorReceipt.setup_signer_subject -cne
+            $setupAssessment.subject -or
+        $descriptorReceipt.setup_signer_thumbprint -cne
+            $setupAssessment.thumbprint -or
+        $descriptorReceipt.setup_signer_self_issued -ne
+            $setupAssessment.self_issued -or
+        $descriptorReceipt.authenticode_trust_mode -cne
+            $setupAssessment.trust_mode -or
+        $descriptorReceipt.public_trust_claim -ne
+            $setupAssessment.public_trust_claim -or
+        $descriptorReceipt.timestamp_required -ne $true -or
         $descriptorReceipt.setup_build_receipt_sha256 -cne
             (Get-BytesSha256 $buildReceiptBytes) -or
         $descriptorReceipt.source_revision -cne $ExpectedSourceRevision -or
@@ -1219,7 +1275,7 @@ try {
     }
 
     [ordered]@{
-        schema = "rusty.fleet.windows_publication_receipt.v2"
+        schema = "rusty.fleet.windows_publication_receipt.v3"
         result = "pass"
         mode = $Mode.ToLowerInvariant()
         version = $Version
@@ -1236,6 +1292,11 @@ try {
         descriptor_receipt_sha256 = Get-BytesSha256 $descriptorReceiptBytes
         descriptor_signer_spki_sha256 =
             $ExpectedDescriptorSignerSpkiSha256
+        authenticode_trust_mode = $setupAssessment.trust_mode
+        signer_certificate_sha256 = $setupAssessment.certificate_sha256
+        signer_self_issued = $setupAssessment.self_issued
+        public_trust_claim = $setupAssessment.public_trust_claim
+        timestamp_required = $true
         asset_count = $inventory.Count
         assets = $inventory
         token_used = $tokenUsed

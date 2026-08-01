@@ -71,16 +71,19 @@ Assert-RustyFleetSha256 `
     -Name "HostessProviderSha256"
 
 $repoPath = (Resolve-Path -LiteralPath $RepoRoot).Path
+$releaseChannelPolicy = $null
 if ($BuildKind -eq "signed-release") {
-    $policyPath = (Resolve-Path -LiteralPath $ReleasePolicyPath).Path
-    $policy = Get-Content -LiteralPath $policyPath -Raw |
-        ConvertFrom-Json -Depth 10
-    if ($policy.schema -cne "rusty.fleet.windows_release_trust_policy.v1" -or
-        $policy.publication_enabled -ne $true -or
-        @($policy.authorized_fleet_signer_thumbprints) -cnotcontains
-            $ExpectedFleetSignerThumbprint.ToUpperInvariant() -or
-        @($policy.authorized_hostess_signer_thumbprints) -cnotcontains
-            $ExpectedHostessSignerThumbprint.ToUpperInvariant()) {
+    if ($Channel -eq "dev") {
+        throw "signed release requires Labs or Stable channel identity"
+    }
+    $releaseChannelPolicy = Read-RustyFleetReleaseTrustPolicy `
+        -LiteralPath (Resolve-Path -LiteralPath $ReleasePolicyPath).Path `
+        -Channel $Channel
+    if ($releaseChannelPolicy.publication_enabled -ne $true -or
+        $ExpectedFleetSignerThumbprint.ToUpperInvariant() -cne
+            $releaseChannelPolicy.authenticode.thumbprint -or
+        $ExpectedHostessSignerThumbprint.ToUpperInvariant() -cne
+            $releaseChannelPolicy.authenticode.thumbprint) {
         throw "signed release inputs are not authorized by the revisioned Fleet release policy"
     }
 }
@@ -96,7 +99,10 @@ $hostessProvenance = Read-RustyFleetHostessProvenance `
     -ProviderPath $providerPath `
     -ProviderSha256 $HostessProviderSha256 `
     -BuildKind $BuildKind `
-    -ExpectedSignerThumbprint $ExpectedHostessSignerThumbprint
+    -Channel $Channel `
+    -AuthenticodePolicy $(if ($releaseChannelPolicy) {
+        $releaseChannelPolicy.authenticode
+    } else { $null })
 
 if (-not $SourceRevision) {
     $SourceRevision = (& git -C $repoPath rev-parse HEAD).Trim()
@@ -204,28 +210,22 @@ try {
             throw "signed release requires an independently supplied Fleet signer thumbprint"
         }
         $fleetSigner = $ExpectedFleetSignerThumbprint.ToUpperInvariant()
+        $fleetAssessments = @()
         foreach ($executable in @(
             (Join-Path $consolePath "RustyFleet.FleetConsole.exe"),
             $hubPath,
             $fleetctlPath,
             $fleetOnboardPath
         )) {
-            $signature = Get-AuthenticodeSignature -LiteralPath $executable
-            $observedThumbprint = if ($signature.SignerCertificate) {
-                $signature.SignerCertificate.Thumbprint
-            }
-            else {
-                $null
-            }
-            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
-                $observedThumbprint -cne $fleetSigner) {
-                throw "required Fleet Authenticode signer is not authorized: $(Split-Path -Leaf $executable)"
-            }
+            $fleetAssessments += Get-RustyFleetAuthenticodeAssessment `
+                -LiteralPath $executable `
+                -AuthenticodePolicy $releaseChannelPolicy.authenticode `
+                -Channel $Channel
         }
-        $providerSignature = Get-AuthenticodeSignature -LiteralPath $providerPath
-        if ($providerSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-            throw "required Hostess Authenticode signature is not valid"
-        }
+        $providerAssessment = Get-RustyFleetAuthenticodeAssessment `
+            -LiteralPath $providerPath `
+            -AuthenticodePolicy $releaseChannelPolicy.authenticode `
+            -Channel $Channel
         if ($BuildKind -ne "signed-release") {
             throw "signature enforcement requires BuildKind signed-release"
         }
@@ -384,6 +384,9 @@ try {
                 owner_document_sha256 = $hostessProvenance.provenance_sha256
                 license_path = "providers/hostess-hotspot-provider/provenance/LICENSE"
                 third_party_notices_path = "providers/hostess-hotspot-provider/provenance/THIRD-PARTY-NOTICES.txt"
+                release_policy_path = "providers/hostess-hotspot-provider/provenance/rusty-hostess-hotspot-provider.release-policy.json"
+                release_policy_schema = $hostessProvenance.provenance.release_policy.schema
+                release_policy_sha256 = $hostessProvenance.provenance.release_policy.sha256
                 source_repository = $hostessProvenance.provenance.source.repository
                 source_revision = $hostessProvenance.provenance.source.revision
                 source_tree = $hostessProvenance.provenance.source.tree
@@ -399,7 +402,19 @@ try {
                     $hostessProvenance.provenance.bundled_native_libraries
                 ).Count
                 signing_state = $hostessProvenance.provenance.signing.state
-                authorized_signer_thumbprint = $hostessProvenance.provenance.signing.authorized_thumbprint
+                authenticode_status = $hostessProvenance.provenance.signing.authenticode_status
+                signer_subject = $hostessProvenance.provenance.signing.subject
+                signer_issuer = $hostessProvenance.provenance.signing.issuer
+                signer_thumbprint_sha1 = $hostessProvenance.provenance.signing.thumbprint_sha1
+                signer_certificate_sha256 = $hostessProvenance.provenance.signing.certificate_sha256
+                code_signing_eku_present = [bool] $hostessProvenance.provenance.signing.code_signing_eku_present
+                signer_self_issued = $hostessProvenance.provenance.signing.self_issued
+                timestamp_present = [bool] $hostessProvenance.provenance.signing.timestamp_present
+                chain_trusted = [bool] $hostessProvenance.provenance.signing.chain_trusted
+                chain_element_count = [int] $hostessProvenance.provenance.signing.chain_element_count
+                public_trust_claim = [bool] $hostessProvenance.provenance.signing.public_trust_claim
+                authenticode_trust_boundary = $hostessProvenance.provenance.signing.trust_boundary
+                chain_status_flags = @($hostessProvenance.provenance.signing.chain_status_flags)
                 distribution_eligibility = $hostessProvenance.provenance.distribution.eligibility
             }
         }
@@ -407,7 +422,7 @@ try {
 
     $archiveAsset = "$bundleName.zip"
     $manifest = [ordered]@{
-        schema = "rusty.fleet.windows_release_manifest.v2"
+        schema = "rusty.fleet.windows_release_manifest.v3"
         product_id = "rusty-fleet"
         version = $Version
         channel = $Channel
@@ -429,6 +444,30 @@ try {
             authenticode_required = [bool] $RequireAuthenticodeSignatures
             authorized_fleet_signer_thumbprint = if ($RequireAuthenticodeSignatures) {
                 $ExpectedFleetSignerThumbprint.ToUpperInvariant()
+            }
+            else {
+                $null
+            }
+            authenticode = if ($RequireAuthenticodeSignatures) {
+                [ordered]@{
+                    subject = $releaseChannelPolicy.authenticode.subject
+                    thumbprint = $releaseChannelPolicy.authenticode.thumbprint
+                    certificate_sha256 =
+                        $releaseChannelPolicy.authenticode.certificate_sha256
+                    self_issued = [bool] (
+                        $releaseChannelPolicy.authenticode.self_issued
+                    )
+                    public_trust_claim = [bool] (
+                        $releaseChannelPolicy.authenticode.public_trust_claim
+                    )
+                    trust_mode = $releaseChannelPolicy.authenticode.trust_mode
+                    timestamp_required = [bool] (
+                        $releaseChannelPolicy.authenticode.timestamp_required
+                    )
+                    allowed_chain_status_flags = @(
+                        $releaseChannelPolicy.authenticode.allowed_chain_status_flags
+                    )
+                }
             }
             else {
                 $null
@@ -471,7 +510,7 @@ try {
             else {
                 "RustyFleet-Setup.exe"
             }
-            plan_protocol = "rusty.fleet.guided_installer_plan.v1"
+            plan_protocol = "rusty.fleet.guided_installer_plan.v2"
             service_registration = "absent"
             configuration = "external_after_install"
         }
@@ -521,7 +560,7 @@ try {
     Write-RustyFleetUtf8 -LiteralPath $checksumsPath -Content $checksumText
 
     $receipt = [ordered]@{
-        schema = "rusty.fleet.windows_distribution_validation_receipt.v1"
+        schema = "rusty.fleet.windows_distribution_validation_receipt.v2"
         result = "pass"
         version = $Version
         source_revision = $SourceRevision
@@ -537,6 +576,15 @@ try {
         private_configuration_absent = $true
         adb_absent = $true
         signatures = if ($RequireAuthenticodeSignatures) { "verified" } else { "not_required_unsigned_dev" }
+        authenticode_trust_mode = if ($RequireAuthenticodeSignatures) {
+            $releaseChannelPolicy.authenticode.trust_mode
+        } else { "unsigned-development" }
+        public_trust_claim = if ($RequireAuthenticodeSignatures) {
+            [bool] $releaseChannelPolicy.authenticode.public_trust_claim
+        } else { $false }
+        signer_certificate_sha256 = if ($RequireAuthenticodeSignatures) {
+            $releaseChannelPolicy.authenticode.certificate_sha256
+        } else { $null }
     }
     $receiptPath = Join-Path $bundleRoot "metadata\validation-receipt.json"
     Write-RustyFleetUtf8 `

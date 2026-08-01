@@ -18,13 +18,17 @@ Every bundle contains exactly five runtime components:
 The Hostess provider is preserved as a separate owner artifact. The builder
 requires its exact SHA-256 and the owner-issued
 `rusty-hostess-hotspot-provider.provenance.json`, `LICENSE`, and
-`THIRD-PARTY-NOTICES.txt`. It independently checks the provider hash and size,
+`THIRD-PARTY-NOTICES.txt`, plus
+`rusty-hostess-hotspot-provider.release-policy.json`. It independently checks
+the provider hash and size,
 clean source commit/tree and source availability, embedded product version,
 canonical PE payload, dependency and native library inventories, signing
-state, distribution eligibility, and companion document hashes. Signed
-publication also requires the independently supplied owner-authorized signer
-thumbprint. It rejects an alternate filename, digest, or Fleet-invented
-provenance. Its fixed invocation is:
+state, exact self-issued trust boundary, distribution eligibility, release
+policy evidence, and companion document hashes. Signed Labs publication also
+requires the owner signer identity, certificate hash, and allowed channel to
+match Fleet's independently reviewed v2 channel policy. It rejects an
+alternate filename, digest, policy, signer, or Fleet-invented provenance. Its
+fixed invocation is:
 
 ```text
 rusty-hostess-hotspot-provider.exe integration windows-hotspot --json
@@ -32,6 +36,18 @@ rusty-hostess-hotspot-provider.exe integration windows-hotspot --json
 
 The request and receipt schemas remain Hostess-owned. Fleet packages and pins
 the artifact; it does not redefine its hotspot behavior.
+
+The current reviewed owner target is
+[`windows-hotspot-provider-v0.1.3`](https://github.com/MesmerPrism/rusty-hostess/releases/tag/windows-hotspot-provider-v0.1.3),
+source revision `053b32c1f0bba34f36c0579c41007b3972699073`. Fleet's
+real-artifact consumer check verified the 96,382,544-byte provider at SHA-256
+`1fdbfe6afa7a736540582c3a3771eb41753bd1ad1a5bc2067ba9358030bf32b5`
+with owner provenance SHA-256
+`f7683d12875c07d1d48fd9ebaf548060446816957ad157f33e3c8325f2e0fb1c`
+and owner policy SHA-256
+`d22092b491c02a8aba9ff135dd4df56e3fa07f6cbc5ea440da630ce91bf6e00e`.
+The protected workflow still receives and revalidates every exact URL and hash;
+this documentation is not runtime authority.
 
 Credentials, private configuration, device serials, pairing material, ADB, and
 generated runtime state are deliberately absent. Configuration is supplied
@@ -100,8 +116,10 @@ contract:
 RustyFleet-Setup.exe --plan --json
 ```
 
-That command returns exactly the schema, product, version, distribution track, SHA-256 of
-the Setup executable, and readiness flag; it never changes the install root.
+That command returns exactly the v2 schema, product, version, Fleet channel,
+SHA-256 of the Setup executable, Authenticode trust mode, signer certificate
+SHA-256, self-issued and public-trust claims, timestamp requirement, and
+readiness flag; it never changes the install root.
 Run the executable with no arguments for the visible prompt. `I` performs a
 new install or update, `R` selects the previous release, and `N` exits without
 changes.
@@ -125,17 +143,24 @@ process, change `PATH`, create configuration or credentials, invoke
 
 ## Publication
 
-GitHub Releases is the binary source of truth. Publication is blocked unless
-the workflow runs in `signed-release` mode, all five executables have valid
-Authenticode signatures, every Fleet-owned executable matches an independently
-supplied Fleet signer pin, and Hostess's owner document says
-`eligibility=signed_release` with a verified signing identity matching the
-explicit workflow input `hostess_signer_thumbprint`. The workflow downloads
-the provider and its three owner metadata documents, builds and signs the
-Fleet executables, validates the entire bundle, and publishes the ZIP plus
-hash-bound metadata. It then embeds the ZIP in Setup, signs Setup, hashes the
-signed bytes, and creates a compact RFC 8785 JCS v2 payload signed with
-RSA-PSS/SHA-256. The exact public SubjectPublicKeyInfo bytes are exported as
+GitHub Releases is the binary source of truth. Current publication is enabled
+only for Labs. It is blocked unless the workflow runs in `signed-release`
+mode, all five executables and Setup satisfy the centralized exact
+Authenticode assessment, every certificate matches the reviewed subject,
+thumbprint, and certificate SHA-256, and a timestamp is present. The assessment
+accepts exactly two host-dependent chain shapes: `Valid` with one clean trusted
+self-issued element on a machine that already trusts the certificate, or
+`UnknownError` with one `UntrustedRoot` element elsewhere. Both prove the same
+exact pinned self-issued signer; neither changes Fleet's
+`public_trust_claim=false`. Hostess's v2 owner
+document must say `eligibility=labs_signed_release`, allow only `labs`, reject
+Stable eligibility, and bind its fourth owner-issued release-policy document.
+The workflow downloads the provider and its four owner metadata documents,
+builds and signs the Fleet executables, validates the entire bundle, and
+publishes the ZIP plus hash-bound metadata. It then embeds the ZIP in Setup,
+signs Setup, hashes the signed bytes, and creates a compact RFC 8785 JCS v4
+payload signed with RSA-PSS/SHA-256. The exact public SubjectPublicKeyInfo
+bytes are exported as
 `release-descriptor.spki.der`; their SHA-256 must equal the independently
 authorized policy pin.
 
@@ -152,12 +177,12 @@ Preflight independently rechecks the exact local tag, commit, tree, and tagged
 policy blob; Setup Authenticode, its full signed hash, and canonical pre-sign
 receipt; the ZIP sidecar and fully extracted bundle; and byte equality between
 the published manifest, checksums, validation receipt, and their inner ZIP
-copies. It reconstructs the exact JCS v2 payload, verifies RSA-PSS using the
+copies. It reconstructs the exact JCS v4 payload, verifies RSA-PSS using the
 exported SPKI, checks every descriptor-receipt hash, and builds a closed
 filename-to-SHA-256-and-size inventory.
 
 The immutable `release-descriptor.receipt.json` is Fleet's owner metadata
-asset. Its closed v3 contract binds the exact release tag, the
+asset. Its closed v5 contract binds the exact release tag, the
 channel-specific installation identity (`rusty-fleet-labs` for Labs and
 `rusty-fleet` otherwise), and one `complete-product` primary artifact with
 exact name, SHA-256, byte length, and immutable tag-addressed URL. The older
@@ -184,7 +209,7 @@ visible. Create or upload interruption may leave a hidden resumable draft;
 mismatched remote state is never deleted or rewritten automatically.
 
 The signing job is read-only, checks out without retained credentials, requires
-the exact pre-existing `v<version>` tag, and exposes the dedicated release-only
+the exact pre-existing maturity-qualified Labs tag, and exposes the dedicated release-only
 publication token only to the final step-scoped authority. Actions artifacts
 contain evidence only and are never publication inputs. `release.json` carries
 an exact bounded validity duration (23 hours in the release workflow), points
@@ -199,7 +224,9 @@ must say that no supported download or deployed metadata is available.
 ### Renewable Pages metadata handoff
 
 The protected Pages workflow renews the 23-hour descriptor every 12 hours and
-may also be dispatched explicitly. It checks out the exact existing release
+may also be dispatched explicitly for `labs` or `stable`. The `dev` channel is
+local-development material and cannot create a release descriptor,
+publication, or Pages deployment. The workflow checks out the exact existing release
 tag for release validation while retaining the human site from the triggering
 main revision. It requires the configured commit, tree, and tagged policy,
 resolves the visible GitHub Release tag to that commit, downloads its complete
@@ -220,7 +247,7 @@ enforces a binary-free Pages tree. It also revalidates the descriptor
 receipt's exact tag, installation identity, and complete-product artifact
 against the target channel and release inventory before copying the owner
 metadata byte-for-byte. Its
-`rusty.fleet.windows_release_metadata_handoff.v1` output carries only fixed
+`rusty.fleet.windows_release_metadata_handoff.v2` output carries only fixed
 relative filenames, hashes, sizes, owners, version plus exact product channel,
 Fleet channel, maturity, and transport distribution track, exact source
 commit/tree, freshness, and prior-handoff lineage. It names Setup and its build
@@ -228,16 +255,18 @@ receipt as `github_releases` authority assets without copying either binary to
 Pages. A completed output is idempotently resumable; an explicitly resumed
 partial owned staging directory is rebuilt from the retained inputs.
 
-Source publication and metadata deployment remain disabled by default.
-Activation requires the repository variable
-`FLEET_METADATA_DEPLOYMENT_ENABLED=true`, plus these public trust inputs in the
-protected `windows-release-metadata` environment:
+Release publication remains bound to the exact public pins in the tagged
+source policy. Metadata deployment remains disabled by default and requires
+the repository variable `FLEET_METADATA_DEPLOYMENT_ENABLED=true`, plus these
+matching public trust inputs in the protected `windows-release-metadata`
+environment:
 
 | Variable | Exact meaning |
 | --- | --- |
 | `FLEET_METADATA_VERSION` | Numeric three-component release version |
-| `FLEET_METADATA_CHANNEL` | `dev`, `labs`, or `stable` distribution track |
+| `FLEET_METADATA_CHANNEL` | `labs` or `stable`; protected renewal rejects local-only `dev` |
 | `FLEET_METADATA_MATURITY` | `alpha`, `beta`, `rc`, or `released` |
+| `FLEET_METADATA_TAG` | Exact tag, including the maturity sequence such as `v1.2.3-alpha.1`; optional fallback is valid only for `released` |
 | `FLEET_METADATA_SOURCE_REVISION` | Full 40-hex commit resolved by `v<version>` |
 | `FLEET_METADATA_SOURCE_TREE` | Full 40-hex tree for that exact commit |
 | `FLEET_SIGNER_THUMBPRINT` | Reviewed uppercase Fleet Authenticode thumbprint |
@@ -249,9 +278,34 @@ The protected secret used by renewal is
 requires `FLEET_SIGNING_PFX_BASE64`, `FLEET_SIGNING_PFX_PASSWORD`, and, only
 for final GitHub Release mutation, `FLEET_RELEASE_PUBLISH_TOKEN`. Secret values
 never enter workflow inputs, release policy, receipts, Actions evidence, or
-Pages content. The checked-in release policy intentionally remains disabled
-with empty pin arrays until the reviewed public production identities are
-supplied in a dedicated release commit.
+Pages content. The checked-in release policy contains only the reviewed public
+signer identity, thumbprint, certificate SHA-256, trust mode, allowed chain
+status, and descriptor SPKI. The current organizational Authenticode
+certificate is self-issued, so this exact authorization is an integrity and
+owner-identity pin, not a claim that a fresh Windows installation trusts its
+issuer. Setup displays that limitation and never imports or modifies a Root
+certificate. Stable remains disabled until a separately reviewed public-chain
+signer policy exists.
+
+The `windows-labs-release` dispatcher requires these reviewed variables:
+
+| Variable | Exact meaning |
+| --- | --- |
+| `HOSTESS_PROVIDER_URL` | Immutable v0.1.3 provider executable URL |
+| `HOSTESS_PROVIDER_SHA256` | Exact lowercase provider SHA-256 |
+| `HOSTESS_SIGNER_THUMBPRINT` | Exact uppercase Hostess signer thumbprint |
+| `HOSTESS_PROVENANCE_DOCUMENT_URL` | Immutable owner provenance URL |
+| `HOSTESS_RELEASE_POLICY_URL` | Immutable owner release-policy URL |
+| `HOSTESS_LICENSE_URL` | Immutable owner LICENSE URL |
+| `HOSTESS_THIRD_PARTY_NOTICES_URL` | Immutable owner notices URL |
+| `FLEET_SIGNER_THUMBPRINT` | Exact uppercase Fleet signer thumbprint |
+| `FLEET_DESCRIPTOR_SIGNER_SPKI_SHA256` | Exact lowercase descriptor SPKI SHA-256 |
+
+Its only dispatcher secret is `FLEET_LABS_WORKFLOW_TOKEN`. The delegated owner
+workflow separately requires `FLEET_SIGNING_PFX_BASE64` and
+`FLEET_SIGNING_PFX_PASSWORD`; publication additionally requires
+`FLEET_RELEASE_PUBLISH_TOKEN`, while descriptor generation or renewal requires
+`FLEET_DESCRIPTOR_SIGNING_KEY_PEM_BASE64` in its protected environment.
 
 ## Offline tests
 
@@ -262,6 +316,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -File .\packaging\windows\tests\Test-WindowsReleaseDescriptor.ps1
 pwsh -NoProfile -ExecutionPolicy Bypass `
   -File .\packaging\windows\tests\Test-WindowsReleasePolicy.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\packaging\windows\tests\Test-WindowsAuthenticodeTrust.ps1
 pwsh -NoProfile -ExecutionPolicy Bypass `
   -File .\packaging\windows\tests\Test-WindowsPagesDeployment.ps1
 pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass `

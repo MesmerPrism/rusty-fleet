@@ -8,7 +8,7 @@ param(
     [string] $Version,
 
     [Parameter(Mandatory)]
-    [ValidateSet("dev", "labs", "stable")]
+    [ValidateSet("labs", "stable")]
     [string] $Channel,
 
     [ValidateSet("alpha", "beta", "rc", "released")]
@@ -71,7 +71,6 @@ $setupReceiptName = if ($Channel -eq "labs") { "RustyFleet-Labs-Setup.build-rece
 $installationIdentity = if ($Channel -eq "labs") { "rusty-fleet-labs" } else { "rusty-fleet" }
 $productChannel = if ($Channel -eq "labs") { "labs" } else { "stable" }
 $distributionTrack = switch ($Channel) {
-    "dev" { "local-development" }
     "labs" { "github-prerelease" }
     "stable" { "github-release" }
 }
@@ -166,7 +165,7 @@ function Assert-NoPagesBinary {
         $isAllowedSpki = (
             $AllowDescriptorSpki -and
             $relative -cmatch (
-                "^Rusty-Fleet/metadata/(?:dev|labs|stable)/" +
+                "^Rusty-Fleet/metadata/(?:labs|stable)/" +
                 "release-descriptor\.spki\.der$"
             )
         )
@@ -299,6 +298,11 @@ Assert-ExactProperties -InputObject $preflight -Expected @(
     "descriptor_sha256",
     "descriptor_receipt_sha256",
     "descriptor_signer_spki_sha256",
+    "authenticode_trust_mode",
+    "signer_certificate_sha256",
+    "signer_self_issued",
+    "public_trust_claim",
+    "timestamp_required",
     "asset_count",
     "assets",
     "token_used",
@@ -311,7 +315,7 @@ Assert-ExactProperties -InputObject $preflight -Expected @(
     "uploaded_asset_count"
 ) -Context "publication preflight receipt"
 if ($preflight.schema -cne
-        "rusty.fleet.windows_publication_receipt.v2" -or
+        "rusty.fleet.windows_publication_receipt.v3" -or
     $preflight.result -cne "pass" -or
     $preflight.mode -cne "preflight" -or
     $preflight.version -cne $Version -or
@@ -323,6 +327,12 @@ if ($preflight.schema -cne
     $preflight.source_tree -cne $ExpectedSourceTree -or
     $preflight.descriptor_signer_spki_sha256 -cne
         $ExpectedDescriptorSignerSpkiSha256 -or
+    $preflight.authenticode_trust_mode -cne
+        "exact-pinned-self-issued-untrusted-root-only" -or
+    $preflight.signer_certificate_sha256 -cnotmatch "^[0-9a-f]{64}$" -or
+    $preflight.signer_self_issued -ne $true -or
+    $preflight.public_trust_claim -ne $false -or
+    $preflight.timestamp_required -ne $true -or
     [long] $preflight.asset_count -ne 10 -or
     $preflight.token_used -ne $false -or
     $preflight.gh_invoked -ne $false) {
@@ -355,7 +365,7 @@ Assert-ExactProperties -InputObject $envelope -Expected @(
     "signer_spki_sha256"
 ) -Context "release descriptor envelope"
 if ($envelope.schema -cne
-        "rusty.fleet.release_descriptor_envelope.v3" -or
+        "rusty.fleet.release_descriptor_envelope.v4" -or
     $envelope.signer_spki_sha256 -cne
         $ExpectedDescriptorSignerSpkiSha256) {
     throw "release descriptor signer identity is not exact"
@@ -391,12 +401,18 @@ Assert-ExactProperties -InputObject $payload -Expected @(
     "version"
 ) -Context "release descriptor payload"
 Assert-ExactProperties -InputObject $payload.asset -Expected @(
+    "authenticode_trust_mode",
     "installer_protocol",
     "media_type",
     "name",
+    "public_trust_claim",
     "sha256",
     "signer_certificate_sha256",
+    "signer_self_issued",
+    "signer_subject",
+    "signer_thumbprint",
     "size_bytes",
+    "timestamp_required",
     "url"
 ) -Context "release descriptor asset"
 $expectedSetupUrl = (
@@ -405,7 +421,7 @@ $expectedSetupUrl = (
 )
 $nowMs = $NowUtc.ToUniversalTime().ToUnixTimeMilliseconds()
 $minimumRemainingMs = [long] $MinimumRemainingMinutes * 60000
-if ($payload.schema -cne "rusty.fleet.windows_release.v3" -or
+if ($payload.schema -cne "rusty.fleet.windows_release.v4" -or
     $payload.product -cne $installationIdentity -or
     $payload.version -cne $Version -or
     $payload.product_channel -cne $productChannel -or
@@ -422,7 +438,16 @@ if ($payload.schema -cne "rusty.fleet.windows_release.v3" -or
         ([long] $payload.expires_at_ms - [long] $payload.issued_at_ms) -or
     [long] $payload.validity_duration_ms -gt 86400000 -or
     $payload.asset.installer_protocol -cne
-        "rusty.fleet.guided_setup.v1" -or
+        "rusty.fleet.guided_setup.v2" -or
+    $payload.asset.authenticode_trust_mode -cne
+        $preflight.authenticode_trust_mode -or
+    $payload.asset.public_trust_claim -ne $preflight.public_trust_claim -or
+    $payload.asset.signer_self_issued -ne $preflight.signer_self_issued -or
+    $payload.asset.signer_certificate_sha256 -cne
+        $preflight.signer_certificate_sha256 -or
+    $payload.asset.signer_subject -cne "CN=MesmerPrism" -or
+    $payload.asset.signer_thumbprint -cnotmatch "^[0-9A-F]{40}$" -or
+    $payload.asset.timestamp_required -ne $true -or
     $payload.asset.media_type -cne
         "application/vnd.microsoft.portable-executable" -or
     $payload.asset.name -cne $setupName -or
@@ -487,6 +512,12 @@ Assert-ExactProperties -InputObject $descriptorReceipt -Expected @(
     "setup_sha256",
     "setup_size_bytes",
     "setup_signer_certificate_sha256",
+    "setup_signer_subject",
+    "setup_signer_thumbprint",
+    "setup_signer_self_issued",
+    "authenticode_trust_mode",
+    "public_trust_claim",
+    "timestamp_required",
     "setup_build_receipt_sha256",
     "source_revision",
     "source_tree",
@@ -509,7 +540,7 @@ Assert-ExactProperties -InputObject $descriptorReceipt.primary_artifact -Expecte
     "url"
 ) -Context "release descriptor primary artifact"
 if ($descriptorReceipt.schema -cne
-        "rusty.fleet.windows_release_descriptor_receipt.v4" -or
+        "rusty.fleet.windows_release_descriptor_receipt.v5" -or
     $descriptorReceipt.result -cne "pass" -or
     $descriptorReceipt.version -cne $Version -or
     $descriptorReceipt.product_channel -cne $productChannel -or
@@ -535,6 +566,19 @@ if ($descriptorReceipt.schema -cne
     $descriptorReceipt.source_revision -cne $ExpectedSourceRevision -or
     $descriptorReceipt.source_tree -cne $ExpectedSourceTree -or
     $descriptorReceipt.setup_sha256 -cne $preflight.setup_sha256 -or
+    $descriptorReceipt.setup_signer_certificate_sha256 -cne
+        $preflight.signer_certificate_sha256 -or
+    $descriptorReceipt.setup_signer_subject -cne
+        $payload.asset.signer_subject -or
+    $descriptorReceipt.setup_signer_thumbprint -cne
+        $payload.asset.signer_thumbprint -or
+    $descriptorReceipt.setup_signer_self_issued -ne
+        $preflight.signer_self_issued -or
+    $descriptorReceipt.authenticode_trust_mode -cne
+        $preflight.authenticode_trust_mode -or
+    $descriptorReceipt.public_trust_claim -ne
+        $preflight.public_trust_claim -or
+    $descriptorReceipt.timestamp_required -ne $true -or
     $descriptorReceipt.descriptor_signer_spki_sha256 -cne
         $ExpectedDescriptorSignerSpkiSha256 -or
     $descriptorReceipt.descriptor_sha256 -cne $descriptorSha256 -or

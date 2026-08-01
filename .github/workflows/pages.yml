@@ -60,7 +60,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:VERSION -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
-              $env:CHANNEL -cnotmatch '^(?:dev|labs|stable)$' -or
+              $env:CHANNEL -cnotmatch '^(?:labs|stable)$' -or
               $env:MATURITY -cnotmatch '^(?:alpha|beta|rc|released)$' -or
               $env:SOURCE_REVISION -cnotmatch '^[0-9a-f]{40}$' -or
               $env:SOURCE_TREE -cnotmatch '^[0-9a-f]{40}$' -or
@@ -94,15 +94,14 @@ jobs:
               $status.Count -ne 0) {
             throw 'renewal checkout is not the exact clean release tag, commit, and tree'
           }
-          $policy = Get-Content `
+          Import-Module .\packaging\windows\Distribution.Common.psm1 -Force
+          $policy = Read-RustyFleetReleaseTrustPolicy `
             -LiteralPath .\packaging\windows\trust\release-policy.json `
-            -Raw |
-            ConvertFrom-Json -Depth 10
-          if ($policy.schema -cne 'rusty.fleet.windows_release_trust_policy.v1' -or
-              $policy.publication_enabled -ne $true -or
-              @($policy.authorized_fleet_signer_thumbprints) -cnotcontains
+            -Channel $env:CHANNEL
+          if ($policy.publication_enabled -ne $true -or
+              $policy.authenticode.thumbprint -cne
                 $env:FLEET_SIGNER_THUMBPRINT -or
-              @($policy.authorized_hostess_signer_thumbprints) -cnotcontains
+              $policy.authenticode.thumbprint -cne
                 $env:HOSTESS_SIGNER_THUMBPRINT -or
               @($policy.authorized_descriptor_signer_spki_sha256) -cnotcontains
                 $env:DESCRIPTOR_SIGNER_SPKI_SHA256) {
@@ -323,7 +322,7 @@ jobs:
         run: |
           $existing = Join-Path $env:RUNNER_TEMP 'fleet-existing-pages'
           [IO.Directory]::CreateDirectory($existing) | Out-Null
-          foreach ($channel in @('dev','labs','stable')) {
+          foreach ($channel in @('labs','stable')) {
             if ($channel -ceq $env:CHANNEL) { continue }
             foreach ($name in @('release.json','release-descriptor.receipt.json','release-descriptor.spki.der','deployment-handoff.json')) {
               $uri = "https://mesmerprism.com/Rusty-Fleet/metadata/$channel/$name"
