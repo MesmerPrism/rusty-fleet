@@ -158,6 +158,8 @@ exact pinned self-issued signer; neither changes Fleet's
 `public_trust_claim=false`. Hostess's v2 owner
 document must say `eligibility=labs_signed_release`, allow only `labs`, reject
 Stable eligibility, and bind its fourth owner-issued release-policy document.
+The repository forces Fleet's own release-policy JSON to LF in ordinary Git
+checkouts so Windows materializes the tagged LF bytes before staging.
 The workflow downloads the provider and its four owner metadata documents,
 builds and signs the Fleet executables, validates the entire bundle, and
 publishes the ZIP plus hash-bound metadata. It then embeds the ZIP in Setup,
