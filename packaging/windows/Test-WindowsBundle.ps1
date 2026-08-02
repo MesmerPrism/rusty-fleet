@@ -77,9 +77,13 @@ $expectedComponentIds = @(
     "fleet-onboard",
     "hostess-hotspot-provider"
 )
+$onboardingReady = $manifest.distribution.onboarding_ready -eq $true
+if ($onboardingReady) {
+    $expectedComponentIds += "rusty-quest-key-record-helper"
+}
 if (@(Compare-Object $expectedComponentIds $componentIds).Count -ne 0 -or
     $componentIds.Count -ne $expectedComponentIds.Count) {
-    throw "bundle must contain exactly the five declared runtime components"
+    throw "bundle runtime component set does not match onboarding readiness"
 }
 
 $onboard = @($manifest.components |
@@ -91,13 +95,88 @@ if ($onboard.Count -ne 1 -or
     $onboard[0].activation -ne "explicit_operator_invocation" -or
     $onboard[0].network_access -ne "absent" -or
     $onboard[0].output -ne "private_machine_bound_onboarding_only" -or
-    $onboard[0].operational_readiness -ne
-        "requires_separately_configured_signed_owner_key_record_tool" -or
-    $onboard[0].bundled_owner_key_record_tool -ne $false -or
-    $manifest.distribution.onboarding_ready -ne $false -or
-    $manifest.distribution.onboarding_blocker -ne
-        "signed_rusty_quest_owner_key_record_release_not_bundled") {
+    $onboard[0].operational_readiness -ne $(if ($onboardingReady) {
+        "ready_for_private_generation"
+    } else { "requires_pinned_owner_key_record_release" }) -or
+    $onboard[0].bundled_owner_key_record_tool -ne $onboardingReady -or
+    $manifest.distribution.onboarding_blocker -ne $(if ($onboardingReady) {
+        "none"
+    } else { "pinned_rusty_quest_owner_key_record_release_not_bundled" })) {
     throw "fleet-onboard component boundary is not exact"
+}
+if ($manifest.build.kind -eq "signed-release" -and -not $onboardingReady) {
+    throw "signed release must bundle the pinned Rusty Quest owner capsule"
+}
+
+$helper = @($manifest.components |
+    Where-Object { $_.component_id -eq "rusty-quest-key-record-helper" })
+if ($onboardingReady) {
+    if ($helper.Count -ne 1 -or
+        $helper[0].owner -cne "rusty-quest" -or
+        $helper[0].kind -cne "offline_public_key_derivation_helper" -or
+        $helper[0].entrypoint -cne
+            "components/rusty-quest-key-record-helper/fleet-agent-key-record.exe" -or
+        $helper[0].activation -cne "fleet_onboard_child_process_only" -or
+        $helper[0].network_access -cne "absent" -or
+        $helper[0].bundled_as_owner_capsule -ne $true -or
+        $helper[0].owner_release.owner_id -cne "rusty-quest" -or
+        $helper[0].owner_release.consumer_id -cne "rusty-fleet/fleet-onboard" -or
+        $helper[0].owner_release.capsule_version -cne "1.0.0" -or
+        $helper[0].owner_release.manifest_path -cne
+            "components/rusty-quest-key-record-helper/release-manifest.json" -or
+        $helper[0].owner_release.manifest_sha256 -cne
+            "1e3ae5456d7fa77a3733fa7df023f0b2ddda72b946e66fb3d1f1acdd6214680f" -or
+        $helper[0].owner_release.executable_sha256 -cne
+            "c5ed362dffbe3701e051672ecaaed86902a9f0881d3f179ff47fa02ff07afeae" -or
+        $helper[0].owner_release.source_commit -cne
+            "4a982368a29d41c3ecde8083b4aefc1e1bb1a4dc" -or
+        $helper[0].owner_release.source_tree -cne
+            "bf9e9921c1a293b7fff053d9add91bcfff7899c2" -or
+        $helper[0].owner_release.owner_signature_present -ne $false -or
+        $helper[0].owner_release.capsule_validity -cne
+            "packaging-and-tool-provenance-only" -or
+        $helper[0].owner_release.onboarding_accepted -ne $false -or
+        $helper[0].owner_release.live_authority -cne "rusty-manifold") {
+        throw "Rusty Quest key-record helper component boundary is not exact"
+    }
+    $helperRoot = Join-Path $bundlePath "components\rusty-quest-key-record-helper"
+    $helperFiles = @(Get-ChildItem -LiteralPath $helperRoot -File -Recurse |
+        ForEach-Object { [IO.Path]::GetRelativePath($helperRoot, $_.FullName).Replace("\", "/") } |
+        Sort-Object)
+    $expectedHelperFiles = @(
+        "LICENSE", "SOURCE-NOTICE.md", "checksums.sha256",
+        "fleet-agent-key-record.exe", "provenance.json", "release-manifest.json") |
+        Sort-Object
+    if (@(Compare-Object $helperFiles $expectedHelperFiles -SyncWindow 0).Count -ne 0 -or
+        $helperFiles.Count -ne $expectedHelperFiles.Count) {
+        throw "bundled owner capsule contains an extra or missing file"
+    }
+    $ownerManifestPath = Join-Path $helperRoot "release-manifest.json"
+    $ownerExecutablePath = Join-Path $helperRoot "fleet-agent-key-record.exe"
+    if ((Get-RustyFleetSha256 -LiteralPath $ownerManifestPath) -cne
+            $helper[0].owner_release.manifest_sha256 -or
+        (Get-RustyFleetSha256 -LiteralPath $ownerExecutablePath) -cne
+            $helper[0].owner_release.executable_sha256) {
+        throw "bundled owner capsule bytes do not match the component pin"
+    }
+    $ownerManifest = Get-Content -Raw -LiteralPath $ownerManifestPath | ConvertFrom-Json -Depth 30
+    if ($ownerManifest.schema -cne
+            "rusty.quest.fleet_agent_key_record_release_capsule.v1" -or
+        $ownerManifest.capsule_version -cne "1.0.0" -or
+        $ownerManifest.source.repository_url -cne
+            "https://github.com/MesmerPrism/rusty-quest" -or
+        $ownerManifest.source.commit -cne $helper[0].owner_release.source_commit -or
+        $ownerManifest.source.tree -cne $helper[0].owner_release.source_tree -or
+        $ownerManifest.artifact.sha256 -cne
+            $helper[0].owner_release.executable_sha256 -or
+        $ownerManifest.distribution.inert_until_invoked -ne $true -or
+        $ownerManifest.distribution.private_material_included -ne $false -or
+        $ownerManifest.distribution.live_onboarding_claim -ne $false) {
+        throw "bundled owner capsule manifest is stale or crosses authority"
+    }
+}
+elseif ($helper.Count -ne 0) {
+    throw "blocked onboarding bundle must not carry an undeclared owner capsule"
 }
 
 $provider = @($manifest.components |
@@ -251,6 +330,13 @@ if ($manifest.build.kind -eq "signed-release") {
         throw "signed release Authenticode chain truth is not exact"
     }
     foreach ($component in $manifest.components) {
+        if ($component.component_id -ceq "rusty-quest-key-record-helper") {
+            # Preserve owner bytes exactly. The signed Fleet Setup/archive and
+            # Fleet's independent owner/hash pin authenticate distribution;
+            # Rusty Quest has issued no Authenticode/signature authority for
+            # this capsule.
+            continue
+        }
         $executable = Join-Path $bundlePath $component.entrypoint.Replace("/", "\")
         Get-RustyFleetAuthenticodeAssessment `
             -LiteralPath $executable `

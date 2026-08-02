@@ -1,0 +1,10 @@
+{
+  "schema": "rusty.fleet.fleet_agent_key_record_owner_release_fixture_matrix.v1",
+  "owner_id": "rusty-quest",
+  "consumer_id": "rusty-fleet/fleet-onboard",
+  "capsule_version": "1.0.0",
+  "expected": "pass",
+  "capsule_validity": "packaging-and-tool-provenance-only",
+  "onboarding_accepted": false,
+  "live_authority": "rusty-manifold"
+}

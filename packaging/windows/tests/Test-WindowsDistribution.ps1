@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 [CmdletBinding()]
-param()
+param(
+    [string] $FleetAgentKeyRecordOwnerCapsuleRoot = ""
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -135,6 +137,7 @@ function Invoke-TestBundle {
         [Parameter(Mandatory)][string] $ProviderPath,
         [Parameter(Mandatory)][string] $ProviderSha256,
         [Parameter(Mandatory)][string] $ProviderMetadataDirectory,
+        [string] $OwnerCapsuleRoot = "",
         [ValidateSet("dev", "labs", "stable")]
         [string] $Channel = "dev",
         [ValidateSet("alpha", "beta", "rc", "released")]
@@ -143,23 +146,28 @@ function Invoke-TestBundle {
         [string] $SourceTree = ("2" * 40)
     )
 
-    & (Join-Path $packagingRoot "New-WindowsBundle.ps1") `
-        -Version $Version `
-        -Channel $Channel `
-        -Maturity $Maturity `
-        -BuildKind unsigned-dev `
-        -HostessProviderPath $ProviderPath `
-        -HostessProviderSha256 $ProviderSha256 `
-        -HostessProviderMetadataDirectory $ProviderMetadataDirectory `
-        -OutputDirectory $OutputDirectory `
-        -SourceRevision $SourceRevision `
-        -SourceTree $SourceTree `
-        -SourceDateEpoch 1785110400 `
-        -SkipBuild `
-        -ConsoleArtifactDirectory $ConsoleDirectory `
-        -HubArtifactPath $HubPath `
-        -FleetctlArtifactPath $FleetctlPath `
-        -FleetOnboardArtifactPath $FleetOnboardPath
+    $arguments = @{
+        Version = $Version
+        Channel = $Channel
+        Maturity = $Maturity
+        BuildKind = "unsigned-dev"
+        HostessProviderPath = $ProviderPath
+        HostessProviderSha256 = $ProviderSha256
+        HostessProviderMetadataDirectory = $ProviderMetadataDirectory
+        OutputDirectory = $OutputDirectory
+        SourceRevision = $SourceRevision
+        SourceTree = $SourceTree
+        SourceDateEpoch = 1785110400
+        SkipBuild = $true
+        ConsoleArtifactDirectory = $ConsoleDirectory
+        HubArtifactPath = $HubPath
+        FleetctlArtifactPath = $FleetctlPath
+        FleetOnboardArtifactPath = $FleetOnboardPath
+    }
+    if ($OwnerCapsuleRoot) {
+        $arguments.FleetAgentKeyRecordOwnerCapsuleRoot = $OwnerCapsuleRoot
+    }
+    & (Join-Path $packagingRoot "New-WindowsBundle.ps1") @arguments
 }
 
 function Start-TestSetup {
@@ -659,6 +667,52 @@ try {
         ConvertFrom-Json
     Assert-Distribution ($validation.result -eq "pass") "valid bundle did not pass"
     Assert-Distribution ($validation.runtime_components -eq 5) "runtime composition is not exact"
+
+    if ($FleetAgentKeyRecordOwnerCapsuleRoot) {
+        $readyOutput = Join-Path $testRoot "owner-capsule-ready"
+        Invoke-TestBundle `
+            -Version "0.0.0-test.1" `
+            -OutputDirectory $readyOutput `
+            -ConsoleDirectory $console `
+            -HubPath $hub `
+            -FleetctlPath $fleetctl `
+            -FleetOnboardPath $fleetOnboard `
+            -ProviderPath $provider `
+            -ProviderSha256 $providerSha256 `
+            -ProviderMetadataDirectory $providerMetadata `
+            -OwnerCapsuleRoot $FleetAgentKeyRecordOwnerCapsuleRoot | Out-Null
+        $readyBundle = Join-Path $readyOutput $bundleNameOne
+        $readyValidation = & (Join-Path $packagingRoot "Test-WindowsBundle.ps1") `
+            -BundleRoot $readyBundle | ConvertFrom-Json
+        $readyManifest = Get-Content -Raw -LiteralPath (
+            Join-Path $readyBundle "metadata\release-manifest.json") |
+            ConvertFrom-Json -Depth 30
+        Assert-Distribution (
+            $readyValidation.runtime_components -eq 6 -and
+            $readyManifest.distribution.onboarding_ready -eq $true -and
+            $readyManifest.distribution.onboarding_blocker -ceq "none" -and
+            @($readyManifest.components | Where-Object {
+                $_.component_id -ceq "rusty-quest-key-record-helper"
+            }).Count -eq 1
+        ) "complete owner capsule did not make the package onboarding-ready"
+
+        $damagedReadyBundle = Join-Path $testRoot "owner-capsule-damaged"
+        Copy-Item -LiteralPath $readyBundle -Destination $damagedReadyBundle -Recurse
+        [IO.File]::AppendAllText((
+            Join-Path $damagedReadyBundle (
+                "components\rusty-quest-key-record-helper\fleet-agent-key-record.exe")),
+            "damage")
+        $damagedOwnerRejected = $false
+        try {
+            & (Join-Path $packagingRoot "Test-WindowsBundle.ps1") `
+                -BundleRoot $damagedReadyBundle | Out-Null
+        }
+        catch {
+            $damagedOwnerRejected = $true
+        }
+        Assert-Distribution $damagedOwnerRejected `
+            "bundle validation accepted substituted owner helper bytes"
+    }
 
     foreach ($relative in @(
         "metadata\release-manifest.json",

@@ -1,0 +1,22 @@
+{
+  "schema": "rusty.fleet.fleet_agent_key_record_owner_release_damage_matrix.v1",
+  "cases": [
+    { "name": "wrong-owner", "expected": "reject" },
+    { "name": "wrong-fleet-consumer", "expected": "reject" },
+    { "name": "capsule-substitution", "expected": "reject" },
+    { "name": "duplicate-capsule", "expected": "reject" },
+    { "name": "stale-source-revision", "expected": "reject" },
+    { "name": "stale-provenance", "expected": "reject" },
+    { "name": "secret-leakage", "expected": "reject" },
+    { "name": "extra-repository", "expected": "reject" },
+    { "name": "extra-package-file", "expected": "reject" }
+  ],
+  "existing_onboarding_negatives": [
+    "duplicate-device-id",
+    "duplicate-key-id",
+    "duplicate-private-seed",
+    "extra-private-inventory-file",
+    "hard-linked-private-seed",
+    "reparse-private-inventory"
+  ]
+}

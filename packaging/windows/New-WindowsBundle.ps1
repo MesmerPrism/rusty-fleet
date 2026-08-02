@@ -40,6 +40,7 @@ param(
     [string] $HubArtifactPath,
     [string] $FleetctlArtifactPath,
     [string] $FleetOnboardArtifactPath,
+    [string] $FleetAgentKeyRecordOwnerCapsuleRoot,
     [string] $ReleasePolicyPath = (
         Join-Path $PSScriptRoot "trust\release-policy.json"
     ),
@@ -58,6 +59,29 @@ $distributionTrack = switch ($Channel) {
     "stable" { "github-release" }
 }
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
+$repoPath = (Resolve-Path -LiteralPath $RepoRoot).Path
+
+$ownerCapsuleReady = $false
+$ownerCapsulePath = $null
+$ownerReleaseValidation = $null
+if (-not [string]::IsNullOrWhiteSpace($FleetAgentKeyRecordOwnerCapsuleRoot)) {
+    $ownerCapsulePath = (Resolve-Path -LiteralPath $FleetAgentKeyRecordOwnerCapsuleRoot).Path
+    $ownerReleaseValidation = & pwsh -NoProfile -ExecutionPolicy Bypass -File `
+        (Join-Path $repoPath "tools\Test-FleetAgentKeyRecordOwnerRelease.ps1") `
+        -CapsuleRoot $ownerCapsulePath | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $ownerReleaseValidation.status -cne "pass" -or
+        $ownerReleaseValidation.owner_id -cne "rusty-quest" -or
+        $ownerReleaseValidation.consumer_id -cne "rusty-fleet/fleet-onboard" -or
+        $ownerReleaseValidation.capsule_validity -cne
+            "packaging-and-tool-provenance-only" -or
+        $ownerReleaseValidation.onboarding_accepted -ne $false) {
+        throw "Rusty Quest key-record owner release capsule validation failed"
+    }
+    $ownerCapsuleReady = $true
+}
+elseif ($BuildKind -eq "signed-release") {
+    throw "signed release requires the exact pinned Rusty Quest key-record owner capsule"
+}
 
 foreach ($pair in @(
     @($SourceRepository, "SourceRepository"),
@@ -70,7 +94,6 @@ Assert-RustyFleetSha256 `
     -Value $HostessProviderSha256 `
     -Name "HostessProviderSha256"
 
-$repoPath = (Resolve-Path -LiteralPath $RepoRoot).Path
 $releaseChannelPolicy = $null
 if ($BuildKind -eq "signed-release") {
     if ($Channel -eq "dev") {
@@ -244,7 +267,7 @@ try {
     if (Test-Path -LiteralPath $bundleRoot) {
         Remove-Item -LiteralPath $bundleRoot -Recurse -Force
     }
-    foreach ($relativeDirectory in @(
+    $bundleDirectories = @(
         "components\fleet-console",
         "components\fleet-hub",
         "components\fleetctl",
@@ -253,7 +276,11 @@ try {
         "providers\hostess-hotspot-provider\provenance",
         "distribution-tools",
         "metadata"
-    )) {
+    )
+    if ($ownerCapsuleReady) {
+        $bundleDirectories += "components\rusty-quest-key-record-helper"
+    }
+    foreach ($relativeDirectory in $bundleDirectories) {
         [System.IO.Directory]::CreateDirectory(
             (Join-Path $bundleRoot $relativeDirectory)
         ) | Out-Null
@@ -269,6 +296,11 @@ try {
         -Destination (Join-Path $bundleRoot "components\fleetctl\fleetctl.exe")
     Copy-Item -LiteralPath $fleetOnboardPath `
         -Destination (Join-Path $bundleRoot "components\fleet-onboard\fleet-onboard.exe")
+    if ($ownerCapsuleReady) {
+        Get-ChildItem -LiteralPath $ownerCapsulePath -File |
+            Copy-Item -Destination (
+                Join-Path $bundleRoot "components\rusty-quest-key-record-helper")
+    }
     Copy-Item -LiteralPath $providerPath `
         -Destination (Join-Path $bundleRoot "providers\hostess-hotspot-provider\rusty-hostess-hotspot-provider.exe")
     foreach ($documentName in $hostessProvenance.documents.Values) {
@@ -293,6 +325,10 @@ try {
         "fleet-onboard" = "components/fleet-onboard/"
         "hostess-hotspot-provider" = "providers/hostess-hotspot-provider/"
         "distribution-tools" = "distribution-tools/"
+    }
+    if ($ownerCapsuleReady) {
+        $componentRoots["rusty-quest-key-record-helper"] =
+            "components/rusty-quest-key-record-helper/"
     }
     $payload = @(
         Get-ChildItem -LiteralPath $bundleRoot -File -Recurse |
@@ -345,8 +381,13 @@ try {
             activation = "explicit_operator_invocation"
             network_access = "absent"
             output = "private_machine_bound_onboarding_only"
-            operational_readiness = "requires_separately_configured_signed_owner_key_record_tool"
-            bundled_owner_key_record_tool = $false
+            operational_readiness = if ($ownerCapsuleReady) {
+                "ready_for_private_generation"
+            }
+            else {
+                "requires_pinned_owner_key_record_release"
+            }
+            bundled_owner_key_record_tool = $ownerCapsuleReady
         },
         [ordered]@{
             component_id = "hostess-hotspot-provider"
@@ -419,6 +460,31 @@ try {
             }
         }
     )
+    if ($ownerCapsuleReady) {
+        $components += [ordered]@{
+            component_id = "rusty-quest-key-record-helper"
+            owner = "rusty-quest"
+            kind = "offline_public_key_derivation_helper"
+            entrypoint = "components/rusty-quest-key-record-helper/fleet-agent-key-record.exe"
+            activation = "fleet_onboard_child_process_only"
+            network_access = "absent"
+            bundled_as_owner_capsule = $true
+            owner_release = [ordered]@{
+                owner_id = [string]$ownerReleaseValidation.owner_id
+                consumer_id = [string]$ownerReleaseValidation.consumer_id
+                capsule_version = [string]$ownerReleaseValidation.capsule_version
+                manifest_path = "components/rusty-quest-key-record-helper/release-manifest.json"
+                manifest_sha256 = [string]$ownerReleaseValidation.manifest_sha256
+                executable_sha256 = [string]$ownerReleaseValidation.executable_sha256
+                source_commit = [string]$ownerReleaseValidation.source_commit
+                source_tree = [string]$ownerReleaseValidation.source_tree
+                owner_signature_present = $false
+                capsule_validity = "packaging-and-tool-provenance-only"
+                onboarding_accepted = $false
+                live_authority = "rusty-manifold"
+            }
+        }
+    }
 
     $archiveAsset = "$bundleName.zip"
     $manifest = [ordered]@{
@@ -490,8 +556,13 @@ try {
                 "development_only"
             }
             publication_allowed = $BuildKind -eq "signed-release"
-            onboarding_ready = $false
-            onboarding_blocker = "signed_rusty_quest_owner_key_record_release_not_bundled"
+            onboarding_ready = $ownerCapsuleReady
+            onboarding_blocker = if ($ownerCapsuleReady) {
+                "none"
+            }
+            else {
+                "pinned_rusty_quest_owner_key_record_release_not_bundled"
+            }
         }
         components = $components
         payload = $payload
@@ -567,7 +638,7 @@ try {
         manifest_sha256 = Get-RustyFleetSha256 -LiteralPath $manifestPath
         checksums_sha256 = Get-RustyFleetSha256 -LiteralPath $checksumsPath
         payload_files = $payload.Count
-        runtime_components = 5
+        runtime_components = $components.Count
         exact_external_provider = $true
         hostess_owner_provenance_sha256 = $hostessProvenance.provenance_sha256
         distribution_eligibility = $manifest.distribution.eligibility

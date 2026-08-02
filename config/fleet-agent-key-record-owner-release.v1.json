@@ -1,0 +1,35 @@
+{
+  "schema": "rusty.fleet.fleet_agent_key_record_owner_release_pin.v1",
+  "owner_id": "rusty-quest",
+  "owner_repository": "https://github.com/MesmerPrism/rusty-quest",
+  "consumer_id": "rusty-fleet/fleet-onboard",
+  "capsule_schema": "rusty.quest.fleet_agent_key_record_release_capsule.v1",
+  "capsule_version": "1.0.0",
+  "manifest_sha256": "1e3ae5456d7fa77a3733fa7df023f0b2ddda72b946e66fb3d1f1acdd6214680f",
+  "executable_sha256": "c5ed362dffbe3701e051672ecaaed86902a9f0881d3f179ff47fa02ff07afeae",
+  "executable_size_bytes": 219648,
+  "provenance_sha256": "e958d459025bf52fb8c6214ba41981db89f2b7d2832b3a222dbe30943367b0f9",
+  "source_commit": "4a982368a29d41c3ecde8083b4aefc1e1bb1a4dc",
+  "source_tree": "bf9e9921c1a293b7fff053d9add91bcfff7899c2",
+  "target": "x86_64-pc-windows-msvc",
+  "payload": [
+    { "path": "fleet-agent-key-record.exe", "sha256": "c5ed362dffbe3701e051672ecaaed86902a9f0881d3f179ff47fa02ff07afeae", "size_bytes": 219648 },
+    { "path": "provenance.json", "sha256": "e958d459025bf52fb8c6214ba41981db89f2b7d2832b3a222dbe30943367b0f9", "size_bytes": 3157 },
+    { "path": "LICENSE", "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0", "size_bytes": 34523 },
+    { "path": "SOURCE-NOTICE.md", "sha256": "e3455bd856c5b7d311b222faf88012e582b87cdecaf0d563f631856b2b2fc786", "size_bytes": 427 }
+  ],
+  "owner_signature": {
+    "present": false,
+    "authority": "absent",
+    "reason": "rusty-quest-has-no-key-record-capsule-signing-or-revocation-authority"
+  },
+  "claims": {
+    "capsule_validity": "packaging-and-tool-provenance-only",
+    "onboarding_accepted": false,
+    "device_activated": false,
+    "device_reachable": false,
+    "lease_issued": false,
+    "peer_accepted": false,
+    "live_authority": "rusty-manifold"
+  }
+}

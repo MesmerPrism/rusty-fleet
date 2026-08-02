@@ -111,8 +111,13 @@
         "docs/FLEET_AGENT.md",
         "fixtures/fleet-agent/",
         "tools/Build-FleetAgentAndroid.ps1",
+        "tools/Build-FleetAgentKeyRecord.ps1",
+        "tools/Build-FleetAgentKeyRecordRelease.ps1",
         "tools/Invoke-FleetAgentAndroidSmoke.ps1",
         "tools/Test-FleetAgentAndroid.ps1",
+        "tools/Test-FleetAgentKeyRecordRelease.ps1",
+        "tools/Test-FleetAgentKeyRecordReleaseSelfTest.ps1",
+        "schemas/rusty.quest.fleet_agent_key_record_release_capsule.v1.schema.json",
         "tools/checks/Test-FleetAgentAndroidStatic.ps1"
       ]
     },

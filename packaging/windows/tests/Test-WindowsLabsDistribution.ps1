@@ -38,6 +38,13 @@ Assert-Labs (
     $schemaText -match '"public_trust_claim": \{ "const": true \}'
 ) "release schema does not reject cross-axis substitutions"
 Assert-Labs ($bundle -match 'RustyFleet-Labs-\$Version-win-x64' -and $setup -match 'RustyFleet-Labs-Setup\.exe') "Labs artifacts are not independently named"
+Assert-Labs (
+    $bundle -match 'FleetAgentKeyRecordOwnerCapsuleRoot' -and
+    $bundle -match 'signed release requires the exact pinned Rusty Quest key-record owner capsule' -and
+    $bundle -match 'onboarding_ready = \$ownerCapsuleReady' -and
+    $bundle -match 'rusty-quest-key-record-helper' -and
+    $bundle -match 'packaging-and-tool-provenance-only'
+) "Labs bundle does not fail closed on the exact Rusty Quest owner capsule"
 Assert-Labs ($setup -match 'rusty-fleet-labs' -and $setup -match 'Rusty Fleet Labs' -and $setup -match 'RustyFleetLabs') "Labs installation identity is incomplete"
 Assert-Labs (
     $descriptor -match '\$plan\.product -cne \$installationIdentity' -and
