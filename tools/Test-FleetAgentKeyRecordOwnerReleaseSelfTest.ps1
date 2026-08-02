@@ -17,7 +17,7 @@ $matrix = Get-Content -Raw -LiteralPath (
     ConvertFrom-Json
 if ($matrix.schema -cne
         "rusty.fleet.fleet_agent_key_record_owner_release_damage_matrix.v1" -or
-    @($matrix.cases).Count -ne 9) {
+    @($matrix.cases).Count -ne 13) {
     throw "Fleet owner release damage matrix is incomplete"
 }
 
@@ -53,6 +53,8 @@ function Invoke-MustReject([string] $Name, [scriptblock] $Mutate) {
 & pwsh -NoProfile -ExecutionPolicy Bypass -File $validator `
     -CapsuleRoot $CapsuleRoot -PinPath $basePin *> $null
 if ($LASTEXITCODE -ne 0) { throw "valid owner release did not pass self-test preflight" }
+& pwsh -NoProfile -ExecutionPolicy Bypass -File $validator -PolicySelfTest *> $null
+if ($LASTEXITCODE -ne 0) { throw "owner executable policy self-test failed" }
 
 Invoke-MustReject "wrong-owner" {
     param($capsule, $pin)
@@ -100,6 +102,22 @@ Invoke-MustReject "extra-repository" {
 Invoke-MustReject "extra-package-file" {
     param($capsule, $pin)
     [IO.File]::WriteAllText((Join-Path $capsule "unexpected.bin"), "forbidden")
+}
+Invoke-MustReject "extra-parse-only-repository" {
+    param($capsule, $pin)
+    $path = Join-Path $capsule "provenance.json"
+    $value = Get-Content -Raw $path | ConvertFrom-Json
+    $value.source.workspace_parse_only_repositories =
+        @($value.source.workspace_parse_only_repositories) +
+        $value.source.workspace_parse_only_repositories[0]
+    Write-Json $path $value
+}
+Invoke-MustReject "non-reproducible-provenance" {
+    param($capsule, $pin)
+    $path = Join-Path $capsule "provenance.json"
+    $value = Get-Content -Raw $path | ConvertFrom-Json
+    $value.build.pe_reproducibility_marker = "absent"
+    Write-Json $path $value
 }
 
 Write-Output "Rusty Fleet key-record owner release self-test passed"

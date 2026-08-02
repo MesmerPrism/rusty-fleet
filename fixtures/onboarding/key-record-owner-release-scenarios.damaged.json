@@ -9,7 +9,11 @@
     { "name": "stale-provenance", "expected": "reject" },
     { "name": "secret-leakage", "expected": "reject" },
     { "name": "extra-repository", "expected": "reject" },
-    { "name": "extra-package-file", "expected": "reject" }
+    { "name": "extra-package-file", "expected": "reject" },
+    { "name": "extra-parse-only-repository", "expected": "reject" },
+    { "name": "non-reproducible-provenance", "expected": "reject" },
+    { "name": "missing-pe-repro-marker-policy", "expected": "reject" },
+    { "name": "machine-local-path-policy", "expected": "reject" }
   ],
   "existing_onboarding_negatives": [
     "duplicate-device-id",

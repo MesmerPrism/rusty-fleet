@@ -25,20 +25,23 @@ const TOOL_OWNER: &str = "rusty-quest";
 const TOOL_OWNER_REPOSITORY: &str = "https://github.com/MesmerPrism/rusty-quest";
 const TOOL_CONSUMER_ID: &str = "rusty-fleet/fleet-onboard";
 const TOOL_MANIFEST_SHA256: &str =
-    "1e3ae5456d7fa77a3733fa7df023f0b2ddda72b946e66fb3d1f1acdd6214680f";
+    "d96baf6f3cdd5af9d79d0d98df5fd96e5ee9f689350a1d415c8a88fac101e457";
+const TOOL_MANIFEST_SIZE: u64 = 1_835;
 const TOOL_EXECUTABLE_SHA256: &str =
-    "c5ed362dffbe3701e051672ecaaed86902a9f0881d3f179ff47fa02ff07afeae";
+    "6e3962726be67cf42d0fdc2dbf3792f7d665524323e5615f1907002518bfe3d7";
 const TOOL_EXECUTABLE_SIZE: u64 = 219_648;
 const TOOL_PROVENANCE_SHA256: &str =
-    "e958d459025bf52fb8c6214ba41981db89f2b7d2832b3a222dbe30943367b0f9";
+    "dba7ba306b3f0839db54d1e965f71a1939f82b413fa72cf7d883788a7ba41676";
 const TOOL_LICENSE_SHA256: &str =
     "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0";
-const TOOL_NOTICE_SHA256: &str = "e3455bd856c5b7d311b222faf88012e582b87cdecaf0d563f631856b2b2fc786";
+const TOOL_NOTICE_SHA256: &str = "7a95b2704991263057c12f75efae64cd2c38bf35e20fceca7bc42884e69e698a";
 const TOOL_CHECKSUMS_SHA256: &str =
-    "010ff799a46878d13ec858910f7441afbb6e714367760f463effd3519674c749";
-const TOOL_SOURCE_COMMIT: &str = "4a982368a29d41c3ecde8083b4aefc1e1bb1a4dc";
-const TOOL_SOURCE_TREE: &str = "bf9e9921c1a293b7fff053d9add91bcfff7899c2";
-const TOOL_COMPOSITION: &str = "f8b0fc2c7458be0c8a07f276ab4abff5ccf7e134c7f3d62bb966e5cc72f7211f";
+    "aae77f56355cb6129b13dbe20850fb08c01a7a4cba9a17a8d97aee84490f407b";
+const TOOL_SOURCE_COMMIT: &str = "cebdf368d9a2f1d2c12f9566f937f51bd5f29945";
+const TOOL_SOURCE_TREE: &str = "1d23419ff6e95289b804d86ccc5a5cd66fd27afc";
+const TOOL_COMPOSITION: &str = "690b3f6192c27f2de7da621f1ffe4b136868701ce9161ca1fd961ee70b196609";
+const TOOL_CARGO_CONFIG_SHA256: &str =
+    "b25e4a2d0a7562470f166e8082f1ff2ee01bcd01cc222935e4fcffb15febfc4f";
 const PROFILE_SCHEMA: &str = "rusty.quest.fleet_agent_profile.v1";
 const PROFILE_OWNER_SOURCE_SHA256: &str =
     "dd076b50ce37484105f9c75b542b94d50d62fc1c5070e60b0de1056fd0d4b86b";
@@ -198,6 +201,7 @@ struct ProvenanceSource {
     package: String,
     composition_fingerprint: String,
     repositories: Vec<SourceRepository>,
+    workspace_parse_only_repositories: Vec<SourceRepository>,
     files: Vec<SourceFile>,
 }
 
@@ -226,6 +230,13 @@ struct ProvenanceBuild {
     rustc: String,
     cargo: String,
     locked_dependencies: bool,
+    isolated_git_materializations: bool,
+    post_build_identity_verified: bool,
+    path_remap_root: String,
+    symbols_stripped: bool,
+    linker_reproducibility_argument: String,
+    pe_reproducibility_marker: String,
+    cargo_config_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -518,6 +529,9 @@ fn validate_tool(request: &Request) -> Result<ValidatedTool, String> {
     if hash(&manifest_file.bytes) != TOOL_MANIFEST_SHA256 {
         return Err("untrusted_tool_manifest".to_owned());
     }
+    if manifest_file.bytes.len() as u64 != TOOL_MANIFEST_SIZE {
+        return Err("untrusted_tool_manifest".to_owned());
+    }
     let manifest: ToolManifest = serde_json::from_slice(&manifest_file.bytes)
         .map_err(|_| "invalid_tool_manifest".to_owned())?;
     validate_exact_manifest(&manifest)?;
@@ -599,7 +613,7 @@ fn validate_exact_manifest(manifest: &ToolManifest) -> Result<(), String> {
             TOOL_EXECUTABLE_SHA256,
             TOOL_EXECUTABLE_SIZE,
         ),
-        ("provenance.json", TOOL_PROVENANCE_SHA256, 3_157),
+        ("provenance.json", TOOL_PROVENANCE_SHA256, 4_596),
         ("LICENSE", TOOL_LICENSE_SHA256, 34_523),
         ("SOURCE-NOTICE.md", TOOL_NOTICE_SHA256, 427),
     ];
@@ -665,6 +679,29 @@ fn validate_exact_provenance(provenance: &ToolProvenance) -> Result<(), String> 
             TOOL_SOURCE_TREE,
         ),
     ];
+    let expected_workspace_parse_only_repositories = [
+        (
+            "rusty-lattice",
+            "workspace-parse-only",
+            "https://github.com/MesmerPrism/rusty-lattice",
+            "0aee7faa52fc965ff2255381781dd082ab639f4b",
+            "4f60d4a01a3ca4dc217c4f82c16c952ab6733eb4",
+        ),
+        (
+            "rusty-matter",
+            "workspace-parse-only",
+            "https://github.com/MesmerPrism/rusty-matter",
+            "eec8cddd9830f7ef0f90574ddcbde2daac0ec804",
+            "cd4e1ce39a8c91263774ea3e69fb859f503ffde8",
+        ),
+        (
+            "rusty-optics",
+            "workspace-parse-only",
+            "https://github.com/MesmerPrism/rusty-optics",
+            "fd01d84acffa1b0a3a192fe978af337d9fedd18a",
+            "f527b761043e4e1e3a6bfa5969611dcf419e55fa",
+        ),
+    ];
     let expected_files = [
         (
             "Cargo.lock",
@@ -688,11 +725,15 @@ fn validate_exact_provenance(provenance: &ToolProvenance) -> Result<(), String> 
         ),
         (
             "tools/Build-FleetAgentKeyRecordRelease.ps1",
-            "e067b147ffefb25d462b488a925cefbba0bd94df7b95686eb618240c94587c77",
+            "4525c43a52b87031cff47e79c60f73adaebacf7ebc99e2bcd7086283d864ff9b",
         ),
         (
             "tools/Test-FleetAgentKeyRecordRelease.ps1",
-            "9dab0b122b82b4a92b5577cfe867ff7f229e4b3f3ad9982547579c43e2544dc9",
+            "8194506d56cbc5712c11623eabb3ba4b2f5a56f25414767f304adad7dedad486",
+        ),
+        (
+            "tools/lib/SourceComposition.psm1",
+            "7e3a231b0703b9e0d1ab0b687a473f1a03366885a9eb3108d55839757d30c3df",
         ),
     ];
     if provenance.schema != TOOL_PROVENANCE_SCHEMA
@@ -703,12 +744,21 @@ fn validate_exact_provenance(provenance: &ToolProvenance) -> Result<(), String> 
         || provenance.source.package != "rusty-quest-fleet-agent"
         || provenance.source.composition_fingerprint != TOOL_COMPOSITION
         || provenance.source.repositories.len() != expected_repositories.len()
+        || provenance.source.workspace_parse_only_repositories.len()
+            != expected_workspace_parse_only_repositories.len()
         || provenance.source.files.len() != expected_files.len()
         || provenance.build.target != "x86_64-pc-windows-msvc"
         || provenance.build.profile != "release"
         || provenance.build.rustc.trim().is_empty()
         || provenance.build.cargo.trim().is_empty()
         || !provenance.build.locked_dependencies
+        || !provenance.build.isolated_git_materializations
+        || !provenance.build.post_build_identity_verified
+        || provenance.build.path_remap_root != "/rusty-build"
+        || !provenance.build.symbols_stripped
+        || provenance.build.linker_reproducibility_argument != "/Brepro"
+        || provenance.build.pe_reproducibility_marker != "IMAGE_DEBUG_TYPE_REPRO"
+        || provenance.build.cargo_config_sha256 != TOOL_CARGO_CONFIG_SHA256
         || provenance.claims.owner != TOOL_OWNER
         || !provenance.claims.helper_only
         || provenance.claims.runtime_activation != "explicit_fleet_onboard_invocation"
@@ -725,6 +775,21 @@ fn validate_exact_provenance(provenance: &ToolProvenance) -> Result<(), String> 
         .repositories
         .iter()
         .zip(expected_repositories)
+    {
+        if actual.repository_id != expected.0
+            || actual.role != expected.1
+            || actual.repository_url != expected.2
+            || actual.commit != expected.3
+            || actual.tree != expected.4
+        {
+            return Err("invalid_tool_provenance".to_owned());
+        }
+    }
+    for (actual, expected) in provenance
+        .source
+        .workspace_parse_only_repositories
+        .iter()
+        .zip(expected_workspace_parse_only_repositories)
     {
         if actual.repository_id != expected.0
             || actual.role != expected.1
@@ -3110,7 +3175,7 @@ mod tests {
                 ToolPayloadEntry {
                     path: "provenance.json".to_owned(),
                     sha256: TOOL_PROVENANCE_SHA256.to_owned(),
-                    size_bytes: 3_157,
+                    size_bytes: 4_596,
                 },
                 ToolPayloadEntry {
                     path: "LICENSE".to_owned(),
@@ -3120,7 +3185,7 @@ mod tests {
                 },
                 ToolPayloadEntry {
                     path: "SOURCE-NOTICE.md".to_owned(),
-                    sha256: "e3455bd856c5b7d311b222faf88012e582b87cdecaf0d563f631856b2b2fc786"
+                    sha256: "7a95b2704991263057c12f75efae64cd2c38bf35e20fceca7bc42884e69e698a"
                         .to_owned(),
                     size_bytes: 427,
                 },
@@ -3161,6 +3226,29 @@ mod tests {
                         tree: TOOL_SOURCE_TREE.to_owned(),
                     },
                 ],
+                workspace_parse_only_repositories: vec![
+                    SourceRepository {
+                        repository_id: "rusty-lattice".to_owned(),
+                        role: "workspace-parse-only".to_owned(),
+                        repository_url: "https://github.com/MesmerPrism/rusty-lattice".to_owned(),
+                        commit: "0aee7faa52fc965ff2255381781dd082ab639f4b".to_owned(),
+                        tree: "4f60d4a01a3ca4dc217c4f82c16c952ab6733eb4".to_owned(),
+                    },
+                    SourceRepository {
+                        repository_id: "rusty-matter".to_owned(),
+                        role: "workspace-parse-only".to_owned(),
+                        repository_url: "https://github.com/MesmerPrism/rusty-matter".to_owned(),
+                        commit: "eec8cddd9830f7ef0f90574ddcbde2daac0ec804".to_owned(),
+                        tree: "cd4e1ce39a8c91263774ea3e69fb859f503ffde8".to_owned(),
+                    },
+                    SourceRepository {
+                        repository_id: "rusty-optics".to_owned(),
+                        role: "workspace-parse-only".to_owned(),
+                        repository_url: "https://github.com/MesmerPrism/rusty-optics".to_owned(),
+                        commit: "fd01d84acffa1b0a3a192fe978af337d9fedd18a".to_owned(),
+                        tree: "f527b761043e4e1e3a6bfa5969611dcf419e55fa".to_owned(),
+                    },
+                ],
                 files: vec![
                     SourceFile {
                         path: "Cargo.lock".to_owned(),
@@ -3190,12 +3278,17 @@ mod tests {
                     },
                     SourceFile {
                         path: "tools/Build-FleetAgentKeyRecordRelease.ps1".to_owned(),
-                        sha256: "e067b147ffefb25d462b488a925cefbba0bd94df7b95686eb618240c94587c77"
+                        sha256: "4525c43a52b87031cff47e79c60f73adaebacf7ebc99e2bcd7086283d864ff9b"
                             .to_owned(),
                     },
                     SourceFile {
                         path: "tools/Test-FleetAgentKeyRecordRelease.ps1".to_owned(),
-                        sha256: "9dab0b122b82b4a92b5577cfe867ff7f229e4b3f3ad9982547579c43e2544dc9"
+                        sha256: "8194506d56cbc5712c11623eabb3ba4b2f5a56f25414767f304adad7dedad486"
+                            .to_owned(),
+                    },
+                    SourceFile {
+                        path: "tools/lib/SourceComposition.psm1".to_owned(),
+                        sha256: "7e3a231b0703b9e0d1ab0b687a473f1a03366885a9eb3108d55839757d30c3df"
                             .to_owned(),
                     },
                 ],
@@ -3206,6 +3299,13 @@ mod tests {
                 rustc: "rustc fixture".to_owned(),
                 cargo: "cargo fixture".to_owned(),
                 locked_dependencies: true,
+                isolated_git_materializations: true,
+                post_build_identity_verified: true,
+                path_remap_root: "/rusty-build".to_owned(),
+                symbols_stripped: true,
+                linker_reproducibility_argument: "/Brepro".to_owned(),
+                pe_reproducibility_marker: "IMAGE_DEBUG_TYPE_REPRO".to_owned(),
+                cargo_config_sha256: TOOL_CARGO_CONFIG_SHA256.to_owned(),
             },
             claims: ProvenanceClaims {
                 owner: TOOL_OWNER.to_owned(),
@@ -3358,7 +3458,8 @@ mod tests {
 
     #[test]
     fn manifest_repository_set_is_closed() {
-        assert_eq!(["8181683", "rusty-manifold", "rusty-quest",].len(), 3);
+        assert_eq!(["rusty-fleet", "rusty-manifold", "rusty-quest"].len(), 3);
+        assert_eq!(["rusty-lattice", "rusty-matter", "rusty-optics"].len(), 3);
         assert_eq!(TOOL_SOURCE_TREE.len(), 40);
         assert!(is_sha256(TOOL_MANIFEST_SHA256));
         assert!(is_sha256(TOOL_EXECUTABLE_SHA256));

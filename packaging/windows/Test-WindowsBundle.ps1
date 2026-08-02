@@ -125,13 +125,19 @@ if ($onboardingReady) {
         $helper[0].owner_release.manifest_path -cne
             "components/rusty-quest-key-record-helper/release-manifest.json" -or
         $helper[0].owner_release.manifest_sha256 -cne
-            "1e3ae5456d7fa77a3733fa7df023f0b2ddda72b946e66fb3d1f1acdd6214680f" -or
+            "d96baf6f3cdd5af9d79d0d98df5fd96e5ee9f689350a1d415c8a88fac101e457" -or
         $helper[0].owner_release.executable_sha256 -cne
-            "c5ed362dffbe3701e051672ecaaed86902a9f0881d3f179ff47fa02ff07afeae" -or
+            "6e3962726be67cf42d0fdc2dbf3792f7d665524323e5615f1907002518bfe3d7" -or
+        $helper[0].owner_release.provenance_sha256 -cne
+            "dba7ba306b3f0839db54d1e965f71a1939f82b413fa72cf7d883788a7ba41676" -or
+        $helper[0].owner_release.checksums_sha256 -cne
+            "aae77f56355cb6129b13dbe20850fb08c01a7a4cba9a17a8d97aee84490f407b" -or
         $helper[0].owner_release.source_commit -cne
-            "4a982368a29d41c3ecde8083b4aefc1e1bb1a4dc" -or
+            "cebdf368d9a2f1d2c12f9566f937f51bd5f29945" -or
         $helper[0].owner_release.source_tree -cne
-            "bf9e9921c1a293b7fff053d9add91bcfff7899c2" -or
+            "1d23419ff6e95289b804d86ccc5a5cd66fd27afc" -or
+        $helper[0].owner_release.executable_reproducible -ne $true -or
+        $helper[0].owner_release.executable_machine_path_free -ne $true -or
         $helper[0].owner_release.owner_signature_present -ne $false -or
         $helper[0].owner_release.capsule_validity -cne
             "packaging-and-tool-provenance-only" -or
@@ -153,10 +159,16 @@ if ($onboardingReady) {
     }
     $ownerManifestPath = Join-Path $helperRoot "release-manifest.json"
     $ownerExecutablePath = Join-Path $helperRoot "fleet-agent-key-record.exe"
+    $ownerProvenancePath = Join-Path $helperRoot "provenance.json"
+    $ownerChecksumsPath = Join-Path $helperRoot "checksums.sha256"
     if ((Get-RustyFleetSha256 -LiteralPath $ownerManifestPath) -cne
             $helper[0].owner_release.manifest_sha256 -or
         (Get-RustyFleetSha256 -LiteralPath $ownerExecutablePath) -cne
-            $helper[0].owner_release.executable_sha256) {
+            $helper[0].owner_release.executable_sha256 -or
+        (Get-RustyFleetSha256 -LiteralPath $ownerProvenancePath) -cne
+            $helper[0].owner_release.provenance_sha256 -or
+        (Get-RustyFleetSha256 -LiteralPath $ownerChecksumsPath) -cne
+            $helper[0].owner_release.checksums_sha256) {
         throw "bundled owner capsule bytes do not match the component pin"
     }
     $ownerManifest = Get-Content -Raw -LiteralPath $ownerManifestPath | ConvertFrom-Json -Depth 30

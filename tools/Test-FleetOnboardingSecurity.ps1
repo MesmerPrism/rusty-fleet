@@ -44,10 +44,10 @@ $ownerReleaseDamaged = Get-Content -Raw -LiteralPath (
     ConvertFrom-Json
 
 foreach ($required in @(
-    "1e3ae5456d7fa77a3733fa7df023f0b2ddda72b946e66fb3d1f1acdd6214680f",
-    "c5ed362dffbe3701e051672ecaaed86902a9f0881d3f179ff47fa02ff07afeae",
-    "e958d459025bf52fb8c6214ba41981db89f2b7d2832b3a222dbe30943367b0f9",
-    "4a982368a29d41c3ecde8083b4aefc1e1bb1a4dc",
+    "d96baf6f3cdd5af9d79d0d98df5fd96e5ee9f689350a1d415c8a88fac101e457",
+    "6e3962726be67cf42d0fdc2dbf3792f7d665524323e5615f1907002518bfe3d7",
+    "dba7ba306b3f0839db54d1e965f71a1939f82b413fa72cf7d883788a7ba41676",
+    "cebdf368d9a2f1d2c12f9566f937f51bd5f29945",
     "ee6faba86ef876f988e7b5ddaa552ee3a484f15b0e3704c79404f92b0bda9fc9",
     "validate_offline",
     "ContainedJob",
@@ -104,6 +104,8 @@ foreach ($required in @(
     "owner capsule contains an extra or missing file",
     "owner capsule provenance does not match the supported Fleet pin",
     "owner capsule contains prohibited private or machine-local material",
+    "IMAGE_DEBUG_TYPE_REPRO",
+    "machine-local ASCII path",
     "packaging-and-tool-provenance-only",
     "onboarding_accepted = `$false")) {
     Assert-True -Condition $ownerReleaseValidator.Contains($required, [StringComparison]::Ordinal) `
@@ -112,16 +114,28 @@ foreach ($required in @(
 Assert-True -Condition (
     $ownerReleaseValid.schema -ceq
         "rusty.fleet.fleet_agent_key_record_owner_release_fixture_matrix.v1" -and
+    $ownerReleaseValid.source_commit -ceq
+        "cebdf368d9a2f1d2c12f9566f937f51bd5f29945" -and
+    $ownerReleaseValid.source_tree -ceq
+        "1d23419ff6e95289b804d86ccc5a5cd66fd27afc" -and
+    $ownerReleaseValid.manifest_sha256 -ceq
+        "d96baf6f3cdd5af9d79d0d98df5fd96e5ee9f689350a1d415c8a88fac101e457" -and
+    $ownerReleaseValid.executable_sha256 -ceq
+        "6e3962726be67cf42d0fdc2dbf3792f7d665524323e5615f1907002518bfe3d7" -and
+    $ownerReleaseValid.pe_reproducibility_marker -ceq "IMAGE_DEBUG_TYPE_REPRO" -and
+    @($ownerReleaseValid.machine_path_encodings_rejected).Count -eq 3 -and
     $ownerReleaseValid.onboarding_accepted -eq $false -and
     $ownerReleaseDamaged.schema -ceq
         "rusty.fleet.fleet_agent_key_record_owner_release_damage_matrix.v1" -and
-    @($ownerReleaseDamaged.cases).Count -eq 9 -and
+    @($ownerReleaseDamaged.cases).Count -eq 13 -and
     @($ownerReleaseDamaged.existing_onboarding_negatives) -contains "duplicate-device-id" -and
     @($ownerReleaseDamaged.existing_onboarding_negatives) -contains "duplicate-key-id" -and
     @($ownerReleaseDamaged.existing_onboarding_negatives) -contains "extra-private-inventory-file" -and
     $ownerReleaseSelfTest.Contains("wrong-fleet-consumer", [StringComparison]::Ordinal) -and
     $ownerReleaseSelfTest.Contains("duplicate-capsule", [StringComparison]::Ordinal) -and
-    $ownerReleaseSelfTest.Contains("extra-repository", [StringComparison]::Ordinal)
+    $ownerReleaseSelfTest.Contains("extra-repository", [StringComparison]::Ordinal) -and
+    $ownerReleaseSelfTest.Contains("extra-parse-only-repository", [StringComparison]::Ordinal) -and
+    $ownerReleaseSelfTest.Contains("non-reproducible-provenance", [StringComparison]::Ordinal)
 ) -Message "Fleet owner release valid/damaged fixture matrix is incomplete."
 
 $verbs = @(

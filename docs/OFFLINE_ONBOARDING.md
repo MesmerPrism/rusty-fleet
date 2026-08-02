@@ -64,17 +64,22 @@ release manifest, public provenance, project license, source notice and
 checksums. Fleet preserves those owner bytes without augmentation when it
 packages the inert helper component.
 
-The owner release accepts exactly:
+The owner release accepts exactly these six files:
 
-- manifest SHA-256
-  `1e3ae5456d7fa77a3733fa7df023f0b2ddda72b946e66fb3d1f1acdd6214680f`;
-- executable SHA-256
-  `c5ed362dffbe3701e051672ecaaed86902a9f0881d3f179ff47fa02ff07afeae`;
-- provenance SHA-256
-  `e958d459025bf52fb8c6214ba41981db89f2b7d2832b3a222dbe30943367b0f9`;
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `LICENSE` | 34,523 | `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0` |
+| `SOURCE-NOTICE.md` | 427 | `7a95b2704991263057c12f75efae64cd2c38bf35e20fceca7bc42884e69e698a` |
+| `checksums.sha256` | 420 | `aae77f56355cb6129b13dbe20850fb08c01a7a4cba9a17a8d97aee84490f407b` |
+| `fleet-agent-key-record.exe` | 219,648 | `6e3962726be67cf42d0fdc2dbf3792f7d665524323e5615f1907002518bfe3d7` |
+| `provenance.json` | 4,596 | `dba7ba306b3f0839db54d1e965f71a1939f82b413fa72cf7d883788a7ba41676` |
+| `release-manifest.json` | 1,835 | `d96baf6f3cdd5af9d79d0d98df5fd96e5ee9f689350a1d415c8a88fac101e457` |
+
+It also accepts only:
+
 - Rusty Quest source commit
-  `4a982368a29d41c3ecde8083b4aefc1e1bb1a4dc`;
-- exact source tree `bf9e9921c1a293b7fff053d9add91bcfff7899c2`,
+  `cebdf368d9a2f1d2c12f9566f937f51bd5f29945`;
+- exact source tree `1d23419ff6e95289b804d86ccc5a5cd66fd27afc`,
   composition fingerprint, package, public source-file hashes and the closed
   Rusty Fleet/Rusty Manifold/Rusty Quest provenance set;
 - consumer identity `rusty-fleet/fleet-onboard` and owner identity
@@ -83,6 +88,12 @@ The owner release accepts exactly:
 Unknown manifest fields, extra or missing repositories, dirty repository
 claims, source/provenance drift, executable drift, wrong consumer/owner,
 duplicate capsule files, secret markers, or path substitution fail closed.
+The supported helper is independently required to be a reproducible x64 PE:
+its provenance binds isolated Git materializations, post-build identity
+verification, source-path remapping, stripped symbols, `/Brepro`, and an exact
+`IMAGE_DEBUG_TYPE_REPRO` marker. Fleet scans the executable itself for that PE
+marker and for machine-local ASCII and UTF-16 paths; provenance text alone is
+not sufficient.
 Opened manifest and executable handles are bound by volume/file identity,
 link count, ACL digest, length, and content digest. The exact non-inheritable
 executable handle and every mutable ancestor directory remain retained while

@@ -74,7 +74,9 @@ if (-not [string]::IsNullOrWhiteSpace($FleetAgentKeyRecordOwnerCapsuleRoot)) {
         $ownerReleaseValidation.consumer_id -cne "rusty-fleet/fleet-onboard" -or
         $ownerReleaseValidation.capsule_validity -cne
             "packaging-and-tool-provenance-only" -or
-        $ownerReleaseValidation.onboarding_accepted -ne $false) {
+        $ownerReleaseValidation.onboarding_accepted -ne $false -or
+        $ownerReleaseValidation.executable_reproducible -ne $true -or
+        $ownerReleaseValidation.executable_machine_path_free -ne $true) {
         throw "Rusty Quest key-record owner release capsule validation failed"
     }
     $ownerCapsuleReady = $true
@@ -476,8 +478,12 @@ try {
                 manifest_path = "components/rusty-quest-key-record-helper/release-manifest.json"
                 manifest_sha256 = [string]$ownerReleaseValidation.manifest_sha256
                 executable_sha256 = [string]$ownerReleaseValidation.executable_sha256
+                provenance_sha256 = [string]$ownerReleaseValidation.provenance_sha256
+                checksums_sha256 = [string]$ownerReleaseValidation.checksums_sha256
                 source_commit = [string]$ownerReleaseValidation.source_commit
                 source_tree = [string]$ownerReleaseValidation.source_tree
+                executable_reproducible = $true
+                executable_machine_path_free = $true
                 owner_signature_present = $false
                 capsule_validity = "packaging-and-tool-provenance-only"
                 onboarding_accepted = $false
