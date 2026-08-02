@@ -38,7 +38,9 @@ internal sealed record InventoryItem(string Sha256, long SizeBytes);
 internal sealed class ReleaseDefinition
 {
     private const long MaximumExpandedBytes = 2L * 1024 * 1024 * 1024;
-    private static readonly HashSet<string> ExpectedComponents = new(
+    private const string OwnerKeyRecordHelperComponent =
+        "rusty-quest-key-record-helper";
+    private static readonly HashSet<string> BaseExpectedComponents = new(
         [
             "fleet-console",
             "fleet-hub",
@@ -169,13 +171,30 @@ internal sealed class ReleaseDefinition
                 ? "RustyFleet-Labs-Setup.exe"
                 : "RustyFleet-Setup.exe");
 
+        var onboardingReady = distribution
+            .GetProperty("onboarding_ready")
+            .GetBoolean();
+        RequireString(
+            distribution,
+            "onboarding_blocker",
+            onboardingReady
+                ? "none"
+                : "pinned_rusty_quest_owner_key_record_release_not_bundled");
+        var expectedComponents = new HashSet<string>(
+            BaseExpectedComponents,
+            StringComparer.Ordinal);
+        if (onboardingReady)
+        {
+            expectedComponents.Add(OwnerKeyRecordHelperComponent);
+        }
+
         var componentIds = root.GetProperty("components")
             .EnumerateArray()
             .Select(item => RequiredString(item, "component_id"))
             .ToArray();
-        if (componentIds.Length != ExpectedComponents.Count ||
+        if (componentIds.Length != expectedComponents.Count ||
             componentIds.Distinct(StringComparer.Ordinal).Count() != componentIds.Length ||
-            !componentIds.ToHashSet(StringComparer.Ordinal).SetEquals(ExpectedComponents))
+            !componentIds.ToHashSet(StringComparer.Ordinal).SetEquals(expectedComponents))
         {
             throw new InvalidDataException("release manifest component composition is not exact");
         }
@@ -226,7 +245,7 @@ internal sealed class ReleaseDefinition
         RequireString(receiptRoot, "checksums_sha256", checksumsSha256);
         if (receiptRoot.GetProperty("payload_files").GetInt32() != payload.Count ||
             receiptRoot.GetProperty("runtime_components").GetInt32() !=
-                ExpectedComponents.Count)
+                expectedComponents.Count)
         {
             throw new InvalidDataException("validation receipt counts are not exact");
         }

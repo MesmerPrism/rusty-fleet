@@ -696,6 +696,89 @@ try {
             }).Count -eq 1
         ) "complete owner capsule did not make the package onboarding-ready"
 
+        $readyArchive = Join-Path $readyOutput "$bundleNameOne.zip"
+        $readySetupOutput = Join-Path $testRoot "owner-capsule-ready-setup"
+        $readySetupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+            -Version "0.0.0-test.1" -Channel dev -BuildKind unsigned-dev `
+            -BundleArchivePath $readyArchive `
+            -DevelopmentInstallRoot (Join-Path $testRoot "owner-capsule-ready-install") `
+            -OutputDirectory $readySetupOutput | ConvertFrom-Json
+        $readySetupPath = Join-Path $readySetupOutput "RustyFleet-Setup.exe"
+        $readySetupPlan = & $readySetupPath --plan --json | ConvertFrom-Json
+        Assert-Distribution (
+            $readySetupReceipt.version -ceq "0.0.0-test.1" -and
+            $readySetupPlan.ready -eq $true
+        ) "Setup did not admit the exact onboarding-ready six-component bundle"
+
+        $fiveMismatchRoot = Join-Path $testRoot "setup-five-components-falsely-ready"
+        $fiveMismatchBundle = Join-Path $fiveMismatchRoot $bundleNameOne
+        Copy-Item -LiteralPath $bundleOne -Destination $fiveMismatchBundle -Recurse
+        $fiveMismatchManifestPath = Join-Path $fiveMismatchBundle `
+            "metadata\release-manifest.json"
+        $fiveMismatchManifest = Get-Content -LiteralPath $fiveMismatchManifestPath -Raw |
+            ConvertFrom-Json -Depth 30
+        $fiveMismatchManifest.distribution.onboarding_ready = $true
+        $fiveMismatchManifest.distribution.onboarding_blocker = "none"
+        Write-RustyFleetUtf8 -LiteralPath $fiveMismatchManifestPath -Content (
+            $fiveMismatchManifest | ConvertTo-Json -Depth 30)
+        $fiveMismatchArchive = Join-Path $fiveMismatchRoot "$bundleNameOne.zip"
+        New-RustyFleetDeterministicZip -SourceDirectory $fiveMismatchBundle `
+            -DestinationPath $fiveMismatchArchive -SourceDateEpoch 0
+        $fiveMismatchAccepted = $false
+        $fiveMismatchFailure = ""
+        try {
+            & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+                -Version "0.0.0-test.1" -Channel dev -BuildKind unsigned-dev `
+                -BundleArchivePath $fiveMismatchArchive `
+                -DevelopmentInstallRoot (Join-Path $testRoot "five-mismatch-install") `
+                -OutputDirectory (Join-Path $testRoot "five-mismatch-setup") | Out-Null
+            $fiveMismatchAccepted = $true
+        }
+        catch {
+            $fiveMismatchFailure = $_.Exception.Message
+        }
+        Assert-Distribution (
+            -not $fiveMismatchAccepted -and
+            $fiveMismatchFailure -match
+                "bundle runtime component set does not match onboarding readiness"
+        ) `
+            "Setup accepted five components that falsely claimed onboarding readiness"
+
+        $sixMismatchRoot = Join-Path $testRoot "setup-six-components-falsely-blocked"
+        $sixMismatchBundle = Join-Path $sixMismatchRoot $bundleNameOne
+        Copy-Item -LiteralPath $readyBundle -Destination $sixMismatchBundle -Recurse
+        $sixMismatchManifestPath = Join-Path $sixMismatchBundle `
+            "metadata\release-manifest.json"
+        $sixMismatchManifest = Get-Content -LiteralPath $sixMismatchManifestPath -Raw |
+            ConvertFrom-Json -Depth 30
+        $sixMismatchManifest.distribution.onboarding_ready = $false
+        $sixMismatchManifest.distribution.onboarding_blocker =
+            "pinned_rusty_quest_owner_key_record_release_not_bundled"
+        Write-RustyFleetUtf8 -LiteralPath $sixMismatchManifestPath -Content (
+            $sixMismatchManifest | ConvertTo-Json -Depth 30)
+        $sixMismatchArchive = Join-Path $sixMismatchRoot "$bundleNameOne.zip"
+        New-RustyFleetDeterministicZip -SourceDirectory $sixMismatchBundle `
+            -DestinationPath $sixMismatchArchive -SourceDateEpoch 0
+        $sixMismatchAccepted = $false
+        $sixMismatchFailure = ""
+        try {
+            & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+                -Version "0.0.0-test.1" -Channel dev -BuildKind unsigned-dev `
+                -BundleArchivePath $sixMismatchArchive `
+                -DevelopmentInstallRoot (Join-Path $testRoot "six-mismatch-install") `
+                -OutputDirectory (Join-Path $testRoot "six-mismatch-setup") | Out-Null
+            $sixMismatchAccepted = $true
+        }
+        catch {
+            $sixMismatchFailure = $_.Exception.Message
+        }
+        Assert-Distribution (
+            -not $sixMismatchAccepted -and
+            $sixMismatchFailure -match
+                "bundle runtime component set does not match onboarding readiness"
+        ) `
+            "Setup accepted six components that falsely claimed onboarding was blocked"
+
         foreach ($ownerFile in @(
             "fleet-agent-key-record.exe", "LICENSE", "SOURCE-NOTICE.md")) {
             $caseName = $ownerFile.Replace(".", "-")
