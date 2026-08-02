@@ -161,14 +161,26 @@ if ($onboardingReady) {
     $ownerExecutablePath = Join-Path $helperRoot "fleet-agent-key-record.exe"
     $ownerProvenancePath = Join-Path $helperRoot "provenance.json"
     $ownerChecksumsPath = Join-Path $helperRoot "checksums.sha256"
+    $ownerLicensePath = Join-Path $helperRoot "LICENSE"
+    $ownerNoticePath = Join-Path $helperRoot "SOURCE-NOTICE.md"
     if ((Get-RustyFleetSha256 -LiteralPath $ownerManifestPath) -cne
             $helper[0].owner_release.manifest_sha256 -or
+        [long](Get-Item -LiteralPath $ownerManifestPath).Length -ne 1835 -or
         (Get-RustyFleetSha256 -LiteralPath $ownerExecutablePath) -cne
             $helper[0].owner_release.executable_sha256 -or
+        [long](Get-Item -LiteralPath $ownerExecutablePath).Length -ne 219648 -or
         (Get-RustyFleetSha256 -LiteralPath $ownerProvenancePath) -cne
             $helper[0].owner_release.provenance_sha256 -or
+        [long](Get-Item -LiteralPath $ownerProvenancePath).Length -ne 4596 -or
         (Get-RustyFleetSha256 -LiteralPath $ownerChecksumsPath) -cne
-            $helper[0].owner_release.checksums_sha256) {
+            $helper[0].owner_release.checksums_sha256 -or
+        [long](Get-Item -LiteralPath $ownerChecksumsPath).Length -ne 420 -or
+        (Get-RustyFleetSha256 -LiteralPath $ownerLicensePath) -cne
+            "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0" -or
+        [long](Get-Item -LiteralPath $ownerLicensePath).Length -ne 34523 -or
+        (Get-RustyFleetSha256 -LiteralPath $ownerNoticePath) -cne
+            "7a95b2704991263057c12f75efae64cd2c38bf35e20fceca7bc42884e69e698a" -or
+        [long](Get-Item -LiteralPath $ownerNoticePath).Length -ne 427) {
         throw "bundled owner capsule bytes do not match the component pin"
     }
     $ownerManifest = Get-Content -Raw -LiteralPath $ownerManifestPath | ConvertFrom-Json -Depth 30

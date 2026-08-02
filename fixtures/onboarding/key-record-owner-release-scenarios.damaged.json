@@ -13,7 +13,9 @@
     { "name": "extra-parse-only-repository", "expected": "reject" },
     { "name": "non-reproducible-provenance", "expected": "reject" },
     { "name": "missing-pe-repro-marker-policy", "expected": "reject" },
-    { "name": "machine-local-path-policy", "expected": "reject" }
+    { "name": "machine-local-path-policy", "expected": "reject" },
+    { "name": "license-substitution", "expected": "reject" },
+    { "name": "source-notice-substitution", "expected": "reject" }
   ],
   "existing_onboarding_negatives": [
     "duplicate-device-id",

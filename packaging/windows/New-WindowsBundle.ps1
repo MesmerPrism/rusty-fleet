@@ -61,24 +61,30 @@ $distributionTrack = switch ($Channel) {
 Import-Module (Join-Path $PSScriptRoot "Distribution.Common.psm1") -Force
 $repoPath = (Resolve-Path -LiteralPath $RepoRoot).Path
 
+function Assert-OwnerCapsule([string] $LiteralPath, [string] $Phase) {
+    $validation = & pwsh -NoProfile -ExecutionPolicy Bypass -File `
+        (Join-Path $repoPath "tools\Test-FleetAgentKeyRecordOwnerRelease.ps1") `
+        -CapsuleRoot $LiteralPath | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $validation.status -cne "pass" -or
+        $validation.owner_id -cne "rusty-quest" -or
+        $validation.consumer_id -cne "rusty-fleet/fleet-onboard" -or
+        $validation.capsule_validity -cne
+            "packaging-and-tool-provenance-only" -or
+        $validation.onboarding_accepted -ne $false -or
+        $validation.executable_reproducible -ne $true -or
+        $validation.executable_machine_path_free -ne $true) {
+        throw "Rusty Quest key-record owner release capsule validation failed at $Phase"
+    }
+    return $validation
+}
+
 $ownerCapsuleReady = $false
 $ownerCapsulePath = $null
 $ownerReleaseValidation = $null
 if (-not [string]::IsNullOrWhiteSpace($FleetAgentKeyRecordOwnerCapsuleRoot)) {
     $ownerCapsulePath = (Resolve-Path -LiteralPath $FleetAgentKeyRecordOwnerCapsuleRoot).Path
-    $ownerReleaseValidation = & pwsh -NoProfile -ExecutionPolicy Bypass -File `
-        (Join-Path $repoPath "tools\Test-FleetAgentKeyRecordOwnerRelease.ps1") `
-        -CapsuleRoot $ownerCapsulePath | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $ownerReleaseValidation.status -cne "pass" -or
-        $ownerReleaseValidation.owner_id -cne "rusty-quest" -or
-        $ownerReleaseValidation.consumer_id -cne "rusty-fleet/fleet-onboard" -or
-        $ownerReleaseValidation.capsule_validity -cne
-            "packaging-and-tool-provenance-only" -or
-        $ownerReleaseValidation.onboarding_accepted -ne $false -or
-        $ownerReleaseValidation.executable_reproducible -ne $true -or
-        $ownerReleaseValidation.executable_machine_path_free -ne $true) {
-        throw "Rusty Quest key-record owner release capsule validation failed"
-    }
+    $ownerReleaseValidation = Assert-OwnerCapsule `
+        -LiteralPath $ownerCapsulePath -Phase "source-preflight"
     $ownerCapsuleReady = $true
 }
 elseif ($BuildKind -eq "signed-release") {
@@ -177,6 +183,30 @@ if (Test-Path -LiteralPath $buildRoot) {
 [System.IO.Directory]::CreateDirectory($buildRoot) | Out-Null
 
 try {
+    if ($ownerCapsuleReady) {
+        $stagedOwnerCapsulePath = Join-Path $buildRoot "owner-capsule"
+        [void][IO.Directory]::CreateDirectory($stagedOwnerCapsulePath)
+        foreach ($name in @(
+            "LICENSE", "SOURCE-NOTICE.md", "checksums.sha256",
+            "fleet-agent-key-record.exe", "provenance.json", "release-manifest.json")) {
+            Copy-Item -LiteralPath (Join-Path $ownerCapsulePath $name) `
+                -Destination (Join-Path $stagedOwnerCapsulePath $name)
+        }
+        $stagedValidation = Assert-OwnerCapsule `
+            -LiteralPath $stagedOwnerCapsulePath -Phase "validated-staging"
+        if ($stagedValidation.manifest_sha256 -cne
+                $ownerReleaseValidation.manifest_sha256 -or
+            $stagedValidation.executable_sha256 -cne
+                $ownerReleaseValidation.executable_sha256 -or
+            $stagedValidation.provenance_sha256 -cne
+                $ownerReleaseValidation.provenance_sha256 -or
+            $stagedValidation.checksums_sha256 -cne
+                $ownerReleaseValidation.checksums_sha256) {
+            throw "staged owner capsule identity drifted from source preflight"
+        }
+        $ownerCapsulePath = $stagedOwnerCapsulePath
+    }
+
     if (-not $SkipBuild) {
         $consolePublish = Join-Path $buildRoot "console"
         & dotnet publish `
@@ -299,9 +329,26 @@ try {
     Copy-Item -LiteralPath $fleetOnboardPath `
         -Destination (Join-Path $bundleRoot "components\fleet-onboard\fleet-onboard.exe")
     if ($ownerCapsuleReady) {
-        Get-ChildItem -LiteralPath $ownerCapsulePath -File |
-            Copy-Item -Destination (
-                Join-Path $bundleRoot "components\rusty-quest-key-record-helper")
+        $bundledOwnerCapsulePath =
+            Join-Path $bundleRoot "components\rusty-quest-key-record-helper"
+        foreach ($name in @(
+            "LICENSE", "SOURCE-NOTICE.md", "checksums.sha256",
+            "fleet-agent-key-record.exe", "provenance.json", "release-manifest.json")) {
+            Copy-Item -LiteralPath (Join-Path $ownerCapsulePath $name) `
+                -Destination (Join-Path $bundledOwnerCapsulePath $name)
+        }
+        $bundledValidation = Assert-OwnerCapsule `
+            -LiteralPath $bundledOwnerCapsulePath -Phase "final-bundle"
+        if ($bundledValidation.manifest_sha256 -cne
+                $ownerReleaseValidation.manifest_sha256 -or
+            $bundledValidation.executable_sha256 -cne
+                $ownerReleaseValidation.executable_sha256 -or
+            $bundledValidation.provenance_sha256 -cne
+                $ownerReleaseValidation.provenance_sha256 -or
+            $bundledValidation.checksums_sha256 -cne
+                $ownerReleaseValidation.checksums_sha256) {
+            throw "bundled owner capsule identity drifted from source preflight"
+        }
     }
     Copy-Item -LiteralPath $providerPath `
         -Destination (Join-Path $bundleRoot "providers\hostess-hotspot-provider\rusty-hostess-hotspot-provider.exe")

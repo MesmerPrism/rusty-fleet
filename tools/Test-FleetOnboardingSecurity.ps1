@@ -127,7 +127,7 @@ Assert-True -Condition (
     $ownerReleaseValid.onboarding_accepted -eq $false -and
     $ownerReleaseDamaged.schema -ceq
         "rusty.fleet.fleet_agent_key_record_owner_release_damage_matrix.v1" -and
-    @($ownerReleaseDamaged.cases).Count -eq 13 -and
+    @($ownerReleaseDamaged.cases).Count -eq 15 -and
     @($ownerReleaseDamaged.existing_onboarding_negatives) -contains "duplicate-device-id" -and
     @($ownerReleaseDamaged.existing_onboarding_negatives) -contains "duplicate-key-id" -and
     @($ownerReleaseDamaged.existing_onboarding_negatives) -contains "extra-private-inventory-file" -and
@@ -135,7 +135,9 @@ Assert-True -Condition (
     $ownerReleaseSelfTest.Contains("duplicate-capsule", [StringComparison]::Ordinal) -and
     $ownerReleaseSelfTest.Contains("extra-repository", [StringComparison]::Ordinal) -and
     $ownerReleaseSelfTest.Contains("extra-parse-only-repository", [StringComparison]::Ordinal) -and
-    $ownerReleaseSelfTest.Contains("non-reproducible-provenance", [StringComparison]::Ordinal)
+    $ownerReleaseSelfTest.Contains("non-reproducible-provenance", [StringComparison]::Ordinal) -and
+    $ownerReleaseSelfTest.Contains("license-substitution", [StringComparison]::Ordinal) -and
+    $ownerReleaseSelfTest.Contains("source-notice-substitution", [StringComparison]::Ordinal)
 ) -Message "Fleet owner release valid/damaged fixture matrix is incomplete."
 
 $verbs = @(

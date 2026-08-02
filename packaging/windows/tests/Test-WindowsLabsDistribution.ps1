@@ -43,7 +43,11 @@ Assert-Labs (
     $bundle -match 'signed release requires the exact pinned Rusty Quest key-record owner capsule' -and
     $bundle -match 'onboarding_ready = \$ownerCapsuleReady' -and
     $bundle -match 'rusty-quest-key-record-helper' -and
-    $bundle -match 'packaging-and-tool-provenance-only'
+    $bundle -match 'packaging-and-tool-provenance-only' -and
+    $bundle -match 'Assert-OwnerCapsule' -and
+    $bundle -match 'validated-staging' -and
+    $bundle -match 'final-bundle' -and
+    $bundle -match 'SOURCE-NOTICE\.md'
 ) "Labs bundle does not fail closed on the exact Rusty Quest owner capsule"
 Assert-Labs ($setup -match 'rusty-fleet-labs' -and $setup -match 'Rusty Fleet Labs' -and $setup -match 'RustyFleetLabs') "Labs installation identity is incomplete"
 Assert-Labs (

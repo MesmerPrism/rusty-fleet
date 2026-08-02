@@ -696,22 +696,26 @@ try {
             }).Count -eq 1
         ) "complete owner capsule did not make the package onboarding-ready"
 
-        $damagedReadyBundle = Join-Path $testRoot "owner-capsule-damaged"
-        Copy-Item -LiteralPath $readyBundle -Destination $damagedReadyBundle -Recurse
-        [IO.File]::AppendAllText((
-            Join-Path $damagedReadyBundle (
-                "components\rusty-quest-key-record-helper\fleet-agent-key-record.exe")),
-            "damage")
-        $damagedOwnerRejected = $false
-        try {
-            & (Join-Path $packagingRoot "Test-WindowsBundle.ps1") `
-                -BundleRoot $damagedReadyBundle | Out-Null
+        foreach ($ownerFile in @(
+            "fleet-agent-key-record.exe", "LICENSE", "SOURCE-NOTICE.md")) {
+            $caseName = $ownerFile.Replace(".", "-")
+            $damagedReadyBundle = Join-Path $testRoot "owner-capsule-damaged-$caseName"
+            Copy-Item -LiteralPath $readyBundle -Destination $damagedReadyBundle -Recurse
+            [IO.File]::AppendAllText((
+                Join-Path $damagedReadyBundle (
+                    "components\rusty-quest-key-record-helper\$ownerFile")),
+                "damage")
+            $damagedOwnerRejected = $false
+            try {
+                & (Join-Path $packagingRoot "Test-WindowsBundle.ps1") `
+                    -BundleRoot $damagedReadyBundle | Out-Null
+            }
+            catch {
+                $damagedOwnerRejected = $true
+            }
+            Assert-Distribution $damagedOwnerRejected `
+                "bundle validation accepted substituted owner capsule file: $ownerFile"
         }
-        catch {
-            $damagedOwnerRejected = $true
-        }
-        Assert-Distribution $damagedOwnerRejected `
-            "bundle validation accepted substituted owner helper bytes"
     }
 
     foreach ($relative in @(

@@ -17,7 +17,7 @@ $matrix = Get-Content -Raw -LiteralPath (
     ConvertFrom-Json
 if ($matrix.schema -cne
         "rusty.fleet.fleet_agent_key_record_owner_release_damage_matrix.v1" -or
-    @($matrix.cases).Count -ne 13) {
+    @($matrix.cases).Count -ne 15) {
     throw "Fleet owner release damage matrix is incomplete"
 }
 
@@ -118,6 +118,14 @@ Invoke-MustReject "non-reproducible-provenance" {
     $value = Get-Content -Raw $path | ConvertFrom-Json
     $value.build.pe_reproducibility_marker = "absent"
     Write-Json $path $value
+}
+Invoke-MustReject "license-substitution" {
+    param($capsule, $pin)
+    [IO.File]::AppendAllText((Join-Path $capsule "LICENSE"), "damage")
+}
+Invoke-MustReject "source-notice-substitution" {
+    param($capsule, $pin)
+    [IO.File]::AppendAllText((Join-Path $capsule "SOURCE-NOTICE.md"), "damage")
 }
 
 Write-Output "Rusty Fleet key-record owner release self-test passed"
