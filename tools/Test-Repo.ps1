@@ -335,6 +335,7 @@ function Test-RequiredFiles {
         "docs/PROVIDER_CAPABILITY_CATALOG.md",
         "tools/New-FleetIcon.ps1",
         "tools/Test-FleetOnboardingSecurity.ps1",
+        "tools/Get-FleetAgentKeyRecordOwnerRelease.ps1",
         "tools/Fleet.ValidationGuardrails.psm1",
         "tools/Invoke-FleetValidation.ps1",
         "tools/Test-FleetValidationGuardrails.ps1",

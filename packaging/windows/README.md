@@ -83,6 +83,27 @@ an immutable source-to-artifact proof. An unsigned bundle and its owner provenan
 `development_only`; the Fleet manifest sets `publication_allowed` to false.
 It is not a release artifact.
 
+## Fetch the pinned Rusty Quest owner capsule
+
+Fleet keeps the Rusty Quest key-record helper as a byte-preserved external
+owner release. Plan its exact six-file download without changing disk:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\Get-FleetAgentKeyRecordOwnerRelease.ps1 `
+  -OutputDirectory <new-capsule-directory>
+```
+
+Append `-Execute` to download into a private candidate directory, verify every
+size and SHA-256 against
+`config/fleet-agent-key-record-owner-release.v1.json`, run the complete Fleet
+owner-capsule validator, and publish the candidate atomically to the requested
+directory. An existing destination is rejected. The command emits a typed
+receipt and never treats packaging provenance as enrollment, activation,
+reachability, lease, or peer-acceptance evidence. Supply the resulting path as
+`-FleetAgentKeyRecordOwnerCapsuleRoot` when building an onboarding-ready
+bundle.
+
 `New-WindowsSetup.ps1` embeds that already validated ZIP in one self-contained
 `RustyFleet-Setup.exe`. Its exact no-change automation route is
 `--plan --json`; its zero-argument route is the visible guided installer.
@@ -335,7 +356,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File .\packaging\windows\tests\Test-WindowsPublicationRemote.ps1
 pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File .\packaging\windows\tests\Test-WindowsPublication.ps1
+  -File .\packaging\windows\tests\Test-WindowsPublication.ps1 `
+  -FleetAgentKeyRecordOwnerCapsuleRoot <validated-capsule-directory>
 ```
 
 The suite covers deterministic archives, exact five-component composition,

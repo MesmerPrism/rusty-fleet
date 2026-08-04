@@ -189,16 +189,38 @@ jobs:
           rustup toolchain install 1.96.0 --profile minimal
           rustup override set 1.96.0
 
+      - name: Download and validate exact Rusty Quest owner capsule
+        shell: pwsh
+        run: |
+          $capsule = Join-Path $env:RUNNER_TEMP 'rusty-quest-key-record-owner-capsule'
+          $receipt = .\tools\Get-FleetAgentKeyRecordOwnerRelease.ps1 `
+            -OutputDirectory $capsule `
+            -Execute | ConvertFrom-Json -Depth 20
+          if ($receipt.result -cne 'pass' -or
+              $receipt.owner_id -cne 'rusty-quest' -or
+              $receipt.consumer_id -cne 'rusty-fleet/fleet-onboard') {
+            throw 'Rusty Quest owner capsule fetch receipt is not exact'
+          }
+          [IO.File]::AppendAllText(
+            $env:GITHUB_ENV,
+            "FLEET_AGENT_KEY_RECORD_OWNER_CAPSULE_ROOT=$capsule`n",
+            [Text.UTF8Encoding]::new($false)
+          )
+
       - name: Run offline distribution tests
         shell: pwsh
         run: |
-          .\packaging\windows\tests\Test-WindowsDistribution.ps1
+          .\packaging\windows\tests\Test-WindowsDistribution.ps1 `
+            -FleetAgentKeyRecordOwnerCapsuleRoot `
+              $env:FLEET_AGENT_KEY_RECORD_OWNER_CAPSULE_ROOT
           .\packaging\windows\tests\Test-WindowsReleaseDescriptor.ps1
           .\packaging\windows\tests\Test-WindowsReleasePolicy.ps1
           .\packaging\windows\tests\Test-WindowsAuthenticodeTrust.ps1
           .\packaging\windows\tests\Test-WindowsPagesDeployment.ps1
           .\packaging\windows\tests\Test-WindowsPublicationRemote.ps1
-          .\packaging\windows\tests\Test-WindowsPublication.ps1
+          .\packaging\windows\tests\Test-WindowsPublication.ps1 `
+            -FleetAgentKeyRecordOwnerCapsuleRoot `
+              $env:FLEET_AGENT_KEY_RECORD_OWNER_CAPSULE_ROOT
 
       - name: Build Fleet executables
         shell: pwsh
@@ -309,6 +331,9 @@ jobs:
             HubArtifactPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleet-hub-local.exe')
             FleetctlArtifactPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleetctl.exe')
             FleetOnboardArtifactPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\fleet-onboard.exe')
+            FleetAgentKeyRecordOwnerCapsuleRoot = (
+              $env:FLEET_AGENT_KEY_RECORD_OWNER_CAPSULE_ROOT
+            )
             RequireCleanSource = $true
           }
           if ($env:SIGNING_MODE -eq 'signed-release') {

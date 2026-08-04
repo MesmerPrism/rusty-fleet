@@ -16,6 +16,7 @@ $pagesWorkflow = Read-Repo ".github/workflows/pages.yml"
 $stableWorkflow = Read-Repo ".github/workflows/release-windows.yml"
 $labsWorkflow = Read-Repo ".github/workflows/release-windows-labs.yml"
 $publication = Read-Repo "packaging/windows/Publish-WindowsRelease.ps1"
+$ownerFetcher = Read-Repo "tools/Get-FleetAgentKeyRecordOwnerRelease.ps1"
 $descriptor = Read-Repo "packaging/windows/New-WindowsReleaseDescriptor.ps1"
 $signing = Read-Repo "packaging/windows/Sign-WindowsArtifacts.ps1"
 $policy = Read-Repo "packaging/windows/trust/release-policy.json" |
@@ -49,6 +50,14 @@ Assert-Labs (
     $bundle -match 'final-bundle' -and
     $bundle -match 'SOURCE-NOTICE\.md'
 ) "Labs bundle does not fail closed on the exact Rusty Quest owner capsule"
+Assert-Labs (
+    $ownerFetcher -match 'rusty\.fleet\.owner_capsule_fetch_plan\.v1' -and
+    $ownerFetcher -match 'rusty\.fleet\.owner_capsule_fetch_receipt\.v1' -and
+    $ownerFetcher -match 'fleet-agent-key-record-v\$\(\$pin\.capsule_version\)' -and
+    $ownerFetcher -match 'Test-FleetAgentKeyRecordOwnerRelease\.ps1' -and
+    $stableWorkflow -match 'Get-FleetAgentKeyRecordOwnerRelease\.ps1' -and
+    $stableWorkflow -match 'FLEET_AGENT_KEY_RECORD_OWNER_CAPSULE_ROOT'
+) "signed release does not fetch, validate, and consume the pinned owner capsule"
 Assert-Labs ($setup -match 'rusty-fleet-labs' -and $setup -match 'Rusty Fleet Labs' -and $setup -match 'RustyFleetLabs') "Labs installation identity is incomplete"
 Assert-Labs (
     $descriptor -match '\$plan\.product -cne \$installationIdentity' -and

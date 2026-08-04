@@ -3,7 +3,10 @@
 
 [CmdletBinding()]
 param(
-    [switch] $BaselineOnly
+    [switch] $BaselineOnly,
+
+    [Parameter(Mandatory)]
+    [string] $FleetAgentKeyRecordOwnerCapsuleRoot
 )
 
 Set-StrictMode -Version Latest
@@ -230,6 +233,22 @@ try {
                 "`n"
             )
         )
+    $sourceTools = Join-Path $sourceRepo "tools"
+    $sourceConfig = Join-Path $sourceRepo "config"
+    [IO.Directory]::CreateDirectory($sourceTools) | Out-Null
+    [IO.Directory]::CreateDirectory($sourceConfig) | Out-Null
+    Copy-Item `
+        -LiteralPath (
+            Join-Path $repositoryRoot "tools\Test-FleetAgentKeyRecordOwnerRelease.ps1"
+        ) `
+        -Destination $sourceTools
+    Copy-Item `
+        -LiteralPath (
+            Join-Path $repositoryRoot (
+                "config\fleet-agent-key-record-owner-release.v1.json"
+            )
+        ) `
+        -Destination $sourceConfig
     Copy-Item `
         -LiteralPath (Join-Path $repositoryRoot ".gitattributes") `
         -Destination (Join-Path $sourceRepo ".gitattributes")
@@ -669,6 +688,7 @@ public static class ProviderFixture { }
         -HubArtifactPath $hubPath `
         -FleetctlArtifactPath $fleetctlPath `
         -FleetOnboardArtifactPath $fleetOnboardPath `
+        -FleetAgentKeyRecordOwnerCapsuleRoot $FleetAgentKeyRecordOwnerCapsuleRoot `
         -RequireCleanSource `
         -RequireAuthenticodeSignatures `
         -ExpectedFleetSignerThumbprint $signerThumbprint `
