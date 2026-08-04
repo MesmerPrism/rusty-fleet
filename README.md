@@ -164,13 +164,15 @@ The current implementation is split into:
 - `fleet-onboarding` and `fleet-onboard`: a standalone, offline,
   confirmation-bound generator for new current-user-only Fleet Agent
   profiles, seeds, public key records, and Hub enrollment configuration. Its
-  pinned developer-evidence tool runs from a deny-rename retained path inside
-  a bounded Windows Job Object, and rollback/cleanup use a closed
-  retained-handle inventory. The current portable Rusty Quest capsule is
-  explicitly pre-build-snapshot, unproven source binding usable only by exact
-  artifact hash, and development-only; distribution still requires a
-  separately signed owner-issued release capsule. The generator neither
-  installs nor enrolls devices and is
+  exact Rusty Quest `1.0.0` owner-release helper runs from a deny-rename
+  retained path inside a bounded Windows Job Object, and rollback/cleanup use
+  a closed retained-handle inventory. Fleet separately pins the owner identity,
+  manifest, executable, source and provenance; ready Windows bundles preserve
+  the capsule byte-for-byte as an inert component. Rusty Quest has no capsule
+  signing/revocation authority, so the contract makes no signature claim. The
+  helper proves packaging/tool provenance only, while Manifold remains the
+  live enrollment and peer authority. The generator neither installs nor
+  enrolls devices and is
   documented in
   [Offline Fleet Onboarding](docs/OFFLINE_ONBOARDING.md).
 
@@ -187,8 +189,9 @@ This composition is a headless source candidate. Repository validation does
 not claim a GUI-attended pass, Quest/device behavior, signed Windows bundles,
 publication, or release availability. Those remain separately gated.
 
-The Windows distribution source now composes exactly five inert components,
-including `fleet-onboard`, into a deterministic validated ZIP and embeds it in
+The Windows distribution source composes five base inert components and, when
+the complete pinned owner capsule validates, one inert Rusty Quest helper
+component into a deterministic validated ZIP and embeds it in
 the generic-icon `RustyFleet-Setup.exe`. Setup exposes exact no-change
 `--plan --json` automation plus a visible zero-argument guided install. QFM
 may verify and launch that Setup through the v2 signed-descriptor handoff, but

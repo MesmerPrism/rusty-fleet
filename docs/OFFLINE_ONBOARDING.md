@@ -47,7 +47,7 @@ are no generic tool arguments, environment overrides, supplied seeds,
 tool-derived endpoints, serials, ADB routes, pairing values, overwrite,
 resume, force, or installation switches.
 
-## Planning and quarantined trust evidence
+## Planning and owner-release trust evidence
 
 `validate-tool` and `plan` are read-only. They do not create the output root,
 temporary directories, or seeds; execute the key tool; alter ACLs; contact or
@@ -55,26 +55,45 @@ start Hub; or interact with a device. The canonical plan binds the request,
 output list, pinned Quest tool and owner-profile evidence, and explicit
 non-claims. `apply` rebuilds that plan and requires its exact SHA-256.
 
-The request locates a repository-issued manifest; it does not choose the trust
-anchor. The currently pinned capsule is machine-bound developer evidence for
-this source checkpoint. It is not a portable or supported distribution
-artifact and must not be copied, repackaged, or advertised as one. Its absolute
-developer-workspace provenance and executable locations are intentionally
-quarantined from onboarding and release documentation.
+The request locates an owner-issued release manifest; it does not choose the
+trust anchor. Fleet pins the consumer, owner identity, manifest, artifact,
+source and provenance independently in
+`config/fleet-agent-key-record-owner-release.v1.json`. The supported Rusty
+Quest `1.0.0` capsule is portable and contains exactly the helper executable,
+release manifest, public provenance, project license, source notice and
+checksums. Fleet preserves those owner bytes without augmentation when it
+packages the inert helper component.
 
-That quarantined developer-evidence path accepts exactly:
+The owner release accepts exactly these six files:
 
-- manifest SHA-256
-  `e92c9e000246798748ccb208567f24f72398ed6bad21cc3d05fc81c38da34f56`;
-- executable SHA-256
-  `74b75142ba0e7a777eb8a01fbb8ceed5aeb7f9c744a8d3fb8ec2e0fc850c0431`;
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `LICENSE` | 34,523 | `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0` |
+| `SOURCE-NOTICE.md` | 427 | `7a95b2704991263057c12f75efae64cd2c38bf35e20fceca7bc42884e69e698a` |
+| `checksums.sha256` | 420 | `aae77f56355cb6129b13dbe20850fb08c01a7a4cba9a17a8d97aee84490f407b` |
+| `fleet-agent-key-record.exe` | 219,648 | `6e3962726be67cf42d0fdc2dbf3792f7d665524323e5615f1907002518bfe3d7` |
+| `provenance.json` | 4,596 | `dba7ba306b3f0839db54d1e965f71a1939f82b413fa72cf7d883788a7ba41676` |
+| `release-manifest.json` | 1,835 | `d96baf6f3cdd5af9d79d0d98df5fd96e5ee9f689350a1d415c8a88fac101e457` |
+
+It also accepts only:
+
 - Rusty Quest source commit
-  `de1444187365b785f4ef74e24ccb40b10f34982f`;
-- its exact source tree, composition fingerprint, package, and three-repository
-  provenance set.
+  `cebdf368d9a2f1d2c12f9566f937f51bd5f29945`;
+- exact source tree `1d23419ff6e95289b804d86ccc5a5cd66fd27afc`,
+  composition fingerprint, package, public source-file hashes and the closed
+  Rusty Fleet/Rusty Manifold/Rusty Quest provenance set;
+- consumer identity `rusty-fleet/fleet-onboard` and owner identity
+  `rusty-quest`.
 
 Unknown manifest fields, extra or missing repositories, dirty repository
-claims, source drift, executable drift, or path substitution fail closed.
+claims, source/provenance drift, executable drift, wrong consumer/owner,
+duplicate capsule files, secret markers, or path substitution fail closed.
+The supported helper is independently required to be a reproducible x64 PE:
+its provenance binds isolated Git materializations, post-build identity
+verification, source-path remapping, stripped symbols, `/Brepro`, and an exact
+`IMAGE_DEBUG_TYPE_REPRO` marker. Fleet scans the executable itself for that PE
+marker and for machine-local ASCII and UTF-16 paths; provenance text alone is
+not sufficient.
 Opened manifest and executable handles are bound by volume/file identity,
 link count, ACL digest, length, and content digest. The exact non-inheritable
 executable handle and every mutable ancestor directory remain retained while
@@ -82,11 +101,18 @@ the tool runs. Ancestor handles deny delete sharing, the complete path identity
 chain is checked immediately before and after process creation, and executable
 bytes are rehashed after every invocation.
 
-A supported distribution requires a separately owner-issued release capsule
-whose portable provenance, release artifact, and installation contract are
-reviewed and pinned by a later Fleet change. The current developer capsule and
-pins do not satisfy that gate. Distribution work must remain blocked until the
-owner release capsule exists and Fleet validates that separate contract.
+Rusty Quest currently has no key-record-capsule signature or revocation
+authority. Fleet therefore records `owner_signature.present=false` instead of
+inventing a signature. Exact public repository identity, clean source
+commit/tree, closed provenance and independently pinned SHA-256 values bind the
+owner release. A signed Fleet bundle authenticates Fleet packaging only and is
+not relabeled as a Rusty Quest signature.
+
+Capsule validity is packaging and helper provenance only. It does not prove
+onboarding acceptance, installation, activation, reachability, a lease, or
+peer acceptance. Manifold remains the live enrollment and peer authority.
+`onboarding_ready=true` means only that the complete pinned helper capsule is
+present and valid in the bundle; live onboarding remains separately gated.
 
 ## Contained key derivation
 
@@ -175,8 +201,9 @@ its owner-issued receipt.
 
 | Threat | Mitigation |
 | --- | --- |
-| altered or substituted tool | exact developer-evidence pins, closed provenance set, retained non-inheritable executable and deny-rename ancestor chain, before/after path-identity checks, post-invocation rehash |
-| developer capsule mistaken for a release | explicit machine-bound quarantine; supported distribution blocked on a separately owner-issued release capsule and later Fleet pin |
+| altered or substituted tool | exact owner identity/manifest/artifact/source/provenance pins, closed provenance set, retained non-inheritable executable and deny-rename ancestor chain, before/after path-identity checks, post-invocation rehash |
+| capsule mistaken for live authority | explicit packaging-only claim; onboarding/activation/reachability/lease/peer non-claims; Manifold remains live authority |
+| absent owner signature authority | explicit `owner_signature.present=false`; exact Git/source/hash binding; no simulated signature or revocation |
 | network/share or link redirection | standard local-drive requirement, component-wise non-following opens, reparse and namespace rejection |
 | request/tool argument injection | strict JSON structs, dotted-ID validation, fixed argument vector, cleared environment |
 | inherited disclosure | private request and parent prerequisite, immediate current-user-only root ACL, inherited private children |

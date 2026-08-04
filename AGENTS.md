@@ -234,6 +234,15 @@ accessibility, device-owner, file operations, media streaming, and relay access
 are separate opt-in capabilities with explicit grants and truthful degraded
 states.
 
+Offline onboarding consumes only the exact Rusty Quest key-record owner
+release pinned in `config/fleet-agent-key-record-owner-release.v1.json`. Keep
+the owner capsule byte-for-byte, bind its owner identity and hash separately,
+and treat it as an inert helper component. Capsule validation proves packaging
+and tool provenance only; it never proves enrollment, activation, reachability,
+lease issuance, or peer acceptance. Rusty Quest currently has no capsule
+signature/revocation authority, so do not fabricate one; Manifold remains the
+sole live enrollment and peer authority.
+
 For M1 check-ins, preserve the signed Manifold peer identity, proposal id,
 status revision, timestamps, capabilities, and payload class; bind the
 enrolled peer and active key to the Fleet observation; and sign RFC 8785/JCS

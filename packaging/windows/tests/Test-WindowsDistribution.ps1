@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 [CmdletBinding()]
-param()
+param(
+    [string] $FleetAgentKeyRecordOwnerCapsuleRoot = ""
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -135,6 +137,7 @@ function Invoke-TestBundle {
         [Parameter(Mandatory)][string] $ProviderPath,
         [Parameter(Mandatory)][string] $ProviderSha256,
         [Parameter(Mandatory)][string] $ProviderMetadataDirectory,
+        [string] $OwnerCapsuleRoot = "",
         [ValidateSet("dev", "labs", "stable")]
         [string] $Channel = "dev",
         [ValidateSet("alpha", "beta", "rc", "released")]
@@ -143,23 +146,28 @@ function Invoke-TestBundle {
         [string] $SourceTree = ("2" * 40)
     )
 
-    & (Join-Path $packagingRoot "New-WindowsBundle.ps1") `
-        -Version $Version `
-        -Channel $Channel `
-        -Maturity $Maturity `
-        -BuildKind unsigned-dev `
-        -HostessProviderPath $ProviderPath `
-        -HostessProviderSha256 $ProviderSha256 `
-        -HostessProviderMetadataDirectory $ProviderMetadataDirectory `
-        -OutputDirectory $OutputDirectory `
-        -SourceRevision $SourceRevision `
-        -SourceTree $SourceTree `
-        -SourceDateEpoch 1785110400 `
-        -SkipBuild `
-        -ConsoleArtifactDirectory $ConsoleDirectory `
-        -HubArtifactPath $HubPath `
-        -FleetctlArtifactPath $FleetctlPath `
-        -FleetOnboardArtifactPath $FleetOnboardPath
+    $arguments = @{
+        Version = $Version
+        Channel = $Channel
+        Maturity = $Maturity
+        BuildKind = "unsigned-dev"
+        HostessProviderPath = $ProviderPath
+        HostessProviderSha256 = $ProviderSha256
+        HostessProviderMetadataDirectory = $ProviderMetadataDirectory
+        OutputDirectory = $OutputDirectory
+        SourceRevision = $SourceRevision
+        SourceTree = $SourceTree
+        SourceDateEpoch = 1785110400
+        SkipBuild = $true
+        ConsoleArtifactDirectory = $ConsoleDirectory
+        HubArtifactPath = $HubPath
+        FleetctlArtifactPath = $FleetctlPath
+        FleetOnboardArtifactPath = $FleetOnboardPath
+    }
+    if ($OwnerCapsuleRoot) {
+        $arguments.FleetAgentKeyRecordOwnerCapsuleRoot = $OwnerCapsuleRoot
+    }
+    & (Join-Path $packagingRoot "New-WindowsBundle.ps1") @arguments
 }
 
 function Start-TestSetup {
@@ -659,6 +667,139 @@ try {
         ConvertFrom-Json
     Assert-Distribution ($validation.result -eq "pass") "valid bundle did not pass"
     Assert-Distribution ($validation.runtime_components -eq 5) "runtime composition is not exact"
+
+    if ($FleetAgentKeyRecordOwnerCapsuleRoot) {
+        $readyOutput = Join-Path $testRoot "owner-capsule-ready"
+        Invoke-TestBundle `
+            -Version "0.0.0-test.1" `
+            -OutputDirectory $readyOutput `
+            -ConsoleDirectory $console `
+            -HubPath $hub `
+            -FleetctlPath $fleetctl `
+            -FleetOnboardPath $fleetOnboard `
+            -ProviderPath $provider `
+            -ProviderSha256 $providerSha256 `
+            -ProviderMetadataDirectory $providerMetadata `
+            -OwnerCapsuleRoot $FleetAgentKeyRecordOwnerCapsuleRoot | Out-Null
+        $readyBundle = Join-Path $readyOutput $bundleNameOne
+        $readyValidation = & (Join-Path $packagingRoot "Test-WindowsBundle.ps1") `
+            -BundleRoot $readyBundle | ConvertFrom-Json
+        $readyManifest = Get-Content -Raw -LiteralPath (
+            Join-Path $readyBundle "metadata\release-manifest.json") |
+            ConvertFrom-Json -Depth 30
+        Assert-Distribution (
+            $readyValidation.runtime_components -eq 6 -and
+            $readyManifest.distribution.onboarding_ready -eq $true -and
+            $readyManifest.distribution.onboarding_blocker -ceq "none" -and
+            @($readyManifest.components | Where-Object {
+                $_.component_id -ceq "rusty-quest-key-record-helper"
+            }).Count -eq 1
+        ) "complete owner capsule did not make the package onboarding-ready"
+
+        $readyArchive = Join-Path $readyOutput "$bundleNameOne.zip"
+        $readySetupOutput = Join-Path $testRoot "owner-capsule-ready-setup"
+        $readySetupReceipt = & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+            -Version "0.0.0-test.1" -Channel dev -BuildKind unsigned-dev `
+            -BundleArchivePath $readyArchive `
+            -DevelopmentInstallRoot (Join-Path $testRoot "owner-capsule-ready-install") `
+            -OutputDirectory $readySetupOutput | ConvertFrom-Json
+        $readySetupPath = Join-Path $readySetupOutput "RustyFleet-Setup.exe"
+        $readySetupPlan = & $readySetupPath --plan --json | ConvertFrom-Json
+        Assert-Distribution (
+            $readySetupReceipt.version -ceq "0.0.0-test.1" -and
+            $readySetupPlan.ready -eq $true
+        ) "Setup did not admit the exact onboarding-ready six-component bundle"
+
+        $fiveMismatchRoot = Join-Path $testRoot "setup-five-components-falsely-ready"
+        $fiveMismatchBundle = Join-Path $fiveMismatchRoot $bundleNameOne
+        Copy-Item -LiteralPath $bundleOne -Destination $fiveMismatchBundle -Recurse
+        $fiveMismatchManifestPath = Join-Path $fiveMismatchBundle `
+            "metadata\release-manifest.json"
+        $fiveMismatchManifest = Get-Content -LiteralPath $fiveMismatchManifestPath -Raw |
+            ConvertFrom-Json -Depth 30
+        $fiveMismatchManifest.distribution.onboarding_ready = $true
+        $fiveMismatchManifest.distribution.onboarding_blocker = "none"
+        Write-RustyFleetUtf8 -LiteralPath $fiveMismatchManifestPath -Content (
+            $fiveMismatchManifest | ConvertTo-Json -Depth 30)
+        $fiveMismatchArchive = Join-Path $fiveMismatchRoot "$bundleNameOne.zip"
+        New-RustyFleetDeterministicZip -SourceDirectory $fiveMismatchBundle `
+            -DestinationPath $fiveMismatchArchive -SourceDateEpoch 0
+        $fiveMismatchAccepted = $false
+        $fiveMismatchFailure = ""
+        try {
+            & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+                -Version "0.0.0-test.1" -Channel dev -BuildKind unsigned-dev `
+                -BundleArchivePath $fiveMismatchArchive `
+                -DevelopmentInstallRoot (Join-Path $testRoot "five-mismatch-install") `
+                -OutputDirectory (Join-Path $testRoot "five-mismatch-setup") | Out-Null
+            $fiveMismatchAccepted = $true
+        }
+        catch {
+            $fiveMismatchFailure = $_.Exception.Message
+        }
+        Assert-Distribution (
+            -not $fiveMismatchAccepted -and
+            $fiveMismatchFailure -match
+                "bundle runtime component set does not match onboarding readiness"
+        ) `
+            "Setup accepted five components that falsely claimed onboarding readiness"
+
+        $sixMismatchRoot = Join-Path $testRoot "setup-six-components-falsely-blocked"
+        $sixMismatchBundle = Join-Path $sixMismatchRoot $bundleNameOne
+        Copy-Item -LiteralPath $readyBundle -Destination $sixMismatchBundle -Recurse
+        $sixMismatchManifestPath = Join-Path $sixMismatchBundle `
+            "metadata\release-manifest.json"
+        $sixMismatchManifest = Get-Content -LiteralPath $sixMismatchManifestPath -Raw |
+            ConvertFrom-Json -Depth 30
+        $sixMismatchManifest.distribution.onboarding_ready = $false
+        $sixMismatchManifest.distribution.onboarding_blocker =
+            "pinned_rusty_quest_owner_key_record_release_not_bundled"
+        Write-RustyFleetUtf8 -LiteralPath $sixMismatchManifestPath -Content (
+            $sixMismatchManifest | ConvertTo-Json -Depth 30)
+        $sixMismatchArchive = Join-Path $sixMismatchRoot "$bundleNameOne.zip"
+        New-RustyFleetDeterministicZip -SourceDirectory $sixMismatchBundle `
+            -DestinationPath $sixMismatchArchive -SourceDateEpoch 0
+        $sixMismatchAccepted = $false
+        $sixMismatchFailure = ""
+        try {
+            & (Join-Path $packagingRoot "New-WindowsSetup.ps1") `
+                -Version "0.0.0-test.1" -Channel dev -BuildKind unsigned-dev `
+                -BundleArchivePath $sixMismatchArchive `
+                -DevelopmentInstallRoot (Join-Path $testRoot "six-mismatch-install") `
+                -OutputDirectory (Join-Path $testRoot "six-mismatch-setup") | Out-Null
+            $sixMismatchAccepted = $true
+        }
+        catch {
+            $sixMismatchFailure = $_.Exception.Message
+        }
+        Assert-Distribution (
+            -not $sixMismatchAccepted -and
+            $sixMismatchFailure -match
+                "bundle runtime component set does not match onboarding readiness"
+        ) `
+            "Setup accepted six components that falsely claimed onboarding was blocked"
+
+        foreach ($ownerFile in @(
+            "fleet-agent-key-record.exe", "LICENSE", "SOURCE-NOTICE.md")) {
+            $caseName = $ownerFile.Replace(".", "-")
+            $damagedReadyBundle = Join-Path $testRoot "owner-capsule-damaged-$caseName"
+            Copy-Item -LiteralPath $readyBundle -Destination $damagedReadyBundle -Recurse
+            [IO.File]::AppendAllText((
+                Join-Path $damagedReadyBundle (
+                    "components\rusty-quest-key-record-helper\$ownerFile")),
+                "damage")
+            $damagedOwnerRejected = $false
+            try {
+                & (Join-Path $packagingRoot "Test-WindowsBundle.ps1") `
+                    -BundleRoot $damagedReadyBundle | Out-Null
+            }
+            catch {
+                $damagedOwnerRejected = $true
+            }
+            Assert-Distribution $damagedOwnerRejected `
+                "bundle validation accepted substituted owner capsule file: $ownerFile"
+        }
+    }
 
     foreach ($relative in @(
         "metadata\release-manifest.json",
