@@ -162,6 +162,13 @@ that same handle. Rollback repeats the full historical validation and changes
 only the pointer. Setup never automatically deletes a retained release or an
 interrupted candidate.
 
+The retained-history validator recognizes both exact blocked-onboarding labels
+issued by earlier Labs bundles and the current bundler. This compatibility is
+limited to those two closed values and does not weaken the independent
+onboarding-ready boolean, exact component composition, or payload evidence
+checks. It lets an installed pre-capsule Labs release be validated before a
+capsule-ready update is activated.
+
 Install, update, and rollback do not register a service, launch a Fleet
 process, change `PATH`, create configuration or credentials, invoke
 `fleet-onboard`, or install/use ADB.
