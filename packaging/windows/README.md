@@ -102,7 +102,11 @@ directory. An existing destination is rejected. The command emits a typed
 receipt and never treats packaging provenance as enrollment, activation,
 reachability, lease, or peer-acceptance evidence. Supply the resulting path as
 `-FleetAgentKeyRecordOwnerCapsuleRoot` when building an onboarding-ready
-bundle.
+developer bundle. A `signed-release` build with no supplied path invokes the
+same pinned fetch/validation CLI into a run-owned temporary directory, consumes
+the byte-exact capsule, and removes that temporary directory in its terminal
+cleanup. The caller may still prefetch and supply the exact directory to make
+that input explicit.
 
 `New-WindowsSetup.ps1` embeds that already validated ZIP in one self-contained
 `RustyFleet-Setup.exe`. Its exact no-change automation route is

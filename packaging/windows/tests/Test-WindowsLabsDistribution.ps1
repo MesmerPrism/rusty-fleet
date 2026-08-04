@@ -41,7 +41,8 @@ Assert-Labs (
 Assert-Labs ($bundle -match 'RustyFleet-Labs-\$Version-win-x64' -and $setup -match 'RustyFleet-Labs-Setup\.exe') "Labs artifacts are not independently named"
 Assert-Labs (
     $bundle -match 'FleetAgentKeyRecordOwnerCapsuleRoot' -and
-    $bundle -match 'signed release requires the exact pinned Rusty Quest key-record owner capsule' -and
+    $bundle -match 'signed release could not fetch the exact pinned Rusty Quest owner capsule' -and
+    $bundle -match 'signed release owner capsule fetch receipt is not exact' -and
     $bundle -match 'onboarding_ready = \$ownerCapsuleReady' -and
     $bundle -match 'rusty-quest-key-record-helper' -and
     $bundle -match 'packaging-and-tool-provenance-only' -and
@@ -55,8 +56,8 @@ Assert-Labs (
     $ownerFetcher -match 'rusty\.fleet\.owner_capsule_fetch_receipt\.v1' -and
     $ownerFetcher -match 'fleet-agent-key-record-v\$\(\$pin\.capsule_version\)' -and
     $ownerFetcher -match 'Test-FleetAgentKeyRecordOwnerRelease\.ps1' -and
-    $stableWorkflow -match 'Get-FleetAgentKeyRecordOwnerRelease\.ps1' -and
-    $stableWorkflow -match 'FLEET_AGENT_KEY_RECORD_OWNER_CAPSULE_ROOT'
+    $bundle -match 'Get-FleetAgentKeyRecordOwnerRelease\.ps1' -and
+    $bundle -match 'rusty\.fleet\.owner_capsule_fetch_receipt\.v1'
 ) "signed release does not fetch, validate, and consume the pinned owner capsule"
 Assert-Labs ($setup -match 'rusty-fleet-labs' -and $setup -match 'Rusty Fleet Labs' -and $setup -match 'RustyFleetLabs') "Labs installation identity is incomplete"
 Assert-Labs (

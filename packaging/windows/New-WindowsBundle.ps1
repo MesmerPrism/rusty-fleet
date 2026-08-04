@@ -81,14 +81,12 @@ function Assert-OwnerCapsule([string] $LiteralPath, [string] $Phase) {
 $ownerCapsuleReady = $false
 $ownerCapsulePath = $null
 $ownerReleaseValidation = $null
+$downloadedOwnerCapsulePath = $null
 if (-not [string]::IsNullOrWhiteSpace($FleetAgentKeyRecordOwnerCapsuleRoot)) {
     $ownerCapsulePath = (Resolve-Path -LiteralPath $FleetAgentKeyRecordOwnerCapsuleRoot).Path
     $ownerReleaseValidation = Assert-OwnerCapsule `
         -LiteralPath $ownerCapsulePath -Phase "source-preflight"
     $ownerCapsuleReady = $true
-}
-elseif ($BuildKind -eq "signed-release") {
-    throw "signed release requires the exact pinned Rusty Quest key-record owner capsule"
 }
 
 foreach ($pair in @(
@@ -183,6 +181,33 @@ if (Test-Path -LiteralPath $buildRoot) {
 [System.IO.Directory]::CreateDirectory($buildRoot) | Out-Null
 
 try {
+    if (-not $ownerCapsuleReady -and $BuildKind -eq "signed-release") {
+        $downloadedOwnerCapsulePath = Join-Path ([IO.Path]::GetTempPath()) (
+            "rusty-fleet-owner-capsule-" + [guid]::NewGuid().ToString("N")
+        )
+        $fetcher = Join-Path $repoPath (
+            "tools\Get-FleetAgentKeyRecordOwnerRelease.ps1"
+        )
+        $fetchLines = @(& pwsh -NoProfile -ExecutionPolicy Bypass -File `
+            $fetcher -OutputDirectory $downloadedOwnerCapsulePath -Execute)
+        if ($LASTEXITCODE -ne 0) {
+            throw "signed release could not fetch the exact pinned Rusty Quest owner capsule"
+        }
+        $fetchReceipt = ($fetchLines -join [Environment]::NewLine) |
+            ConvertFrom-Json -Depth 30
+        if ($fetchReceipt.schema -cne
+                "rusty.fleet.owner_capsule_fetch_receipt.v1" -or
+            $fetchReceipt.result -cne "pass" -or
+            $fetchReceipt.owner_id -cne "rusty-quest" -or
+            $fetchReceipt.consumer_id -cne "rusty-fleet/fleet-onboard") {
+            throw "signed release owner capsule fetch receipt is not exact"
+        }
+        $ownerCapsulePath = $downloadedOwnerCapsulePath
+        $ownerReleaseValidation = Assert-OwnerCapsule `
+            -LiteralPath $ownerCapsulePath -Phase "source-preflight"
+        $ownerCapsuleReady = $true
+    }
+
     if ($ownerCapsuleReady) {
         $stagedOwnerCapsulePath = Join-Path $buildRoot "owner-capsule"
         [void][IO.Directory]::CreateDirectory($stagedOwnerCapsulePath)
@@ -759,5 +784,9 @@ try {
 finally {
     if (Test-Path -LiteralPath $buildRoot) {
         Remove-Item -LiteralPath $buildRoot -Recurse -Force
+    }
+    if ($downloadedOwnerCapsulePath -and
+        (Test-Path -LiteralPath $downloadedOwnerCapsulePath)) {
+        Remove-Item -LiteralPath $downloadedOwnerCapsulePath -Recurse -Force
     }
 }

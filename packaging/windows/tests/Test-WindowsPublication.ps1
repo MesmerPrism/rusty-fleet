@@ -5,8 +5,7 @@
 param(
     [switch] $BaselineOnly,
 
-    [Parameter(Mandatory)]
-    [string] $FleetAgentKeyRecordOwnerCapsuleRoot
+    [string] $FleetAgentKeyRecordOwnerCapsuleRoot = ""
 )
 
 Set-StrictMode -Version Latest
@@ -240,6 +239,11 @@ try {
     Copy-Item `
         -LiteralPath (
             Join-Path $repositoryRoot "tools\Test-FleetAgentKeyRecordOwnerRelease.ps1"
+        ) `
+        -Destination $sourceTools
+    Copy-Item `
+        -LiteralPath (
+            Join-Path $repositoryRoot "tools\Get-FleetAgentKeyRecordOwnerRelease.ps1"
         ) `
         -Destination $sourceTools
     Copy-Item `
@@ -671,30 +675,35 @@ public static class ProviderFixture { }
     )
 
     $distributionRoot = Join-Path $testRoot "distribution"
-    & (Join-Path $packagingRoot "New-WindowsBundle.ps1") `
-        -Version "1.2.3" `
-        -Channel labs `
-        -Maturity alpha `
-        -BuildKind signed-release `
-        -HostessProviderPath $providerPath `
-        -HostessProviderSha256 $providerSha256 `
-        -HostessProviderMetadataDirectory $metadataRoot `
-        -OutputDirectory $distributionRoot `
-        -SourceRevision $sourceRevision `
-        -SourceTree $sourceTree `
-        -SourceDateEpoch 1785110400 `
-        -SkipBuild `
-        -ConsoleArtifactDirectory $consoleRoot `
-        -HubArtifactPath $hubPath `
-        -FleetctlArtifactPath $fleetctlPath `
-        -FleetOnboardArtifactPath $fleetOnboardPath `
-        -FleetAgentKeyRecordOwnerCapsuleRoot $FleetAgentKeyRecordOwnerCapsuleRoot `
-        -RequireCleanSource `
-        -RequireAuthenticodeSignatures `
-        -ExpectedFleetSignerThumbprint $signerThumbprint `
-        -ExpectedHostessSignerThumbprint $signerThumbprint `
-        -RepoRoot $sourceRepo `
-        -ReleasePolicyPath $policyPath |
+    $bundleArguments = @{
+        Version = "1.2.3"
+        Channel = "labs"
+        Maturity = "alpha"
+        BuildKind = "signed-release"
+        HostessProviderPath = $providerPath
+        HostessProviderSha256 = $providerSha256
+        HostessProviderMetadataDirectory = $metadataRoot
+        OutputDirectory = $distributionRoot
+        SourceRevision = $sourceRevision
+        SourceTree = $sourceTree
+        SourceDateEpoch = 1785110400
+        SkipBuild = $true
+        ConsoleArtifactDirectory = $consoleRoot
+        HubArtifactPath = $hubPath
+        FleetctlArtifactPath = $fleetctlPath
+        FleetOnboardArtifactPath = $fleetOnboardPath
+        RequireCleanSource = $true
+        RequireAuthenticodeSignatures = $true
+        ExpectedFleetSignerThumbprint = $signerThumbprint
+        ExpectedHostessSignerThumbprint = $signerThumbprint
+        RepoRoot = $sourceRepo
+        ReleasePolicyPath = $policyPath
+    }
+    if ($FleetAgentKeyRecordOwnerCapsuleRoot) {
+        $bundleArguments.FleetAgentKeyRecordOwnerCapsuleRoot =
+            $FleetAgentKeyRecordOwnerCapsuleRoot
+    }
+    & (Join-Path $packagingRoot "New-WindowsBundle.ps1") @bundleArguments |
         Out-Null
 
     $setupReceiptJson = & (
