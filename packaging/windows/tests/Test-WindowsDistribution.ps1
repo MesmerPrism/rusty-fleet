@@ -213,6 +213,72 @@ function Complete-TestSetup {
     }
 }
 
+function Convert-TestInstallToRetainedLabsBlocker {
+    param([Parameter(Mandatory)][string] $InstallRoot)
+
+    $statePath = Join-Path $InstallRoot "state\current.json"
+    $state = Get-Content -LiteralPath $statePath -Raw |
+        ConvertFrom-Json -Depth 30
+    $releaseRoot = Join-Path $InstallRoot (
+        $state.current.relative_path.Replace("/", "\")
+    )
+    $manifestPath = Join-Path $releaseRoot "metadata\release-manifest.json"
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw |
+        ConvertFrom-Json -Depth 30
+    Assert-Distribution (
+        $manifest.distribution.onboarding_ready -eq $false -and
+        $manifest.distribution.onboarding_blocker -ceq
+            "pinned_rusty_quest_owner_key_record_release_not_bundled"
+    ) "legacy retained-release fixture did not start from the current blocked value"
+    $manifest.distribution.onboarding_blocker =
+        "signed_rusty_quest_owner_key_record_release_not_bundled"
+    Write-TestArtifact -LiteralPath $manifestPath -Content (
+        ConvertTo-RustyFleetJson -InputObject $manifest
+    )
+    $manifestSha256 = Get-RustyFleetSha256 -LiteralPath $manifestPath
+
+    $checksumsPath = Join-Path $releaseRoot "metadata\checksums.sha256"
+    $checksumLines = @(
+        Get-Content -LiteralPath $checksumsPath |
+            ForEach-Object {
+                if ($_ -cmatch
+                    '^[0-9a-f]{64} \*metadata/release-manifest\.json$') {
+                    "$manifestSha256 *metadata/release-manifest.json"
+                }
+                else { $_ }
+            }
+    )
+    Assert-Distribution (
+        @($checksumLines | Where-Object {
+            $_ -ceq "$manifestSha256 *metadata/release-manifest.json"
+        }).Count -eq 1
+    ) "legacy retained-release fixture did not update the manifest checksum"
+    Write-TestArtifact -LiteralPath $checksumsPath -Content (
+        ($checksumLines -join "`n") + "`n"
+    )
+    $checksumsSha256 = Get-RustyFleetSha256 -LiteralPath $checksumsPath
+
+    $receiptPath = Join-Path $releaseRoot "metadata\validation-receipt.json"
+    $receipt = Get-Content -LiteralPath $receiptPath -Raw |
+        ConvertFrom-Json -Depth 30
+    $receipt.manifest_sha256 = $manifestSha256
+    $receipt.checksums_sha256 = $checksumsSha256
+    Write-TestArtifact -LiteralPath $receiptPath -Content (
+        ConvertTo-RustyFleetJson -InputObject $receipt
+    )
+
+    $state.current.manifest_sha256 = $manifestSha256
+    $state.current.release_id =
+        "$($state.current.version)-$($manifestSha256.Substring(0, 16))"
+    Write-TestArtifact -LiteralPath $statePath -Content (
+        ConvertTo-RustyFleetJson -InputObject $state
+    )
+    [pscustomobject]@{
+        blocker = $manifest.distribution.onboarding_blocker
+        manifest_sha256 = $manifestSha256
+    }
+}
+
 function Wait-TestCandidate {
     param(
         [Parameter(Mandatory)][string] $InstallRoot,
@@ -1434,6 +1500,12 @@ try {
         (Test-Path -LiteralPath $setupTwoPath -PathType Leaf)
     ) "second Setup build did not produce an update authority"
 
+    $retainedLabsFixture = Convert-TestInstallToRetainedLabsBlocker `
+        -InstallRoot $setupInstallRoot
+    Assert-Distribution (
+        $retainedLabsFixture.blocker -ceq
+            "signed_rusty_quest_owner_key_record_release_not_bundled"
+    ) "retained Labs compatibility fixture was not exact"
     $update = Start-TestSetup -LiteralPath $setupTwoPath -Answer i
     $updateResult = Complete-TestSetup -Process $update
     $update.Dispose()
@@ -1543,6 +1615,7 @@ try {
         setup_embeds_exact_bundle = $true
         setup_plan_contract_exact = $true
         guided_setup_install_verified = $true
+        retained_blocker_compatibility_verified = $true
         interrupted_candidate_inert_and_recoverable = $true
         retained_leaf_rename_denied = $true
         historical_payload_tamper_rejected = $true

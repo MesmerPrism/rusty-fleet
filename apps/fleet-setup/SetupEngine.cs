@@ -174,12 +174,18 @@ internal sealed class ReleaseDefinition
         var onboardingReady = distribution
             .GetProperty("onboarding_ready")
             .GetBoolean();
-        RequireString(
-            distribution,
-            "onboarding_blocker",
-            onboardingReady
-                ? "none"
-                : "pinned_rusty_quest_owner_key_record_release_not_bundled");
+        var onboardingBlocker = RequiredString(distribution, "onboarding_blocker");
+        var currentBlockedValue =
+            "pinned_rusty_quest_owner_key_record_release_not_bundled";
+        var retainedLabsBlockedValue =
+            "signed_rusty_quest_owner_key_record_release_not_bundled";
+        if ((onboardingReady && onboardingBlocker != "none") ||
+            (!onboardingReady &&
+             onboardingBlocker != currentBlockedValue &&
+             onboardingBlocker != retainedLabsBlockedValue))
+        {
+            throw new InvalidDataException("unexpected release onboarding_blocker");
+        }
         var expectedComponents = new HashSet<string>(
             BaseExpectedComponents,
             StringComparer.Ordinal);
