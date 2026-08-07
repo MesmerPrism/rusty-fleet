@@ -9,8 +9,10 @@ generated binaries, and private payload details.
 
 Use:
 
-- `rusty-morphospace-context` for repo-family ownership, workflow, and
+- `rusty-morphospace` for portable repo-family ownership, workflow, and
   public/private routing;
+- `rusty-morphospace-context` for explicit machine-local environment and path
+  resolution;
 - `system-engineering` for authority, contracts, adapters, observability,
   validation, and mitigation maps;
 - `rust-work-graph` for broad inventory, dependency, instruction-surface, and
