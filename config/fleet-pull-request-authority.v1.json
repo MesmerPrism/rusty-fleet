@@ -351,7 +351,7 @@
     },
     {
       "approval_id": "fleet-workflow-validation-cadence-20260811",
-      "required_ancestor": "d11a96c9045940117e2a385bb5a8d52aea1a2406",
+      "required_ancestor": "91d6bd9f438e304701e930a1730c387cea13cb6e",
       "changed_paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/windows-distribution-ci.yml",
@@ -392,8 +392,8 @@
           "path": "tools/Test-Repo.ps1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 44795,
-          "sha256": "995fca4312e731a6c32cfac8056135fb01b48415ee5c34cfcf6d9fb489bbe02d"
+          "size_bytes": 44931,
+          "sha256": "90051fff51708de3f71cf80da39327ac8dfd30426bb07b889f5b2d80f78b1ec9"
         }
       ],
       "status": "approved"
