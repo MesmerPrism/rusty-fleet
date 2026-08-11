@@ -454,23 +454,34 @@ pub fn default_query(limit: usize) -> FleetQuery {
 
 #[must_use]
 pub fn text_query(text: &str, limit: usize) -> FleetQuery {
-    FleetQuery {
-        expression: Some(QueryExpression::Or {
+    let expressions = text
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(|term| QueryExpression::Or {
             expressions: vec![
                 QueryExpression::Predicate {
                     field: QueryField::DisplayName,
                     comparison: Comparison::Contains,
-                    value: Some(QueryValue::Text(text.to_owned())),
+                    value: Some(QueryValue::Text(term.to_owned())),
                     qualifier: None,
                 },
                 QueryExpression::Predicate {
                     field: QueryField::DeviceId,
                     comparison: Comparison::Contains,
-                    value: Some(QueryValue::Text(text.to_owned())),
+                    value: Some(QueryValue::Text(term.to_owned())),
                     qualifier: None,
                 },
             ],
-        }),
+        })
+        .collect::<Vec<_>>();
+    let expression = match expressions.len() {
+        0 => None,
+        1 => expressions.into_iter().next(),
+        _ => Some(QueryExpression::And { expressions }),
+    };
+
+    FleetQuery {
+        expression,
         ..default_query(limit)
     }
 }
@@ -514,6 +525,37 @@ mod tests {
         ] {
             assert!(execute(args).is_ok());
         }
+    }
+
+    #[test]
+    fn free_text_filter_is_separator_tolerant_and_requires_every_term() {
+        let hub = load_hub(4);
+        let now_ms = BASE_TIME_MS;
+
+        let cross_field = hub
+            .list(&text_query("Quest/sim", 4), now_ms)
+            .expect("separator-tolerant query");
+        assert_eq!(cross_field.total_count, 4);
+
+        let one_device = hub
+            .list(&text_query("sim/0001", 4), now_ms)
+            .expect("multi-term query");
+        assert_eq!(one_device.total_count, 1);
+        assert_eq!(one_device.rows[0].identity.device_id, "sim-00001");
+
+        let mismatched = hub
+            .list(&text_query("Quest/missing", 4), now_ms)
+            .expect("mismatched query");
+        assert_eq!(mismatched.total_count, 0);
+
+        let separator_only = text_query("--- / ", 4);
+        assert!(separator_only.expression.is_none());
+        assert_eq!(
+            hub.list(&separator_only, now_ms)
+                .expect("separator-only query")
+                .total_count,
+            4
+        );
     }
 
     #[test]

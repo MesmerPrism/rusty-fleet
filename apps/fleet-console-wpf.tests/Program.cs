@@ -243,14 +243,20 @@ internal static class Program
                 Require(expression.GetProperty("kind").GetString() == "and", "facets are not canonical AND");
                 var expressions = expression.GetProperty("expressions");
                 Require(
-                    expressions.GetArrayLength() == 2 &&
+                    expressions.GetArrayLength() == 3 &&
                     expressions[0].GetProperty("kind").GetString() == "or" &&
-                    expressions[0].GetProperty("expressions").GetArrayLength() == 2,
-                    "search must target display name and device ID");
+                    expressions[0].GetProperty("expressions").GetArrayLength() == 2 &&
+                    expressions[0].GetProperty("expressions")[0]
+                        .GetProperty("value").GetString() == "Quest" &&
+                    expressions[1].GetProperty("kind").GetString() == "or" &&
+                    expressions[1].GetProperty("expressions").GetArrayLength() == 2 &&
+                    expressions[1].GetProperty("expressions")[0]
+                        .GetProperty("value").GetString() == "0001",
+                    "search terms must each target display name and device ID");
                 Require(
-                    expressions[1].GetProperty("field").GetString() == "freshness" &&
-                    expressions[1].GetProperty("comparison").GetString() == "equals" &&
-                    expressions[1].GetProperty("value").GetString() == "stale",
+                    expressions[2].GetProperty("field").GetString() == "freshness" &&
+                    expressions[2].GetProperty("comparison").GetString() == "equals" &&
+                    expressions[2].GetProperty("value").GetString() == "stale",
                     "freshness facet is not canonical");
                 var sort = document.RootElement.GetProperty("sort");
                 Require(
@@ -259,6 +265,23 @@ internal static class Program
                     sort[0].GetProperty("direction").GetString() == "descending",
                     "sort scope is not canonical");
             }
+
+            var separatorQuery = JsonSerializer.SerializeToElement(
+                FleetQuery.Create("Quest/0001"),
+                FleetJson.Options);
+            var separatorTerms = separatorQuery
+                .GetProperty("expression")
+                .GetProperty("expressions");
+            Require(
+                separatorTerms.GetArrayLength() == 2 &&
+                separatorTerms[0].GetProperty("expressions")[0]
+                    .GetProperty("value").GetString() == "Quest" &&
+                separatorTerms[1].GetProperty("expressions")[0]
+                    .GetProperty("value").GetString() == "0001",
+                "separator-tolerant search did not preserve AND terms");
+            Require(
+                FleetQuery.Create("--- / ").Expression is null,
+                "separator-only search must not narrow the fleet");
 
             var source = new StaticFleetDataSource(
                 projection,
@@ -337,14 +360,17 @@ internal static class Program
                 "background refresh did not preserve the applied sort independently " +
                 "from the editor");
 
-            workspace.SearchText = "Quest 0001";
+            workspace.SearchText = "Quest/00001";
             workspace.SelectedFreshness = "Fresh";
             workspace.SelectedGrouping = "Cohort";
             workspace.SelectedSort = "Device name";
             workspace.SelectedSortDirection = "Ascending";
             workspace.ApplyScopeAsync().GetAwaiter().GetResult();
             Require(source.LastQuery?.Expression is not null, "search was not sent to the data source");
-            Require(workspace.Rows.Count == 1, "combined scope did not narrow the projection");
+            Require(
+                workspace.Rows.Count == 1,
+                $"combined scope returned {workspace.Rows.Count} rows for " +
+                JsonSerializer.Serialize(source.LastQuery, FleetJson.Options));
             Require(
                 workspace.ActiveScopeText.Contains("freshness = fresh", StringComparison.Ordinal) &&
                 workspace.ActiveScopeText.Contains("grouped by cohort", StringComparison.Ordinal),
@@ -404,7 +430,7 @@ internal static class Program
                 canonicalSummary: fixtureSummary);
             var savedWorkspace = new FleetWorkspaceViewModel(savedSource);
             savedWorkspace.InitializeAsync().GetAwaiter().GetResult();
-            savedWorkspace.SearchText = "Quest 0001";
+            savedWorkspace.SearchText = "Quest/00001";
             savedWorkspace.SelectedFreshness = "Fresh";
             savedWorkspace.SelectedGrouping = "Cohort";
             savedWorkspace.ApplyScopeAsync().GetAwaiter().GetResult();
