@@ -350,7 +350,7 @@
       "status": "approved"
     },
     {
-      "approval_id": "fleet-validation-cadence-20260811",
+      "approval_id": "fleet-workflow-validation-cadence-20260811",
       "required_ancestor": "d11a96c9045940117e2a385bb5a8d52aea1a2406",
       "changed_paths": [
         ".github/workflows/ci.yml",
