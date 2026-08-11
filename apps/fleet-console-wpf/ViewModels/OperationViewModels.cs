@@ -58,14 +58,15 @@ public sealed class PackageOperationTargetViewModel
         Stage = DeviceRowViewModel.Title(projection.Stage);
         ReasonCode = projection.ReasonCode;
         Message = projection.Message;
-        OwnerDelivery = projection.Stage == "dispatch_ready"
-            ? "Prepared only · owner ingress unavailable"
-            : "Not prepared";
+        OwnerDelivery = DescribeOwnerDelivery(projection);
+        ApplicationProof = projection.EffectiveReceipt is null
+            ? "No installed-version application proof is present."
+            : "Exact installed-version application proof is present; cleanup is not claimed.";
         AccessibleName =
             $"Device {DeviceId}, identity revision {IdentityRevision}, " +
             $"eligibility {Eligibility}, lifecycle {Lifecycle}, stage {Stage}, " +
             $"reason {ReasonCode}, {Message}, {OwnerDelivery}. " +
-            "No package dispatch or installation is claimed.";
+            ApplicationProof;
     }
 
     public string DeviceId { get; }
@@ -84,7 +85,47 @@ public sealed class PackageOperationTargetViewModel
 
     public string OwnerDelivery { get; }
 
+    public string ApplicationProof { get; }
+
     public string AccessibleName { get; }
+
+    private static string DescribeOwnerDelivery(PackageInstallTargetLedger projection)
+    {
+        if (projection.EffectiveReceipt?.UpdaterReceipt.AcceptedCheckpoint is { } checkpoint)
+        {
+            return
+                $"Installed version proven · install_commit accepted · " +
+                $"version {checkpoint.VersionCode} · sequence {checkpoint.Sequence}";
+        }
+
+        if (projection.InvocationAcknowledgement is { } acknowledgement)
+        {
+            return acknowledgement.Accepted
+                ? $"Owner acknowledged dispatch · {DeviceRowViewModel.Title(acknowledgement.Code)}"
+                : $"Owner rejected dispatch · {DeviceRowViewModel.Title(acknowledgement.Code)}";
+        }
+
+        if (projection.OwnerClaim is { } claim)
+        {
+            var expiry = claim.ExpiresAtMs <= 253_402_300_799_999
+                ? DateTimeOffset
+                    .FromUnixTimeMilliseconds(claim.ExpiresAtMs)
+                    .UtcDateTime
+                    .ToString("yyyy-MM-dd HH:mm:ss 'UTC'")
+                : $"Unix time {claim.ExpiresAtMs} ms";
+            return $"Updater owner claim recorded · expires {expiry}";
+        }
+
+        if (projection.Invocation is not null)
+        {
+            var attempts = projection.PriorOwnerClaims.Count;
+            return attempts == 0
+                ? "Prepared · waiting for authenticated updater-owner claim"
+                : $"Prepared · {attempts} prior owner claim attempt(s) retained · waiting for a new claim";
+        }
+
+        return "No owner invocation prepared";
+    }
 }
 
 public sealed class QuestAwakeTargetViewModel

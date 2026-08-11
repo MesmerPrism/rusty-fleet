@@ -687,14 +687,16 @@ internal static class Program
                     target.Lifecycle == "accepted" &&
                     target.Stage == "dispatch_ready" &&
                     target.Invocation is not null &&
+                    target.OwnerClaim is null &&
                     target.InvocationAcknowledgement is null &&
                     target.EffectiveReceipt is null) &&
                 operationWorkspace.PackageOperationTargets.All(target =>
-                    target.AccessibleName.Contains(
-                        "No package dispatch or installation is claimed",
-                        StringComparison.Ordinal)) &&
+                    target.OwnerDelivery ==
+                        "Prepared · waiting for authenticated updater-owner claim" &&
+                    target.ApplicationProof ==
+                        "No installed-version application proof is present.") &&
                 operationWorkspace.PackageOperationStatusText.Contains(
-                    "no package was dispatched or installed",
+                    "preparation is not dispatch or installed-version proof",
                     StringComparison.Ordinal) &&
                 operationSource.PackageExecuteCount == 1 &&
                 !operationWorkspace.CanConfirmPackageInstallRelease &&
@@ -733,6 +735,61 @@ internal static class Program
                     "Refresh failed · prior package projection retained",
                     StringComparison.Ordinal),
                 "damaged package operation evidence did not fail closed");
+
+            operationSource.AdvancePackageOwnerEvidence("claimed");
+            operationWorkspace.RefreshPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            var claimedTarget = operationWorkspace.PackageOperationTargets[0];
+            Require(
+                claimedTarget.OwnerDelivery.Contains(
+                    "Updater owner claim recorded · expires",
+                    StringComparison.Ordinal) &&
+                claimedTarget.ApplicationProof ==
+                    "No installed-version application proof is present.",
+                "active package owner claim was not projected truthfully");
+
+            operationSource.AdvancePackageOwnerEvidence("acknowledged");
+            operationWorkspace.RefreshPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            var acknowledgedTarget = operationWorkspace.PackageOperationTargets[0];
+            Require(
+                operationWorkspace.CurrentPackageOperation?.Lifecycle == "dispatched" &&
+                acknowledgedTarget.OwnerDelivery ==
+                    "Owner acknowledged dispatch · Owner Dispatch Accepted" &&
+                acknowledgedTarget.ApplicationProof ==
+                    "No installed-version application proof is present.",
+                "owner dispatch acknowledgement was confused with application proof");
+
+            operationSource.AdvancePackageOwnerEvidence("applied");
+            operationWorkspace.RefreshPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            var appliedTarget = operationWorkspace.PackageOperationTargets[0];
+            Require(
+                appliedTarget.OwnerDelivery ==
+                    "Installed version proven · install_commit accepted · version 42 · sequence 17" &&
+                appliedTarget.ApplicationProof ==
+                    "Exact installed-version application proof is present; cleanup is not claimed." &&
+                appliedTarget.AccessibleName.Contains(
+                    "cleanup is not claimed",
+                    StringComparison.Ordinal),
+                "installed-version proof or independent cleanup boundary was not projected");
+
+            var retainedAppliedPackage = operationWorkspace.CurrentPackageOperation;
+            operationSource.DamageNextPackageReceiptResponse = true;
+            operationWorkspace.RefreshPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                ReferenceEquals(
+                    retainedAppliedPackage,
+                    operationWorkspace.CurrentPackageOperation) &&
+                operationWorkspace.PackageOperationStatusText.StartsWith(
+                    "Refresh failed · prior package projection retained",
+                    StringComparison.Ordinal),
+                "mismatched installed-version evidence did not fail closed");
 
             operationWorkspace.ClearBatchSelectionCommand.Execute(null);
             operationWorkspace.SelectedWindowsHotspotAction =
@@ -1412,6 +1469,10 @@ internal static class Program
             Require(
                 AutomationProperties.GetName(operationWindow.PackageOperationRegion) ==
                 "Package install and release operation" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.PackageOperationRegion).Contains(
+                    "reports durable claim, dispatch, and installed-version evidence",
+                    StringComparison.Ordinal) &&
                 AutomationProperties.GetName(
                     operationWindow.PackageManifestUrlControl) ==
                 "Signed package manifest HTTPS URL" &&
@@ -1605,9 +1666,9 @@ internal static class Program
                 $"package target row exposed {firstPackagePeer.GetAutomationControlType()} instead of a native data-item peer");
             Require(
                 firstPackageTarget.AccessibleName.Contains(
-                    "No package dispatch or installation is claimed.",
+                    "Exact installed-version application proof is present; cleanup is not claimed.",
                     StringComparison.Ordinal),
-                "package target row omitted the no-dispatch/no-install boundary");
+                "package target row omitted installed-version or cleanup evidence");
             var recycledNameVerified = false;
             foreach (var targetIndex in new[] { 10, 20, 30, 40, 49 })
             {
@@ -1651,6 +1712,8 @@ internal static class Program
                 AutomationProperties.GetName(lastPackageRow) ==
                 lastPackageTarget.AccessibleName &&
                 lastPackagePeer.GetName() == lastPackageTarget.AccessibleName &&
+                lastPackageTarget.ApplicationProof ==
+                    "No installed-version application proof is present." &&
                 recycledNameVerified,
                 "recycled package target rows retained stale UI Automation evidence");
             operationWindow.Width = 1_000;
@@ -2206,9 +2269,11 @@ internal static class Program
                 package_install_release_preview = true,
                 package_install_release_exact_release_and_targets = true,
                 package_install_release_explicit_confirmation = true,
-                package_install_release_dispatch_ready_only = true,
+                package_install_release_preparation_boundary = true,
                 package_install_release_all_targets_prepared = true,
-                package_install_release_owner_ingress_unavailable = true,
+                package_install_release_post_claim_projection = true,
+                package_install_release_installed_version_proof = true,
+                package_install_release_cleanup_boundary = true,
                 package_install_release_single_shot = true,
                 package_install_release_accessible = true,
                 package_target_native_row_peer = true,
@@ -2777,6 +2842,141 @@ internal static class Program
         public PackageInstallReleaseOperation? LastPackageOperation { get; private set; }
 
         public bool DamageNextPackageOperationResponse { get; set; }
+
+        public bool DamageNextPackageReceiptResponse { get; set; }
+
+        public void AdvancePackageOwnerEvidence(string step)
+        {
+            var operation = LastPackageOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic package operation was not created");
+            var targets = operation.Targets.ToArray();
+            var first = targets[0];
+            var invocation = first.Invocation ??
+                             throw new InvalidOperationException(
+                                 "synthetic package invocation was not prepared");
+            var claim = new PackageUpdaterClaim
+            {
+                Schema = "rusty.fleet.package_updater_claim.v1",
+                ClaimId = "package-claim-0001",
+                OwnerId = "rusty-quest.package-updater",
+                RequestId = "package-claim-request-0001",
+                ClaimedAtMs = operation.CreatedAtMs + 300,
+                ExpiresAtMs = operation.CreatedAtMs + 30_000,
+                InvocationSha256 = "sha256:" + new string('1', 64),
+                ReleaseSha256 = "sha256:" + new string('2', 64),
+                TargetSha256 = "sha256:" + new string('3', 64),
+                Invocation = invocation
+            };
+            var acknowledgement = step is "acknowledged" or "applied"
+                ? new PackageUpdaterInvocationAcknowledgement
+                {
+                    Schema =
+                        "rusty.fleet.package_updater_invocation_acknowledgement.v1",
+                    OperationId = operation.OperationId,
+                    DeviceId = first.DeviceId,
+                    OwnerActionRequestId = invocation.OwnerActionRequestId,
+                    Accepted = true,
+                    Code = "owner_dispatch_accepted",
+                    AcknowledgedAtMs = operation.CreatedAtMs + 400
+                }
+                : null;
+            var checkpoint = new PackageUpdateCheckpoint
+            {
+                PackageName = invocation.ExpectedPackageName,
+                RolloutRing = invocation.ExpectedRolloutRing,
+                Sequence = 17,
+                VersionCode = 42,
+                SignedManifestSha256 = "sha256:" + new string('4', 64)
+            };
+            var effectiveReceipt = step == "applied"
+                ? new PackageUpdaterEffectiveReceipt
+                {
+                    Schema = "rusty.fleet.package_updater_effective_receipt.v1",
+                    OperationId = operation.OperationId,
+                    DeviceId = first.DeviceId,
+                    IdentityRevision = first.IdentityRevision,
+                    OwnerActionRequestId = invocation.OwnerActionRequestId,
+                    WrappedAtMs = operation.CreatedAtMs + 500,
+                    UpdaterReceipt = new PackageUpdateReceipt
+                    {
+                        Schema = "rusty.quest.package_update_receipt.v1",
+                        Stage = "install_commit",
+                        Decision = "accepted",
+                        Code = "install_commit_accepted",
+                        ObservedAtMs = operation.CreatedAtMs + 490,
+                        EnvelopeSha256 = "sha256:" + new string('5', 64),
+                        SignedManifestSha256 = checkpoint.SignedManifestSha256,
+                        PackageName = checkpoint.PackageName,
+                        RolloutRing = checkpoint.RolloutRing,
+                        Sequence = checkpoint.Sequence,
+                        VersionCode = checkpoint.VersionCode,
+                        AcceptedCheckpoint = checkpoint,
+                        StateChanged = true
+                    }
+                }
+                : null;
+            var lifecycle = step switch
+            {
+                "claimed" => "accepted",
+                "acknowledged" => "dispatched",
+                "applied" => "applied",
+                _ => throw new ArgumentOutOfRangeException(nameof(step))
+            };
+            var stage = step switch
+            {
+                "claimed" => "dispatch_ready",
+                "acknowledged" => "owner_acknowledged",
+                "applied" => "applied",
+                _ => throw new ArgumentOutOfRangeException(nameof(step))
+            };
+            targets[0] = new PackageInstallTargetLedger
+            {
+                DeviceId = first.DeviceId,
+                IdentityRevision = first.IdentityRevision,
+                Preflight = first.Preflight,
+                Lifecycle = lifecycle,
+                Stage = stage,
+                Invocation = invocation,
+                OwnerClaim = claim,
+                ConsumedOwnerClaimIdentities =
+                [
+                    new ConsumedPackageUpdaterClaimIdentity
+                    {
+                        ClaimId = claim.ClaimId,
+                        RequestId = claim.RequestId
+                    }
+                ],
+                InvocationAcknowledgement = acknowledgement,
+                EffectiveReceipt = effectiveReceipt,
+                ReasonCode = step switch
+                {
+                    "claimed" => "owner_claim_active",
+                    "acknowledged" => "owner_invocation_acknowledged",
+                    _ => "owner_effective_installed_version"
+                },
+                Message = step switch
+                {
+                    "claimed" => "Updater owner claimed the exact invocation.",
+                    "acknowledged" => "Updater acknowledged dispatch; application remains unproven.",
+                    _ => "Updater install_commit receipt proves the effective installed package version."
+                },
+                LastTransitionMs = operation.CreatedAtMs +
+                    (step == "claimed" ? 300 : step == "acknowledged" ? 400 : 500)
+            };
+            LastPackageOperation = new PackageInstallReleaseOperation
+            {
+                Schema = operation.Schema,
+                OperationId = operation.OperationId,
+                ActionId = operation.ActionId,
+                CreatedAtMs = operation.CreatedAtMs,
+                Preview = operation.Preview,
+                Lifecycle = step == "acknowledged" ? "dispatched" : "accepted",
+                MaxParallelism = operation.MaxParallelism,
+                CleanupRequired = operation.CleanupRequired,
+                Targets = targets
+            };
+        }
 
         public WindowsHotspotPreviewRequest? LastWindowsHotspotPreviewRequest { get; private set; }
 
@@ -4000,6 +4200,22 @@ internal static class Program
             var operation = LastPackageOperation ??
                             throw new InvalidOperationException(
                                 "synthetic package operation was not created");
+            if (DamageNextPackageReceiptResponse)
+            {
+                DamageNextPackageReceiptResponse = false;
+                var damaged = JsonNode.Parse(
+                    JsonSerializer.Serialize(operation, FleetJson.Options)) ??
+                    throw new InvalidOperationException(
+                        "synthetic package operation could not be cloned");
+                damaged["targets"]![0]!["effective_receipt"]!["updater_receipt"]!
+                    ["accepted_checkpoint"]!["package_name"] =
+                    "org.example.substituted";
+                return JsonSerializer.Deserialize<PackageInstallReleaseOperation>(
+                           damaged.ToJsonString(),
+                           FleetJson.Options) ??
+                       throw new InvalidOperationException(
+                           "damaged package receipt could not be projected");
+            }
             if (!DamageNextPackageOperationResponse)
             {
                 return operation;
@@ -4016,6 +4232,9 @@ internal static class Program
                 Lifecycle = first.Lifecycle,
                 Stage = first.Stage,
                 Invocation = first.Invocation,
+                OwnerClaim = first.OwnerClaim,
+                PriorOwnerClaims = first.PriorOwnerClaims,
+                ConsumedOwnerClaimIdentities = first.ConsumedOwnerClaimIdentities,
                 InvocationAcknowledgement = first.InvocationAcknowledgement,
                 EffectiveReceipt = first.EffectiveReceipt,
                 ReasonCode = first.ReasonCode,

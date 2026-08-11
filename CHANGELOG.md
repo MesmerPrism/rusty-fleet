@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Made the WPF package-operation ledger validate and project durable updater
+  claims, owner dispatch acknowledgement, and exact `install_commit`
+  installed-version proof without exposing owner credentials or conflating
+  application with cleanup.
 - Added the standalone `fleet-onboard` offline onboarding generator with
   deterministic confirmation-bound planning, exact pinned Rusty Quest
   key-record invocation from a deny-rename retained path in a bounded Windows

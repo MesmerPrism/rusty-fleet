@@ -418,9 +418,11 @@ M1 evidence and exact boundary are recorded in
 The source-only M2 Kiosk slice is implemented and device-free validation is
 green; a live owner/device proof remains a separate explicit gate. The package
 source stack now includes disabled-by-default authenticated updater ingress and
-durable bounded owner claims. Live updater/device proof, attended wearer
-behavior, and WPF activation of post-claim controls remain separate explicit
-gates.
+durable bounded owner claims. The WPF target ledger now reads and validates
+claim occupancy, owner dispatch acknowledgement, and exact installed-version
+proof while keeping cleanup separate and owner credentials absent. Live
+updater/device proof, attended wearer behavior, and human-facing owner
+cancellation/retry controls remain separate explicit gates.
 
 ## License
 

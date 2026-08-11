@@ -1016,7 +1016,7 @@
                             BorderThickness="1"
                             BorderBrush="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"
                             AutomationProperties.Name="Package install and release operation"
-                            AutomationProperties.HelpText="Preview the exact signed release and selected identities, then confirm preparation only. Authenticated updater ingress is unavailable, so Fleet does not claim dispatch or installation.">
+                            AutomationProperties.HelpText="Preview the exact signed release and selected identities, then confirm preparation only. Authenticated updater work remains machine-owned; this view reports durable claim, dispatch, and installed-version evidence without exposing owner credentials.">
                         <Border.Resources>
                             <Style x:Key="PackageInputTextBoxStyle"
                                    TargetType="{x:Type TextBox}">
@@ -1145,7 +1145,7 @@
                                       ScrollViewer.CanContentScroll="True"
                                       ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                       AutomationProperties.Name="Package operation targets"
-                                      AutomationProperties.HelpText="Read-only exact-target package preparation evidence.">
+                                      AutomationProperties.HelpText="Read-only exact-target package preparation, owner delivery, and installed-version evidence.">
                                 <DataGrid.Style>
                                     <Style TargetType="{x:Type DataGrid}">
                                         <Style.Triggers>
@@ -1206,6 +1206,9 @@
                                                     <TextBlock Text="{Binding Message}"
                                                                TextWrapping="Wrap" />
                                                     <TextBlock Text="{Binding OwnerDelivery}"
+                                                               TextWrapping="Wrap"
+                                                               Opacity="0.75" />
+                                                    <TextBlock Text="{Binding ApplicationProof}"
                                                                TextWrapping="Wrap"
                                                                Opacity="0.75" />
                                                     <TextBlock Text="{Binding ReasonCode, StringFormat={}Reason {0}}"
