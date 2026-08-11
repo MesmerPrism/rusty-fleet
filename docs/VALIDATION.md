@@ -88,6 +88,12 @@ configured linker and the same strict leak gate. This is source/test evidence
 under Rust LLD, not a claim that separately produced release artifacts are
 equivalent to MSVC-linked artifacts.
 
+The guardrail's synthetic timeout self-test reserves ten seconds for a loaded
+Windows host to start its test-only PowerShell process and synchronously flush
+one stdout and one stderr line before the deliberate 30-second hang. That
+allowance tests preservation of output that actually existed before Job Object
+termination; it does not change any production check timeout or cleanup bound.
+
 The atomic `rusty.fleet.validation_run_receipt.v1` records requested,
 required, and effective profiles; configuration SHA-256; Git evidence;
 command identities; timings; per-check status, timeout, and cleanup; aggregate

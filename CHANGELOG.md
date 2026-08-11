@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Hardened the validation guardrail's timeout/output self-test against loaded
+  Windows process-start variance while keeping production check and cleanup
+  deadlines unchanged.
 - Made the WPF package-operation ledger validate and project durable updater
   claims, owner dispatch acknowledgement, and exact `install_commit`
   installed-version proof without exposing owner credentials or conflating
