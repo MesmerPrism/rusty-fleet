@@ -370,13 +370,13 @@ function Test-GitHubWorkflowCadence {
         Join-Path $repoRoot ".github/workflows/windows-distribution-ci.yml"
     ) -Raw).Replace("`r`n", "`n")
 
-    $ciTrigger = @"
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-"@
+    $ciTrigger = @(
+        "on:",
+        "  push:",
+        "    branches:",
+        "      - main",
+        "  pull_request:"
+    ) -join "`n"
     Assert-True -Condition $ci.Contains($ciTrigger) `
         -Message "CI must validate pull requests and main pushes, not every feature push."
     Assert-True -Condition $ci.Contains(
@@ -386,13 +386,13 @@ on:
         "cancel-in-progress: `${{ github.event_name == 'pull_request' }}"
     ) -Message "CI must cancel only superseded pull-request runs."
 
-    $distributionTrigger = @"
-on:
-  push:
-    branches:
-      - main
-    paths:
-"@
+    $distributionTrigger = @(
+        "on:",
+        "  push:",
+        "    branches:",
+        "      - main",
+        "    paths:"
+    ) -join "`n"
     Assert-True -Condition $distribution.Contains($distributionTrigger) `
         -Message "Distribution validation must run on affected main pushes."
     Assert-True -Condition $distribution.Contains("`n  pull_request:`n    paths:`n") `
