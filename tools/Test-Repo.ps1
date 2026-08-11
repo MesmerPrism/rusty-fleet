@@ -352,13 +352,59 @@ function Test-RequiredFiles {
         "morphospace/iteration-events.jsonl",
         "tools/Test-Repo.ps1",
         ".github/workflows/ci.yml",
-        ".github/workflows/deep-validation.yml"
+        ".github/workflows/deep-validation.yml",
+        ".github/workflows/windows-distribution-ci.yml"
     )
 
     foreach ($relative in $required) {
         Assert-True -Condition (Test-Path -LiteralPath (Join-Path $repoRoot $relative) -PathType Leaf) `
             -Message "Required file is missing: $relative"
     }
+}
+
+function Test-GitHubWorkflowCadence {
+    $ci = (Get-Content -LiteralPath (
+        Join-Path $repoRoot ".github/workflows/ci.yml"
+    ) -Raw).Replace("`r`n", "`n")
+    $distribution = (Get-Content -LiteralPath (
+        Join-Path $repoRoot ".github/workflows/windows-distribution-ci.yml"
+    ) -Raw).Replace("`r`n", "`n")
+
+    $ciTrigger = @(
+        "on:",
+        "  push:",
+        "    branches:",
+        "      - main",
+        "  pull_request:"
+    ) -join "`n"
+    Assert-True -Condition $ci.Contains($ciTrigger) `
+        -Message "CI must validate pull requests and main pushes, not every feature push."
+    Assert-True -Condition $ci.Contains(
+        'group: fleet-ci-${{ github.event.pull_request.number || github.ref }}'
+    ) -Message "CI concurrency must bind one pull-request or ref lane."
+    Assert-True -Condition $ci.Contains(
+        "cancel-in-progress: `${{ github.event_name == 'pull_request' }}"
+    ) -Message "CI must cancel only superseded pull-request runs."
+
+    $distributionTrigger = @(
+        "on:",
+        "  push:",
+        "    branches:",
+        "      - main",
+        "    paths:"
+    ) -join "`n"
+    Assert-True -Condition $distribution.Contains($distributionTrigger) `
+        -Message "Distribution validation must run on affected main pushes."
+    Assert-True -Condition $distribution.Contains("`n  pull_request:`n    paths:`n") `
+        -Message "Distribution validation must run on affected pull requests."
+    Assert-True -Condition (-not $distribution.Contains("      - README.md")) `
+        -Message "Generic README edits must not trigger distribution validation."
+    Assert-True -Condition $distribution.Contains(
+        'group: fleet-windows-distribution-${{ github.event.pull_request.number || github.ref }}'
+    ) -Message "Distribution concurrency must bind one pull-request or ref lane."
+    Assert-True -Condition $distribution.Contains(
+        "cancel-in-progress: `${{ github.event_name == 'pull_request' }}"
+    ) -Message "Distribution must cancel only superseded pull-request runs."
 }
 
 function Invoke-Cargo {
@@ -886,6 +932,7 @@ try {
         }
     }
     Test-RequiredFiles
+    Test-GitHubWorkflowCadence
     Test-JsonDocuments
     Test-PublicBoundary
     Test-PlanningInvariants
