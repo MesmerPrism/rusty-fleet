@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace RustyFleet.FleetConsole.Contracts;
 
@@ -21,6 +22,10 @@ public static class FleetJson
 
 public sealed class FleetQuery
 {
+    private static readonly Regex SearchTermSeparator = new(
+        @"[^\p{L}\p{N}]+",
+        RegexOptions.CultureInvariant);
+
     [JsonPropertyName("schema")]
     public string Schema { get; init; } = "rusty.fleet.query.v1";
 
@@ -49,17 +54,18 @@ public sealed class FleetQuery
         string sortField = "display_name",
         string sortDirection = "ascending")
     {
-        var normalized = searchText?.Trim();
         var terms = new List<object>();
-        if (!string.IsNullOrEmpty(normalized))
+        foreach (var term in SearchTermSeparator
+                     .Split(searchText?.Trim() ?? string.Empty)
+                     .Where(static term => term.Length > 0))
         {
             terms.Add(new Dictionary<string, object?>
             {
                 ["kind"] = "or",
                 ["expressions"] = new object[]
                 {
-                    Predicate("display_name", "contains", normalized),
-                    Predicate("device_id", "contains", normalized)
+                    Predicate("display_name", "contains", term),
+                    Predicate("device_id", "contains", term)
                 }
             });
         }

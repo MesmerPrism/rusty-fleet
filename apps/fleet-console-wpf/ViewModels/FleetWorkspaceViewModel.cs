@@ -3446,7 +3446,6 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         }
 
         if (kind != "or" ||
-            searchText.Length != 0 ||
             !expression.TryGetProperty("expressions", out var alternatives) ||
             alternatives.ValueKind != JsonValueKind.Array)
         {
@@ -3474,7 +3473,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             return false;
         }
 
-        searchText = firstValue;
+        searchText = searchText.Length == 0
+            ? firstValue
+            : $"{searchText} {firstValue}";
         return true;
     }
 
