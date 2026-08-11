@@ -598,9 +598,12 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         IsPackagePreviewReady(CurrentPackageOperation);
 
     public string PackageConfirmationButtonText =>
-        CurrentPackageOperation?.Lifecycle == "accepted"
-            ? "Preparation accepted"
-            : "Confirm preparation";
+        CurrentPackageOperation?.Lifecycle switch
+        {
+            null or "proposed" => "Confirm preparation",
+            "rejected" => "Preparation unavailable",
+            _ => "Preparation accepted"
+        };
 
     public string PackageOperationSummaryText
     {
@@ -1281,8 +1284,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             RequireSamePackageOperation(prior, operation);
             ProjectPackageOperation(operation);
             PackageOperationStatusText =
-                "Prepared for owner delivery · authenticated updater ingress is unavailable · " +
-                "no package was dispatched or installed";
+                "Prepared for authenticated updater-owner claim · " +
+                "preparation is not dispatch or installed-version proof";
         }
         catch (Exception error) when (IsProjectionFailure(error))
         {
@@ -1319,9 +1322,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 PackagePreviewIdentities(prior));
             RequireSamePackageOperation(prior, operation);
             ProjectPackageOperation(operation);
-            PackageOperationStatusText =
-                "Package operation refreshed · owner ingress remains unavailable · " +
-                "no package dispatch or installation is claimed";
+            PackageOperationStatusText = PackageOwnerEvidenceStatus(operation);
         }
         catch (Exception error) when (IsProjectionFailure(error))
         {
@@ -2775,7 +2776,15 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         }
 
         var eligible = operation.Targets.Count(target => target.Preflight.Eligible);
-        var prepared = operation.Targets.Count(target => target.Stage == "dispatch_ready");
+        var prepared = operation.Targets.Count(target =>
+            target.Stage == "dispatch_ready" && target.OwnerClaim is null);
+        var claimed = operation.Targets.Count(target =>
+            target.Lifecycle == "accepted" && target.OwnerClaim is not null);
+        var inFlight = operation.Targets.Count(target =>
+            target.Lifecycle is "dispatched" or "running");
+        var applied = operation.Targets.Count(target => target.Lifecycle == "applied");
+        var terminalWithoutApplication = operation.Targets.Count(target =>
+            target.Lifecycle is "failed" or "expired" or "cancelled");
         var excluded = operation.Targets.Count - eligible;
         var releaseReference = operation.Preview.Release.Kind == "manifest_url"
             ? operation.Preview.Release.ManifestUrl
@@ -2787,8 +2796,25 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             $"package {operation.Preview.ExpectedPackageName} · " +
             $"ring {operation.Preview.ExpectedRolloutRing} · " +
             $"{operation.Targets.Count} exact target(s) · {eligible} eligible · " +
-            $"{excluded} excluded · {prepared} prepared only · " +
+            $"{excluded} excluded · {prepared} awaiting claim · {claimed} claimed · " +
+            $"{inFlight} in flight · {applied} applied · " +
+            $"{terminalWithoutApplication} terminal without application · " +
             $"lifecycle {DeviceRowViewModel.Title(operation.Lifecycle)}";
+    }
+
+    private static string PackageOwnerEvidenceStatus(
+        PackageInstallReleaseOperation operation)
+    {
+        var claimed = operation.Targets.Count(target =>
+            target.Lifecycle == "accepted" && target.OwnerClaim is not null);
+        var acknowledged = operation.Targets.Count(target =>
+            target.InvocationAcknowledgement?.Accepted == true);
+        var applied = operation.Targets.Count(target =>
+            target.EffectiveReceipt is not null && target.Lifecycle == "applied");
+        return
+            $"Package operation refreshed · {claimed} owner claim record(s) · " +
+            $"{acknowledged} dispatch acknowledgement(s) · " +
+            $"{applied} exact installed-version proof(s) · cleanup remains separate";
     }
 
     private void ProjectWindowsHotspotOperation(

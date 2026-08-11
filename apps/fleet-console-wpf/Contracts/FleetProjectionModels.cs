@@ -789,6 +789,165 @@ public sealed class PackageUpdaterInvocation
     public long ExpiresAtMs { get; init; }
 }
 
+public sealed class PackageUpdaterClaim
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("claim_id")]
+    public string ClaimId { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_id")]
+    public string OwnerId { get; init; } = string.Empty;
+
+    [JsonPropertyName("request_id")]
+    public string RequestId { get; init; } = string.Empty;
+
+    [JsonPropertyName("claimed_at_ms")]
+    public long ClaimedAtMs { get; init; }
+
+    [JsonPropertyName("expires_at_ms")]
+    public long ExpiresAtMs { get; init; }
+
+    [JsonPropertyName("invocation_sha256")]
+    public string InvocationSha256 { get; init; } = string.Empty;
+
+    [JsonPropertyName("release_sha256")]
+    public string ReleaseSha256 { get; init; } = string.Empty;
+
+    [JsonPropertyName("target_sha256")]
+    public string TargetSha256 { get; init; } = string.Empty;
+
+    [JsonPropertyName("invocation")]
+    public PackageUpdaterInvocation Invocation { get; init; } = new();
+}
+
+public sealed class ConsumedPackageUpdaterClaimIdentity
+{
+    [JsonPropertyName("claim_id")]
+    public string ClaimId { get; init; } = string.Empty;
+
+    [JsonPropertyName("request_id")]
+    public string RequestId { get; init; } = string.Empty;
+}
+
+public sealed class PackageUpdaterInvocationAcknowledgement
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_action_request_id")]
+    public string OwnerActionRequestId { get; init; } = string.Empty;
+
+    [JsonPropertyName("accepted")]
+    public bool Accepted { get; init; }
+
+    [JsonPropertyName("code")]
+    public string Code { get; init; } = string.Empty;
+
+    [JsonPropertyName("acknowledged_at_ms")]
+    public long AcknowledgedAtMs { get; init; }
+}
+
+public sealed class PackageUpdateCheckpoint
+{
+    [JsonPropertyName("package_name")]
+    public string PackageName { get; init; } = string.Empty;
+
+    [JsonPropertyName("rollout_ring")]
+    public string RolloutRing { get; init; } = string.Empty;
+
+    [JsonPropertyName("sequence")]
+    public ulong Sequence { get; init; }
+
+    [JsonPropertyName("version_code")]
+    public ulong VersionCode { get; init; }
+
+    [JsonPropertyName("signed_manifest_sha256")]
+    public string SignedManifestSha256 { get; init; } = string.Empty;
+}
+
+public sealed class PackageUpdateReceipt
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("stage")]
+    public string Stage { get; init; } = string.Empty;
+
+    [JsonPropertyName("decision")]
+    public string Decision { get; init; } = string.Empty;
+
+    [JsonPropertyName("code")]
+    public string Code { get; init; } = string.Empty;
+
+    [JsonPropertyName("observed_at_ms")]
+    public long ObservedAtMs { get; init; }
+
+    [JsonPropertyName("envelope_sha256")]
+    public string? EnvelopeSha256 { get; init; }
+
+    [JsonPropertyName("signed_manifest_sha256")]
+    public string? SignedManifestSha256 { get; init; }
+
+    [JsonPropertyName("key_id")]
+    public string? KeyId { get; init; }
+
+    [JsonPropertyName("manifest_id")]
+    public string? ManifestId { get; init; }
+
+    [JsonPropertyName("package_name")]
+    public string? PackageName { get; init; }
+
+    [JsonPropertyName("rollout_ring")]
+    public string? RolloutRing { get; init; }
+
+    [JsonPropertyName("sequence")]
+    public ulong? Sequence { get; init; }
+
+    [JsonPropertyName("version_code")]
+    public ulong? VersionCode { get; init; }
+
+    [JsonPropertyName("prior_checkpoint")]
+    public PackageUpdateCheckpoint? PriorCheckpoint { get; init; }
+
+    [JsonPropertyName("accepted_checkpoint")]
+    public PackageUpdateCheckpoint? AcceptedCheckpoint { get; init; }
+
+    [JsonPropertyName("state_changed")]
+    public bool StateChanged { get; init; }
+}
+
+public sealed class PackageUpdaterEffectiveReceipt
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; init; } = string.Empty;
+
+    [JsonPropertyName("identity_revision")]
+    public ulong IdentityRevision { get; init; }
+
+    [JsonPropertyName("owner_action_request_id")]
+    public string OwnerActionRequestId { get; init; } = string.Empty;
+
+    [JsonPropertyName("updater_receipt")]
+    public PackageUpdateReceipt UpdaterReceipt { get; init; } = new();
+
+    [JsonPropertyName("wrapped_at_ms")]
+    public long WrappedAtMs { get; init; }
+}
+
 public sealed class PackageInstallTargetLedger
 {
     [JsonPropertyName("device_id")]
@@ -809,11 +968,21 @@ public sealed class PackageInstallTargetLedger
     [JsonPropertyName("invocation")]
     public PackageUpdaterInvocation? Invocation { get; init; }
 
+    [JsonPropertyName("owner_claim")]
+    public PackageUpdaterClaim? OwnerClaim { get; init; }
+
+    [JsonPropertyName("prior_owner_claims")]
+    public IReadOnlyList<PackageUpdaterClaim> PriorOwnerClaims { get; init; } = [];
+
+    [JsonPropertyName("consumed_owner_claim_identities")]
+    public IReadOnlyList<ConsumedPackageUpdaterClaimIdentity>
+        ConsumedOwnerClaimIdentities { get; init; } = [];
+
     [JsonPropertyName("invocation_acknowledgement")]
-    public JsonElement? InvocationAcknowledgement { get; init; }
+    public PackageUpdaterInvocationAcknowledgement? InvocationAcknowledgement { get; init; }
 
     [JsonPropertyName("effective_receipt")]
-    public JsonElement? EffectiveReceipt { get; init; }
+    public PackageUpdaterEffectiveReceipt? EffectiveReceipt { get; init; }
 
     [JsonPropertyName("reason_code")]
     public string ReasonCode { get; init; } = string.Empty;

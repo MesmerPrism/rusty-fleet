@@ -292,8 +292,11 @@ public static class FleetProjectionValidation
             !operation.CleanupRequired,
             "package operation header");
         Require(
-            operation.Lifecycle is "proposed" or "accepted" or "rejected",
-            "package operation owner-ingress boundary");
+            operation.Lifecycle is
+                "proposed" or "accepted" or "dispatched" or "running" or
+                "applied" or "failed" or "expired" or "rejected" or
+                "cancellation_requested" or "cancelled",
+            "package operation lifecycle");
 
         var preview = operation.Preview;
         Require(
@@ -351,53 +354,303 @@ public static class FleetProjectionValidation
                     target.Lifecycle == "rejected" &&
                     target.Stage == "preflight_rejected" &&
                     target.Invocation is null &&
+                    target.OwnerClaim is null &&
+                    target.PriorOwnerClaims.Count == 0 &&
+                    target.ConsumedOwnerClaimIdentities.Count == 0 &&
                     target.InvocationAcknowledgement is null &&
                     target.EffectiveReceipt is null,
                     "excluded package target");
                 continue;
             }
 
+            ValidatePackageOwnerHistory(target, operation);
+
             if (target.Lifecycle == "proposed")
             {
                 Require(
                     target.Stage == "preview_ready" &&
                     target.Invocation is null &&
+                    target.OwnerClaim is null &&
                     target.InvocationAcknowledgement is null &&
                     target.EffectiveReceipt is null,
                     "preview-ready package target");
                 continue;
             }
 
-            Require(
-                target.Lifecycle == "accepted" &&
-                target.Stage is "approved" or "dispatch_ready" &&
-                target.InvocationAcknowledgement is null &&
-                target.EffectiveReceipt is null,
-                "accepted package target");
-            if (target.Stage == "approved")
-            {
-                Require(target.Invocation is null, "approved package target");
-            }
-            else
+            if (target.Lifecycle == "accepted")
             {
                 Require(
-                    target.Invocation is not null,
-                    "dispatch-ready package target invocation");
-                ValidatePackageInvocation(target.Invocation!, operation, target);
+                    target.Stage is "approved" or "dispatch_ready" &&
+                    target.InvocationAcknowledgement is null &&
+                    target.EffectiveReceipt is null,
+                    "accepted package target");
+                if (target.Stage == "approved")
+                {
+                    Require(
+                        target.Invocation is null && target.OwnerClaim is null,
+                        "approved package target");
+                }
+                else
+                {
+                    Require(
+                        target.Invocation is not null,
+                        "dispatch-ready package target invocation");
+                    ValidatePackageInvocation(target.Invocation!, operation, target);
+                    if (target.OwnerClaim is not null)
+                    {
+                        ValidatePackageClaim(target.OwnerClaim, operation, target);
+                    }
+                }
+                continue;
             }
+
+            Require(
+                target.Invocation is not null,
+                "post-claim package target invocation");
+            ValidatePackageInvocation(target.Invocation!, operation, target);
+
+            if (target.Lifecycle is "dispatched" or "running")
+            {
+                Require(
+                    target.InvocationAcknowledgement is not null &&
+                    target.InvocationAcknowledgement.Accepted &&
+                    target.EffectiveReceipt is null,
+                    "in-flight package owner evidence");
+                ValidatePackageAcknowledgement(
+                    target.InvocationAcknowledgement!,
+                    target.Invocation!);
+                Require(
+                    target.Lifecycle == "dispatched"
+                        ? target.Stage == "owner_acknowledged"
+                        : target.Stage is
+                            "staged" or "awaiting_wearer" or
+                            "cancellation_requested" or "recovery_required",
+                    "in-flight package stage");
+                continue;
+            }
+
+            if (target.Lifecycle == "applied")
+            {
+                Require(
+                    target.Stage == "applied" &&
+                    target.EffectiveReceipt is not null,
+                    "applied package target");
+                ValidatePackageEffectiveReceipt(
+                    target.EffectiveReceipt!,
+                    target.Invocation!,
+                    operation,
+                    target);
+                continue;
+            }
+
+            if (target.Lifecycle is "failed" or "expired")
+            {
+                Require(
+                    target.Stage ==
+                        (target.Lifecycle == "failed" ? "failed" : "expired") &&
+                    target.EffectiveReceipt is null,
+                    "terminal package target without application proof");
+                if (target.InvocationAcknowledgement is not null)
+                {
+                    ValidatePackageAcknowledgement(
+                        target.InvocationAcknowledgement,
+                        target.Invocation!);
+                }
+                continue;
+            }
+
+            Require(
+                target.Lifecycle is "cancellation_requested" or "cancelled" &&
+                target.Stage == target.Lifecycle &&
+                target.EffectiveReceipt is null,
+                "cancelled package target");
         }
 
         var eligible = operation.Targets
             .Where(target => target.Preflight.Eligible)
             .ToArray();
-        var expectedLifecycle = eligible.Length == 0
-            ? "rejected"
-            : eligible.Any(target => target.Lifecycle == "proposed")
-                ? "proposed"
-                : "accepted";
+        var expectedLifecycle = DerivePackageOperationLifecycle(eligible);
         Require(
             operation.Lifecycle == expectedLifecycle,
             "package operation aggregate lifecycle");
+        Require(
+            operation.Targets.Count(target =>
+                target.Lifecycle is "dispatched" or "running" ||
+                (target.Lifecycle == "accepted" && target.OwnerClaim is not null)) <=
+            operation.MaxParallelism,
+            "package operation owner-delivery parallelism");
+    }
+
+    private static void ValidatePackageOwnerHistory(
+        PackageInstallTargetLedger target,
+        PackageInstallReleaseOperation operation)
+    {
+        Require(target.PriorOwnerClaims.Count <= 16, "prior package owner claims");
+        Require(
+            target.ConsumedOwnerClaimIdentities.Count <= 64,
+            "consumed package owner claim identities");
+
+        var claimIds = new HashSet<string>(StringComparer.Ordinal);
+        var requestIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var identity in target.ConsumedOwnerClaimIdentities)
+        {
+            Require(
+                IsPortableIdentifier(identity.ClaimId, 256) &&
+                IsPortableIdentifier(identity.RequestId, 256) &&
+                claimIds.Add(identity.ClaimId) &&
+                requestIds.Add(identity.RequestId),
+                "consumed package owner claim identity");
+        }
+
+        foreach (var claim in target.PriorOwnerClaims)
+        {
+            ValidatePackageClaim(claim, operation, target);
+            Require(
+                target.ConsumedOwnerClaimIdentities.Any(identity =>
+                    identity.ClaimId == claim.ClaimId &&
+                    identity.RequestId == claim.RequestId),
+                "prior package owner claim replay identity");
+        }
+
+        if (target.OwnerClaim is not null)
+        {
+            Require(
+                target.ConsumedOwnerClaimIdentities.Any(identity =>
+                    identity.ClaimId == target.OwnerClaim.ClaimId &&
+                    identity.RequestId == target.OwnerClaim.RequestId),
+                "active package owner claim replay identity");
+        }
+    }
+
+    private static void ValidatePackageClaim(
+        PackageUpdaterClaim claim,
+        PackageInstallReleaseOperation operation,
+        PackageInstallTargetLedger target)
+    {
+        Require(
+            claim.Schema == "rusty.fleet.package_updater_claim.v1" &&
+            IsPortableIdentifier(claim.ClaimId, 256) &&
+            claim.OwnerId == "rusty-quest.package-updater" &&
+            IsPortableIdentifier(claim.RequestId, 256) &&
+            claim.ClaimedAtMs >= 0 &&
+            claim.ExpiresAtMs > claim.ClaimedAtMs &&
+            claim.ExpiresAtMs <= claim.Invocation.ExpiresAtMs &&
+            IsPrefixedSha256(claim.InvocationSha256) &&
+            IsPrefixedSha256(claim.ReleaseSha256) &&
+            IsPrefixedSha256(claim.TargetSha256),
+            "package owner claim");
+        ValidatePackageInvocation(claim.Invocation, operation, target);
+        Require(
+            target.Invocation is not null &&
+            JsonSerializer.Serialize(claim.Invocation, FleetJson.Options) ==
+            JsonSerializer.Serialize(target.Invocation, FleetJson.Options),
+            "package owner claim invocation binding");
+    }
+
+    private static void ValidatePackageAcknowledgement(
+        PackageUpdaterInvocationAcknowledgement acknowledgement,
+        PackageUpdaterInvocation invocation)
+    {
+        Require(
+            acknowledgement.Schema ==
+            "rusty.fleet.package_updater_invocation_acknowledgement.v1" &&
+            acknowledgement.OperationId == invocation.OperationId &&
+            acknowledgement.DeviceId == invocation.DeviceId &&
+            acknowledgement.OwnerActionRequestId == invocation.OwnerActionRequestId &&
+            IsPortableIdentifier(acknowledgement.Code, 256) &&
+            acknowledgement.AcknowledgedAtMs >= 0,
+            "package updater acknowledgement");
+    }
+
+    private static void ValidatePackageEffectiveReceipt(
+        PackageUpdaterEffectiveReceipt receipt,
+        PackageUpdaterInvocation invocation,
+        PackageInstallReleaseOperation operation,
+        PackageInstallTargetLedger target)
+    {
+        Require(
+            receipt.Schema == "rusty.fleet.package_updater_effective_receipt.v1" &&
+            receipt.OperationId == operation.OperationId &&
+            receipt.DeviceId == target.DeviceId &&
+            receipt.IdentityRevision == target.IdentityRevision &&
+            receipt.OwnerActionRequestId == invocation.OwnerActionRequestId &&
+            receipt.WrappedAtMs >= 0 &&
+            receipt.WrappedAtMs <= invocation.ExpiresAtMs,
+            "package updater effective receipt binding");
+
+        var update = receipt.UpdaterReceipt;
+        var checkpoint = update.AcceptedCheckpoint;
+        Require(
+            update.Schema == "rusty.quest.package_update_receipt.v1" &&
+            update.Stage == "install_commit" &&
+            update.Decision == "accepted" &&
+            IsPortableIdentifier(update.Code, 256) &&
+            update.ObservedAtMs >= 0 &&
+            (update.EnvelopeSha256 is null ||
+                IsPrefixedSha256(update.EnvelopeSha256)) &&
+            (update.SignedManifestSha256 is null ||
+                IsPrefixedSha256(update.SignedManifestSha256)) &&
+            checkpoint is not null,
+            "package updater install-commit receipt");
+        ValidatePackageCheckpoint(checkpoint!);
+        Require(
+            update.PackageName == invocation.ExpectedPackageName &&
+            update.RolloutRing == invocation.ExpectedRolloutRing &&
+            update.Sequence == checkpoint!.Sequence &&
+            update.VersionCode == checkpoint.VersionCode &&
+            update.SignedManifestSha256 == checkpoint.SignedManifestSha256 &&
+            checkpoint.PackageName == invocation.ExpectedPackageName &&
+            checkpoint.RolloutRing == invocation.ExpectedRolloutRing,
+            "package updater installed-version proof");
+        if (update.PriorCheckpoint is not null)
+        {
+            ValidatePackageCheckpoint(update.PriorCheckpoint);
+        }
+    }
+
+    private static void ValidatePackageCheckpoint(PackageUpdateCheckpoint checkpoint)
+    {
+        Require(
+            IsAndroidPackageName(checkpoint.PackageName) &&
+            IsPortableIdentifier(checkpoint.RolloutRing, 128) &&
+            checkpoint.Sequence > 0 &&
+            checkpoint.VersionCode > 0 &&
+            IsPrefixedSha256(checkpoint.SignedManifestSha256),
+            "package updater checkpoint");
+    }
+
+    private static string DerivePackageOperationLifecycle(
+        IReadOnlyList<PackageInstallTargetLedger> eligible)
+    {
+        if (eligible.Count == 0)
+        {
+            return "rejected";
+        }
+        if (eligible.Any(target => target.Lifecycle == "running"))
+        {
+            return "running";
+        }
+        if (eligible.Any(target => target.Lifecycle == "dispatched"))
+        {
+            return "dispatched";
+        }
+        if (eligible.Any(target => target.Lifecycle == "proposed"))
+        {
+            return "proposed";
+        }
+        if (eligible.Any(target => target.Lifecycle == "accepted"))
+        {
+            return "accepted";
+        }
+        if (eligible.All(target => target.Lifecycle == "applied"))
+        {
+            return "applied";
+        }
+        if (eligible.All(target => target.Lifecycle == "expired"))
+        {
+            return "expired";
+        }
+        return "failed";
     }
 
     private static void ValidatePackageRelease(PackageReleaseReference release)
@@ -1023,6 +1276,10 @@ public static class FleetProjectionValidation
         value.Length == 64 &&
         value.All(character =>
             char.IsAsciiDigit(character) || character is >= 'a' and <= 'f');
+
+    private static bool IsPrefixedSha256(string value) =>
+        value.StartsWith("sha256:", StringComparison.Ordinal) &&
+        IsLowerHexSha256(value[7..]);
 
     private static bool IsSavedViewIdEdge(char value) =>
         char.IsAsciiLetterLower(value) || char.IsAsciiDigit(value);

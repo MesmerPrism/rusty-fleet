@@ -131,10 +131,13 @@ package-owner-receipt OPERATION_ID JSON
 
 The WPF Console continues to accept a credential-free HTTPS signed-manifest URL, expected
 package identity, and rollout ring. Confirmation is labeled as preparation,
-and projects the durable operation status. Owner authentication and evidence
-submission are intentionally not activated in WPF in this source slice: the
-owner is a machine participant, and adding human-facing cancellation/retry
-controls requires the later complete operation-parity design. The input lock is visible once
+and projects the durable operation status. Its read-only target ledger validates
+and distinguishes an active owner claim, accepted dispatch acknowledgement,
+and the exact `install_commit` installed-version proof; it also states that
+application proof is not cleanup proof. Owner authentication and evidence
+submission are intentionally not activated in WPF: the owner is a machine
+participant, and adding human-facing cancellation/retry controls requires the
+later complete operation-parity design. The input lock is visible once
 the preview is immutable, an accepted preparation cannot be confirmed again,
 and `Close view` clears only the local Console projection; it does not cancel
 or mutate the Hub operation. Batch operations are collapsed by default to
@@ -184,8 +187,9 @@ Focused validation covers:
   Applied;
 - WPF exact-release/target confirmation across the normal 50-device fixture,
   fail-closed refresh, a virtualized accessible per-target ledger, disabled
-  repeat confirmation, non-color target evidence, and explicit
-  no-dispatch/no-install language.
+  repeat confirmation, non-color target evidence, truthful claim/dispatch/
+  installed-version projections, damaged-receipt rejection, and an explicit
+  cleanup boundary.
 
 Repository Quick and Standard gates are device-free. A live package update
 requires a separately authorized owner/device validation unit and cannot be
