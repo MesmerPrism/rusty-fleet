@@ -15,7 +15,8 @@ two-slot restart recovery, and one cleaned private Quest Wi-Fi proof. Nothing
 listens by default: the operator must supply a valid enrollment config,
 absolute private state directory, and explicitly permit a non-loopback bind.
 The native WPF table/inspector slice now includes canonical separator-tolerant
-AND-term search across device names and IDs, freshness scope, Hub-owned sort
+unquoted AND-term and literal quoted-phrase search across device names and IDs,
+freshness scope, Hub-owned sort
 choices, explicit cohort/model/freshness/application grouping, hidden-selection preservation,
 retained inspector context across scope changes, and an explicit queue for
 live membership, ordering, or grouping changes while shared row values
