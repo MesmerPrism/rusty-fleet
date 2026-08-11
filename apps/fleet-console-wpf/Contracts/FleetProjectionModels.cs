@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Rusty Fleet contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -24,6 +25,9 @@ public sealed class FleetQuery
 {
     private static readonly Regex SearchTermSeparator = new(
         @"[^\p{L}\p{N}]+",
+        RegexOptions.CultureInvariant);
+    private static readonly Regex SearchPhraseWhitespace = new(
+        @"\s+",
         RegexOptions.CultureInvariant);
 
     [JsonPropertyName("schema")]
@@ -55,9 +59,7 @@ public sealed class FleetQuery
         string sortDirection = "ascending")
     {
         var terms = new List<object>();
-        foreach (var term in SearchTermSeparator
-                     .Split(searchText?.Trim() ?? string.Empty)
-                     .Where(static term => term.Length > 0))
+        foreach (var term in ParseSearchTerms(searchText))
         {
             terms.Add(new Dictionary<string, object?>
             {
@@ -103,6 +105,49 @@ public sealed class FleetQuery
             ],
             Limit = limit
         };
+    }
+
+    private static IReadOnlyList<string> ParseSearchTerms(string? searchText)
+    {
+        var terms = new List<string>();
+        var token = new StringBuilder();
+        var quoted = false;
+
+        void Flush()
+        {
+            if (quoted)
+            {
+                var phrase = SearchPhraseWhitespace.Replace(token.ToString(), " ").Trim();
+                if (phrase.Length > 0)
+                {
+                    terms.Add(phrase);
+                }
+            }
+            else
+            {
+                terms.AddRange(SearchTermSeparator
+                    .Split(token.ToString())
+                    .Where(static term => term.Length > 0));
+            }
+
+            token.Clear();
+        }
+
+        foreach (var character in searchText ?? string.Empty)
+        {
+            if (character == '"')
+            {
+                Flush();
+                quoted = !quoted;
+            }
+            else
+            {
+                token.Append(character);
+            }
+        }
+
+        Flush();
+        return terms;
     }
 
     private static Dictionary<string, object?> Predicate(

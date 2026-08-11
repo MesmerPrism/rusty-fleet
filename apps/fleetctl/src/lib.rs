@@ -454,21 +454,20 @@ pub fn default_query(limit: usize) -> FleetQuery {
 
 #[must_use]
 pub fn text_query(text: &str, limit: usize) -> FleetQuery {
-    let expressions = text
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|term| !term.is_empty())
+    let expressions = parse_search_terms(text)
+        .into_iter()
         .map(|term| QueryExpression::Or {
             expressions: vec![
                 QueryExpression::Predicate {
                     field: QueryField::DisplayName,
                     comparison: Comparison::Contains,
-                    value: Some(QueryValue::Text(term.to_owned())),
+                    value: Some(QueryValue::Text(term.clone())),
                     qualifier: None,
                 },
                 QueryExpression::Predicate {
                     field: QueryField::DeviceId,
                     comparison: Comparison::Contains,
-                    value: Some(QueryValue::Text(term.to_owned())),
+                    value: Some(QueryValue::Text(term)),
                     qualifier: None,
                 },
             ],
@@ -484,6 +483,40 @@ pub fn text_query(text: &str, limit: usize) -> FleetQuery {
         expression,
         ..default_query(limit)
     }
+}
+
+fn parse_search_terms(text: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut token = String::new();
+    let mut quoted = false;
+
+    let flush = |token: &mut String, quoted: bool, terms: &mut Vec<String>| {
+        if quoted {
+            let phrase = token.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !phrase.is_empty() {
+                terms.push(phrase);
+            }
+        } else {
+            terms.extend(
+                token
+                    .split(|character: char| !character.is_alphanumeric())
+                    .filter(|term| !term.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+        token.clear();
+    };
+
+    for character in text.chars() {
+        if character == '"' {
+            flush(&mut token, quoted, &mut terms);
+            quoted = !quoted;
+        } else {
+            token.push(character);
+        }
+    }
+    flush(&mut token, quoted, &mut terms);
+    terms
 }
 
 fn value<T, E>(result: Result<T, E>) -> Result<serde_json::Value, CliFailure>
@@ -528,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn free_text_filter_is_separator_tolerant_and_requires_every_term() {
+    fn free_text_filter_supports_separator_terms_and_single_field_phrases() {
         let hub = load_hub(4);
         let now_ms = BASE_TIME_MS;
 
@@ -547,6 +580,29 @@ mod tests {
             .list(&text_query("Quest/missing", 4), now_ms)
             .expect("mismatched query");
         assert_eq!(mismatched.total_count, 0);
+
+        let display_name_phrase = hub
+            .list(&text_query("\"Quest 0001\"", 4), now_ms)
+            .expect("display name phrase query");
+        assert_eq!(display_name_phrase.total_count, 1);
+        assert_eq!(display_name_phrase.rows[0].identity.device_id, "sim-00001");
+
+        let device_id_phrase = hub
+            .list(&text_query("\"sim-00001\"", 4), now_ms)
+            .expect("device id phrase query");
+        assert_eq!(device_id_phrase.total_count, 1);
+        assert_eq!(device_id_phrase.rows[0].identity.device_id, "sim-00001");
+
+        let cross_field_phrase = hub
+            .list(&text_query("\"Quest sim\"", 4), now_ms)
+            .expect("cross-field phrase query");
+        assert_eq!(cross_field_phrase.total_count, 0);
+
+        let mixed_phrase = hub
+            .list(&text_query("\"Quest 0001\" sim", 4), now_ms)
+            .expect("mixed phrase query");
+        assert_eq!(mixed_phrase.total_count, 1);
+        assert_eq!(mixed_phrase.rows[0].identity.device_id, "sim-00001");
 
         let separator_only = text_query("--- / ", 4);
         assert!(separator_only.expression.is_none());

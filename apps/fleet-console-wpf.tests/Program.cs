@@ -283,6 +283,33 @@ internal static class Program
                 FleetQuery.Create("--- / ").Expression is null,
                 "separator-only search must not narrow the fleet");
 
+            var phraseQuery = JsonSerializer.SerializeToElement(
+                FleetQuery.Create("\"Quest 0001\""),
+                FleetJson.Options);
+            var phraseExpression = phraseQuery.GetProperty("expression");
+            Require(
+                phraseExpression.GetProperty("kind").GetString() == "or" &&
+                phraseExpression.GetProperty("expressions").GetArrayLength() == 2 &&
+                phraseExpression.GetProperty("expressions")[0]
+                    .GetProperty("value").GetString() == "Quest 0001" &&
+                phraseExpression.GetProperty("expressions")[1]
+                    .GetProperty("value").GetString() == "Quest 0001",
+                "quoted search did not preserve one phrase across the two searchable fields");
+
+            var mixedPhraseQuery = JsonSerializer.SerializeToElement(
+                FleetQuery.Create("\"Quest 0001\" sim"),
+                FleetJson.Options);
+            var mixedPhraseTerms = mixedPhraseQuery
+                .GetProperty("expression")
+                .GetProperty("expressions");
+            Require(
+                mixedPhraseTerms.GetArrayLength() == 2 &&
+                mixedPhraseTerms[0].GetProperty("expressions")[0]
+                    .GetProperty("value").GetString() == "Quest 0001" &&
+                mixedPhraseTerms[1].GetProperty("expressions")[0]
+                    .GetProperty("value").GetString() == "sim",
+                "quoted and unquoted search terms did not preserve canonical AND shape");
+
             var source = new StaticFleetDataSource(
                 projection,
                 canonicalSummary: fixtureSummary);
