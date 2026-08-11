@@ -348,6 +348,55 @@
         { "path": "packaging/windows/tests/Test-WindowsReleasePolicy.ps1", "state": "present", "mode": "100644", "size_bytes": 12496, "sha256": "6037e97a908d395efbc296d9daaa87a0fe4c686c2e254189fbd3f8aa9874a3df" }
       ],
       "status": "approved"
+    },
+    {
+      "approval_id": "fleet-validation-cadence-20260811",
+      "required_ancestor": "d11a96c9045940117e2a385bb5a8d52aea1a2406",
+      "changed_paths": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/windows-distribution-ci.yml",
+        "docs/VALIDATION.md",
+        "docs/WORKFLOW.md",
+        "tools/Test-Repo.ps1"
+      ],
+      "artifacts": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 5016,
+          "sha256": "c89742e7ac4b6b59ca3fb08b5f169a9334011e09db26eca062f5a2685d72a867"
+        },
+        {
+          "path": ".github/workflows/windows-distribution-ci.yml",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 1834,
+          "sha256": "07de0c56f49b70e79bf4df8462a8367d9bce8f884c06456c54f7dfd7b4e909ee"
+        },
+        {
+          "path": "docs/VALIDATION.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 27323,
+          "sha256": "452478878ecc90e73074c03e832cb636952157b977167bacc4217be8924a6e2e"
+        },
+        {
+          "path": "docs/WORKFLOW.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 10913,
+          "sha256": "7ccc481cb67c6bf66a6276035f51addf17766538660034f888e6bd5be3b94697"
+        },
+        {
+          "path": "tools/Test-Repo.ps1",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 44795,
+          "sha256": "995fca4312e731a6c32cfac8056135fb01b48415ee5c34cfcf6d9fb489bbe02d"
+        }
+      ],
+      "status": "approved"
     }
   ],
   "status": "active"
