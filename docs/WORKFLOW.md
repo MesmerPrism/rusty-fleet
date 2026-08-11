@@ -83,7 +83,7 @@ units.
 | Moment | Required work | Typical cost | Git/GitHub action |
 | --- | --- | --- | --- |
 | Edit loop | nearest formatter/parser/unit/fixture check | seconds to a few minutes | none |
-| Coherent internal layer | focused tests plus `Quick` | short | local commit |
+| Coherent internal layer | focused tests; `Quick` at a recovery or review boundary | short | local commit |
 | Meaningful recovery checkpoint | `Quick`, secret/public-boundary scan, branch is buildable or clearly marked WIP | short | push working branch |
 | Milestone integration | all affected component tests plus `Standard` | moderate | handoff/PR and milestone acceptance |
 | Device checkpoint | source/static/build gates first, then one bounded serial-scoped suite | expensive | attach sanitized receipt to milestone |
@@ -112,8 +112,11 @@ An internal layer is a reviewable result such as:
 - CLI/API projection plus parity tests;
 - WPF projection over an already accepted route.
 
-Run the focused checks and `Quick`, then commit the layer. A layer may span
-many files. Do not commit one file at a time merely to create activity.
+Run the focused checks, then commit the layer. Add `Quick` when the layer is a
+meaningful recovery checkpoint or will be handed to another contributor. A
+layer may span many files. Do not commit one file at a time merely to create
+activity, and do not delay a recoverable commit solely to manufacture a dirty
+aggregate receipt.
 
 ### Meaningful recovery checkpoint
 
@@ -129,9 +132,18 @@ private evidence, or a knowingly broken public boundary for backup.
 
 ### Milestone integration
 
-Run `Standard` after the full vertical slice is assembled. Include every
-affected repository's owner checks, contract fixtures, CLI/API parity,
-public-boundary checks, and the milestone scenario suite.
+Freeze and commit the full vertical slice, then run the automatically selected
+risk-proportional aggregate once against its exact base. When the selected
+profile is `Standard` or `Deep`, that clean committed run is the handoff
+evidence. Include every affected repository's owner checks, contract fixtures,
+CLI/API parity, public-boundary checks, and the milestone scenario suite.
+
+A dirty-source aggregate is an explicit diagnostic, not a prerequisite for
+the clean committed handoff run. Do not execute the same aggregate before and
+after a commit merely because the commit invalidates the dirty receipt. During
+iteration, use the nearest focused checks and run the aggregate after the
+candidate is frozen. Rerun it only when a repair changes the candidate or a
+failed check requires new evidence.
 
 A small repair after a failure reruns its nearest failed check first. Once the
 repair is stable, rerun the aggregate Standard gate once. Do not repeatedly run

@@ -40,7 +40,11 @@ before execution and re-reads them afterward. Drift rejects the run. Direct
 execution rejects dirty source unless `-AllowDirtySource` is explicit; the
 legacy `Test-Repo.ps1` edit entrypoint supplies that opt-in because it is
 specifically an uncommitted edit loop. A later commit invalidates the dirty
-receipt and requires new evidence.
+receipt, but it does not require a second aggregate merely to pair dirty and
+clean evidence. Use focused checks during iteration, freeze and commit the
+candidate, then execute the risk-selected aggregate once against its exact
+base for handoff. Treat an explicitly requested dirty aggregate as diagnostic
+evidence only.
 
 Each registered check has an identity and timeout, emits a periodic heartbeat,
 and starts suspended. The runner assigns it to a kill-on-close Windows Job
@@ -493,8 +497,14 @@ replacement for them.
 
 ## GitHub cadence
 
-- The risk-proportional gate runs on every push and pull request from the
-  exact event base, or the default-branch merge base for a first branch push.
+- The risk-proportional gate runs for pull requests and `main` pushes from the
+  exact event base. Feature-branch pushes are recovery checkpoints and do not
+  duplicate the pull-request gate.
+- Superseded runs for the same pull request are cancelled. `main` readback is
+  retained and is never cancelled merely because a newer merge arrives.
+- Windows distribution validation uses the same pull-request plus `main`
+  cadence, but only for packaging, setup, release, site, and distribution
+  workflow surfaces. A generic `README.md` edit is not distribution evidence.
 - Focused is sufficient for ordinary documentation and narrow static edits.
 - Standard is selected for ordinary product code, schemas, tools, integration
   changes, and normal Morphospace unit/state evidence.

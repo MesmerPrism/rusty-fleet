@@ -2,8 +2,9 @@ name: Windows distribution validation
 
 on:
   push:
+    branches:
+      - main
     paths:
-      - README.md
       - apps/fleet-setup/**
       - apps/fleet-console-wpf/RustyFleet.FleetConsole.csproj
       - apps/fleet-console-wpf/Assets/rusty-fleet.*
@@ -15,7 +16,6 @@ on:
       - .github/workflows/pages.yml
   pull_request:
     paths:
-      - README.md
       - apps/fleet-setup/**
       - apps/fleet-console-wpf/RustyFleet.FleetConsole.csproj
       - apps/fleet-console-wpf/Assets/rusty-fleet.*
@@ -25,6 +25,10 @@ on:
       - .github/workflows/windows-distribution-ci.yml
       - .github/workflows/release-windows.yml
       - .github/workflows/pages.yml
+
+concurrency:
+  group: fleet-windows-distribution-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
