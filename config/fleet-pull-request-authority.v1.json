@@ -197,22 +197,22 @@
           "path": "CHANGELOG.md",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 7227,
-          "sha256": "6186455030871972506ad081885f837d7d98bee3c097e2eeaeaf2b5e41c4a571"
+          "size_bytes": 7117,
+          "sha256": "2dfd35291616577d1b86449ea898fd160bea64aebac2fd488d47b6987d7cfa5f"
         },
         {
           "path": "docs/VALIDATION.md",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 28225,
-          "sha256": "3e29fea1bcfb7739eeeefd4c43bf1655ab13e0106422e9c51d4b3f857b89e689"
+          "size_bytes": 27713,
+          "sha256": "7a393df8662eefac29f99a34f1fb037b957b5897a01e9a01f92568e673c0b5fd"
         },
         {
           "path": "tools/Test-FleetValidationGuardrails.ps1",
           "state": "present",
           "mode": "100644",
-          "size_bytes": 57457,
-          "sha256": "11e0b54215a2b70ddc7e604bce29f8ae8c3d42eb71d4281526d8581abdeb693e"
+          "size_bytes": 56349,
+          "sha256": "d31dc2ed262b27f257991469933b85f8d1993153ea43db42c335232342342d8d"
         }
       ],
       "status": "approved"
