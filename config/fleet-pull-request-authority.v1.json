@@ -185,6 +185,39 @@
       "status": "approved"
     },
     {
+      "approval_id": "fleet-validation-timeout-selftest-20260812",
+      "required_ancestor": "e058309c586a0e2dac96dac6ae93154bd6602363",
+      "changed_paths": [
+        "CHANGELOG.md",
+        "docs/VALIDATION.md",
+        "tools/Test-FleetValidationGuardrails.ps1"
+      ],
+      "artifacts": [
+        {
+          "path": "CHANGELOG.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 7117,
+          "sha256": "2dfd35291616577d1b86449ea898fd160bea64aebac2fd488d47b6987d7cfa5f"
+        },
+        {
+          "path": "docs/VALIDATION.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 27713,
+          "sha256": "7a393df8662eefac29f99a34f1fb037b957b5897a01e9a01f92568e673c0b5fd"
+        },
+        {
+          "path": "tools/Test-FleetValidationGuardrails.ps1",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 56349,
+          "sha256": "d31dc2ed262b27f257991469933b85f8d1993153ea43db42c335232342342d8d"
+        }
+      ],
+      "status": "approved"
+    },
+    {
       "approval_id": "fleet-windows-labs-release-20260731",
       "required_ancestor": "e7301362aa29c74dc76ecf4112e08a32d8fd3797",
       "changed_paths": [
