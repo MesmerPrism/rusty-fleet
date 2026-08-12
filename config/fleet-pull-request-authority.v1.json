@@ -397,6 +397,39 @@
         }
       ],
       "status": "approved"
+    },
+    {
+      "approval_id": "fleet-validation-timeout-selftest-20260812",
+      "required_ancestor": "e058309c586a0e2dac96dac6ae93154bd6602363",
+      "changed_paths": [
+        "CHANGELOG.md",
+        "docs/VALIDATION.md",
+        "tools/Test-FleetValidationGuardrails.ps1"
+      ],
+      "artifacts": [
+        {
+          "path": "CHANGELOG.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 7227,
+          "sha256": "6186455030871972506ad081885f837d7d98bee3c097e2eeaeaf2b5e41c4a571"
+        },
+        {
+          "path": "docs/VALIDATION.md",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 28225,
+          "sha256": "3e29fea1bcfb7739eeeefd4c43bf1655ab13e0106422e9c51d4b3f857b89e689"
+        },
+        {
+          "path": "tools/Test-FleetValidationGuardrails.ps1",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 57457,
+          "sha256": "11e0b54215a2b70ddc7e604bce29f8ae8c3d42eb71d4281526d8581abdeb693e"
+        }
+      ],
+      "status": "approved"
     }
   ],
   "status": "active"
