@@ -66,6 +66,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     private string _operationStatusText =
         "Select exact devices, then preview Show Kiosk controls";
     private PackageInstallReleaseOperation? _currentPackageOperation;
+    private PackageInstallReleaseProgress? _currentPackageProgress;
     private string _packageManifestUrl = string.Empty;
     private string _packageName = string.Empty;
     private string _packageRolloutRing = "labs";
@@ -161,6 +162,9 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         RefreshPackageInstallReleaseCommand = new AsyncCommand(
             RefreshPackageInstallReleaseAsync,
             () => !IsBusy && _source is not null && CurrentPackageOperation is not null);
+        ArchivePackageInstallReleaseCommand = new AsyncCommand(
+            ArchivePackageInstallReleaseAsync,
+            () => CanArchivePackageInstallRelease);
         DismissPackageInstallReleaseCommand = new RelayCommand(
             DismissPackageInstallRelease,
             () => !IsBusy && CurrentPackageOperation is not null);
@@ -399,6 +403,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
 
     public AsyncCommand RefreshPackageInstallReleaseCommand { get; }
 
+    public AsyncCommand ArchivePackageInstallReleaseCommand { get; }
+
     public RelayCommand DismissPackageInstallReleaseCommand { get; }
 
     public AsyncCommand PreviewWindowsHotspotCommand { get; }
@@ -581,7 +587,22 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 PreviewPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 ConfirmPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 RefreshPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanArchivePackageInstallRelease));
+                ArchivePackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 DismissPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public PackageInstallReleaseProgress? CurrentPackageProgress
+    {
+        get => _currentPackageProgress;
+        private set
+        {
+            if (SetProperty(ref _currentPackageProgress, value))
+            {
+                OnPropertyChanged(nameof(CanArchivePackageInstallRelease));
+                ArchivePackageInstallReleaseCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -596,6 +617,17 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         !IsBusy &&
         _source is not null &&
         IsPackagePreviewReady(CurrentPackageOperation);
+
+    public bool CanArchivePackageInstallRelease =>
+        !IsBusy &&
+        _source is not null &&
+        CurrentPackageOperation is not null &&
+        CurrentPackageProgress is
+        {
+            Retention: "active",
+            Terminal: true,
+            ArchiveEligible: true
+        };
 
     public string PackageConfirmationButtonText =>
         CurrentPackageOperation?.Lifecycle switch
@@ -953,6 +985,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 OnPropertyChanged(nameof(CanConfirmPackageInstallRelease));
                 ConfirmPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 RefreshPackageInstallReleaseCommand.RaiseCanExecuteChanged();
+                OnPropertyChanged(nameof(CanArchivePackageInstallRelease));
+                ArchivePackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 DismissPackageInstallReleaseCommand.RaiseCanExecuteChanged();
                 PreviewWindowsHotspotCommand.RaiseCanExecuteChanged();
                 OnPropertyChanged(nameof(CanConfirmWindowsHotspot));
@@ -1230,6 +1264,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 timeout.Token);
             ValidatePackageOperationBinding(operation, request);
             ProjectPackageOperation(operation);
+            CurrentPackageProgress = null;
             PackageOperationStatusText =
                 "Preview ready · review every target and signed release reference before confirming";
         }
@@ -1283,6 +1318,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 PackagePreviewIdentities(prior));
             RequireSamePackageOperation(prior, operation);
             ProjectPackageOperation(operation);
+            CurrentPackageProgress = null;
             PackageOperationStatusText =
                 "Prepared for authenticated updater-owner claim · " +
                 "preparation is not dispatch or installed-version proof";
@@ -1321,8 +1357,15 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
                 prior.Preview.ExpectedRolloutRing,
                 PackagePreviewIdentities(prior));
             RequireSamePackageOperation(prior, operation);
+            var progress = await _source.PackageInstallReleaseProgressAsync(
+                prior.OperationId,
+                timeout.Token);
+            FleetProjectionValidation.ValidatePackageInstallReleaseProgress(
+                operation,
+                progress);
             ProjectPackageOperation(operation);
-            PackageOperationStatusText = PackageOwnerEvidenceStatus(operation);
+            CurrentPackageProgress = progress;
+            PackageOperationStatusText = PackageOwnerEvidenceStatus(operation, progress);
         }
         catch (Exception error) when (IsProjectionFailure(error))
         {
@@ -1335,9 +1378,65 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         }
     }
 
+    public async Task ArchivePackageInstallReleaseAsync()
+    {
+        var prior = CurrentPackageOperation;
+        var priorProgress = CurrentPackageProgress;
+        if (_source is null || prior is null || priorProgress is null)
+        {
+            PackageOperationStatusText =
+                "Refresh a terminal package operation before archiving it";
+            return;
+        }
+        if (!CanArchivePackageInstallRelease)
+        {
+            PackageOperationStatusText =
+                "Only an exact refreshed terminal operation can be archived";
+            return;
+        }
+
+        var request = new PackageOperationArchiveRequest
+        {
+            OperationId = prior.OperationId,
+            ExpectedOperationSha256 = priorProgress.OperationSha256
+        };
+        IsBusy = true;
+        PackageOperationStatusText =
+            $"Archiving exact terminal operation {prior.OperationId}";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var archive = await _source.ArchivePackageInstallReleaseAsync(
+                request,
+                timeout.Token);
+            FleetProjectionValidation.ValidatePackageInstallReleaseArchive(archive);
+            RequireSamePackageOperation(prior, archive.Operation);
+            if (archive.OperationSha256 != priorProgress.OperationSha256)
+            {
+                throw new InvalidDataException(
+                    "The archived package operation did not match the exact refreshed digest.");
+            }
+            ProjectPackageOperation(archive.Operation);
+            CurrentPackageProgress = archive.Progress;
+            PackageOperationStatusText =
+                "Terminal operation archived · full evidence remains readable · " +
+                "active operation capacity reclaimed";
+        }
+        catch (Exception error) when (IsProjectionFailure(error))
+        {
+            PackageOperationStatusText =
+                $"Archive failed · prior package projection retained · {error.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     public void DismissPackageInstallRelease()
     {
         CurrentPackageOperation = null;
+        CurrentPackageProgress = null;
         PackageOperationTargets.Clear();
         PackageOperationSummaryText = "No package operation preview";
         PackageOperationStatusText =
@@ -2803,7 +2902,8 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     }
 
     private static string PackageOwnerEvidenceStatus(
-        PackageInstallReleaseOperation operation)
+        PackageInstallReleaseOperation operation,
+        PackageInstallReleaseProgress progress)
     {
         var claimed = operation.Targets.Count(target =>
             target.Lifecycle == "accepted" && target.OwnerClaim is not null);
@@ -2814,7 +2914,10 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
         return
             $"Package operation refreshed · {claimed} owner claim record(s) · " +
             $"{acknowledged} dispatch acknowledgement(s) · " +
-            $"{applied} exact installed-version proof(s) · cleanup remains separate";
+            $"{progress.Staged} staged · {progress.AwaitingWearer} awaiting wearer · " +
+            $"{applied} exact installed-version proof(s) · " +
+            $"retention {progress.Retention}" +
+            (progress.ArchiveEligible ? " · ready to archive" : string.Empty);
     }
 
     private void ProjectWindowsHotspotOperation(

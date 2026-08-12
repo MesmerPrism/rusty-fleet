@@ -49,13 +49,17 @@ Console. It freezes a signed release reference and exact device identities,
 then prepares every eligible updater invocation after explicit confirmation.
 When and only when private updater-owner configuration is present, the
 authenticated owner can claim one exact invocation through the durable bounded
-scheduler and return bound acknowledgement or effective install evidence.
+scheduler and return bound acknowledgement, monotonic intermediate progress,
+or effective install evidence.
 That owner ingress is loopback-only even when the general Hub configuration
 permits a non-loopback bind; it is a source-side admission surface, not an
 updater transport or client.
 Claims and acknowledgements never prove installation; only the exact accepted
 `install_commit` receipt advances a target to Applied. The ingress remains
-disabled by default. See the
+disabled by default. Exact count progress is available through API, CLI, and
+WPF, and an operator may hash-bind a terminal operation into the durable
+archive without erasing its evidence, reclaiming active operation capacity.
+See the
 [package install/release checkpoint](docs/PACKAGE_INSTALL_RELEASE.md).
 
 The additive Quest awake-control stack exposes the bounded Meta development
@@ -134,7 +138,8 @@ The current implementation is split into:
 - `fleet-kiosk-adapter`: bounded no-redirect signed Kiosk status, invoke, and
   result transport with owner-vector parity and poll-only restart recovery;
 - `fleet-package-updater-adapter`: bounded invocation and untrusted
-  owner-evidence validation for the pinned attended Rusty Quest updater,
+  acknowledgement, progress, and receipt validation for the pinned attended
+  Rusty Quest updater,
   without Android or evidence-admission authority;
 - `fleet-quest-awake-adapter`: pinned local File Manager provider execution,
   exact invocation/receipt validation, and public readback projection without

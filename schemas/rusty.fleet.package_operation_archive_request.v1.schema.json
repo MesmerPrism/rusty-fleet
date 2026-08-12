@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.package_operation_archive_request.v1.schema.json",
+  "title": "Rusty Fleet package operation archive request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operation_id", "expected_operation_sha256"],
+  "properties": {
+    "schema": { "const": "rusty.fleet.package_operation_archive_request.v1" },
+    "operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._/-]+$"
+    },
+    "expected_operation_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

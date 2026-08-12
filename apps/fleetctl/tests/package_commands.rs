@@ -4,11 +4,13 @@
 use fleet_contracts::{
     AuthorizationState, CommandLifecycle, EnablementState, FreshnessState, OperationExecuteRequest,
     OperationPreviewRequest, PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA,
-    PACKAGE_INSTALL_PREVIEW_REQUEST_SCHEMA, PACKAGES_INSTALL_RELEASE_ACTION_ID,
+    PACKAGE_INSTALL_PREVIEW_REQUEST_SCHEMA, PACKAGE_OPERATION_ARCHIVE_SCHEMA,
+    PACKAGES_INSTALL_RELEASE_ACTION_ID, PackageInstallReleaseArchive,
     PackageInstallReleaseExecuteRequest, PackageInstallReleaseOperation,
     PackageInstallReleasePreview, PackageInstallReleasePreviewRequest, PackageInstallStage,
-    PackageInstallTargetLedger, PackageInstallTargetPreflight, PackageReleaseReference,
-    PackageUpdaterInvocation, PackageUpdaterOwnerContractBinding, ReachabilityState, SupportState,
+    PackageInstallTargetLedger, PackageInstallTargetPreflight, PackageOperationArchiveRequest,
+    PackageOperationRetention, PackageReleaseReference, PackageUpdaterInvocation,
+    PackageUpdaterOwnerContractBinding, ReachabilityState, SupportState,
 };
 use fleetctl::{CliFailure, FleetOperationClient, execute, execute_with_operation_client};
 
@@ -17,6 +19,7 @@ struct MockPackageClient {
     preview_request: Option<PackageInstallReleasePreviewRequest>,
     execute_request: Option<PackageInstallReleaseExecuteRequest>,
     operation: Option<PackageInstallReleaseOperation>,
+    archive: Option<PackageInstallReleaseArchive>,
     damage_next_response: bool,
 }
 
@@ -93,6 +96,59 @@ impl FleetOperationClient for MockPackageClient {
             ));
         }
         self.response()
+    }
+
+    fn get_package_install_release_progress(
+        &mut self,
+        operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let operation = self.operation.as_ref().ok_or_else(|| {
+            CliFailure::new("operation_missing", "package operation was not found")
+        })?;
+        if operation.operation_id != operation_id {
+            return Err(CliFailure::new(
+                "operation_missing",
+                "package operation was not found",
+            ));
+        }
+        serde_json::to_value(operation.progress(
+            if self.archive.is_some() {
+                PackageOperationRetention::Archived
+            } else {
+                PackageOperationRetention::Active
+            },
+            self.archive.as_ref().map(|archive| archive.archived_at_ms),
+        ))
+        .map_err(|error| CliFailure::new("serialization_failed", error.to_string()))
+    }
+
+    fn archive_package_install_release(
+        &mut self,
+        request: &PackageOperationArchiveRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let operation = self.operation.as_ref().ok_or_else(|| {
+            CliFailure::new("operation_missing", "package operation was not found")
+        })?;
+        if !operation.is_terminal()
+            || operation.operation_sha256() != request.expected_operation_sha256
+        {
+            return Err(CliFailure::new(
+                "archive_rejected",
+                "package archive request did not bind a terminal operation",
+            ));
+        }
+        let archived_at_ms = 2_000;
+        let archive = PackageInstallReleaseArchive {
+            schema: PACKAGE_OPERATION_ARCHIVE_SCHEMA.to_owned(),
+            operation_id: operation.operation_id.clone(),
+            operation_sha256: operation.operation_sha256(),
+            archived_at_ms,
+            progress: operation.progress(PackageOperationRetention::Archived, Some(archived_at_ms)),
+            operation: operation.clone(),
+        };
+        self.archive = Some(archive.clone());
+        serde_json::to_value(archive)
+            .map_err(|error| CliFailure::new("serialization_failed", error.to_string()))
     }
 }
 
@@ -178,6 +234,7 @@ fn operation(
             prior_owner_claims: Vec::new(),
             consumed_owner_claim_identities: Vec::new(),
             invocation_acknowledgement: None,
+            owner_progress: None,
             effective_receipt: None,
             reason_code: if prepared {
                 "owner_dispatch_ready".to_owned()
@@ -282,6 +339,39 @@ fn package_cli_preserves_preview_execute_status_and_owner_boundary() {
     )
     .expect("package get");
     assert_eq!(status, executed);
+
+    let progress = execute_with_operation_client(
+        vec![
+            "package-progress".to_owned(),
+            "package-operation-1".to_owned(),
+        ],
+        &mut client,
+    )
+    .expect("package progress");
+    assert_eq!(progress["dispatch_ready"], 2);
+    assert_eq!(progress["retention"], "active");
+
+    let operation = client.operation.as_mut().expect("operation");
+    for target in &mut operation.targets {
+        target.lifecycle = CommandLifecycle::Failed;
+        target.stage = PackageInstallStage::Failed;
+        target.reason_code = "owner_failed".to_owned();
+        target.message = "Owner reported a terminal failure".to_owned();
+        target.last_transition_ms = 1_100;
+    }
+    operation.lifecycle = operation.derived_lifecycle();
+    let operation_sha256 = operation.operation_sha256();
+    let archived = execute_with_operation_client(
+        vec![
+            "package-archive".to_owned(),
+            "package-operation-1".to_owned(),
+            operation_sha256,
+        ],
+        &mut client,
+    )
+    .expect("package archive");
+    assert_eq!(archived["progress"]["retention"], "archived");
+    assert_eq!(archived["progress"]["archive_eligible"], false);
 }
 
 #[test]

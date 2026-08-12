@@ -188,7 +188,10 @@ Quick is safe during normal editing and checks:
   authority, fail-closed replay-ledger exhaustion, shared logical-time GET/POST
   offer selection, exact active/acknowledged capacity, stale-offer no-mutation,
   bounded claim scheduling, exact claim/invocation digests, strict
-  acknowledgement/effective-receipt admission, and CLI/API projection parity;
+  acknowledgement/progress/effective-receipt admission, monotonic owner-stage
+  rejection, exact count projection, hash-bound terminal archive, full-ledger
+  retention, active-capacity reclamation, archived restart restoration, and
+  CLI/API/WPF operator parity;
 - Quest awake valid/damaged contracts, exact action/duration/interval/
   generation bindings, eight-hour cap, distinct stop-versus-restore effects,
   receipt-gated power/watchdog readbacks, pinned-provider response binding,

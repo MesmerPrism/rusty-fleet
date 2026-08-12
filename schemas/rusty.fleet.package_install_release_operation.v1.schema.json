@@ -480,6 +480,12 @@
             }
           ]
         },
+        "owner_progress": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "rusty.fleet.package_updater_progress.v1.schema.json" }
+          ]
+        },
         "effective_receipt": {
           "oneOf": [
             {"type": "null"},

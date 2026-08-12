@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.authenticated_package_updater_progress.v1.schema.json",
+  "title": "Rusty Fleet authenticated updater progress submission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "owner_id", "claim_id", "invocation_sha256", "progress"],
+  "properties": {
+    "schema": { "const": "rusty.fleet.authenticated_package_updater_progress.v1" },
+    "owner_id": { "$ref": "#/$defs/portableId" },
+    "claim_id": { "$ref": "#/$defs/portableId" },
+    "invocation_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "progress": { "$ref": "rusty.fleet.package_updater_progress.v1.schema.json" }
+  },
+  "$defs": {
+    "portableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._/-]+$"
+    }
+  }
+}

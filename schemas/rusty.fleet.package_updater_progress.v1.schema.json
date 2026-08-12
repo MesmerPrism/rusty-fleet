@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.package_updater_progress.v1.schema.json",
+  "title": "Rusty Fleet authenticated updater progress",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation_id",
+    "device_id",
+    "owner_action_request_id",
+    "stage",
+    "code",
+    "message",
+    "observed_at_ms"
+  ],
+  "properties": {
+    "schema": { "const": "rusty.fleet.package_updater_progress.v1" },
+    "operation_id": { "$ref": "#/$defs/portableId" },
+    "device_id": { "$ref": "#/$defs/portableId" },
+    "owner_action_request_id": { "$ref": "#/$defs/portableId" },
+    "stage": {
+      "enum": [
+        "staged",
+        "awaiting_wearer",
+        "cancellation_requested",
+        "cancelled",
+        "recovery_required",
+        "failed",
+        "expired"
+      ]
+    },
+    "code": { "$ref": "#/$defs/portableId" },
+    "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "observed_at_ms": { "type": "integer", "minimum": 0 }
+  },
+  "$defs": {
+    "portableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._/-]+$"
+    }
+  }
+}

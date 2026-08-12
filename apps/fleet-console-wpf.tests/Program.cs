@@ -791,6 +791,39 @@ internal static class Program
                     StringComparison.Ordinal),
                 "mismatched installed-version evidence did not fail closed");
 
+            operationSource.CompleteRemainingPackageTargetsAsFailed();
+            operationWorkspace.RefreshPackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationWorkspace.CurrentPackageProgress is
+                {
+                    Retention: "active",
+                    Terminal: true,
+                    ArchiveEligible: true,
+                    Applied: 1,
+                    Failed: 49
+                } &&
+                operationWorkspace.CanArchivePackageInstallRelease &&
+                operationWorkspace.ArchivePackageInstallReleaseCommand.CanExecute(null),
+                "exact terminal package progress did not enable explicit archival");
+            operationWorkspace.ArchivePackageInstallReleaseAsync()
+                .GetAwaiter()
+                .GetResult();
+            Require(
+                operationSource.PackageArchiveCount == 1 &&
+                operationWorkspace.CurrentPackageProgress is
+                {
+                    Retention: "archived",
+                    Terminal: true,
+                    ArchiveEligible: false
+                } &&
+                !operationWorkspace.CanArchivePackageInstallRelease &&
+                operationWorkspace.PackageOperationStatusText.Contains(
+                    "active operation capacity reclaimed",
+                    StringComparison.Ordinal),
+                "terminal package archival did not preserve evidence and reclaim active capacity");
+
             operationWorkspace.ClearBatchSelectionCommand.Execute(null);
             operationWorkspace.SelectedWindowsHotspotAction =
                 operationWorkspace.WindowsHotspotActionOptions.Single(option =>
@@ -1491,6 +1524,13 @@ internal static class Program
                 AutomationProperties.GetName(
                     operationWindow.RefreshPackageInstallReleaseControl) ==
                 "Refresh package operation results" &&
+                AutomationProperties.GetName(
+                    operationWindow.ArchivePackageInstallReleaseControl) ==
+                "Archive exact terminal package operation" &&
+                AutomationProperties.GetHelpText(
+                    operationWindow.ArchivePackageInstallReleaseControl).Contains(
+                    "reclaiming active operation capacity",
+                    StringComparison.Ordinal) &&
                 AutomationProperties.GetName(
                     operationWindow.DismissPackageInstallReleaseControl) ==
                 "Close package operation view" &&
@@ -2274,6 +2314,8 @@ internal static class Program
                 package_install_release_post_claim_projection = true,
                 package_install_release_installed_version_proof = true,
                 package_install_release_cleanup_boundary = true,
+                package_install_release_exact_progress = true,
+                package_install_release_terminal_archive = true,
                 package_install_release_single_shot = true,
                 package_install_release_accessible = true,
                 package_target_native_row_peer = true,
@@ -2845,6 +2887,8 @@ internal static class Program
 
         public bool DamageNextPackageReceiptResponse { get; set; }
 
+        public int PackageArchiveCount { get; private set; }
+
         public void AdvancePackageOwnerEvidence(string step)
         {
             var operation = LastPackageOperation ??
@@ -2972,6 +3016,47 @@ internal static class Program
                 CreatedAtMs = operation.CreatedAtMs,
                 Preview = operation.Preview,
                 Lifecycle = step == "acknowledged" ? "dispatched" : "accepted",
+                MaxParallelism = operation.MaxParallelism,
+                CleanupRequired = operation.CleanupRequired,
+                Targets = targets
+            };
+        }
+
+        public void CompleteRemainingPackageTargetsAsFailed()
+        {
+            var operation = LastPackageOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic package operation was not created");
+            var targets = operation.Targets
+                .Select(target => target.Lifecycle == "applied"
+                    ? target
+                    : new PackageInstallTargetLedger
+                    {
+                        DeviceId = target.DeviceId,
+                        IdentityRevision = target.IdentityRevision,
+                        Preflight = target.Preflight,
+                        Lifecycle = "failed",
+                        Stage = "failed",
+                        Invocation = target.Invocation,
+                        OwnerClaim = null,
+                        PriorOwnerClaims = target.PriorOwnerClaims,
+                        ConsumedOwnerClaimIdentities = target.ConsumedOwnerClaimIdentities,
+                        InvocationAcknowledgement = null,
+                        OwnerProgress = null,
+                        EffectiveReceipt = null,
+                        ReasonCode = "owner_install_failed",
+                        Message = "Synthetic updater failure retained without application proof.",
+                        LastTransitionMs = operation.CreatedAtMs + 600
+                    })
+                .ToArray();
+            LastPackageOperation = new PackageInstallReleaseOperation
+            {
+                Schema = operation.Schema,
+                OperationId = operation.OperationId,
+                ActionId = operation.ActionId,
+                CreatedAtMs = operation.CreatedAtMs,
+                Preview = operation.Preview,
+                Lifecycle = "failed",
                 MaxParallelism = operation.MaxParallelism,
                 CleanupRequired = operation.CleanupRequired,
                 Targets = targets
@@ -3358,6 +3443,55 @@ internal static class Program
             }
 
             return Task.FromResult(ReturnPackageOperation());
+        }
+
+        public Task<PackageInstallReleaseProgress> PackageInstallReleaseProgressAsync(
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LastPackageOperation is null ||
+                LastPackageOperation.OperationId != operationId)
+            {
+                throw new InvalidOperationException(
+                    "synthetic package operation not found");
+            }
+
+            return Task.FromResult(CreatePackageProgress(
+                LastPackageOperation,
+                "active",
+                archivedAtMs: null));
+        }
+
+        public Task<PackageInstallReleaseArchive> ArchivePackageInstallReleaseAsync(
+            PackageOperationArchiveRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var operation = LastPackageOperation ??
+                            throw new InvalidOperationException(
+                                "synthetic package operation not found");
+            var active = CreatePackageProgress(operation, "active", archivedAtMs: null);
+            if (request.OperationId != operation.OperationId ||
+                request.ExpectedOperationSha256 != active.OperationSha256 ||
+                !active.Terminal)
+            {
+                throw new InvalidOperationException(
+                    "synthetic package archive request was not exact and terminal");
+            }
+
+            PackageArchiveCount++;
+            var archivedAtMs = active.LastTransitionMs + 1;
+            var progress = CreatePackageProgress(operation, "archived", archivedAtMs);
+            return Task.FromResult(new PackageInstallReleaseArchive
+            {
+                Schema = "rusty.fleet.package_install_release_archive.v1",
+                OperationId = operation.OperationId,
+                OperationSha256 = active.OperationSha256,
+                ArchivedAtMs = archivedAtMs,
+                Progress = progress,
+                Operation = operation
+            });
         }
 
         public Task<WindowsHotspotOperation> PreviewWindowsHotspotAsync(
@@ -3802,6 +3936,58 @@ internal static class Program
             };
         }
 
+        private static PackageInstallReleaseProgress CreatePackageProgress(
+            PackageInstallReleaseOperation operation,
+            string retention,
+            long? archivedAtMs)
+        {
+            uint CountStage(string stage) => checked((uint)operation.Targets.Count(target =>
+                target.Stage == stage));
+            var total = checked((uint)operation.Targets.Count);
+            var eligible = checked((uint)operation.Targets.Count(target =>
+                target.Preflight.Eligible));
+            var terminalTargets = checked((uint)operation.Targets.Count(target =>
+                target.Lifecycle is "rejected" or "applied" or "failed" or
+                    "expired" or "cancelled"));
+            var terminal = terminalTargets == total;
+            return new PackageInstallReleaseProgress
+            {
+                Schema = "rusty.fleet.package_install_release_progress.v1",
+                OperationId = operation.OperationId,
+                OperationSha256 = "sha256:" + new string('9', 64),
+                Lifecycle = operation.Lifecycle,
+                Retention = retention,
+                ArchivedAtMs = archivedAtMs,
+                CreatedAtMs = operation.CreatedAtMs,
+                LastTransitionMs = operation.Targets.Max(target => target.LastTransitionMs),
+                TotalTargets = total,
+                EligibleTargets = eligible,
+                ExcludedTargets = total - eligible,
+                PreviewReady = CountStage("preview_ready"),
+                Approved = CountStage("approved"),
+                DispatchReady = checked((uint)operation.Targets.Count(target =>
+                    target.Stage == "dispatch_ready" && target.OwnerClaim is null)),
+                Claimed = checked((uint)operation.Targets.Count(target =>
+                    target.Lifecycle == "accepted" && target.OwnerClaim is not null)),
+                OwnerAcknowledged = CountStage("owner_acknowledged"),
+                Staged = CountStage("staged"),
+                AwaitingWearer = CountStage("awaiting_wearer"),
+                CancellationRequested = CountStage("cancellation_requested"),
+                RecoveryRequired = CountStage("recovery_required"),
+                Applied = CountStage("applied"),
+                Failed = CountStage("failed"),
+                Expired = CountStage("expired"),
+                Cancelled = CountStage("cancelled"),
+                RetainedOwnerClaims = checked((uint)operation.Targets.Count(target =>
+                    target.Lifecycle is "dispatched" or "running" ||
+                    (target.Lifecycle == "accepted" && target.OwnerClaim is not null))),
+                MaxParallelism = operation.MaxParallelism,
+                TerminalTargets = terminalTargets,
+                Terminal = terminal,
+                ArchiveEligible = terminal && retention == "active"
+            };
+        }
+
         private WindowsHotspotOperation CreateWindowsHotspotOperation(
             WindowsHotspotPreviewRequest request,
             bool executed)
@@ -4236,6 +4422,7 @@ internal static class Program
                 PriorOwnerClaims = first.PriorOwnerClaims,
                 ConsumedOwnerClaimIdentities = first.ConsumedOwnerClaimIdentities,
                 InvocationAcknowledgement = first.InvocationAcknowledgement,
+                OwnerProgress = first.OwnerProgress,
                 EffectiveReceipt = first.EffectiveReceipt,
                 ReasonCode = first.ReasonCode,
                 Message = first.Message,

@@ -12,7 +12,8 @@ Milestone 0 defines versioned Rusty Fleet product contracts here:
   Kiosk-effective-receipt wrapper;
 - the Fleet-owned `packages.install-release` immutable signed-release preview,
   per-target preparation ledger, pinned attended-updater owner contract, and
-  explicit owner-evidence fields.
+  explicit owner-evidence fields, plus authenticated monotonic progress,
+  exact count projection, and hash-bound terminal archive contracts.
 - the Fleet-owned `quest.awake-control` preview, exact policy/generation
   ledger, pinned File Manager provider binding, and independent power,
   watchdog, stop, and restore readbacks.
@@ -50,6 +51,11 @@ The authenticated offer schema exposes only the next exact operation, device,
 and immutable invocation digest; the claim request must repeat all three.
 Owner acknowledgement and effective receipt objects remain untrusted evidence
 until the claim and every frozen binding validate.
+Authenticated progress may advance only through the owner-reported staged,
+wearer-prompt, cancellation, recovery, failure, and expiry vocabulary; it
+never proves application. The count projection is derived from the full
+operation without percentages, and archive admission binds the exact terminal
+operation SHA-256 while retaining the complete readable ledger.
 The operation keeps at most 16 full prior claims as readable evidence and
 separately retains up to 64 consumed claim/request identity pairs as
 non-truncating replay authority. Exhausting that authority fails the target

@@ -99,6 +99,8 @@ public partial class MainWindow : Window
 
     public Button RefreshPackageInstallReleaseControl => RefreshPackageInstallReleaseButton;
 
+    public Button ArchivePackageInstallReleaseControl => ArchivePackageInstallReleaseButton;
+
     public Button DismissPackageInstallReleaseControl => DismissPackageInstallReleaseButton;
 
     public DataGrid PackageOperationTargetsControl => PackageOperationTargetsGrid;

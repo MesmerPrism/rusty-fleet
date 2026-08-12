@@ -5,15 +5,15 @@
 //!
 //! The adapter deliberately owns no Android, downloader, signature-key, or
 //! PackageInstaller behavior. It prepares an exact owner invocation and can
-//! validate the shape and binding of untrusted evidence before an authenticated
-//! owner transport exists. Validation is not admission: the Hub cannot advance
-//! owner-only lifecycle states through this adapter. An invocation
-//! acknowledgement is transport evidence; only an authenticated effective
-//! `install_commit` receipt can prove application.
+//! validate the shape and binding of untrusted evidence received through the
+//! separately authenticated owner ingress. Validation is not admission: the
+//! Hub owns monotonic lifecycle transitions and durable mutation. An invocation
+//! acknowledgement and intermediate progress are transport evidence; only an
+//! authenticated effective `install_commit` receipt can prove application.
 
 use fleet_contracts::{
     PackageReleaseReference, PackageUpdaterEffectiveReceipt, PackageUpdaterInvocation,
-    PackageUpdaterInvocationAcknowledgement, ValidateContract,
+    PackageUpdaterInvocationAcknowledgement, PackageUpdaterProgress, ValidateContract,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +134,21 @@ impl PackageUpdaterOwnerAdapter {
         })?;
         Ok(receipt)
     }
+
+    pub fn validate_untrusted_progress(
+        &self,
+        invocation: &PackageUpdaterInvocation,
+        progress: PackageUpdaterProgress,
+        now_ms: i64,
+    ) -> Result<PackageUpdaterProgress, PackageUpdaterAdapterError> {
+        if now_ms < progress.observed_at_ms || now_ms > invocation.expires_at_ms {
+            return Err(PackageUpdaterAdapterError::Expired);
+        }
+        progress
+            .validate_for(invocation)
+            .map_err(|_| PackageUpdaterAdapterError::BindingMismatch)?;
+        Ok(progress)
+    }
 }
 
 fn release_reference_len(reference: &PackageReleaseReference) -> usize {
@@ -146,10 +161,11 @@ fn release_reference_len(reference: &PackageReleaseReference) -> usize {
 #[cfg(test)]
 mod tests {
     use fleet_contracts::{
-        PACKAGE_UPDATE_RECEIPT_SCHEMA, PACKAGE_UPDATER_ACK_SCHEMA, PackageReleaseReference,
-        PackageUpdateCheckpoint, PackageUpdateReceipt, PackageUpdateReceiptDecision,
-        PackageUpdateReceiptStage, PackageUpdaterEffectiveReceipt, PackageUpdaterInvocation,
-        PackageUpdaterInvocationAcknowledgement,
+        PACKAGE_UPDATE_RECEIPT_SCHEMA, PACKAGE_UPDATER_ACK_SCHEMA, PACKAGE_UPDATER_PROGRESS_SCHEMA,
+        PackageReleaseReference, PackageUpdateCheckpoint, PackageUpdateReceipt,
+        PackageUpdateReceiptDecision, PackageUpdateReceiptStage, PackageUpdaterEffectiveReceipt,
+        PackageUpdaterInvocation, PackageUpdaterInvocationAcknowledgement, PackageUpdaterProgress,
+        PackageUpdaterProgressStage,
     };
 
     use super::{
@@ -233,6 +249,24 @@ mod tests {
         assert!(
             adapter
                 .validate_untrusted_effective_receipt(&invocation, effective_receipt(), 3_001)
+                .is_ok()
+        );
+        assert!(
+            adapter
+                .validate_untrusted_progress(
+                    &invocation,
+                    PackageUpdaterProgress {
+                        schema: PACKAGE_UPDATER_PROGRESS_SCHEMA.to_owned(),
+                        operation_id: invocation.operation_id.clone(),
+                        device_id: invocation.device_id.clone(),
+                        owner_action_request_id: invocation.owner_action_request_id.clone(),
+                        stage: PackageUpdaterProgressStage::AwaitingWearer,
+                        code: "awaiting_wearer".to_owned(),
+                        message: "PackageInstaller is awaiting wearer confirmation".to_owned(),
+                        observed_at_ms: 2_500,
+                    },
+                    2_501,
+                )
                 .is_ok()
         );
     }

@@ -22,11 +22,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use fleet_contracts::{
-    AuthenticatedPackageUpdaterAcknowledgement, AuthenticatedPackageUpdaterReceipt,
-    CommandLifecycle, FleetQuery, OperationExecuteRequest, OperationPreviewRequest,
-    PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_UPDATER_CLAIM_SCHEMA,
-    PackageInstallReleaseExecuteRequest, PackageInstallReleasePreviewRequest,
-    PackageReleaseReference, PackageUpdaterClaim, PackageUpdaterClaimRequest, PackageUpdaterOffer,
+    AUTHENTICATED_PACKAGE_UPDATER_PROGRESS_SCHEMA, AuthenticatedPackageUpdaterAcknowledgement,
+    AuthenticatedPackageUpdaterProgress, AuthenticatedPackageUpdaterReceipt, CommandLifecycle,
+    FleetQuery, OperationExecuteRequest, OperationPreviewRequest,
+    PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_OPERATION_ARCHIVE_REQUEST_SCHEMA,
+    PACKAGE_UPDATER_CLAIM_SCHEMA, PackageInstallReleaseExecuteRequest,
+    PackageInstallReleasePreviewRequest, PackageOperationArchiveRequest, PackageReleaseReference,
+    PackageUpdaterClaim, PackageUpdaterClaimRequest, PackageUpdaterOffer,
     QUEST_AWAKE_EXECUTE_REQUEST_SCHEMA, QUEST_AWAKE_PREVIEW_REQUEST_SCHEMA,
     QUEST_WIFI_ADB_EXECUTE_REQUEST_SCHEMA, QUEST_WIFI_ADB_PREVIEW_REQUEST_SCHEMA, QuestAwakeAction,
     QuestAwakeExecuteRequest, QuestAwakeOwnerInvocation, QuestAwakePreviewRequest,
@@ -1197,6 +1199,18 @@ pub fn router(state: LocalHubState) -> Router {
         .route(
             "/fleet/v1/package-install-releases/{operation_id}/receipts",
             post(apply_package_install_release_receipt),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/owner-progress",
+            post(apply_package_install_release_progress),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/progress",
+            get(package_install_release_progress),
+        )
+        .route(
+            "/fleet/v1/package-install-releases/{operation_id}/archive",
+            post(archive_package_install_release),
         )
         .route(
             "/fleet/v1/package-install-releases/{operation_id}",
@@ -2616,6 +2630,215 @@ async fn apply_package_install_release_receipt(
     Json(updated).into_response()
 }
 
+async fn apply_package_install_release_progress(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let configured_owner = {
+        let runtime = state.runtime.lock().await;
+        runtime.package_updater_owner.clone()
+    };
+    if let Err(response) =
+        authenticate_package_updater(request.headers(), configured_owner.as_ref())
+    {
+        return *response;
+    }
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "package updater progress").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let submission = match serde_json::from_slice::<AuthenticatedPackageUpdaterProgress>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_progress_json",
+                format!("package updater progress is not valid JSON: {error}"),
+            );
+        }
+    };
+    if submission.schema != AUTHENTICATED_PACKAGE_UPDATER_PROGRESS_SCHEMA
+        || operation_id != submission.progress.operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_identity_mismatch",
+            "package operation path and progress identity must match",
+        );
+    }
+    if configured_owner
+        .as_ref()
+        .is_none_or(|owner| owner.owner_id != submission.owner_id)
+    {
+        return api_error(
+            StatusCode::UNAUTHORIZED,
+            "package_owner_identity_mismatch",
+            "authenticated package owner identity does not match the progress report",
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let operation = match runtime.hub.package_operation(&operation_id) {
+        Ok(operation) => operation,
+        Err(error) => return hub_operation_error(error),
+    };
+    let target = operation.targets.iter().find(|target| {
+        target.device_id == submission.progress.device_id
+            && target.owner_claim.as_ref().is_some_and(|claim| {
+                claim.claim_id == submission.claim_id
+                    && claim.owner_id == submission.owner_id
+                    && constant_time_equal(
+                        claim.invocation_sha256.as_bytes(),
+                        submission.invocation_sha256.as_bytes(),
+                    )
+            })
+    });
+    let Some(target) = target else {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_progress_binding_mismatch",
+            "progress does not bind a retained authenticated owner claim",
+        );
+    };
+    if target
+        .invocation_acknowledgement
+        .as_ref()
+        .is_none_or(|acknowledgement| {
+            !acknowledgement.accepted
+                || acknowledgement.operation_id != submission.progress.operation_id
+                || acknowledgement.device_id != submission.progress.device_id
+                || acknowledgement.owner_action_request_id
+                    != submission.progress.owner_action_request_id
+        })
+    {
+        return api_error(
+            StatusCode::CONFLICT,
+            "package_progress_acknowledgement_missing",
+            "progress requires the exact accepted owner acknowledgement",
+        );
+    }
+    let invocation = target
+        .invocation
+        .as_ref()
+        .expect("authenticated claim binds an invocation");
+    let progress = match runtime.package_updater_adapter.validate_untrusted_progress(
+        invocation,
+        submission.progress,
+        now_ms,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "package_progress_invalid",
+                error.to_string(),
+            );
+        }
+    };
+    let mut candidate_hub = runtime.hub.clone();
+    let updated = match candidate_hub.admit_authenticated_package_updater_progress(progress, now_ms)
+    {
+        Ok(value) => value,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        hub,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(updated).into_response()
+}
+
+async fn package_install_release_progress(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> Response {
+    let runtime = state.runtime.lock().await;
+    match runtime.hub.package_operation_progress(&operation_id) {
+        Ok(progress) => Json(progress).into_response(),
+        Err(error) => hub_operation_error(error),
+    }
+}
+
+async fn archive_package_install_release(
+    State(state): State<LocalHubState>,
+    AxumPath(operation_id): AxumPath<String>,
+    request: Request,
+) -> Response {
+    let bytes =
+        match strict_json_body(request, MAX_OPERATION_BYTES, "package operation archive").await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
+        };
+    let archive_request = match serde_json::from_slice::<PackageOperationArchiveRequest>(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_package_archive_json",
+                format!("package archive request is not valid JSON: {error}"),
+            );
+        }
+    };
+    if archive_request.schema != PACKAGE_OPERATION_ARCHIVE_REQUEST_SCHEMA
+        || archive_request.operation_id != operation_id
+    {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "package_operation_identity_mismatch",
+            "package operation path and archive request identity must match",
+        );
+    }
+    if let Err(failures) = archive_request.validate() {
+        return api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_package_archive_request",
+            format_contract_failures(&failures),
+        );
+    }
+    let now_ms = match unix_time_ms() {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "clock_error", error),
+    };
+    let mut runtime = state.runtime.lock().await;
+    let mut candidate_hub = runtime.hub.clone();
+    let archive = match candidate_hub.archive_package_operation(&archive_request, now_ms) {
+        Ok(value) => value,
+        Err(error) => return hub_operation_error(error),
+    };
+    let RuntimeState {
+        adapter,
+        state_store,
+        owner_receipts,
+        hub,
+        ..
+    } = &mut *runtime;
+    if let Err(error) = state_store.persist(&candidate_hub, adapter, owner_receipts, now_ms) {
+        return api_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "durable_state_failed",
+            error,
+        );
+    }
+    *hub = candidate_hub;
+    Json(archive).into_response()
+}
+
 async fn package_install_release_status(
     State(state): State<LocalHubState>,
     AxumPath(operation_id): AxumPath<String>,
@@ -3813,6 +4036,10 @@ fn hub_operation_error(error: fleet_hub::HubError) -> Response {
         | "package_preview_expired"
         | "package_target_changed_since_preview"
         | "package_target_identity_changed"
+        | "package_progress_transition_invalid"
+        | "package_operation_not_terminal"
+        | "package_archive_operation_changed"
+        | "package_archive_limit_reached"
         | "awake_preview_conflict"
         | "awake_operation_id_conflict"
         | "awake_preview_expired"
@@ -7288,6 +7515,7 @@ mod tests {
         }))
         .expect("claim JSON");
         let claim_response = restored_app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -7315,6 +7543,14 @@ mod tests {
             claim_json["invocation"]["owner_action_request_id"],
             owner_action_request_id
         );
+        let claim_id = claim_json["claim_id"]
+            .as_str()
+            .expect("claim ID")
+            .to_owned();
+        let invocation_sha256 = claim_json["invocation_sha256"]
+            .as_str()
+            .expect("invocation SHA-256")
+            .to_owned();
         let restored_operation = restored
             .runtime
             .lock()
@@ -7328,6 +7564,178 @@ mod tests {
             serde_json::json!("dispatch_ready")
         );
         assert!(restored_operation.targets[0].owner_claim.is_some());
+        drop(restored_operation);
+
+        let authenticated_acknowledgement = serde_json::json!({
+            "schema": "rusty.fleet.authenticated_package_updater_acknowledgement.v1",
+            "owner_id": "rusty-quest.package-updater",
+            "claim_id": claim_id,
+            "invocation_sha256": invocation_sha256,
+            "acknowledgement": {
+                "schema": "rusty.fleet.package_updater_invocation_acknowledgement.v1",
+                "operation_id": operation_id,
+                "device_id": "device.quest.1",
+                "owner_action_request_id": owner_action_request_id,
+                "accepted": true,
+                "code": "accepted",
+                "acknowledged_at_ms": unix_time_ms().expect("acknowledgement time")
+            }
+        });
+        let acknowledged = restored_app
+            .clone()
+            .oneshot(owner_json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/acknowledgements"),
+                serde_json::to_vec(&authenticated_acknowledgement).expect("authenticated ack JSON"),
+            ))
+            .await
+            .expect("authenticated acknowledgement response");
+        assert_eq!(acknowledged.status(), StatusCode::OK);
+
+        let authenticated_progress = serde_json::json!({
+            "schema": "rusty.fleet.authenticated_package_updater_progress.v1",
+            "owner_id": "rusty-quest.package-updater",
+            "claim_id": claim_id,
+            "invocation_sha256": invocation_sha256,
+            "progress": {
+                "schema": "rusty.fleet.package_updater_progress.v1",
+                "operation_id": operation_id,
+                "device_id": "device.quest.1",
+                "owner_action_request_id": owner_action_request_id,
+                "stage": "staged",
+                "code": "apk_staged",
+                "message": "Exact package bytes are staged for attended installation.",
+                "observed_at_ms": unix_time_ms().expect("progress time")
+            }
+        });
+        let progressed = restored_app
+            .clone()
+            .oneshot(owner_json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/owner-progress"),
+                serde_json::to_vec(&authenticated_progress).expect("authenticated progress JSON"),
+            ))
+            .await
+            .expect("authenticated progress response");
+        assert_eq!(progressed.status(), StatusCode::OK);
+
+        let progress_response = restored_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/fleet/v1/package-install-releases/{operation_id}/progress"
+                    ))
+                    .body(Body::empty())
+                    .expect("progress request"),
+            )
+            .await
+            .expect("progress response");
+        assert_eq!(progress_response.status(), StatusCode::OK);
+        let progress_json: Value = serde_json::from_slice(
+            &to_bytes(progress_response.into_body(), 256 * 1024)
+                .await
+                .expect("progress body"),
+        )
+        .expect("progress JSON");
+        assert_eq!(progress_json["staged"], 1);
+        assert_eq!(progress_json["terminal"], false);
+        assert_eq!(progress_json["retention"], "active");
+
+        let authenticated_receipt = serde_json::json!({
+            "schema": "rusty.fleet.authenticated_package_updater_receipt.v1",
+            "owner_id": "rusty-quest.package-updater",
+            "claim_id": claim_id,
+            "invocation_sha256": invocation_sha256,
+            "effective_receipt": receipt["effective_receipt"].clone()
+        });
+        let applied = restored_app
+            .clone()
+            .oneshot(owner_json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/receipts"),
+                serde_json::to_vec(&authenticated_receipt).expect("authenticated receipt JSON"),
+            ))
+            .await
+            .expect("authenticated receipt response");
+        assert_eq!(applied.status(), StatusCode::OK);
+
+        let terminal_progress = restored_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/fleet/v1/package-install-releases/{operation_id}/progress"
+                    ))
+                    .body(Body::empty())
+                    .expect("terminal progress request"),
+            )
+            .await
+            .expect("terminal progress response");
+        let terminal_progress_json: Value = serde_json::from_slice(
+            &to_bytes(terminal_progress.into_body(), 256 * 1024)
+                .await
+                .expect("terminal progress body"),
+        )
+        .expect("terminal progress JSON");
+        assert_eq!(terminal_progress_json["applied"], 1);
+        assert_eq!(terminal_progress_json["terminal"], true);
+        assert_eq!(terminal_progress_json["archive_eligible"], true);
+        let operation_sha256 = terminal_progress_json["operation_sha256"]
+            .as_str()
+            .expect("operation SHA-256")
+            .to_owned();
+
+        let archive_request = serde_json::json!({
+            "schema": "rusty.fleet.package_operation_archive_request.v1",
+            "operation_id": operation_id,
+            "expected_operation_sha256": operation_sha256
+        });
+        let archived = restored_app
+            .clone()
+            .oneshot(json_request(
+                &format!("/fleet/v1/package-install-releases/{operation_id}/archive"),
+                serde_json::to_vec(&archive_request).expect("archive JSON"),
+            ))
+            .await
+            .expect("archive response");
+        assert_eq!(archived.status(), StatusCode::OK);
+        let archive_json: Value = serde_json::from_slice(
+            &to_bytes(archived.into_body(), 256 * 1024)
+                .await
+                .expect("archive body"),
+        )
+        .expect("archive response JSON");
+        assert_eq!(archive_json["progress"]["retention"], "archived");
+        assert_eq!(archive_json["operation"]["targets"][0]["stage"], "applied");
+
+        drop(restored_app);
+        drop(restored);
+        let archived_restore =
+            LocalHubState::from_config(&config, unix_time_ms().expect("archive restore time"))
+                .expect("restore archived package operation");
+        let archived_restore_app = router(archived_restore.clone());
+        let archived_progress = archived_restore_app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/fleet/v1/package-install-releases/{operation_id}/progress"
+                    ))
+                    .body(Body::empty())
+                    .expect("restored archive progress request"),
+            )
+            .await
+            .expect("restored archive progress response");
+        assert_eq!(archived_progress.status(), StatusCode::OK);
+        let archived_progress_json: Value = serde_json::from_slice(
+            &to_bytes(archived_progress.into_body(), 256 * 1024)
+                .await
+                .expect("restored archive progress body"),
+        )
+        .expect("restored archive progress JSON");
+        assert_eq!(archived_progress_json["retention"], "archived");
+        assert_eq!(archived_progress_json["archive_eligible"], false);
+        drop(archived_restore);
         fs::remove_dir_all(state_directory).expect("remove test state directory");
     }
 
@@ -7849,6 +8257,21 @@ mod tests {
 
     fn json_request(uri: &str, body: Vec<u8>) -> Request<Body> {
         json_method_request("POST", uri, body)
+    }
+
+    fn owner_json_request(uri: &str, body: Vec<u8>) -> Request<Body> {
+        let content_length = body.len();
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_LENGTH, content_length)
+            .header(
+                header::AUTHORIZATION,
+                "Bearer owner-token-that-is-at-least-thirty-two-bytes",
+            )
+            .body(Body::from(body))
+            .expect("owner request")
     }
 
     fn json_method_request(method: &str, uri: &str, body: Vec<u8>) -> Request<Body> {

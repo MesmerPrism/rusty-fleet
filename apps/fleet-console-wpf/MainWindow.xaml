@@ -1111,6 +1111,11 @@
                                             Content="Refresh package"
                                             Command="{Binding RefreshPackageInstallReleaseCommand}"
                                             AutomationProperties.Name="Refresh package operation results" />
+                                    <Button x:Name="ArchivePackageInstallReleaseButton"
+                                            Content="Archive terminal"
+                                            Command="{Binding ArchivePackageInstallReleaseCommand}"
+                                            AutomationProperties.Name="Archive exact terminal package operation"
+                                            AutomationProperties.HelpText="Available only after a fresh terminal progress projection. Preserves the full operation while reclaiming active operation capacity." />
                                     <Button x:Name="DismissPackageInstallReleaseButton"
                                             Content="Close view"
                                             Command="{Binding DismissPackageInstallReleaseCommand}"
