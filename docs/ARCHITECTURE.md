@@ -307,13 +307,19 @@ Acknowledgement and receipt submissions must bind the authenticated owner,
 claim, invocation digest, operation, target, identity revision, release, and
 owner action request. Acknowledgement proves only dispatch. Submission,
 download, staging, PackageInstaller launch, and wearer prompt remain
-non-Applied states. Only the pinned Rusty Quest accepted `install_commit`
+non-Applied states. Authenticated intermediate progress may advance only
+monotonically through its bounded owner-stage vocabulary and is projected as
+exact counts, never an inferred percentage. Only the pinned Rusty Quest accepted `install_commit`
 checkpoint for the exact package, ring, manifest digest, sequence, and version
 can advance the Hub to Applied.
 
-Terminal operation retention or archive is a separate cleanup concern.
-`install_commit` proves the effective package result but does not prove that
-temporary files, installer UI, claims, or retained Fleet evidence were cleaned.
+Terminal operation archive is an operator-owned retention action. A fresh
+progress projection supplies the exact operation SHA-256; archive admission
+requires that digest and a fully terminal ledger, preserves the complete
+operation in a separately bounded durable map, and reclaims active-map
+capacity. `install_commit` proves the effective package result, while archive
+proves only Fleet retention state. Neither proves that temporary files,
+installer UI, or owner-side resources were cleaned.
 
 ## Kiosk and foreground control
 

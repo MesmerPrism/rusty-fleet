@@ -358,6 +358,7 @@ public static class FleetProjectionValidation
                     target.PriorOwnerClaims.Count == 0 &&
                     target.ConsumedOwnerClaimIdentities.Count == 0 &&
                     target.InvocationAcknowledgement is null &&
+                    target.OwnerProgress is null &&
                     target.EffectiveReceipt is null,
                     "excluded package target");
                 continue;
@@ -372,6 +373,7 @@ public static class FleetProjectionValidation
                     target.Invocation is null &&
                     target.OwnerClaim is null &&
                     target.InvocationAcknowledgement is null &&
+                    target.OwnerProgress is null &&
                     target.EffectiveReceipt is null,
                     "preview-ready package target");
                 continue;
@@ -382,6 +384,7 @@ public static class FleetProjectionValidation
                 Require(
                     target.Stage is "approved" or "dispatch_ready" &&
                     target.InvocationAcknowledgement is null &&
+                    target.OwnerProgress is null &&
                     target.EffectiveReceipt is null,
                     "accepted package target");
                 if (target.Stage == "approved")
@@ -421,11 +424,22 @@ public static class FleetProjectionValidation
                     target.Invocation!);
                 Require(
                     target.Lifecycle == "dispatched"
-                        ? target.Stage == "owner_acknowledged"
+                        ? target.Stage == "owner_acknowledged" &&
+                          target.OwnerProgress is null
                         : target.Stage is
                             "staged" or "awaiting_wearer" or
                             "cancellation_requested" or "recovery_required",
                     "in-flight package stage");
+                if (target.Lifecycle == "running")
+                {
+                    Require(target.OwnerProgress is not null, "running package progress");
+                    ValidatePackageUpdaterProgress(
+                        target.OwnerProgress!,
+                        target.Invocation!);
+                    Require(
+                        target.OwnerProgress!.Stage == target.Stage,
+                        "running package progress stage");
+                }
                 continue;
             }
 
@@ -440,6 +454,10 @@ public static class FleetProjectionValidation
                     target.Invocation!,
                     operation,
                     target);
+                if (target.OwnerProgress is not null)
+                {
+                    ValidatePackageUpdaterProgress(target.OwnerProgress, target.Invocation!);
+                }
                 continue;
             }
 
@@ -456,14 +474,26 @@ public static class FleetProjectionValidation
                         target.InvocationAcknowledgement,
                         target.Invocation!);
                 }
+                if (target.OwnerProgress is not null)
+                {
+                    ValidatePackageUpdaterProgress(target.OwnerProgress, target.Invocation!);
+                    Require(
+                        target.OwnerProgress.Stage == target.Stage,
+                        "terminal package progress stage");
+                }
                 continue;
             }
 
             Require(
                 target.Lifecycle is "cancellation_requested" or "cancelled" &&
                 target.Stage == target.Lifecycle &&
+                target.OwnerProgress is not null &&
                 target.EffectiveReceipt is null,
                 "cancelled package target");
+            ValidatePackageUpdaterProgress(target.OwnerProgress!, target.Invocation!);
+            Require(
+                target.OwnerProgress!.Stage == target.Stage,
+                "cancelled package progress stage");
         }
 
         var eligible = operation.Targets
@@ -479,6 +509,83 @@ public static class FleetProjectionValidation
                 (target.Lifecycle == "accepted" && target.OwnerClaim is not null)) <=
             operation.MaxParallelism,
             "package operation owner-delivery parallelism");
+    }
+
+    public static void ValidatePackageInstallReleaseProgress(
+        PackageInstallReleaseOperation operation,
+        PackageInstallReleaseProgress progress)
+    {
+        ValidatePackageInstallReleaseOperation(operation);
+        var total = checked((uint)operation.Targets.Count);
+        var eligible = checked((uint)operation.Targets.Count(target =>
+            target.Preflight.Eligible));
+        uint CountStage(string stage) => checked((uint)operation.Targets.Count(target =>
+            target.Stage == stage));
+        var claimed = checked((uint)operation.Targets.Count(target =>
+            target.Lifecycle == "accepted" && target.OwnerClaim is not null));
+        var dispatchReady = checked((uint)operation.Targets.Count(target =>
+            target.Stage == "dispatch_ready" && target.OwnerClaim is null));
+        var retainedClaims = checked((uint)operation.Targets.Count(target =>
+            target.Lifecycle is "dispatched" or "running" ||
+            (target.Lifecycle == "accepted" && target.OwnerClaim is not null)));
+        var terminalTargets = checked((uint)operation.Targets.Count(target =>
+            target.Lifecycle is "rejected" or "applied" or "failed" or
+                "expired" or "cancelled"));
+        var terminal = terminalTargets == total;
+        var lastTransition = operation.Targets.Count == 0
+            ? operation.CreatedAtMs
+            : operation.Targets.Max(target => target.LastTransitionMs);
+
+        Require(
+            progress.Schema == "rusty.fleet.package_install_release_progress.v1" &&
+            progress.OperationId == operation.OperationId &&
+            IsPrefixedSha256(progress.OperationSha256) &&
+            progress.Lifecycle == operation.Lifecycle &&
+            progress.Retention is "active" or "archived" &&
+            progress.CreatedAtMs == operation.CreatedAtMs &&
+            progress.LastTransitionMs == lastTransition &&
+            progress.TotalTargets == total &&
+            progress.EligibleTargets == eligible &&
+            progress.ExcludedTargets == total - eligible &&
+            progress.PreviewReady == CountStage("preview_ready") &&
+            progress.Approved == CountStage("approved") &&
+            progress.DispatchReady == dispatchReady &&
+            progress.Claimed == claimed &&
+            progress.OwnerAcknowledged == CountStage("owner_acknowledged") &&
+            progress.Staged == CountStage("staged") &&
+            progress.AwaitingWearer == CountStage("awaiting_wearer") &&
+            progress.CancellationRequested == CountStage("cancellation_requested") &&
+            progress.RecoveryRequired == CountStage("recovery_required") &&
+            progress.Applied == CountStage("applied") &&
+            progress.Failed == CountStage("failed") &&
+            progress.Expired == CountStage("expired") &&
+            progress.Cancelled == CountStage("cancelled") &&
+            progress.RetainedOwnerClaims == retainedClaims &&
+            progress.MaxParallelism == operation.MaxParallelism &&
+            progress.TerminalTargets == terminalTargets &&
+            progress.Terminal == terminal &&
+            progress.ArchiveEligible == (terminal && progress.Retention == "active") &&
+            (progress.Retention == "active"
+                ? progress.ArchivedAtMs is null
+                : progress.ArchivedAtMs >= lastTransition),
+            "package operation progress projection");
+    }
+
+    public static void ValidatePackageInstallReleaseArchive(
+        PackageInstallReleaseArchive archive)
+    {
+        ValidatePackageInstallReleaseOperation(archive.Operation);
+        ValidatePackageInstallReleaseProgress(archive.Operation, archive.Progress);
+        Require(
+            archive.Schema == "rusty.fleet.package_install_release_archive.v1" &&
+            archive.OperationId == archive.Operation.OperationId &&
+            archive.OperationSha256 == archive.Progress.OperationSha256 &&
+            archive.ArchivedAtMs >= archive.Progress.LastTransitionMs &&
+            archive.Progress.Retention == "archived" &&
+            archive.Progress.ArchivedAtMs == archive.ArchivedAtMs &&
+            archive.Progress.Terminal &&
+            !archive.Progress.ArchiveEligible,
+            "package operation archive");
     }
 
     private static void ValidatePackageOwnerHistory(
@@ -560,6 +667,25 @@ public static class FleetProjectionValidation
             IsPortableIdentifier(acknowledgement.Code, 256) &&
             acknowledgement.AcknowledgedAtMs >= 0,
             "package updater acknowledgement");
+    }
+
+    private static void ValidatePackageUpdaterProgress(
+        PackageUpdaterProgress progress,
+        PackageUpdaterInvocation invocation)
+    {
+        Require(
+            progress.Schema == "rusty.fleet.package_updater_progress.v1" &&
+            progress.OperationId == invocation.OperationId &&
+            progress.DeviceId == invocation.DeviceId &&
+            progress.OwnerActionRequestId == invocation.OwnerActionRequestId &&
+            progress.Stage is "staged" or "awaiting_wearer" or
+                "cancellation_requested" or "cancelled" or
+                "recovery_required" or "failed" or "expired" &&
+            IsPortableIdentifier(progress.Code, 256) &&
+            IsBoundedText(progress.Message, 1_024) &&
+            progress.ObservedAtMs >= 0 &&
+            progress.ObservedAtMs <= invocation.ExpiresAtMs,
+            "package updater progress");
     }
 
     private static void ValidatePackageEffectiveReceipt(

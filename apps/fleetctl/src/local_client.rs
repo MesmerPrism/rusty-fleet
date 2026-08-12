@@ -237,6 +237,36 @@ impl FleetOperationClient for LocalFleetOperationClient {
         )
     }
 
+    fn get_package_install_release_progress(
+        &mut self,
+        operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/progress",
+                encode_path_segment(operation_id)
+            ),
+            None,
+        )
+    }
+
+    fn archive_package_install_release(
+        &mut self,
+        request: &fleet_contracts::PackageOperationArchiveRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/archive",
+                encode_path_segment(&request.operation_id)
+            ),
+            Some(serde_json::to_vec(request).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+        )
+    }
+
     fn preview_quest_awake(
         &mut self,
         request: &QuestAwakePreviewRequest,
@@ -436,6 +466,30 @@ impl FleetOperationClient for LocalFleetOperationClient {
             "POST",
             &format!(
                 "/fleet/v1/package-install-releases/{}/receipts",
+                encode_path_segment(operation_id)
+            ),
+            Some(serde_json::to_vec(submission).map_err(|error| {
+                CliFailure::new("request_serialization_failed", error.to_string())
+            })?),
+            Some(&token),
+        )
+    }
+
+    fn submit_package_updater_progress(
+        &mut self,
+        operation_id: &str,
+        submission: &fleet_contracts::AuthenticatedPackageUpdaterProgress,
+    ) -> Result<serde_json::Value, CliFailure> {
+        let token = std::env::var(PACKAGE_OWNER_TOKEN_ENV).map_err(|_| {
+            CliFailure::new(
+                "package_owner_token_required",
+                "set RUSTY_FLEET_PACKAGE_OWNER_TOKEN for owner ingress",
+            )
+        })?;
+        self.request_with_token(
+            "POST",
+            &format!(
+                "/fleet/v1/package-install-releases/{}/owner-progress",
                 encode_path_segment(operation_id)
             ),
             Some(serde_json::to_vec(submission).map_err(|error| {

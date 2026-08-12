@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     AuthorizationState, CommandLifecycle, ContractViolation, EnablementState, FreshnessState,
@@ -22,12 +23,20 @@ pub const PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA: &str =
     "rusty.fleet.package_install_release_execute_request.v1";
 pub const PACKAGE_UPDATER_ACK_SCHEMA: &str =
     "rusty.fleet.package_updater_invocation_acknowledgement.v1";
+pub const PACKAGE_UPDATER_PROGRESS_SCHEMA: &str = "rusty.fleet.package_updater_progress.v1";
+pub const AUTHENTICATED_PACKAGE_UPDATER_PROGRESS_SCHEMA: &str =
+    "rusty.fleet.authenticated_package_updater_progress.v1";
 pub const PACKAGE_UPDATER_RECEIPT_SUBMISSION_SCHEMA: &str =
     "rusty.fleet.package_updater_receipt_submission.v1";
 pub const PACKAGE_UPDATER_CLAIM_REQUEST_SCHEMA: &str =
     "rusty.fleet.package_updater_claim_request.v1";
 pub const PACKAGE_UPDATER_CLAIM_SCHEMA: &str = "rusty.fleet.package_updater_claim.v1";
 pub const PACKAGE_UPDATER_OFFER_SCHEMA: &str = "rusty.fleet.package_updater_offer.v1";
+pub const PACKAGE_OPERATION_ARCHIVE_REQUEST_SCHEMA: &str =
+    "rusty.fleet.package_operation_archive_request.v1";
+pub const PACKAGE_OPERATION_PROGRESS_SCHEMA: &str =
+    "rusty.fleet.package_install_release_progress.v1";
+pub const PACKAGE_OPERATION_ARCHIVE_SCHEMA: &str = "rusty.fleet.package_install_release_archive.v1";
 pub const MAX_CONSUMED_PACKAGE_OWNER_CLAIMS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +484,67 @@ impl ValidateContract for PackageUpdaterInvocationAcknowledgement {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageUpdaterProgressStage {
+    Staged,
+    AwaitingWearer,
+    CancellationRequested,
+    Cancelled,
+    RecoveryRequired,
+    Failed,
+    Expired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageUpdaterProgress {
+    pub schema: String,
+    pub operation_id: String,
+    pub device_id: String,
+    pub owner_action_request_id: String,
+    pub stage: PackageUpdaterProgressStage,
+    pub code: String,
+    pub message: String,
+    pub observed_at_ms: i64,
+}
+
+impl PackageUpdaterProgress {
+    pub fn validate_for(
+        &self,
+        invocation: &PackageUpdaterInvocation,
+    ) -> Result<(), Vec<ContractViolation>> {
+        let mut failures = Vec::new();
+        if self.schema != PACKAGE_UPDATER_PROGRESS_SCHEMA
+            || self.operation_id != invocation.operation_id
+            || self.device_id != invocation.device_id
+            || self.owner_action_request_id != invocation.owner_action_request_id
+            || self.observed_at_ms < 0
+            || self.observed_at_ms > invocation.expires_at_ms
+            || !is_portable_id(&self.code, 256)
+            || self.message.is_empty()
+            || self.message.len() > 1_024
+        {
+            failures.push(ContractViolation::new(
+                "package_progress_binding_mismatch",
+                "owner_progress",
+                "owner progress must bind the exact invocation, bounded stage, code, message, and observation time",
+            ));
+        }
+        finish(failures)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthenticatedPackageUpdaterProgress {
+    pub schema: String,
+    pub owner_id: String,
+    pub claim_id: String,
+    pub invocation_sha256: String,
+    pub progress: PackageUpdaterProgress,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageUpdateReceiptStage {
@@ -850,6 +920,8 @@ pub struct PackageInstallTargetLedger {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consumed_owner_claim_identities: Vec<ConsumedPackageUpdaterClaimIdentity>,
     pub invocation_acknowledgement: Option<PackageUpdaterInvocationAcknowledgement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_progress: Option<PackageUpdaterProgress>,
     pub effective_receipt: Option<PackageUpdaterEffectiveReceipt>,
     pub reason_code: String,
     pub message: String,
@@ -919,6 +991,244 @@ impl PackageInstallReleaseOperation {
         }
         CommandLifecycle::Failed
     }
+
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.targets.iter().all(|target| {
+            matches!(
+                target.lifecycle,
+                CommandLifecycle::Rejected
+                    | CommandLifecycle::Applied
+                    | CommandLifecycle::Failed
+                    | CommandLifecycle::Expired
+                    | CommandLifecycle::Cancelled
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn operation_sha256(&self) -> String {
+        let bytes = serde_jcs::to_vec(self)
+            .expect("a validated package operation always has a canonical JSON form");
+        format!("sha256:{:x}", Sha256::digest(bytes))
+    }
+
+    #[must_use]
+    pub fn progress(
+        &self,
+        retention: PackageOperationRetention,
+        archived_at_ms: Option<i64>,
+    ) -> PackageInstallReleaseProgress {
+        let count_stage = |stage| {
+            self.targets
+                .iter()
+                .filter(|target| target.stage == stage)
+                .count() as u32
+        };
+        let eligible_targets = self
+            .targets
+            .iter()
+            .filter(|target| target.preflight.eligible)
+            .count() as u32;
+        let claimed = self
+            .targets
+            .iter()
+            .filter(|target| {
+                target.lifecycle == CommandLifecycle::Accepted && target.owner_claim.is_some()
+            })
+            .count() as u32;
+        let dispatch_ready = self
+            .targets
+            .iter()
+            .filter(|target| {
+                target.stage == PackageInstallStage::DispatchReady && target.owner_claim.is_none()
+            })
+            .count() as u32;
+        let retained_owner_claims = self
+            .targets
+            .iter()
+            .filter(|target| {
+                matches!(
+                    target.lifecycle,
+                    CommandLifecycle::Dispatched | CommandLifecycle::Running
+                ) || (target.lifecycle == CommandLifecycle::Accepted
+                    && target.owner_claim.is_some())
+            })
+            .count() as u32;
+        let terminal_targets = self
+            .targets
+            .iter()
+            .filter(|target| {
+                matches!(
+                    target.lifecycle,
+                    CommandLifecycle::Rejected
+                        | CommandLifecycle::Applied
+                        | CommandLifecycle::Failed
+                        | CommandLifecycle::Expired
+                        | CommandLifecycle::Cancelled
+                )
+            })
+            .count() as u32;
+        let terminal = self.is_terminal();
+        PackageInstallReleaseProgress {
+            schema: PACKAGE_OPERATION_PROGRESS_SCHEMA.to_owned(),
+            operation_id: self.operation_id.clone(),
+            operation_sha256: self.operation_sha256(),
+            lifecycle: self.lifecycle,
+            retention,
+            archived_at_ms,
+            created_at_ms: self.created_at_ms,
+            last_transition_ms: self
+                .targets
+                .iter()
+                .map(|target| target.last_transition_ms)
+                .max()
+                .unwrap_or(self.created_at_ms),
+            total_targets: self.targets.len() as u32,
+            eligible_targets,
+            excluded_targets: self.targets.len() as u32 - eligible_targets,
+            preview_ready: count_stage(PackageInstallStage::PreviewReady),
+            approved: count_stage(PackageInstallStage::Approved),
+            dispatch_ready,
+            claimed,
+            owner_acknowledged: count_stage(PackageInstallStage::OwnerAcknowledged),
+            staged: count_stage(PackageInstallStage::Staged),
+            awaiting_wearer: count_stage(PackageInstallStage::AwaitingWearer),
+            cancellation_requested: count_stage(PackageInstallStage::CancellationRequested),
+            recovery_required: count_stage(PackageInstallStage::RecoveryRequired),
+            applied: count_stage(PackageInstallStage::Applied),
+            failed: count_stage(PackageInstallStage::Failed),
+            expired: count_stage(PackageInstallStage::Expired),
+            cancelled: count_stage(PackageInstallStage::Cancelled),
+            retained_owner_claims,
+            max_parallelism: self.max_parallelism,
+            terminal_targets,
+            terminal,
+            archive_eligible: terminal && retention == PackageOperationRetention::Active,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageOperationRetention {
+    Active,
+    Archived,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageInstallReleaseProgress {
+    pub schema: String,
+    pub operation_id: String,
+    pub operation_sha256: String,
+    pub lifecycle: CommandLifecycle,
+    pub retention: PackageOperationRetention,
+    pub archived_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub last_transition_ms: i64,
+    pub total_targets: u32,
+    pub eligible_targets: u32,
+    pub excluded_targets: u32,
+    pub preview_ready: u32,
+    pub approved: u32,
+    pub dispatch_ready: u32,
+    pub claimed: u32,
+    pub owner_acknowledged: u32,
+    pub staged: u32,
+    pub awaiting_wearer: u32,
+    pub cancellation_requested: u32,
+    pub recovery_required: u32,
+    pub applied: u32,
+    pub failed: u32,
+    pub expired: u32,
+    pub cancelled: u32,
+    pub retained_owner_claims: u32,
+    pub max_parallelism: u16,
+    pub terminal_targets: u32,
+    pub terminal: bool,
+    pub archive_eligible: bool,
+}
+
+impl PackageInstallReleaseProgress {
+    pub fn validate_for(
+        &self,
+        operation: &PackageInstallReleaseOperation,
+    ) -> Result<(), Vec<ContractViolation>> {
+        let expected = operation.progress(self.retention, self.archived_at_ms);
+        if self == &expected
+            && (self.retention != PackageOperationRetention::Archived
+                || self
+                    .archived_at_ms
+                    .is_some_and(|time| time >= self.last_transition_ms))
+        {
+            Ok(())
+        } else {
+            Err(vec![ContractViolation::new(
+                "package_progress_projection_mismatch",
+                "progress",
+                "package progress must be the exact count projection over the immutable operation",
+            )])
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageOperationArchiveRequest {
+    pub schema: String,
+    pub operation_id: String,
+    pub expected_operation_sha256: String,
+}
+
+impl ValidateContract for PackageOperationArchiveRequest {
+    fn validate(&self) -> Result<(), Vec<ContractViolation>> {
+        let mut failures = Vec::new();
+        if self.schema != PACKAGE_OPERATION_ARCHIVE_REQUEST_SCHEMA
+            || !is_portable_id(&self.operation_id, 256)
+            || !is_prefixed_sha256(&self.expected_operation_sha256)
+        {
+            failures.push(ContractViolation::new(
+                "invalid_package_archive_request",
+                "archive_request",
+                "archive request must bind one portable operation ID and exact operation SHA-256",
+            ));
+        }
+        finish(failures)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageInstallReleaseArchive {
+    pub schema: String,
+    pub operation_id: String,
+    pub operation_sha256: String,
+    pub archived_at_ms: i64,
+    pub progress: PackageInstallReleaseProgress,
+    pub operation: PackageInstallReleaseOperation,
+}
+
+impl ValidateContract for PackageInstallReleaseArchive {
+    fn validate(&self) -> Result<(), Vec<ContractViolation>> {
+        let mut failures = Vec::new();
+        if self.schema != PACKAGE_OPERATION_ARCHIVE_SCHEMA
+            || self.operation_id != self.operation.operation_id
+            || self.operation_sha256 != self.operation.operation_sha256()
+            || self.archived_at_ms < 0
+            || !self.operation.is_terminal()
+            || self.progress.retention != PackageOperationRetention::Archived
+            || self.progress.archived_at_ms != Some(self.archived_at_ms)
+            || self.progress.validate_for(&self.operation).is_err()
+        {
+            failures.push(ContractViolation::new(
+                "invalid_package_operation_archive",
+                "archive",
+                "archive must retain one exact terminal operation and its archived progress projection",
+            ));
+        }
+        finish(failures)
+    }
 }
 
 impl ValidateContract for PackageInstallReleaseOperation {
@@ -983,6 +1293,7 @@ impl ValidateContract for PackageInstallReleaseOperation {
                     || target.invocation.is_some()
                     || target.owner_claim.is_some()
                     || target.invocation_acknowledgement.is_some()
+                    || target.owner_progress.is_some()
                     || target.effective_receipt.is_some()
                 {
                     failures.push(ContractViolation::new(
@@ -1058,6 +1369,7 @@ impl ValidateContract for PackageInstallReleaseOperation {
                         || target.invocation.is_some()
                         || target.owner_claim.is_some()
                         || target.invocation_acknowledgement.is_some()
+                        || target.owner_progress.is_some()
                         || target.effective_receipt.is_some()
                     {
                         failures.push(ContractViolation::new(
@@ -1075,6 +1387,7 @@ impl ValidateContract for PackageInstallReleaseOperation {
                     };
                     if !valid_stage
                         || target.invocation_acknowledgement.is_some()
+                        || target.owner_progress.is_some()
                         || target.effective_receipt.is_some()
                     {
                         failures.push(ContractViolation::new(
@@ -1137,6 +1450,7 @@ impl ValidateContract for PackageInstallReleaseOperation {
                         || invocation.expected_package_name != self.preview.expected_package_name
                         || invocation.expected_rollout_ring != self.preview.expected_rollout_ring
                         || target.effective_receipt.is_some()
+                        || target.owner_progress.is_some()
                     {
                         failures.push(ContractViolation::new(
                             "invocation_binding_mismatch",
@@ -1190,6 +1504,10 @@ impl ValidateContract for PackageInstallReleaseOperation {
                         || invocation.expected_package_name != self.preview.expected_package_name
                         || invocation.expected_rollout_ring != self.preview.expected_rollout_ring
                         || target.effective_receipt.is_some()
+                        || target.owner_progress.as_ref().is_none_or(|progress| {
+                            progress.validate_for(invocation).is_err()
+                                || progress_stage_to_install_stage(progress.stage) != target.stage
+                        })
                         || target.invocation_acknowledgement.as_ref().is_none_or(
                             |acknowledgement| {
                                 acknowledgement.validate().is_err()
@@ -1225,6 +1543,17 @@ impl ValidateContract for PackageInstallReleaseOperation {
                                     "applied target requires an effective installed-version receipt",
                                 ));
                             }
+                            if target
+                                .owner_progress
+                                .as_ref()
+                                .is_some_and(|progress| progress.validate_for(invocation).is_err())
+                            {
+                                failures.push(ContractViolation::new(
+                                    "invalid_retained_owner_progress",
+                                    &format!("targets[{index}].owner_progress"),
+                                    "applied target may retain only progress bound to the exact invocation",
+                                ));
+                            }
                         }
                         _ => failures.push(ContractViolation::new(
                             "applied_without_effective_receipt",
@@ -1249,6 +1578,17 @@ impl ValidateContract for PackageInstallReleaseOperation {
                             "failed or expired target retains an invocation and no effective receipt",
                         ));
                     }
+                    if let (Some(invocation), Some(progress)) =
+                        (&target.invocation, &target.owner_progress)
+                        && (progress.validate_for(invocation).is_err()
+                            || progress_stage_to_install_stage(progress.stage) != target.stage)
+                    {
+                        failures.push(ContractViolation::new(
+                            "terminal_owner_progress_mismatch",
+                            &format!("targets[{index}].owner_progress"),
+                            "terminal owner progress must bind the exact invocation and terminal stage",
+                        ));
+                    }
                 }
                 CommandLifecycle::Rejected => failures.push(ContractViolation::new(
                     "eligible_target_rejected",
@@ -1259,6 +1599,13 @@ impl ValidateContract for PackageInstallReleaseOperation {
                     if target.stage != PackageInstallStage::CancellationRequested
                         || target.invocation.is_none()
                         || target.effective_receipt.is_some()
+                        || target.owner_progress.as_ref().is_none_or(|progress| {
+                            target.invocation.as_ref().is_none_or(|invocation| {
+                                progress.validate_for(invocation).is_err()
+                                    || progress.stage
+                                        != PackageUpdaterProgressStage::CancellationRequested
+                            })
+                        })
                     {
                         failures.push(ContractViolation::new(
                             "invalid_cancellation_state",
@@ -1271,6 +1618,12 @@ impl ValidateContract for PackageInstallReleaseOperation {
                     if target.stage != PackageInstallStage::Cancelled
                         || target.invocation.is_none()
                         || target.effective_receipt.is_some()
+                        || target.owner_progress.as_ref().is_none_or(|progress| {
+                            target.invocation.as_ref().is_none_or(|invocation| {
+                                progress.validate_for(invocation).is_err()
+                                    || progress.stage != PackageUpdaterProgressStage::Cancelled
+                            })
+                        })
                     {
                         failures.push(ContractViolation::new(
                             "invalid_cancelled_state",
@@ -1314,6 +1667,38 @@ impl ValidateContract for PackageInstallReleaseOperation {
             ));
         }
         finish(failures)
+    }
+}
+
+#[must_use]
+pub const fn progress_stage_to_install_stage(
+    stage: PackageUpdaterProgressStage,
+) -> PackageInstallStage {
+    match stage {
+        PackageUpdaterProgressStage::Staged => PackageInstallStage::Staged,
+        PackageUpdaterProgressStage::AwaitingWearer => PackageInstallStage::AwaitingWearer,
+        PackageUpdaterProgressStage::CancellationRequested => {
+            PackageInstallStage::CancellationRequested
+        }
+        PackageUpdaterProgressStage::Cancelled => PackageInstallStage::Cancelled,
+        PackageUpdaterProgressStage::RecoveryRequired => PackageInstallStage::RecoveryRequired,
+        PackageUpdaterProgressStage::Failed => PackageInstallStage::Failed,
+        PackageUpdaterProgressStage::Expired => PackageInstallStage::Expired,
+    }
+}
+
+#[must_use]
+pub const fn progress_stage_to_lifecycle(stage: PackageUpdaterProgressStage) -> CommandLifecycle {
+    match stage {
+        PackageUpdaterProgressStage::Staged
+        | PackageUpdaterProgressStage::AwaitingWearer
+        | PackageUpdaterProgressStage::RecoveryRequired => CommandLifecycle::Running,
+        PackageUpdaterProgressStage::CancellationRequested => {
+            CommandLifecycle::CancellationRequested
+        }
+        PackageUpdaterProgressStage::Cancelled => CommandLifecycle::Cancelled,
+        PackageUpdaterProgressStage::Failed => CommandLifecycle::Failed,
+        PackageUpdaterProgressStage::Expired => CommandLifecycle::Expired,
     }
 }
 

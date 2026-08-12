@@ -5,8 +5,10 @@ use std::collections::BTreeMap;
 
 use fleet_contracts::{
     PACKAGE_INSTALL_EXECUTE_REQUEST_SCHEMA, PACKAGE_INSTALL_PREVIEW_REQUEST_SCHEMA,
-    PACKAGES_INSTALL_RELEASE_ACTION_ID, PackageInstallReleaseExecuteRequest,
-    PackageInstallReleaseOperation, PackageInstallReleasePreviewRequest, PackageReleaseReference,
+    PACKAGE_OPERATION_ARCHIVE_REQUEST_SCHEMA, PACKAGES_INSTALL_RELEASE_ACTION_ID,
+    PackageInstallReleaseArchive, PackageInstallReleaseExecuteRequest,
+    PackageInstallReleaseOperation, PackageInstallReleasePreviewRequest,
+    PackageInstallReleaseProgress, PackageOperationArchiveRequest, PackageReleaseReference,
     ValidateContract,
 };
 
@@ -18,7 +20,11 @@ use crate::operation::{
 pub(crate) fn is_package_operation_command(command: &str) -> bool {
     matches!(
         command,
-        "package-preview" | "package-execute" | "package-get"
+        "package-preview"
+            | "package-execute"
+            | "package-get"
+            | "package-progress"
+            | "package-archive"
     )
 }
 
@@ -30,6 +36,8 @@ pub(crate) fn execute_package_operation_command<C: FleetOperationClient + ?Sized
         Some("package-preview") => preview(arguments, client),
         Some("package-execute") => execute(arguments, client),
         Some("package-get") => get(arguments, client),
+        Some("package-progress") => progress(arguments, client),
+        Some("package-archive") => archive(arguments, client),
         _ => Err(CliFailure::new(
             "unknown_command",
             "the requested package operation command is unknown",
@@ -151,6 +159,83 @@ fn get<C: FleetOperationClient + ?Sized>(
         return Err(CliFailure::new(
             "package_operation_response_mismatch",
             "Fleet Hub lookup returned a different package operation ID",
+        ));
+    }
+    Ok(raw)
+}
+
+fn progress<C: FleetOperationClient + ?Sized>(
+    arguments: &[String],
+    client: &mut C,
+) -> Result<serde_json::Value, CliFailure> {
+    if arguments.len() != 2 {
+        return Err(CliFailure::new(
+            "unexpected_arguments",
+            "package-progress requires exactly OPERATION_ID",
+        ));
+    }
+    validate_identifier(&arguments[1], "operation_id")?;
+    let raw = client.get_package_install_release_progress(&arguments[1])?;
+    let projection =
+        serde_json::from_value::<PackageInstallReleaseProgress>(raw.clone()).map_err(|error| {
+            CliFailure::new("malformed_package_progress_response", error.to_string())
+        })?;
+    if projection.operation_id != arguments[1] {
+        return Err(CliFailure::new(
+            "package_progress_response_mismatch",
+            "Fleet Hub progress returned a different package operation ID",
+        ));
+    }
+    let operation_raw = client.get_package_install_release(&arguments[1])?;
+    let operation = validate_operation(&operation_raw)?;
+    projection.validate_for(&operation).map_err(|failures| {
+        CliFailure::new(
+            "invalid_package_progress_response",
+            format!(
+                "Fleet Hub package progress contract rejected: {}",
+                violation_summary(&failures)
+            ),
+        )
+    })?;
+    Ok(raw)
+}
+
+fn archive<C: FleetOperationClient + ?Sized>(
+    arguments: &[String],
+    client: &mut C,
+) -> Result<serde_json::Value, CliFailure> {
+    if arguments.len() != 3 {
+        return Err(CliFailure::new(
+            "unexpected_arguments",
+            "package-archive requires exactly OPERATION_ID EXPECTED_OPERATION_SHA256",
+        ));
+    }
+    let request = PackageOperationArchiveRequest {
+        schema: PACKAGE_OPERATION_ARCHIVE_REQUEST_SCHEMA.to_owned(),
+        operation_id: arguments[1].clone(),
+        expected_operation_sha256: arguments[2].clone(),
+    };
+    validate_request(&request, "invalid_package_archive_request")?;
+    let raw = client.archive_package_install_release(&request)?;
+    let archive =
+        serde_json::from_value::<PackageInstallReleaseArchive>(raw.clone()).map_err(|error| {
+            CliFailure::new("malformed_package_archive_response", error.to_string())
+        })?;
+    archive.validate().map_err(|failures| {
+        CliFailure::new(
+            "invalid_package_archive_response",
+            format!(
+                "Fleet Hub package archive contract rejected: {}",
+                violation_summary(&failures)
+            ),
+        )
+    })?;
+    if archive.operation_id != request.operation_id
+        || archive.operation_sha256 != request.expected_operation_sha256
+    {
+        return Err(CliFailure::new(
+            "package_archive_response_mismatch",
+            "Fleet Hub archive did not bind the requested operation and SHA-256",
         ));
     }
     Ok(raw)

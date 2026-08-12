@@ -40,6 +40,7 @@ const RESULT_SCHEMA: &str = "rusty.fleet.query_result.v1";
 const MAX_SAVED_VIEWS: usize = 128;
 const MAX_KIOSK_OPERATIONS: usize = 1_000;
 const MAX_PACKAGE_OPERATIONS: usize = 1_000;
+const MAX_ARCHIVED_PACKAGE_OPERATIONS: usize = 10_000;
 const MAX_AWAKE_OPERATIONS: usize = 1_000;
 const MAX_WIFI_ADB_OPERATIONS: usize = 1_000;
 const MAX_WINDOWS_HOTSPOT_OPERATIONS: usize = 1_000;
@@ -178,6 +179,8 @@ pub struct FleetHubSnapshot {
     #[serde(default)]
     package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
     #[serde(default)]
+    package_operation_archives: BTreeMap<String, fleet_contracts::PackageInstallReleaseArchive>,
+    #[serde(default)]
     awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
     #[serde(default)]
     wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
@@ -198,6 +201,7 @@ pub struct FleetHub {
     saved_views: BTreeMap<String, SavedView>,
     kiosk_operations: BTreeMap<String, fleet_contracts::KioskShowControlsOperation>,
     package_operations: BTreeMap<String, fleet_contracts::PackageInstallReleaseOperation>,
+    package_operation_archives: BTreeMap<String, fleet_contracts::PackageInstallReleaseArchive>,
     awake_operations: BTreeMap<String, fleet_contracts::QuestAwakeOperation>,
     wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
     windows_hotspot_operations: BTreeMap<String, fleet_contracts::WindowsHotspotOperation>,
@@ -225,6 +229,7 @@ impl FleetHub {
             saved_views: BTreeMap::new(),
             kiosk_operations: BTreeMap::new(),
             package_operations: BTreeMap::new(),
+            package_operation_archives: BTreeMap::new(),
             awake_operations: BTreeMap::new(),
             wifi_adb_operations: BTreeMap::new(),
             windows_hotspot_operations: BTreeMap::new(),
@@ -276,6 +281,7 @@ impl FleetHub {
             saved_views: self.saved_views.clone(),
             kiosk_operations: self.kiosk_operations.clone(),
             package_operations: self.package_operations.clone(),
+            package_operation_archives: self.package_operation_archives.clone(),
             awake_operations: self.awake_operations.clone(),
             wifi_adb_operations: self.wifi_adb_operations.clone(),
             windows_hotspot_operations: self.windows_hotspot_operations.clone(),
@@ -413,6 +419,22 @@ impl FleetHub {
                 "Fleet Hub snapshot package operations are invalid or exceed their limit",
             ));
         }
+        if snapshot.package_operation_archives.len() > MAX_ARCHIVED_PACKAGE_OPERATIONS
+            || snapshot
+                .package_operation_archives
+                .iter()
+                .any(|(operation_id, archive)| {
+                    operation_id != &archive.operation_id
+                        || archive.validate().is_err()
+                        || archive.operation.preview.fleet_revision > snapshot.result_revision
+                        || snapshot.package_operations.contains_key(operation_id)
+                })
+        {
+            return Err(HubError::new(
+                "snapshot_package_archives_invalid",
+                "Fleet Hub snapshot package archives are invalid, overlap active operations, or exceed their limit",
+            ));
+        }
         if snapshot.awake_operations.len() > MAX_AWAKE_OPERATIONS
             || snapshot
                 .awake_operations
@@ -481,6 +503,7 @@ impl FleetHub {
             saved_views: snapshot.saved_views,
             kiosk_operations: snapshot.kiosk_operations,
             package_operations: snapshot.package_operations,
+            package_operation_archives: snapshot.package_operation_archives,
             awake_operations: snapshot.awake_operations,
             wifi_adb_operations: snapshot.wifi_adb_operations,
             windows_hotspot_operations: snapshot.windows_hotspot_operations,

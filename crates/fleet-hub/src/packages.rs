@@ -3,17 +3,22 @@
 
 use fleet_contracts::{
     AuthorizationState, CommandLifecycle, ConsumedPackageUpdaterClaimIdentity, EnablementState,
-    FreshnessState, MAX_CONSUMED_PACKAGE_OWNER_CLAIMS, PACKAGE_UPDATER_CAPABILITY_ID,
-    PACKAGE_UPDATER_OWNER, PACKAGES_INSTALL_RELEASE_ACTION_ID, PackageInstallReleaseOperation,
-    PackageInstallReleasePreview, PackageInstallReleasePreviewRequest, PackageInstallStage,
-    PackageInstallTargetLedger, PackageInstallTargetPreflight, PackageUpdaterClaim,
-    PackageUpdaterEffectiveReceipt, PackageUpdaterInvocation,
-    PackageUpdaterInvocationAcknowledgement, PackageUpdaterOwnerContractBinding, ReachabilityState,
-    SupportState, ValidateContract,
+    FreshnessState, MAX_CONSUMED_PACKAGE_OWNER_CLAIMS, PACKAGE_OPERATION_ARCHIVE_SCHEMA,
+    PACKAGE_UPDATER_CAPABILITY_ID, PACKAGE_UPDATER_OWNER, PACKAGES_INSTALL_RELEASE_ACTION_ID,
+    PackageInstallReleaseArchive, PackageInstallReleaseOperation, PackageInstallReleasePreview,
+    PackageInstallReleasePreviewRequest, PackageInstallReleaseProgress, PackageInstallStage,
+    PackageInstallTargetLedger, PackageInstallTargetPreflight, PackageOperationArchiveRequest,
+    PackageOperationRetention, PackageUpdaterClaim, PackageUpdaterEffectiveReceipt,
+    PackageUpdaterInvocation, PackageUpdaterInvocationAcknowledgement,
+    PackageUpdaterOwnerContractBinding, PackageUpdaterProgress, PackageUpdaterProgressStage,
+    ReachabilityState, SupportState, ValidateContract, progress_stage_to_install_stage,
+    progress_stage_to_lifecycle,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceRecord, FleetHub, HubError, MAX_PACKAGE_OPERATIONS};
+use crate::{
+    DeviceRecord, FleetHub, HubError, MAX_ARCHIVED_PACKAGE_OPERATIONS, MAX_PACKAGE_OPERATIONS,
+};
 
 const PREVIEW_MAX_LIFETIME_MS: i64 = 15 * 60 * 1_000;
 
@@ -79,6 +84,16 @@ impl FleetHub {
                 ))
             };
         }
+        if let Some(existing) = self.package_operation_archives.get(&plan.operation_id) {
+            return if package_plan_matches(&plan, &existing.operation) {
+                Ok(existing.operation.clone())
+            } else {
+                Err(HubError::new(
+                    "package_operation_id_conflict",
+                    "operation ID already names a different archived package operation",
+                ))
+            };
+        }
         let mut preflights = Vec::with_capacity(plan.request.targets.len());
         for (device_id, identity_revision) in &plan.request.targets {
             let record = self.devices.get(device_id).ok_or_else(|| {
@@ -134,6 +149,7 @@ impl FleetHub {
                     prior_owner_claims: Vec::new(),
                     consumed_owner_claim_identities: Vec::new(),
                     invocation_acknowledgement: None,
+                    owner_progress: None,
                     effective_receipt: None,
                     reason_code: if eligible {
                         "preview_ready".to_owned()
@@ -507,7 +523,9 @@ impl FleetHub {
         })?;
         if !matches!(
             target.lifecycle,
-            CommandLifecycle::Dispatched | CommandLifecycle::Running
+            CommandLifecycle::Dispatched
+                | CommandLifecycle::Running
+                | CommandLifecycle::CancellationRequested
         ) {
             return Err(HubError::new(
                 "package_receipt_state_invalid",
@@ -533,6 +551,77 @@ impl FleetHub {
         Ok(operation.clone())
     }
 
+    pub fn admit_authenticated_package_updater_progress(
+        &mut self,
+        progress: PackageUpdaterProgress,
+        now_ms: i64,
+    ) -> Result<PackageInstallReleaseOperation, HubError> {
+        let operation = self
+            .package_operations
+            .get_mut(&progress.operation_id)
+            .ok_or_else(|| {
+                HubError::new(
+                    "package_operation_not_found",
+                    "package operation was not found or is archived",
+                )
+            })?;
+        let target = operation
+            .targets
+            .iter_mut()
+            .find(|target| target.device_id == progress.device_id)
+            .ok_or_else(|| {
+                HubError::new("package_target_not_found", "target is not in operation")
+            })?;
+        let invocation = target.invocation.as_ref().ok_or_else(|| {
+            HubError::new(
+                "package_invocation_missing",
+                "target has no dispatched updater invocation",
+            )
+        })?;
+        if progress.validate_for(invocation).is_err()
+            || progress.observed_at_ms > now_ms
+            || target
+                .invocation_acknowledgement
+                .as_ref()
+                .is_none_or(|acknowledgement| {
+                    !acknowledgement.accepted
+                        || acknowledgement.operation_id != progress.operation_id
+                        || acknowledgement.device_id != progress.device_id
+                        || acknowledgement.owner_action_request_id
+                            != progress.owner_action_request_id
+                        || acknowledgement.acknowledged_at_ms > progress.observed_at_ms
+                })
+        {
+            return Err(HubError::new(
+                "package_progress_invalid",
+                "owner progress is stale, future-dated, or not bound to an accepted acknowledgement",
+            ));
+        }
+        if target.owner_progress.as_ref() == Some(&progress) {
+            return Ok(operation.clone());
+        }
+        if target
+            .owner_progress
+            .as_ref()
+            .is_some_and(|prior| prior.observed_at_ms >= progress.observed_at_ms)
+            || !package_progress_transition_allowed(target.stage, progress.stage)
+        {
+            return Err(HubError::new(
+                "package_progress_transition_invalid",
+                "owner progress must advance monotonically from the retained package stage",
+            ));
+        }
+        target.stage = progress_stage_to_install_stage(progress.stage);
+        target.lifecycle = progress_stage_to_lifecycle(progress.stage);
+        target.reason_code = progress.code.clone();
+        target.message = progress.message.clone();
+        target.owner_progress = Some(progress);
+        target.last_transition_ms = now_ms;
+        operation.lifecycle = operation.derived_lifecycle();
+        validate_package_operation(operation)?;
+        Ok(operation.clone())
+    }
+
     pub fn package_operation(
         &self,
         operation_id: &str,
@@ -540,6 +629,11 @@ impl FleetHub {
         self.package_operations
             .get(operation_id)
             .cloned()
+            .or_else(|| {
+                self.package_operation_archives
+                    .get(operation_id)
+                    .map(|archive| archive.operation.clone())
+            })
             .ok_or_else(|| {
                 HubError::new(
                     "package_operation_not_found",
@@ -560,6 +654,122 @@ impl FleetHub {
                 .then_with(|| left.operation_id.cmp(&right.operation_id))
         });
         operations
+    }
+
+    pub fn package_operation_progress(
+        &self,
+        operation_id: &str,
+    ) -> Result<PackageInstallReleaseProgress, HubError> {
+        if let Some(operation) = self.package_operations.get(operation_id) {
+            return Ok(operation.progress(PackageOperationRetention::Active, None));
+        }
+        self.package_operation_archives
+            .get(operation_id)
+            .map(|archive| archive.progress.clone())
+            .ok_or_else(|| {
+                HubError::new(
+                    "package_operation_not_found",
+                    "package operation was not found",
+                )
+            })
+    }
+
+    pub fn archive_package_operation(
+        &mut self,
+        request: &PackageOperationArchiveRequest,
+        now_ms: i64,
+    ) -> Result<PackageInstallReleaseArchive, HubError> {
+        if request.validate().is_err() || now_ms < 0 {
+            return Err(HubError::new(
+                "package_archive_request_invalid",
+                "package archive request is invalid",
+            ));
+        }
+        if let Some(existing) = self.package_operation_archives.get(&request.operation_id) {
+            return if existing.operation_sha256 == request.expected_operation_sha256 {
+                Ok(existing.clone())
+            } else {
+                Err(HubError::new(
+                    "package_archive_operation_changed",
+                    "archived package operation does not match the expected SHA-256",
+                ))
+            };
+        }
+        let operation = self
+            .package_operations
+            .get(&request.operation_id)
+            .cloned()
+            .ok_or_else(|| {
+                HubError::new(
+                    "package_operation_not_found",
+                    "package operation was not found",
+                )
+            })?;
+        if !operation.is_terminal() {
+            return Err(HubError::new(
+                "package_operation_not_terminal",
+                "only an operation with every target terminal can be archived",
+            ));
+        }
+        let operation_sha256 = operation.operation_sha256();
+        if operation_sha256 != request.expected_operation_sha256 {
+            return Err(HubError::new(
+                "package_archive_operation_changed",
+                "package operation changed after the archive proposal",
+            ));
+        }
+        if self.package_operation_archives.len() >= MAX_ARCHIVED_PACKAGE_OPERATIONS {
+            return Err(HubError::new(
+                "package_archive_limit_reached",
+                format!(
+                    "Fleet Hub retains at most {MAX_ARCHIVED_PACKAGE_OPERATIONS} archived package operations"
+                ),
+            ));
+        }
+        let last_transition_ms = operation
+            .targets
+            .iter()
+            .map(|target| target.last_transition_ms)
+            .max()
+            .unwrap_or(operation.created_at_ms);
+        if now_ms < last_transition_ms {
+            return Err(HubError::new(
+                "package_archive_time_invalid",
+                "archive time cannot precede the terminal operation",
+            ));
+        }
+        let archive = PackageInstallReleaseArchive {
+            schema: PACKAGE_OPERATION_ARCHIVE_SCHEMA.to_owned(),
+            operation_id: operation.operation_id.clone(),
+            operation_sha256,
+            archived_at_ms: now_ms,
+            progress: operation.progress(PackageOperationRetention::Archived, Some(now_ms)),
+            operation,
+        };
+        if archive.validate().is_err() {
+            return Err(HubError::new(
+                "package_archive_invalid",
+                "constructed package archive failed contract validation",
+            ));
+        }
+        self.package_operations.remove(&request.operation_id);
+        self.package_operation_archives
+            .insert(request.operation_id.clone(), archive.clone());
+        Ok(archive)
+    }
+
+    pub fn package_operation_archives(&self) -> Vec<PackageInstallReleaseArchive> {
+        let mut archives = self
+            .package_operation_archives
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        archives.sort_by(|left, right| {
+            left.archived_at_ms
+                .cmp(&right.archived_at_ms)
+                .then_with(|| left.operation_id.cmp(&right.operation_id))
+        });
+        archives
     }
 
     fn validate_package_preview_plan(
@@ -717,6 +927,53 @@ impl FleetHub {
     }
 }
 
+fn package_progress_transition_allowed(
+    current: PackageInstallStage,
+    next: PackageUpdaterProgressStage,
+) -> bool {
+    match current {
+        PackageInstallStage::OwnerAcknowledged => matches!(
+            next,
+            PackageUpdaterProgressStage::Staged
+                | PackageUpdaterProgressStage::AwaitingWearer
+                | PackageUpdaterProgressStage::RecoveryRequired
+                | PackageUpdaterProgressStage::Failed
+                | PackageUpdaterProgressStage::Expired
+        ),
+        PackageInstallStage::Staged => matches!(
+            next,
+            PackageUpdaterProgressStage::AwaitingWearer
+                | PackageUpdaterProgressStage::CancellationRequested
+                | PackageUpdaterProgressStage::RecoveryRequired
+                | PackageUpdaterProgressStage::Failed
+                | PackageUpdaterProgressStage::Expired
+        ),
+        PackageInstallStage::AwaitingWearer => matches!(
+            next,
+            PackageUpdaterProgressStage::CancellationRequested
+                | PackageUpdaterProgressStage::RecoveryRequired
+                | PackageUpdaterProgressStage::Failed
+                | PackageUpdaterProgressStage::Expired
+        ),
+        PackageInstallStage::RecoveryRequired => matches!(
+            next,
+            PackageUpdaterProgressStage::Staged
+                | PackageUpdaterProgressStage::AwaitingWearer
+                | PackageUpdaterProgressStage::CancellationRequested
+                | PackageUpdaterProgressStage::Failed
+                | PackageUpdaterProgressStage::Expired
+        ),
+        PackageInstallStage::CancellationRequested => matches!(
+            next,
+            PackageUpdaterProgressStage::Cancelled
+                | PackageUpdaterProgressStage::RecoveryRequired
+                | PackageUpdaterProgressStage::Failed
+                | PackageUpdaterProgressStage::Expired
+        ),
+        _ => false,
+    }
+}
+
 fn package_plan_matches(
     plan: &PackageInstallReleasePreviewPlan,
     operation: &PackageInstallReleaseOperation,
@@ -794,10 +1051,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use fleet_contracts::{
-        CapabilityState, PACKAGE_INSTALL_PREVIEW_REQUEST_SCHEMA, PACKAGE_UPDATE_RECEIPT_SCHEMA,
-        PACKAGE_UPDATER_ACK_SCHEMA, PackageReleaseReference, PackageUpdateCheckpoint,
+        CapabilityState, PACKAGE_INSTALL_PREVIEW_REQUEST_SCHEMA,
+        PACKAGE_OPERATION_ARCHIVE_REQUEST_SCHEMA, PACKAGE_UPDATE_RECEIPT_SCHEMA,
+        PACKAGE_UPDATER_ACK_SCHEMA, PACKAGE_UPDATER_PROGRESS_SCHEMA,
+        PackageOperationArchiveRequest, PackageReleaseReference, PackageUpdateCheckpoint,
         PackageUpdateReceipt, PackageUpdateReceiptDecision, PackageUpdateReceiptStage,
         PackageUpdaterEffectiveReceipt, PackageUpdaterInvocationAcknowledgement,
+        PackageUpdaterProgress, PackageUpdaterProgressStage,
     };
     use fleet_simulator::{BASE_TIME_MS, ScenarioBuilder};
 
@@ -1346,5 +1606,178 @@ mod tests {
                 .select_package_updater_offer(BASE_TIME_MS + 10)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn authenticated_progress_advances_monotonically_and_projects_exact_counts() {
+        let mut hub = ready_hub();
+        let preview = hub
+            .preview_package_install_release(plan(&hub))
+            .expect("preview");
+        hub.confirm_package_install_release(
+            &preview.operation_id,
+            &preview.preview.preview_id,
+            BASE_TIME_MS + 1,
+        )
+        .expect("confirm");
+        hub.prepare_package_install_release_invocation(
+            &preview.operation_id,
+            "sim-00001",
+            "package-owner-request-1".to_owned(),
+            BASE_TIME_MS + 2,
+        )
+        .expect("prepare");
+        hub.admit_authenticated_package_updater_acknowledgement(
+            PackageUpdaterInvocationAcknowledgement {
+                schema: PACKAGE_UPDATER_ACK_SCHEMA.to_owned(),
+                operation_id: preview.operation_id.clone(),
+                device_id: "sim-00001".to_owned(),
+                owner_action_request_id: "package-owner-request-1".to_owned(),
+                accepted: true,
+                code: "accepted".to_owned(),
+                acknowledged_at_ms: BASE_TIME_MS + 3,
+            },
+            BASE_TIME_MS + 3,
+        )
+        .expect("acknowledge");
+
+        let progress = |stage, observed_at_ms, code: &str| PackageUpdaterProgress {
+            schema: PACKAGE_UPDATER_PROGRESS_SCHEMA.to_owned(),
+            operation_id: preview.operation_id.clone(),
+            device_id: "sim-00001".to_owned(),
+            owner_action_request_id: "package-owner-request-1".to_owned(),
+            stage,
+            code: code.to_owned(),
+            message: format!("owner reported {code}"),
+            observed_at_ms,
+        };
+        let staged = progress(
+            PackageUpdaterProgressStage::Staged,
+            BASE_TIME_MS + 4,
+            "package_staged",
+        );
+        hub.admit_authenticated_package_updater_progress(staged.clone(), BASE_TIME_MS + 4)
+            .expect("staged progress");
+        let projection = hub
+            .package_operation_progress(&preview.operation_id)
+            .expect("progress projection");
+        assert_eq!(projection.staged, 1);
+        assert_eq!(projection.retained_owner_claims, 1);
+        assert!(!projection.terminal);
+        assert!(!projection.archive_eligible);
+
+        assert_eq!(
+            hub.admit_authenticated_package_updater_progress(
+                progress(
+                    PackageUpdaterProgressStage::Staged,
+                    BASE_TIME_MS + 5,
+                    "duplicate_stage"
+                ),
+                BASE_TIME_MS + 5
+            )
+            .expect_err("same stage with new evidence cannot replay")
+            .code,
+            "package_progress_transition_invalid"
+        );
+        assert_eq!(
+            hub.package_operation(&preview.operation_id)
+                .expect("operation unchanged")
+                .targets[0]
+                .owner_progress,
+            Some(staged)
+        );
+
+        for (offset, stage, code) in [
+            (
+                6,
+                PackageUpdaterProgressStage::AwaitingWearer,
+                "awaiting_wearer",
+            ),
+            (
+                7,
+                PackageUpdaterProgressStage::CancellationRequested,
+                "cancellation_requested",
+            ),
+            (8, PackageUpdaterProgressStage::Cancelled, "cancelled"),
+        ] {
+            hub.admit_authenticated_package_updater_progress(
+                progress(stage, BASE_TIME_MS + offset, code),
+                BASE_TIME_MS + offset,
+            )
+            .expect("monotonic owner progress");
+        }
+        let projection = hub
+            .package_operation_progress(&preview.operation_id)
+            .expect("terminal progress");
+        assert_eq!(projection.cancelled, 1);
+        assert_eq!(projection.terminal_targets, 1);
+        assert!(projection.terminal);
+        assert!(projection.archive_eligible);
+        FleetHub::restore(HubPolicy::default(), hub.snapshot()).expect("progress survives restart");
+    }
+
+    #[test]
+    fn terminal_archive_preserves_exact_operation_and_reclaims_active_capacity() {
+        let mut hub = ready_hub();
+        let preview = hub
+            .preview_package_install_release(plan(&hub))
+            .expect("preview");
+        hub.confirm_package_install_release(
+            &preview.operation_id,
+            &preview.preview.preview_id,
+            BASE_TIME_MS + 1,
+        )
+        .expect("confirm");
+        hub.prepare_package_install_release_invocation(
+            &preview.operation_id,
+            "sim-00001",
+            "package-owner-request-1".to_owned(),
+            BASE_TIME_MS + 2,
+        )
+        .expect("prepare");
+        let failed = hub
+            .admit_authenticated_package_updater_acknowledgement(
+                PackageUpdaterInvocationAcknowledgement {
+                    schema: PACKAGE_UPDATER_ACK_SCHEMA.to_owned(),
+                    operation_id: preview.operation_id.clone(),
+                    device_id: "sim-00001".to_owned(),
+                    owner_action_request_id: "package-owner-request-1".to_owned(),
+                    accepted: false,
+                    code: "owner_rejected".to_owned(),
+                    acknowledged_at_ms: BASE_TIME_MS + 3,
+                },
+                BASE_TIME_MS + 3,
+            )
+            .expect("terminal failure");
+        assert!(failed.is_terminal());
+        let request = PackageOperationArchiveRequest {
+            schema: PACKAGE_OPERATION_ARCHIVE_REQUEST_SCHEMA.to_owned(),
+            operation_id: failed.operation_id.clone(),
+            expected_operation_sha256: failed.operation_sha256(),
+        };
+        let archive = hub
+            .archive_package_operation(&request, BASE_TIME_MS + 4)
+            .expect("archive terminal operation");
+        assert_eq!(archive.operation, failed);
+        assert_eq!(hub.package_operations().len(), 0);
+        assert_eq!(hub.package_operation_archives(), vec![archive.clone()]);
+        assert_eq!(
+            hub.package_operation(&request.operation_id)
+                .expect("archived operation remains readable"),
+            failed
+        );
+        let projection = hub
+            .package_operation_progress(&request.operation_id)
+            .expect("archived progress");
+        assert_eq!(projection.retention, PackageOperationRetention::Archived);
+        assert!(!projection.archive_eligible);
+        assert_eq!(
+            hub.archive_package_operation(&request, BASE_TIME_MS + 5)
+                .expect("archive is idempotent"),
+            archive
+        );
+        let restored = FleetHub::restore(HubPolicy::default(), hub.snapshot())
+            .expect("archive survives restart");
+        assert_eq!(restored.package_operation_archives(), vec![archive]);
     }
 }

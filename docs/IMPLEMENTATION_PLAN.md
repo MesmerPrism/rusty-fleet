@@ -307,8 +307,11 @@ An additive package source checkpoint is documented in
 [Package Install/Release](PACKAGE_INSTALL_RELEASE.md). It reuses the same
 immutable target, explicit confirmation, Manifold authorization, durable
 ledger, and Console/CLI/API projection principles while preserving Rusty Quest
-package authority. It ends at `dispatch_ready`; authenticated updater ingress
-and live delivery are a separately authorized owner/device unit.
+package authority. The host-side stack now includes authenticated owner claims,
+acknowledgements, monotonic progress, effective receipts, exact count
+projection, and hash-bound terminal archive with CLI/API/WPF operator parity.
+Live delivery and wearer/device proof remain a separately authorized
+owner/device unit.
 
 ### Acceptance
 

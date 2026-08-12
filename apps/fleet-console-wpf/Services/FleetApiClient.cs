@@ -72,6 +72,14 @@ public interface IFleetDataSource
         string operationId,
         CancellationToken cancellationToken);
 
+    Task<PackageInstallReleaseProgress> PackageInstallReleaseProgressAsync(
+        string operationId,
+        CancellationToken cancellationToken);
+
+    Task<PackageInstallReleaseArchive> ArchivePackageInstallReleaseAsync(
+        PackageOperationArchiveRequest request,
+        CancellationToken cancellationToken);
+
     Task<QuestAwakeOperation> PreviewQuestAwakeAsync(
         QuestAwakePreviewRequest request,
         CancellationToken cancellationToken);
@@ -336,6 +344,34 @@ public sealed class FleetApiClient : IFleetDataSource, IDisposable
             $"/fleet/v1/package-install-releases/{encoded}",
             cancellationToken);
         return await ReadAsync<PackageInstallReleaseOperation>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<PackageInstallReleaseProgress> PackageInstallReleaseProgressAsync(
+        string operationId,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(operationId);
+        using var response = await _http.GetAsync(
+            $"/fleet/v1/package-install-releases/{encoded}/progress",
+            cancellationToken);
+        return await ReadAsync<PackageInstallReleaseProgress>(
+            response,
+            cancellationToken);
+    }
+
+    public async Task<PackageInstallReleaseArchive> ArchivePackageInstallReleaseAsync(
+        PackageOperationArchiveRequest request,
+        CancellationToken cancellationToken)
+    {
+        var encoded = Uri.EscapeDataString(request.OperationId);
+        using var response = await _http.PostAsJsonAsync(
+            $"/fleet/v1/package-install-releases/{encoded}/archive",
+            request,
+            FleetJson.Options,
+            cancellationToken);
+        return await ReadAsync<PackageInstallReleaseArchive>(
             response,
             cancellationToken);
     }

@@ -855,6 +855,33 @@ public sealed class PackageUpdaterInvocationAcknowledgement
     public long AcknowledgedAtMs { get; init; }
 }
 
+public sealed class PackageUpdaterProgress
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("device_id")]
+    public string DeviceId { get; init; } = string.Empty;
+
+    [JsonPropertyName("owner_action_request_id")]
+    public string OwnerActionRequestId { get; init; } = string.Empty;
+
+    [JsonPropertyName("stage")]
+    public string Stage { get; init; } = string.Empty;
+
+    [JsonPropertyName("code")]
+    public string Code { get; init; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("observed_at_ms")]
+    public long ObservedAtMs { get; init; }
+}
+
 public sealed class PackageUpdateCheckpoint
 {
     [JsonPropertyName("package_name")]
@@ -981,6 +1008,9 @@ public sealed class PackageInstallTargetLedger
     [JsonPropertyName("invocation_acknowledgement")]
     public PackageUpdaterInvocationAcknowledgement? InvocationAcknowledgement { get; init; }
 
+    [JsonPropertyName("owner_progress")]
+    public PackageUpdaterProgress? OwnerProgress { get; init; }
+
     [JsonPropertyName("effective_receipt")]
     public PackageUpdaterEffectiveReceipt? EffectiveReceipt { get; init; }
 
@@ -1022,6 +1052,130 @@ public sealed class PackageInstallReleaseOperation
 
     [JsonPropertyName("targets")]
     public IReadOnlyList<PackageInstallTargetLedger> Targets { get; init; } = [];
+}
+
+public sealed class PackageInstallReleaseProgress
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_sha256")]
+    public string OperationSha256 { get; init; } = string.Empty;
+
+    [JsonPropertyName("lifecycle")]
+    public string Lifecycle { get; init; } = string.Empty;
+
+    [JsonPropertyName("retention")]
+    public string Retention { get; init; } = string.Empty;
+
+    [JsonPropertyName("archived_at_ms")]
+    public long? ArchivedAtMs { get; init; }
+
+    [JsonPropertyName("created_at_ms")]
+    public long CreatedAtMs { get; init; }
+
+    [JsonPropertyName("last_transition_ms")]
+    public long LastTransitionMs { get; init; }
+
+    [JsonPropertyName("total_targets")]
+    public uint TotalTargets { get; init; }
+
+    [JsonPropertyName("eligible_targets")]
+    public uint EligibleTargets { get; init; }
+
+    [JsonPropertyName("excluded_targets")]
+    public uint ExcludedTargets { get; init; }
+
+    [JsonPropertyName("preview_ready")]
+    public uint PreviewReady { get; init; }
+
+    [JsonPropertyName("approved")]
+    public uint Approved { get; init; }
+
+    [JsonPropertyName("dispatch_ready")]
+    public uint DispatchReady { get; init; }
+
+    [JsonPropertyName("claimed")]
+    public uint Claimed { get; init; }
+
+    [JsonPropertyName("owner_acknowledged")]
+    public uint OwnerAcknowledged { get; init; }
+
+    [JsonPropertyName("staged")]
+    public uint Staged { get; init; }
+
+    [JsonPropertyName("awaiting_wearer")]
+    public uint AwaitingWearer { get; init; }
+
+    [JsonPropertyName("cancellation_requested")]
+    public uint CancellationRequested { get; init; }
+
+    [JsonPropertyName("recovery_required")]
+    public uint RecoveryRequired { get; init; }
+
+    [JsonPropertyName("applied")]
+    public uint Applied { get; init; }
+
+    [JsonPropertyName("failed")]
+    public uint Failed { get; init; }
+
+    [JsonPropertyName("expired")]
+    public uint Expired { get; init; }
+
+    [JsonPropertyName("cancelled")]
+    public uint Cancelled { get; init; }
+
+    [JsonPropertyName("retained_owner_claims")]
+    public uint RetainedOwnerClaims { get; init; }
+
+    [JsonPropertyName("max_parallelism")]
+    public ushort MaxParallelism { get; init; }
+
+    [JsonPropertyName("terminal_targets")]
+    public uint TerminalTargets { get; init; }
+
+    [JsonPropertyName("terminal")]
+    public bool Terminal { get; init; }
+
+    [JsonPropertyName("archive_eligible")]
+    public bool ArchiveEligible { get; init; }
+}
+
+public sealed class PackageOperationArchiveRequest
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } =
+        "rusty.fleet.package_operation_archive_request.v1";
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("expected_operation_sha256")]
+    public string ExpectedOperationSha256 { get; init; } = string.Empty;
+}
+
+public sealed class PackageInstallReleaseArchive
+{
+    [JsonPropertyName("schema")]
+    public string Schema { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_id")]
+    public string OperationId { get; init; } = string.Empty;
+
+    [JsonPropertyName("operation_sha256")]
+    public string OperationSha256 { get; init; } = string.Empty;
+
+    [JsonPropertyName("archived_at_ms")]
+    public long ArchivedAtMs { get; init; }
+
+    [JsonPropertyName("progress")]
+    public PackageInstallReleaseProgress Progress { get; init; } = new();
+
+    [JsonPropertyName("operation")]
+    public PackageInstallReleaseOperation Operation { get; init; } = new();
 }
 
 public sealed class FleetSummaryProjection

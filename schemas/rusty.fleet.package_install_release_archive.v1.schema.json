@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesmerprism.com/rusty-fleet/schemas/rusty.fleet.package_install_release_archive.v1.schema.json",
+  "title": "Rusty Fleet package install/release archive",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation_id",
+    "operation_sha256",
+    "archived_at_ms",
+    "progress",
+    "operation"
+  ],
+  "properties": {
+    "schema": { "const": "rusty.fleet.package_install_release_archive.v1" },
+    "operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._/-]+$"
+    },
+    "operation_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "archived_at_ms": { "type": "integer", "minimum": 0 },
+    "progress": { "$ref": "rusty.fleet.package_install_release_progress.v1.schema.json" },
+    "operation": { "$ref": "rusty.fleet.package_install_release_operation.v1.schema.json" }
+  }
+}

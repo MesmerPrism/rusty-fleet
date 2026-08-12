@@ -72,6 +72,26 @@ pub trait FleetOperationClient {
         ))
     }
 
+    fn get_package_install_release_progress(
+        &mut self,
+        _operation_id: &str,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_operation_client_required",
+            "the injected Fleet client does not support package progress",
+        ))
+    }
+
+    fn archive_package_install_release(
+        &mut self,
+        _request: &fleet_contracts::PackageOperationArchiveRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_operation_client_required",
+            "the injected Fleet client does not support package archiving",
+        ))
+    }
+
     fn preview_quest_awake(
         &mut self,
         _request: &fleet_contracts::QuestAwakePreviewRequest,
@@ -201,6 +221,17 @@ pub trait FleetOperationClient {
             "the injected Fleet client does not support package-owner ingress",
         ))
     }
+
+    fn submit_package_updater_progress(
+        &mut self,
+        _operation_id: &str,
+        _submission: &fleet_contracts::AuthenticatedPackageUpdaterProgress,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "package_owner_client_required",
+            "the injected Fleet client does not support package-owner progress ingress",
+        ))
+    }
 }
 
 pub fn is_operation_command(command: &str) -> bool {
@@ -218,6 +249,7 @@ pub fn is_operation_command(command: &str) -> bool {
             | "package-owner-offer"
             | "package-owner-ack"
             | "package-owner-receipt"
+            | "package-owner-progress"
             | "awake-preview"
             | "awake-execute"
             | "awake-get"
@@ -243,6 +275,7 @@ pub(crate) fn execute_operation_command<C: FleetOperationClient + ?Sized>(
         Some("package-owner-offer") => client.peek_package_updater_offer(),
         Some("package-owner-ack") => package_owner_ack(arguments, client),
         Some("package-owner-receipt") => package_owner_receipt(arguments, client),
+        Some("package-owner-progress") => package_owner_progress(arguments, client),
         _ => Err(CliFailure::new(
             "unknown_command",
             "the requested operation command is unknown",
@@ -300,6 +333,21 @@ fn package_owner_receipt<C: FleetOperationClient + ?Sized>(
     let submission = serde_json::from_str(&arguments[2])
         .map_err(|error| CliFailure::new("invalid_package_owner_json", error.to_string()))?;
     client.submit_package_updater_receipt(&arguments[1], &submission)
+}
+
+fn package_owner_progress<C: FleetOperationClient + ?Sized>(
+    arguments: &[String],
+    client: &mut C,
+) -> Result<serde_json::Value, CliFailure> {
+    if arguments.len() != 3 {
+        return Err(CliFailure::new(
+            "unexpected_arguments",
+            "package-owner-progress requires OPERATION_ID JSON",
+        ));
+    }
+    let submission = serde_json::from_str(&arguments[2])
+        .map_err(|error| CliFailure::new("invalid_package_owner_json", error.to_string()))?;
+    client.submit_package_updater_progress(&arguments[1], &submission)
 }
 
 fn preview<C: FleetOperationClient + ?Sized>(
