@@ -296,7 +296,9 @@ try {
         },
         [ordered]@{
             id = "synthetic-timeout"; minimum_profile = "release"; file = "tools/timeout.ps1"
-            arguments = @(); timeout_seconds = 1
+            # This is a stream-preservation test, not a PowerShell startup benchmark.
+            # Leave enough time for a loaded Windows host to start and flush both pipes.
+            arguments = @(); timeout_seconds = 10
         }
     )
     $config.heartbeat_seconds = 1
@@ -327,8 +329,10 @@ exit 0
     Set-Content -LiteralPath (Join-Path $scratch "tools/index-drift.ps1") `
         -Value '& git add README.md; exit $LASTEXITCODE' -Encoding utf8NoBOM
     Set-Content -LiteralPath (Join-Path $scratch "tools/timeout.ps1") -Value @'
-Write-Output "timeout stdout survived"
+[Console]::Out.WriteLine("timeout stdout survived")
+[Console]::Out.Flush()
 [Console]::Error.WriteLine("timeout stderr survived")
+[Console]::Error.Flush()
 $child = Start-Process -FilePath "pwsh" -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Seconds 30") -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 30
 '@ -Encoding utf8NoBOM
