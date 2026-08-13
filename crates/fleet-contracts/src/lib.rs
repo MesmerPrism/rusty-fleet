@@ -13,6 +13,7 @@ mod identity;
 mod kiosk;
 mod packages;
 mod projection;
+mod q2q_stereo;
 mod query;
 mod stream;
 mod wifi_adb;
@@ -80,6 +81,11 @@ pub use projection::{
     FleetSummaryProjection, NavigationRestoration, ProjectionFreshness, SavedView,
     SavedViewCollection, SavedViewMutationReceipt, SavedViewMutationRequest,
     is_valid_saved_view_id,
+};
+pub use q2q_stereo::{
+    Q2Q_STEREO_EVIDENCE_SCHEMA, Q2Q_STEREO_PLAN_SCHEMA, Q2qStereoAdapter, Q2qStereoDirection,
+    Q2qStereoEvidenceProjection, Q2qStereoHealth, Q2qStereoPhase, Q2qStereoPlan, Q2qStereoPlanStep,
+    Q2qStereoTarget, Q2qStereoTargetSelection,
 };
 pub use query::{
     Comparison, FleetQuery, QueryExpression, QueryField, QueryValue, SortDirection, SortKey,
