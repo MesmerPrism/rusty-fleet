@@ -430,6 +430,39 @@
         }
       ],
       "status": "approved"
+    },
+    {
+      "approval_id": "fleet-actions-node24-artifact-upload-20260813",
+      "required_ancestor": "553bdc57cfae9b41b3011fe82ca56c2e494e26ee",
+      "changed_paths": [
+        ".github/workflows/pages.yml",
+        ".github/workflows/release-windows.yml",
+        "packaging/windows/tests/Test-WindowsReleasePolicy.ps1"
+      ],
+      "artifacts": [
+        {
+          "path": ".github/workflows/pages.yml",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 23211,
+          "sha256": "bd509f726c2ba7e5657f904b82c88fa7a644de8698b648cd0328f67a6a9f345f"
+        },
+        {
+          "path": ".github/workflows/release-windows.yml",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 25427,
+          "sha256": "634a70bea9d4f91879b1682f7655c4c5bcc5650cb158caef1e597d267497c28a"
+        },
+        {
+          "path": "packaging/windows/tests/Test-WindowsReleasePolicy.ps1",
+          "state": "present",
+          "mode": "100644",
+          "size_bytes": 15349,
+          "sha256": "30ac95bccb79c5a00dbe3274e1cb5935e611433d0f7c9a96359d0615cc5f45f0"
+        }
+      ],
+      "status": "approved"
     }
   ],
   "status": "active"
