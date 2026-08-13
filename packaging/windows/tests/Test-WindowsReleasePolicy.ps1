@@ -67,6 +67,51 @@ function Get-ReleaseWorkflowBoundaryFailures([string] $Text) {
     )
 }
 
+function Assert-ExactUploadArtifactStep {
+    param(
+        [Parameter(Mandatory = $true)][string] $WorkflowText,
+        [Parameter(Mandatory = $true)][string] $StepName,
+        [Parameter(Mandatory = $true)][string] $ArtifactName,
+        [Parameter(Mandatory = $true)][string[]] $Paths
+    )
+
+    $startMarker = "      - name: $StepName"
+    $start = $WorkflowText.IndexOf($startMarker, [StringComparison]::Ordinal)
+    if ($start -lt 0) {
+        throw "upload-artifact step is absent: $StepName"
+    }
+    $next = $WorkflowText.IndexOf(
+        "      - name:",
+        $start + $startMarker.Length,
+        [StringComparison]::Ordinal
+    )
+    if ($next -lt 0) {
+        $next = $WorkflowText.Length
+    }
+    $actual = $WorkflowText.Substring($start, $next - $start).TrimEnd()
+
+    $expectedLines = @(
+        $startMarker,
+        "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+        "        with:",
+        "          name: $ArtifactName",
+        "          path: |"
+    )
+    $expectedLines += @($Paths | ForEach-Object { "            $_" })
+    $expectedLines += @(
+        "          if-no-files-found: error",
+        "          retention-days: 0",
+        "          compression-level: 6",
+        "          overwrite: false",
+        "          include-hidden-files: false",
+        "          archive: true"
+    )
+    $expected = $expectedLines -join "`n"
+    if ($actual -cne $expected) {
+        throw "upload-artifact contract drifted: $StepName"
+    }
+}
+
 $policyPath = Join-Path $PSScriptRoot "..\trust\release-policy.json"
 $policyText = Get-Content -LiteralPath $policyPath -Raw
 Import-Module (Join-Path $PSScriptRoot "..\Distribution.Common.psm1") -Force
@@ -107,6 +152,31 @@ $pagesWorkflowPath = Join-Path $repoRoot ".github\workflows\pages.yml"
 $pagesWorkflowText = ConvertTo-PolicyNewlines (
     Get-Content -LiteralPath $pagesWorkflowPath -Raw
 )
+Assert-ExactUploadArtifactStep `
+    -WorkflowText $workflowText `
+    -StepName "Upload release evidence" `
+    -ArtifactName 'RustyFleet-${{ inputs.version }}-release-evidence' `
+    -Paths @(
+        "artifacts/windows-distribution/*.zip.sha256",
+        "artifacts/windows-distribution/*.manifest.json",
+        "artifacts/windows-distribution/*.checksums.sha256",
+        "artifacts/windows-distribution/*.validation-receipt.json",
+        "artifacts/windows-distribution/*.build-receipt.json",
+        "artifacts/windows-distribution/pages-metadata/release.json",
+        "artifacts/windows-distribution/pages-metadata/release-descriptor.receipt.json",
+        "artifacts/windows-distribution/pages-metadata/release-descriptor.spki.der",
+        "artifacts/windows-distribution/publication-preflight.receipt.json"
+    )
+Assert-ExactUploadArtifactStep `
+    -WorkflowText $pagesWorkflowText `
+    -StepName "Upload renewal evidence only" `
+    -ArtifactName 'RustyFleet-${{ vars.FLEET_METADATA_CHANNEL }}-metadata-renewal-evidence' `
+    -Paths @(
+        '${{ runner.temp }}/metadata-preflight.json',
+        '${{ runner.temp }}/metadata-deployment-handoff.json',
+        '${{ runner.temp }}/fleet-renewed-metadata/release.json',
+        '${{ runner.temp }}/fleet-renewed-metadata/release-descriptor.receipt.json'
+    )
 $pagesAuthorityPath = Join-Path $PSScriptRoot (
     "..\New-WindowsPagesDeployment.ps1"
 )
