@@ -276,7 +276,9 @@ fixtures, and negative-path validation.
 
 ## Source workflow
 
-The repository pins Rust 1.96 and edition 2024. Run focused checks directly:
+The repository pins ordinary development and source validation to Rust 1.97.1.
+The workspace `rust-version = "1.96"` remains the supported compiler baseline;
+edition 2024 and Cargo resolver 3 are unchanged. Run focused checks directly:
 
 ```powershell
 cargo fmt --all -- --check

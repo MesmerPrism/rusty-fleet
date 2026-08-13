@@ -306,9 +306,14 @@ entrypoints remain:
 - repository Quick/Standard/Deep gate;
 - explicit device suite when required.
 
-Rust 1.96, edition 2024, and the Cargo workspace are the selected Milestone 0
-source toolchain. CI calls `Test-Repo.ps1`, so local and hosted Quick/Standard
-gates exercise the same locked dependency graph and source suite.
+`rust-toolchain.toml` pins ordinary development and source validation to Rust
+1.97.1 with Clippy and rustfmt. The workspace `rust-version = "1.96"` remains
+the independently supported compiler baseline; edition 2024, Cargo resolver 3,
+dependencies, and `Cargo.lock` are unchanged. CI calls `Test-Repo.ps1`, so
+local and hosted Quick/Standard gates exercise the same locked dependency graph
+and source suite. The protected Windows release workflow retains its explicit
+Rust 1.96 override until a separately pre-authorized validation-authority
+package moves that trust surface.
 
 Focused commands:
 
