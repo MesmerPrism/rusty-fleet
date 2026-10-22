@@ -16,6 +16,31 @@ use crate::CliFailure;
 /// Responses remain raw JSON until this crate has decoded and validated the
 /// complete Kiosk show-controls operation contract.
 pub trait FleetOperationClient {
+    fn search_kiosk_apps(
+        &mut self,
+        _request: &fleet_contracts::KioskAppSearchRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "catalogue_client_required",
+            "catalogue read client required",
+        ))
+    }
+    fn kiosk_app_candidates(&mut self, _identity: &str) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "catalogue_client_required",
+            "catalogue read client required",
+        ))
+    }
+    fn refresh_kiosk_catalog(
+        &mut self,
+        _request: &fleet_contracts::KioskV2CatalogRefreshRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        Err(CliFailure::new(
+            "catalogue_client_required",
+            "catalogue read client required",
+        ))
+    }
+
     fn get_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
         Err(CliFailure::new(
             "provider_catalog_client_required",
@@ -235,32 +260,33 @@ pub trait FleetOperationClient {
 }
 
 pub fn is_operation_command(command: &str) -> bool {
-    matches!(
-        command,
-        "provider-catalog"
-            | "provider-catalog-refresh"
-            | "operation-preview"
-            | "operation-execute"
-            | "operation-get"
-            | "package-preview"
-            | "package-execute"
-            | "package-get"
-            | "package-owner-claim"
-            | "package-owner-offer"
-            | "package-owner-ack"
-            | "package-owner-receipt"
-            | "package-owner-progress"
-            | "awake-preview"
-            | "awake-execute"
-            | "awake-get"
-            | "wifi-adb-preview"
-            | "wifi-adb-execute"
-            | "wifi-adb-get"
-            | "wifi-adb-list"
-            | "hotspot-preview"
-            | "hotspot-execute"
-            | "hotspot-get"
-    )
+    crate::kiosk_apps::is_kiosk_app_command(command)
+        || matches!(
+            command,
+            "provider-catalog"
+                | "provider-catalog-refresh"
+                | "operation-preview"
+                | "operation-execute"
+                | "operation-get"
+                | "package-preview"
+                | "package-execute"
+                | "package-get"
+                | "package-owner-claim"
+                | "package-owner-offer"
+                | "package-owner-ack"
+                | "package-owner-receipt"
+                | "package-owner-progress"
+                | "awake-preview"
+                | "awake-execute"
+                | "awake-get"
+                | "wifi-adb-preview"
+                | "wifi-adb-execute"
+                | "wifi-adb-get"
+                | "wifi-adb-list"
+                | "hotspot-preview"
+                | "hotspot-execute"
+                | "hotspot-get"
+        )
 }
 
 pub(crate) fn execute_operation_command<C: FleetOperationClient + ?Sized>(

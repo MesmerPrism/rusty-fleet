@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path as FilePath, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex as BlockingMutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::to_bytes;
@@ -78,6 +78,23 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot, watch};
 use tokio::time::timeout;
 use tower::limit::GlobalConcurrencyLimitLayer;
+
+mod kiosk_catalog;
+mod kiosk_v2_file_manager;
+pub use kiosk_v2_file_manager::{
+    FileManagerKioskV2CatalogProvider, FileManagerKioskV2ProfileMapping,
+    FileManagerKioskV2ProviderConfig,
+};
+pub trait KioskV2CatalogRuntimeProvider:
+    fleet_kiosk_adapter::KioskEncryptedOperatorV2Provider
+{
+    fn profile_id_for(&self, device_id: &str, identity_revision: u64) -> Result<String, String>;
+}
+impl KioskV2CatalogRuntimeProvider for FileManagerKioskV2CatalogProvider {
+    fn profile_id_for(&self, device_id: &str, identity_revision: u64) -> Result<String, String> {
+        self.profile_id_for(device_id, identity_revision)
+    }
+}
 
 const CONFIG_SCHEMA: &str = "rusty.fleet.local_hub_config.v1";
 const HEALTH_SCHEMA: &str = "rusty.fleet.local_hub_health.v1";
@@ -312,6 +329,8 @@ pub struct LocalHubConfig {
     #[serde(default)]
     pub provider_catalog: Vec<ProviderCatalogConfig>,
     #[serde(default)]
+    pub kiosk_v2_catalog_provider: Option<FileManagerKioskV2ProviderConfig>,
+    #[serde(default)]
     pub hub_policy: LocalHubPolicy,
 }
 
@@ -328,6 +347,12 @@ impl LocalHubConfig {
             return Err(
                 "non-loopback binding requires explicit allow_non_loopback=true".to_owned(),
             );
+        }
+        if let Some(provider) = &self.kiosk_v2_catalog_provider {
+            if !bind.ip().is_loopback() {
+                return Err("Kiosk catalogue provider requires loopback bind".to_owned());
+            }
+            provider.validate_shape().map_err(str::to_owned)?;
         }
         if self.package_updater_owner.is_some() && !bind.ip().is_loopback() {
             return Err("package updater owner ingress requires a loopback bind".to_owned());
@@ -591,6 +616,9 @@ struct RuntimeState {
     provider_catalog_snapshot: ProviderCatalogProjection,
     provider_catalog_refresh_inflight: bool,
     provider_catalog_last_refresh_ms: Option<i64>,
+    kiosk_v2_catalog_provider: Option<Arc<BlockingMutex<Box<dyn KioskV2CatalogRuntimeProvider>>>>,
+    kiosk_catalog_slots: Arc<Semaphore>,
+    inflight_kiosk_catalog_refreshes: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -925,11 +953,41 @@ fn state_slot_path(directory: &FilePath, slot: u64) -> PathBuf {
 
 #[derive(Clone)]
 pub struct LocalHubState {
+    catalogue_listener_loopback: bool,
     runtime: Arc<Mutex<RuntimeState>>,
 }
 
 impl LocalHubState {
     pub fn from_config(config: &LocalHubConfig, now_ms: i64) -> Result<Self, String> {
+        config.validate_offline(now_ms)?;
+        let provider = config
+            .kiosk_v2_catalog_provider
+            .as_ref()
+            .map(|provider| {
+                FileManagerKioskV2CatalogProvider::new(provider, &config.state_directory)
+                    .map(|provider| Box::new(provider) as Box<dyn KioskV2CatalogRuntimeProvider>)
+                    .map_err(str::to_owned)
+            })
+            .transpose()?;
+        Self::from_config_with_provider(config, now_ms, provider)
+    }
+    pub fn from_config_with_kiosk_v2_catalog_provider<
+        P: KioskV2CatalogRuntimeProvider + 'static,
+    >(
+        config: &LocalHubConfig,
+        now_ms: i64,
+        provider: P,
+    ) -> Result<Self, String> {
+        if !config.validate()?.ip().is_loopback() {
+            return Err("Kiosk catalogue provider requires loopback bind".to_owned());
+        }
+        Self::from_config_with_provider(config, now_ms, Some(Box::new(provider)))
+    }
+    fn from_config_with_provider(
+        config: &LocalHubConfig,
+        now_ms: i64,
+        provider: Option<Box<dyn KioskV2CatalogRuntimeProvider>>,
+    ) -> Result<Self, String> {
         config.validate_offline(now_ms)?;
         let mut adapter = FleetManifoldAdapter::new(config.trusted_operator_ids.clone());
         // `validate_offline` proved the same ordered enrollments. Reapply them
@@ -968,6 +1026,7 @@ impl LocalHubState {
             .map(|direct_operator| (direct_operator.device_id.clone(), direct_operator))
             .collect();
         Ok(Self {
+            catalogue_listener_loopback: config.validate()?.ip().is_loopback(),
             runtime: Arc::new(Mutex::new(RuntimeState {
                 hub,
                 adapter,
@@ -1022,6 +1081,10 @@ impl LocalHubState {
                 ),
                 provider_catalog_refresh_inflight: false,
                 provider_catalog_last_refresh_ms: None,
+                kiosk_v2_catalog_provider: provider
+                    .map(|provider| Arc::new(BlockingMutex::new(provider))),
+                kiosk_catalog_slots: Arc::new(Semaphore::new(1)),
+                inflight_kiosk_catalog_refreshes: BTreeSet::new(),
             })),
         })
     }
@@ -1162,6 +1225,15 @@ fn default_watch_limit() -> usize {
 pub fn router(state: LocalHubState) -> Router {
     Router::new()
         .route("/fleet/v1/health", get(health))
+        .route("/fleet/v1/kiosk-apps/search", post(kiosk_catalog::search))
+        .route(
+            "/fleet/v1/kiosk-apps/{app_identity}/candidates",
+            get(kiosk_catalog::candidates),
+        )
+        .route(
+            "/fleet/v1/kiosk-catalog/refresh",
+            post(kiosk_catalog::refresh),
+        )
         .route("/fleet/v1/provider-catalog", get(provider_catalog))
         .route(
             "/fleet/v1/provider-catalog/refresh",
@@ -8097,6 +8169,7 @@ mod tests {
                 quest_connectivity_provider: None,
                 windows_hotspot_provider: None,
                 provider_catalog: Vec::new(),
+                kiosk_v2_catalog_provider: None,
                 hub_policy: Default::default(),
             },
             key_id,
@@ -8300,4 +8373,5 @@ mod tests {
             STATE_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
     }
+    include!("kiosk_catalog_tests.rs");
 }

@@ -12,7 +12,7 @@ using RustyFleet.FleetConsole.Services;
 
 namespace RustyFleet.FleetConsole.ViewModels;
 
-public sealed class FleetWorkspaceViewModel : ObservableObject
+public sealed partial class FleetWorkspaceViewModel : ObservableObject
 {
     public const int WatchEventLimit = 10_000;
 
@@ -114,6 +114,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public FleetWorkspaceViewModel(Func<Uri, IFleetDataSource> sourceFactory)
     {
         _sourceFactory = sourceFactory;
+        InitializeKioskCatalog();
         RowsView = CollectionViewSource.GetDefaultView(Rows);
         ConnectCommand = new AsyncCommand(ConnectAsync, () => !IsBusy);
         SynchronizeUpdatesCommand = new AsyncCommand(
@@ -970,6 +971,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
             {
                 ConnectCommand.RaiseCanExecuteChanged();
                 SynchronizeUpdatesCommand.RaiseCanExecuteChanged();
+                RaiseKioskCatalogCommands();
                 RefreshProviderCatalogCommand.RaiseCanExecuteChanged();
                 LoadProviderCatalogCommand.RaiseCanExecuteChanged();
                 ApplySearchCommand.RaiseCanExecuteChanged();
@@ -1010,7 +1012,7 @@ public sealed class FleetWorkspaceViewModel : ObservableObject
     public DeviceRowViewModel? SelectedDevice
     {
         get => _selectedDevice;
-        private set => SetProperty(ref _selectedDevice, value);
+        private set { if (SetProperty(ref _selectedDevice, value)) RaiseKioskCatalogCommands(); }
     }
 
     public DeviceInspectorViewModel? Inspector

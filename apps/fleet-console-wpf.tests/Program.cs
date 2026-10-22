@@ -338,6 +338,18 @@ internal static class Program
             Require(
                 inspector.Capabilities.Count >= 3,
                 "inspector did not preserve independent capabilities");
+            var catalogueRows = workspace.Rows.ToArray();
+            var catalogueQueryCount = source.QueryCount;
+            var catalogueQuery = JsonSerializer.Serialize(source.LastQuery, FleetJson.Options);
+            workspace.KioskAppSearchText = "study";
+            workspace.SearchKioskAppsAsync().GetAwaiter().GetResult();
+            Require(workspace.KioskAppMatches.Count == 2, "catalogue search collapsed ambiguous labels");
+            workspace.SelectedKioskAppMatch = workspace.KioskAppMatches[1];
+            workspace.ShowKioskAppCandidatesAsync().GetAwaiter().GetResult();
+            Require(workspace.KioskAppCandidates.Single().AppIdentity == workspace.SelectedKioskAppMatch.AppIdentity, "candidate read changed app identity");
+            workspace.RefreshKioskCatalogAsync().GetAwaiter().GetResult();
+            Require(source.LastCatalogRefresh?.DeviceId == first.DeviceId && source.LastCatalogRefresh.IdentityRevision == first.Projection.Identity.IdentityRevision, "catalogue refresh changed selected exact device");
+            Require(workspace.Rows.SequenceEqual(catalogueRows) && ReferenceEquals(workspace.SelectedDevice, first) && ReferenceEquals(workspace.Inspector, inspector) && source.QueryCount == catalogueQueryCount && JsonSerializer.Serialize(source.LastQuery, FleetJson.Options) == catalogueQuery, "catalogue reads discarded fleet context or reread the fleet query");
             var selectedStableKey = first.StableKey;
             var selectedBatchText = workspace.BatchSelectionText;
             Require(
@@ -2854,6 +2866,21 @@ internal static class Program
             new(StringComparer.Ordinal);
         private ulong _savedViewRevision = 1;
 
+        public KioskCatalogRefreshRequest? LastCatalogRefresh { get; private set; }
+        public Task<KioskAppSearchResult> SearchKioskAppsAsync(KioskAppSearchRequest request, CancellationToken cancellationToken) => Task.FromResult(new KioskAppSearchResult {
+            Schema = "rusty.fleet.kiosk_app_search_result.v1", Query = request.Query, NormalizedQuery = request.Query, AsOfMs = Projection.AsOfMs,
+            Coverage = new KioskCatalogCoverage { Current = 1, Absent = 49 },
+            Matches = new[] { "a", "b" }.Select(id => new KioskAppMatch { AppIdentity = new string(id[0], 64), DisplayLabel = "Study", Disambiguator = id, CurrentDeviceCount = 1 }).ToArray()
+        });
+        public Task<KioskAppCandidatesResult> KioskAppCandidatesAsync(string identity, CancellationToken cancellationToken) => Task.FromResult(new KioskAppCandidatesResult {
+            Schema = "rusty.fleet.kiosk_app_candidates_result.v1", AppIdentity = identity, AsOfMs = Projection.AsOfMs,
+            Candidates = new[] { new KioskAppCandidate { AppIdentity = identity, DisplayLabel = "Study", Disambiguator = "b", CatalogFreshness = "fresh", CatalogComplete = true, Row = Projection.Rows[0] } }
+        });
+        public Task<KioskCatalogRefreshResult> RefreshKioskCatalogAsync(KioskCatalogRefreshRequest request, CancellationToken cancellationToken) {
+            LastCatalogRefresh = request;
+            return Task.FromResult(new KioskCatalogRefreshResult { Schema = "rusty.fleet.kiosk_v2_catalog_refresh_projection.v1", Admitted = true,
+                DeviceId = request.DeviceId, IdentityRevision = request.IdentityRevision, EntryCount = 2, FreshUntilMs = Projection.AsOfMs + 60_000, Scopes = new[] { "kiosk.catalog-summary" } });
+        }
         public FleetQueryResult Projection { get; set; } = projection;
 
         public FleetQuery? LastQuery { get; private set; }

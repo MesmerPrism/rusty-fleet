@@ -1371,6 +1371,22 @@
                           AutomationProperties.Name="Selected device inspector"
                           AutomationProperties.HelpText="Current selected-device observations, capabilities, conditions, work, and streams.">
                 <StackPanel>
+                    <Expander Header="Find installed Kiosk apps" Margin="0,0,0,12" AutomationProperties.Name="Kiosk app catalogue reads">
+                        <StackPanel Margin="0,8,0,8">
+                            <TextBlock Text="App name or tag" />
+                            <TextBox Text="{Binding KioskAppSearchText, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Kiosk app name or tag" />
+                            <WrapPanel>
+                                <Button Content="Search" Command="{Binding SearchKioskAppsCommand}" />
+                                <Button Content="Refresh selected device" Command="{Binding RefreshKioskCatalogCommand}" AutomationProperties.HelpText="Read a summary catalogue through the configured encrypted Kiosk provider." />
+                            </WrapPanel>
+                            <TextBlock Text="{Binding KioskCatalogStatus}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                            <ListBox ItemsSource="{Binding KioskAppMatches}" SelectedItem="{Binding SelectedKioskAppMatch}" DisplayMemberPath="Summary" MaxHeight="160" AutomationProperties.Name="Exact Kiosk app matches" />
+                            <Button Content="Show candidate devices" Command="{Binding ShowKioskAppCandidatesCommand}" />
+                            <ItemsControl ItemsSource="{Binding KioskAppCandidates}" AutomationProperties.Name="Kiosk catalogue candidate devices">
+                                <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding Summary}" TextWrapping="Wrap" Margin="0,4" /></DataTemplate></ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Expander>
                     <TextBlock Text="{Binding Inspector.Title, FallbackValue=No device selected}"
                                FontSize="22"
                                FontWeight="SemiBold"

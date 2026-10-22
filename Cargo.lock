@@ -67,6 +67,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -285,17 +291,20 @@ name = "fleet-hub-local"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "ed25519-dalek",
  "fleet-contracts",
  "fleet-hub",
  "fleet-kiosk-adapter",
  "fleet-manifold-adapter",
+ "fleet-onboarding-windows-kernel",
  "fleet-package-updater-adapter",
  "fleet-provider-catalog",
  "fleet-quest-awake-adapter",
  "fleet-quest-connectivity-adapter",
  "fleet-simulator",
  "fleet-windows-hotspot-adapter",
+ "getrandom 0.3.4",
  "hex",
  "rusty-manifold-model",
  "rusty-manifold-peer",
@@ -304,6 +313,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tower",
+ "windows-permissions",
 ]
 
 [[package]]
