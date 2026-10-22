@@ -144,6 +144,44 @@ impl LocalFleetOperationClient {
 }
 
 impl FleetOperationClient for LocalFleetOperationClient {
+    fn search_kiosk_apps(
+        &mut self,
+        request: &fleet_contracts::KioskAppSearchRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "POST",
+            "/fleet/v1/kiosk-apps/search",
+            Some(
+                serde_json::to_vec(request)
+                    .map_err(|_| CliFailure::new("invalid_request", "cannot serialize query"))?,
+            ),
+        )
+    }
+    fn kiosk_app_candidates(&mut self, identity: &str) -> Result<serde_json::Value, CliFailure> {
+        self.request(
+            "GET",
+            &format!(
+                "/fleet/v1/kiosk-apps/{}/candidates",
+                encode_path_segment(identity)
+            ),
+            None,
+        )
+    }
+    fn refresh_kiosk_catalog(
+        &mut self,
+        request: &fleet_contracts::KioskV2CatalogRefreshRequest,
+    ) -> Result<serde_json::Value, CliFailure> {
+        self.request_with_timeout(
+            "POST",
+            "/fleet/v1/kiosk-catalog/refresh",
+            Some(
+                serde_json::to_vec(request)
+                    .map_err(|_| CliFailure::new("invalid_request", "cannot serialize refresh"))?,
+            ),
+            Duration::from_secs(35),
+        )
+    }
+
     fn get_provider_catalog(&mut self) -> Result<serde_json::Value, CliFailure> {
         self.request("GET", "/fleet/v1/provider-catalog", None)
     }

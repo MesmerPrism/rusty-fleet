@@ -4,6 +4,7 @@
 //! `fleetctl` command projection over the same in-process API used by tests and
 //! future UI consumers.
 
+mod kiosk_apps;
 mod local_client;
 mod operation;
 mod package_operation;
@@ -100,6 +101,9 @@ pub fn execute(arguments: Vec<String>) -> Result<serde_json::Value, CliFailure> 
                 "m1-lifecycle",
                 "operator-fixture mixed-freshness [count]",
                 "saved-view-roundtrip [count]",
+                "kiosk-apps-search <app name or tag>",
+                "kiosk-apps-candidates <exact-app-identity>",
+                "kiosk-catalog-refresh <device-id>@<identity-revision>",
                 "provider-catalog",
                 "provider-catalog-refresh",
                 "operation-preview kiosk.show-controls DEVICE@IDENTITY_REVISION...",
@@ -220,6 +224,8 @@ pub fn execute_with_operation_client<C: FleetOperationClient + ?Sized>(
                 client.refresh_provider_catalog()
             }
         }
+    } else if kiosk_apps::is_kiosk_app_command(command) {
+        kiosk_apps::execute_kiosk_app_command(&arguments, client)
     } else if quest_awake_operation::is_quest_awake_operation_command(command) {
         quest_awake_operation::execute_quest_awake_operation_command(&arguments, client)
     } else if quest_wifi_adb_operation::is_quest_wifi_adb_operation_command(command) {

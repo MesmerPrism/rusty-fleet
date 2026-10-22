@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 mod awake;
 mod kiosk;
+mod kiosk_apps;
 mod packages;
 mod wifi_adb;
 mod windows_hotspot;
@@ -188,6 +189,12 @@ pub struct FleetHubSnapshot {
     windows_hotspot_operations: BTreeMap<String, fleet_contracts::WindowsHotspotOperation>,
     #[serde(default)]
     windows_hotspot_observation: Option<windows_hotspot::WindowsHotspotObservedState>,
+    #[serde(default)]
+    kiosk_catalogs: BTreeMap<String, kiosk_apps::KioskCatalogRecord>,
+    #[serde(default)]
+    seen_kiosk_catalog_replay_identities: BTreeSet<String>,
+    #[serde(default)]
+    kiosk_catalog_associations: BTreeMap<String, (u64, String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -206,6 +213,9 @@ pub struct FleetHub {
     wifi_adb_operations: BTreeMap<String, fleet_contracts::QuestWifiAdbOperation>,
     windows_hotspot_operations: BTreeMap<String, fleet_contracts::WindowsHotspotOperation>,
     windows_hotspot_observation: Option<windows_hotspot::WindowsHotspotObservedState>,
+    kiosk_catalogs: BTreeMap<String, kiosk_apps::KioskCatalogRecord>,
+    seen_kiosk_catalog_replay_identities: BTreeSet<String>,
+    kiosk_catalog_associations: BTreeMap<String, (u64, String, String)>,
 }
 
 impl FleetHub {
@@ -234,6 +244,9 @@ impl FleetHub {
             wifi_adb_operations: BTreeMap::new(),
             windows_hotspot_operations: BTreeMap::new(),
             windows_hotspot_observation: None,
+            kiosk_catalogs: BTreeMap::new(),
+            seen_kiosk_catalog_replay_identities: BTreeSet::new(),
+            kiosk_catalog_associations: BTreeMap::new(),
         }
     }
 
@@ -286,6 +299,9 @@ impl FleetHub {
             wifi_adb_operations: self.wifi_adb_operations.clone(),
             windows_hotspot_operations: self.windows_hotspot_operations.clone(),
             windows_hotspot_observation: self.windows_hotspot_observation.clone(),
+            kiosk_catalogs: self.kiosk_catalogs.clone(),
+            seen_kiosk_catalog_replay_identities: self.seen_kiosk_catalog_replay_identities.clone(),
+            kiosk_catalog_associations: self.kiosk_catalog_associations.clone(),
         }
     }
 
@@ -355,6 +371,65 @@ impl FleetHub {
                     format!("Fleet Hub snapshot record is invalid for {device_id}"),
                 ));
             }
+        }
+        if snapshot.kiosk_catalogs.len() > kiosk_apps::MAX_KIOSK_CATALOGS
+            || snapshot.kiosk_catalog_associations.len() > kiosk_apps::MAX_KIOSK_CATALOGS
+            || snapshot.seen_kiosk_catalog_replay_identities.len()
+                > kiosk_apps::MAX_KIOSK_CATALOG_REPLAY_IDENTITIES
+            || snapshot
+                .seen_kiosk_catalog_replay_identities
+                .iter()
+                .any(|id| {
+                    id.len() != 64
+                        || !id
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+            || snapshot.kiosk_catalog_associations.iter().any(
+                |(device, (revision, profile, owner))| {
+                    !snapshot.devices.contains_key(device)
+                        || *revision == 0
+                        || !(8..=128).contains(&profile.len())
+                        || !profile.bytes().all(|b| {
+                            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b':')
+                        })
+                        || !(16..=96).contains(&owner.len())
+                        || !owner
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+                },
+            )
+            || snapshot.kiosk_catalogs.iter().any(|(device, record)| {
+                device != &record.snapshot.device_id
+                    || record.source_epoch.is_empty()
+                    || record.snapshot.validate().is_err()
+                    || record.received_at_ms < record.snapshot.observed_at_ms
+                    || record.production_admission.as_ref().is_none_or(|binding| {
+                        record.received_at_ms < binding.issued_at_ms
+                            || record.received_at_ms > binding.expires_at_ms
+                            || record.received_at_ms > record.snapshot.fresh_until_ms
+                            || !snapshot
+                                .seen_kiosk_catalog_replay_identities
+                                .contains(&binding.replay_identity)
+                            || snapshot.kiosk_catalog_associations.get(device).is_none_or(
+                                |(revision, _, owner)| {
+                                    *revision != record.snapshot.identity_revision
+                                        || owner != &record.snapshot.kiosk_owner_epoch
+                                },
+                            )
+                            || fleet_contracts::ProductionKioskCatalogAdmission {
+                                binding: binding.clone(),
+                                snapshot: record.snapshot.clone(),
+                            }
+                            .validate()
+                            .is_err()
+                    })
+            })
+        {
+            return Err(HubError::new(
+                "snapshot_catalog_invalid",
+                "catalogue or replay state is invalid",
+            ));
         }
         let saved_view_collection = SavedViewCollection {
             schema: "rusty.fleet.saved_view_collection.v1".to_owned(),
@@ -508,6 +583,9 @@ impl FleetHub {
             wifi_adb_operations: snapshot.wifi_adb_operations,
             windows_hotspot_operations: snapshot.windows_hotspot_operations,
             windows_hotspot_observation: snapshot.windows_hotspot_observation,
+            kiosk_catalogs: snapshot.kiosk_catalogs,
+            seen_kiosk_catalog_replay_identities: snapshot.seen_kiosk_catalog_replay_identities,
+            kiosk_catalog_associations: snapshot.kiosk_catalog_associations,
         })
     }
 

@@ -9,6 +9,10 @@ description = "Bounded local HTTP ingress and projection API for Rusty Fleet."
 
 [dependencies]
 axum.workspace = true
+base64 = "=0.22.1"
+getrandom.workspace = true
+windows-permissions.workspace = true
+fleet-onboarding-windows-kernel = { path = "../../crates/fleet-onboarding-windows-kernel" }
 fleet-contracts = { path = "../../crates/fleet-contracts" }
 fleet-hub = { path = "../../crates/fleet-hub" }
 fleet-kiosk-adapter = { path = "../../crates/fleet-kiosk-adapter" }

@@ -268,6 +268,10 @@ bounded dependency, authority, activation, and instruction audit.
 9. Review the
    [Quest awake-control boundary](docs/QUEST_AWAKE_CONTROL.md).
 
+The experimental [Kiosk catalogue summary reads](docs/KIOSK_CATALOG_READS.md)
+add optional explicit refresh, app/tag search and exact-identity candidate
+reads through the configured QFM owner provider.
+
 The current source stack contains the first M2 participating-app operation,
 `kiosk.show-controls`, plus the additive `packages.install-release`
 preparation checkpoint. Dedicated private planning owns iteration state; the

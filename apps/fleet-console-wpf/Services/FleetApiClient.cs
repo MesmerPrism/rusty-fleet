@@ -10,6 +10,10 @@ namespace RustyFleet.FleetConsole.Services;
 
 public interface IFleetDataSource
 {
+    Task<KioskAppSearchResult> SearchKioskAppsAsync(KioskAppSearchRequest request, CancellationToken cancellationToken) => Task.FromException<KioskAppSearchResult>(new NotSupportedException("Kiosk catalogue reads unavailable."));
+    Task<KioskAppCandidatesResult> KioskAppCandidatesAsync(string identity, CancellationToken cancellationToken) => Task.FromException<KioskAppCandidatesResult>(new NotSupportedException("Kiosk catalogue reads unavailable."));
+    Task<KioskCatalogRefreshResult> RefreshKioskCatalogAsync(KioskCatalogRefreshRequest request, CancellationToken cancellationToken) => Task.FromException<KioskCatalogRefreshResult>(new NotSupportedException("Kiosk catalogue provider absent."));
+
     Task<ProviderCatalogProjection> ProviderCatalogAsync(
         CancellationToken cancellationToken) =>
         Task.FromException<ProviderCatalogProjection>(
@@ -117,7 +121,7 @@ public interface IFleetDataSource
         CancellationToken cancellationToken);
 }
 
-public sealed class FleetApiClient : IFleetDataSource, IDisposable
+public sealed partial class FleetApiClient : IFleetDataSource, IDisposable
 {
     public const long MaxResponseBytes = 16 * 1024 * 1024;
 
