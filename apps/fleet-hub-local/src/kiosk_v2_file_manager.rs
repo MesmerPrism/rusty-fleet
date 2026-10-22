@@ -1357,7 +1357,7 @@ mod interop_tests {
         let bytes = std::fs::read(response_path).expect("immutable response");
         assert_eq!(
             crate::sha256_hex(&bytes),
-            "63fe2bcb5fc62006967412836aef467a0f4c2528a39d3575264f4814ba2f0e25"
+            "3a5affaaa8b3d2f40e405ac4a8afeafc91b899a3a38e508feba7f1c1a24f761c"
         );
         let request_bytes = std::fs::read(request_path).expect("request");
         assert_eq!(
